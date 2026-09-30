@@ -171,12 +171,27 @@ final class MediaPruneCommand extends Command
          * create the directory.
          */
         $kitsune = array_values(array_unique([$public, $private]));
+        $unrooted = [];
+
+        // The configured disks are scanned whatever they hold, and one whose root is not there is built, as before — but
+        // not one whose root cannot be looked at, which building would try to create (Adam, decision 25; Codex, #160).
+        foreach ($kitsune as $disk) {
+            if (! is_array($config->get("filesystems.disks.{$disk}"))) {
+                continue;
+            }
+
+            try {
+                self::mayHold($config, $disk, $unrooted);
+            } catch (Throwable) {
+                // One that cannot be asked at all is asked again by its listing, which says what is wrong with it.
+            }
+        }
 
         // ...but not core's private disk where it is the configured private disk under another name — one place, as custody
         // takes it: its listing is that disk's, and every private file would be listed twice, an orphan removed and then
         // failing as unheld, a copy of itself offered as extra and kept (review of slice 5c). One that cannot be told from
         // it, a read-through private disk reaching it through a half among them, is scanned, and its copies listed.
-        if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && MediaDisks::mayHold($config, MediaDisks::PRIVATE)) {
+        if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && self::mayHold($config, MediaDisks::PRIVATE, $unrooted)) {
             try {
                 $same = is_array($config->get("filesystems.disks.{$private}")) && MediaDisks::mayHold($config, $private)
                     && ! MediaDisks::nested($config, MediaDisks::PRIVATE, $private)
@@ -242,7 +257,7 @@ final class MediaPruneCommand extends Command
 
         foreach ([...$named, ...$servedOnly] as $disk) {
             $isNamed = in_array($disk, $named, true);
-            $askable = is_array($config->get("filesystems.disks.{$disk}")) && MediaDisks::mayHold($config, $disk);
+            $askable = is_array($config->get("filesystems.disks.{$disk}")) && self::mayHold($config, $disk, $unrooted);
 
             if (! $askable) {
                 // A served disk that cannot hold anything is not built; a row's disk is listed, and says why it cannot be.
@@ -297,11 +312,14 @@ final class MediaPruneCommand extends Command
 
         foreach ($scanned as $disk) {
             $found = ['orphans' => [], 'partials' => [], 'extras' => []];
-            $failure = null;
+            $failure = $unrooted[$disk] ?? null;
             $built = false;
 
-            foreach ($this->listing($disk, $failure, $built) as $paths) {
-                $this->classify($connection, $disk, in_array($disk, $kitsune, true), $public, $paths, $found);
+            // One whose root cannot be looked at is not built, which would try to create it (Adam, decision 25).
+            if ($failure === null) {
+                foreach ($this->listing($disk, $failure, $built) as $paths) {
+                    $this->classify($connection, $disk, in_array($disk, $kitsune, true), $public, $paths, $found);
+                }
             }
 
             // ⚠️ A LISTING THAT FAILS PART-WAY CONTRIBUTES NOTHING, as `allFiles()`, which returned all or threw, did.
@@ -1278,6 +1296,24 @@ final class MediaPruneCommand extends Command
     private function readsThrough(string $disk): bool
     {
         return $this->readThrough[$disk] ??= Storage::disk($disk) instanceof ReadThroughFilesystem;
+    }
+
+    /**
+     * Whether a disk can hold anything, as `MediaDisks::mayHold()` says — and true for a local one whose root cannot be
+     * looked at, remembered with why, so that it is scanned and said to be unlisted, and the run fails, rather than
+     * taken to hold nothing (Adam, decision 25).
+     *
+     * @param  array<string, string>  $unrooted
+     */
+    private static function mayHold(Repository $config, string $disk, array &$unrooted): bool
+    {
+        try {
+            return MediaDisks::mayHold($config, $disk);
+        } catch (MediaCustodyFailure $failure) {
+            $unrooted[$disk] = $failure->getMessage();
+
+            return true;
+        }
     }
 
     /**

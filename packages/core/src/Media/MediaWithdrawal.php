@@ -218,8 +218,25 @@ final class MediaWithdrawal
          * A served local disk whose root does not exist, or that has none, holds nothing, and is not built — asked of
          * `MediaDisks::mayHold()`, which custody, disposal, reconcile and prune ask too: this kept its own copy of the rule,
          * which counted a disk with no root as holding, and building one refused every trash (review of slice 5b).
+         *
+         * ⚠️ AND ONE WHOSE ROOT CANNOT BE LOOKED AT REFUSES THE TRASH (Adam, decision 25): taken to hold nothing, it was
+         * left out, and a copy it still served stayed on the web while the entry read as withdrawn. Not a private file's
+         * on an unserved disk, which such a disk never served — the rule above — and which it still does not block.
          */
-        $holding = array_values(array_filter($served, static fn (string $disk): bool => MediaDisks::mayHold($config, $disk)));
+        $holding = [];
+
+        foreach ($served as $disk) {
+            try {
+                if (MediaDisks::mayHold($config, $disk)) {
+                    $holding[] = $disk;
+                }
+            } catch (MediaCustodyFailure $failure) {
+                if ($reachable) {
+                    throw $this->refused($id, MediaWithdrawalRefused::UNKNOWN_ROOT, $failure);
+                }
+            }
+        }
+
         $surfaces = array_values(array_diff(array_unique($reachable ? [$public, ...$holding, $named] : [$public]), [$target]));
 
         // A row path the disks read as another: copied or removed, it would be that path, another row's file among them.

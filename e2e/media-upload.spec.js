@@ -157,6 +157,17 @@ const READER_STATE = '.playwright/admin-reader-auth.json';
 const uploadButton = (page) => page.locator('button[wire\\:click="mountAction(\'upload\')"]');
 
 /**
+ * Give the Upload field files, once FilePond has taken over its input.
+ *
+ * ⚠️ NOT BEFORE: the modal's input is there as soon as it opens, and FilePond wraps it a moment later. Files set on it
+ * before then go to an input nothing listens to, and no item ever appears — which a slow run showed, on any test here.
+ */
+async function addFiles(dialog, files) {
+    await expect(dialog.locator('.filepond--root')).toBeAttached();
+    await dialog.locator('input[type=file]').setInputFiles(files);
+}
+
+/**
  * Open the Upload modal, add the files, wait until FilePond has staged every one, set the controls, and submit.
  *
  * ⚠️ BY FILEPOND'S OWN STATE, NOT A TIMEOUT: a file still processing is not in the form's state, and submitting then
@@ -166,7 +177,7 @@ async function upload(page, files, { visibility = null, confirm = false, siteOnl
     await uploadButton(page).click();
 
     const dialog = page.getByRole('dialog');
-    await dialog.locator('input[type=file]').setInputFiles(files);
+    await addFiles(dialog, files);
     await expect(dialog.locator('.filepond--item[data-filepond-item-state="processing-complete"]'))
         .toHaveCount(files.length, { timeout: 20_000 });
 
@@ -189,6 +200,41 @@ test.describe('uploading through the media list', () => {
     // The staging specs leave files behind on purpose; each test here starts from an empty intake so "nothing staged" means it.
     test.beforeEach(() => {
         fs.rmSync(path.join(media().intakePath, 'livewire-tmp'), { recursive: true, force: true });
+    });
+
+    /*
+     * ⚠️ A FILE REFUSED AT STAGING IS SHOWN ON THE FIELD, IN THE REFUSAL'S OWN WORDS, BEFORE UPLOAD IS PRESSED. The endpoint
+     * answers a refusal in Livewire's shape — 422, keyed `files.N` — and Livewire raises it on the field. That is the path
+     * decision 18 puts a full disk on: the gate answers a file the intake disk did not store the same way, which
+     * `UploadStagingGateTest` drives through Livewire's own store on a disk that fails the write. A write that answers
+     * false cannot be made here — the suite runs as root in places, which a read-only directory does not stop, and a
+     * directory it cannot create throws instead of answering false — so the refusal made here is the endpoint rule's,
+     * of a `.png` whose contents are text, which travels the same way.
+     */
+    test('shows a file refused at staging on the field, in its words, before Upload is pressed', async ({ page }) => {
+        const title = 'upload-probe-refused';
+
+        try {
+            await page.goto('/admin/golfdom/c/image');
+            await uploadButton(page).click();
+
+            const dialog = page.getByRole('dialog');
+            await addFiles(dialog, [{ name: `${title}.png`, mimeType: 'image/png', buffer: Buffer.from('just some text') }]);
+
+            await expect(dialog.getByText(`Refusing [${title}.png]: it is named .png but its contents are [text/plain].`, { exact: false }))
+                .toBeVisible({ timeout: 20_000 });
+            await expect(dialog.locator('.filepond--item[data-filepond-item-state="processing-complete"]')).toHaveCount(0);
+            expect(intake().filter((file) => file.endsWith('.png'))).toEqual([]);
+        } finally {
+            removeUploads([title]);
+        }
+
+        // The control: a real image, staged, and FilePond shows it complete with no refusal.
+        await page.goto('/admin/golfdom/c/image');
+        await uploadButton(page).click();
+        await addFiles(page.getByRole('dialog'), [png(`${title}.png`)]);
+        await expect(page.getByRole('dialog').locator('.filepond--item[data-filepond-item-state="processing-complete"]')).toHaveCount(1, { timeout: 20_000 });
+        await expect(page.getByRole('dialog').getByText('its contents are')).toHaveCount(0);
     });
 
     test('offers Upload on a media list, and no create page, where an article list keeps both', async ({ page }) => {
@@ -549,7 +595,7 @@ test.describe('who may upload', () => {
                 await uploadButton(page).click();
 
                 const dialog = page.getByRole('dialog');
-                await dialog.locator('input[type=file]').setInputFiles([png(`${title}.png`)]);
+                await addFiles(dialog, [png(`${title}.png`)]);
                 await expect(dialog.locator('.filepond--item[data-filepond-item-state="processing-complete"]')).toHaveCount(1, { timeout: 20_000 });
                 const staged = intake();
                 expect(staged.length).toBeGreaterThan(0);

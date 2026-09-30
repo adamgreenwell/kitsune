@@ -31,7 +31,10 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\PanelUser;
+use Kitsune\Core\Tests\Fixtures\RefusingDisk;
+use Livewire\Features\SupportFileUploads\FileUploadConfiguration;
 use Livewire\Features\SupportFileUploads\FileUploadController;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Symfony\Component\HttpFoundation\Response;
 
 /*
@@ -516,6 +519,152 @@ describe('the rule the gate hands on', function (): void {
 
         expect($response->getStatusCode())->toBe(200)
             ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(2);
+    });
+});
+
+/*
+ * ⚠️ A FILE THE INTAKE DISK DID NOT STORE IS REFUSED AT STAGING — ADR-042 decision 18 (Adam, 2026-09-30). Livewire does
+ * not check its own writes: on a full disk the endpoint signed the empty path and answered 200, and the editor found out
+ * only on submitting. Driven through Livewire's own store, on a disk that fails the write as a full one does.
+ */
+describe('a file the intake disk did not store', function (): void {
+    beforeEach(function (): void {
+        PanelTenancy::enter($this->here);
+        app(Context::class)->forget();
+
+        // Livewire signs what it staged, and Testbench ships no key to sign with.
+        config(['app.key' => 'base64:'.base64_encode(random_bytes(32))]);
+
+        stagingRole($this->org, $this->user, uploadGrant('image'));
+        $this->actingAs($this->user);
+
+        $this->root = sys_get_temp_dir().'/kitsune-intake-'.bin2hex(random_bytes(4));
+        mkdir($this->root, 0777, true);
+        Exceptions::fake();
+    });
+
+    afterEach(fn () => exec('rm -rf '.escapeshellarg($this->root)));
+
+    /** The gate, with Livewire's controller step behind it answering as the endpoint does, for several files at once. */
+    function throughGateStoring(array $files): Response
+    {
+        return (new GuardUploadStaging)->handle(stagingRequest($files), static fn (): Response => response()->json([
+            'paths' => (new FileUploadController)->validateAndStore($files, MediaDisks::INTAKE),
+        ]));
+    }
+
+    function notStoredReported(int $failed, int $of): void
+    {
+        Exceptions::assertReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), "did not store {$failed} of the {$of} files"));
+    }
+
+    it('refuses a file a full disk staged as nothing, in Livewire\'s shape, and reports it', function (): void {
+        $disk = RefusingDisk::install(MediaDisks::INTAKE, $this->root);
+        // The sidecar is written; the file is not — Livewire's store answers false, and the endpoint signs the empty path.
+        $disk->onOperation(2, function () use ($disk): void {
+            $disk->failWrites = true;
+        });
+
+        $response = throughGateStoring([UploadedFile::fake()->image('photo.png', 2, 2)]);
+        $disk->failWrites = false;
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true))->toBe([
+                'message' => GuardUploadStaging::NOT_STORED,
+                'errors' => ['files.0' => [GuardUploadStaging::NOT_STORED]],
+            ])
+            // The sidecar Livewire wrote first names no file the answer carries: it stays for the sweep, as it did.
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(1)
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.png.json');
+        notStoredReported(1, 1);
+    });
+
+    /* Refused for the file it failed, and what it did store for the same request removed: the browser will never ask for it. */
+    it('refuses the one file of two it did not store, and removes the other it did', function (): void {
+        $disk = RefusingDisk::install(MediaDisks::INTAKE, $this->root);
+        // Sidecar, file, sidecar — and the second file is not written.
+        $disk->onOperation(4, function () use ($disk): void {
+            $disk->failWrites = true;
+        });
+
+        $response = throughGateStoring([UploadedFile::fake()->image('one.png', 2, 2), UploadedFile::fake()->image('two.png', 2, 2)]);
+        $disk->failWrites = false;
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true)['errors'])->toBe(['files.1' => [GuardUploadStaging::NOT_STORED]])
+            // The first file and its sidecar are gone; only the second's orphaned sidecar is left.
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(1)
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.png.json');
+        notStoredReported(1, 2);
+        Exceptions::assertNotReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'could not be removed'));
+    });
+
+    /*
+     * ...and says so where the disk would not remove it: the intake disk answers `false` rather than throw, and a
+     * refusal that went unsaid left the operator a disk short of space and no word of what was on it (Codex, #160).
+     */
+    it('says which files it stored and could not remove, and leaves them to the sweep', function (): void {
+        $disk = RefusingDisk::install(MediaDisks::INTAKE, $this->root);
+        $disk->onOperation(4, function () use ($disk): void {
+            $disk->failWrites = true;
+            $disk->failDeletes = true;
+        });
+
+        $response = throughGateStoring([UploadedFile::fake()->image('one.png', 2, 2), UploadedFile::fake()->image('two.png', 2, 2)]);
+        $disk->failWrites = false;
+        $disk->failDeletes = false;
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true)['errors'])->toBe(['files.1' => [GuardUploadStaging::NOT_STORED]])
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(3);
+        Exceptions::assertReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'did not store 1 of the 2 files')
+            && str_contains($e->getMessage(), '1 of the files it did store could not be removed, and are left to the intake sweep')
+            && ! str_contains($e->getMessage(), $this->root));
+    });
+
+    /** The control: the same store on the same disk, writing both. */
+    it('answers as the endpoint did when every file was stored', function (): void {
+        RefusingDisk::install(MediaDisks::INTAKE, $this->root);
+
+        $response = throughGateStoring([UploadedFile::fake()->image('one.png', 2, 2), UploadedFile::fake()->image('two.png', 2, 2)]);
+
+        expect($response->getStatusCode())->toBe(200)
+            ->and(json_decode((string) $response->getContent(), true)['paths'])->toHaveCount(2)
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(4);
+        Exceptions::assertNotReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'did not store'));
+    });
+
+    /*
+     * Asked of the disk, not read off the answer: a path signed as staged whose file is not there is refused too, and so
+     * is one whose signature this application did not make.
+     */
+    it('refuses a path signed as staged whose file is not on the disk, or whose signature is not this application\'s', function (string $case): void {
+        Storage::fake(MediaDisks::INTAKE);
+        Storage::disk(MediaDisks::INTAKE)->put(FileUploadConfiguration::path('here.png', false), 'x');
+        $signed = match ($case) {
+            'not on the disk' => TemporaryUploadedFile::signPath('gone.png'),
+            'signed elsewhere' => 'not-this-apps-token:here.png',
+            'not a string' => ['here.png'],
+        };
+
+        [$response] = throughGate(stagingRequest([UploadedFile::fake()->create('one.png', 1), UploadedFile::fake()->create('two.png', 1)]),
+            response()->json(['paths' => [TemporaryUploadedFile::signPath('here.png'), $signed]]));
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true)['errors'])->toBe(['files.1' => [GuardUploadStaging::NOT_STORED]])
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toBe([]);
+    })->with(['not on the disk' => 'not on the disk', 'signed elsewhere' => 'signed elsewhere', 'not a string' => 'not a string']);
+
+    /* A full disk is when the space the sweep frees matters, so a refused write still follows the endpoint's 200 with it. */
+    it('still sweeps stale staged files when it refuses a file the disk did not store', function (): void {
+        Storage::fake(MediaDisks::INTAKE);
+        Storage::disk(MediaDisks::INTAKE)->put('livewire-tmp/stale.png', 'x');
+        touch(Storage::disk(MediaDisks::INTAKE)->path('livewire-tmp/stale.png'), Carbon::now()->getTimestamp() - 25 * 3600);
+
+        [$response] = throughGate(stagingRequest(), response()->json(['paths' => [TemporaryUploadedFile::signPath('')]]));
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toBe([]);
     });
 });
 

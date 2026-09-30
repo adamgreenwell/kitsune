@@ -143,8 +143,25 @@ final class MediaDisposal
             }
 
             // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
-            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! MediaDisks::mayHold($config, $disk)) {
-                continue;
+            if ($disk !== $file['disk'] && in_array($disk, $served, true)) {
+                try {
+                    if (! MediaDisks::mayHold($config, $disk)) {
+                        continue;
+                    }
+                } catch (MediaCustodyFailure $e) {
+                    // One whose root cannot be looked at is said so, and the rest are still asked (Adam, decision 25).
+                    Log::warning(sprintf(
+                        'Kitsune could not ask [%s] for [%s], the file of force-deleted entry %d — %s. Once its root can be '
+                        .'looked at, see whether it holds that path, and remove it by hand if it does (ADR-042 decision 25).',
+                        $disk,
+                        $file['path'],
+                        $file['entry_id'],
+                        $e->getMessage(),
+                    ));
+                    $clean = false;
+
+                    continue;
+                }
             }
 
             try {

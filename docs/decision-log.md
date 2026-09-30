@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24) · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4008,7 +4008,9 @@ of the admin (see *Open questions*).
 >   sidecar is gone or names nothing — the name is read from the sidecar itself, since Livewire's fallback makes one up
 >   from its staging directory's. A full disk is the unnamed case: the file's write answers false, the endpoint signs
 >   the empty path, and the upload arrives named for Livewire's staging directory, with no sidecar there; the sidecar
->   Livewire wrote first, and any bytes that fitted, are not that file, and are left to the sweep. The field sets no
+>   Livewire wrote first, and any bytes that fitted, are not that file, and are left to the sweep. *Since 2026-09-30 a
+>   full disk stops at staging, refused on the field before anything is submitted (Adam, decision 18); this refusal
+>   stays, for a submit built by hand.* The field sets no
 >   `maxSize()`: that is a server `max:` rule, which asks the intake disk for a staged file's size before the handler
 >   runs, and throws for one that is not there, as on a full disk. The endpoint's rule is the ceiling. The status control and the list's status column
 >   are withheld for a media type; a status set before, or restored from a revision saved then, stays stored and has
@@ -4021,7 +4023,7 @@ of the admin (see *Open questions*).
 >   fits, and a disk configured to throw fails by an exception — has its partial file removed with the failure, best
 >   effort, as a failed row write's bytes already were.
 > - **Defaults taken, for Adam to overrule.** A file's title is its name, as `store()` makes it: the modal has no
->   title field. The upload half of the stage measurement stays owed — stage must accept a 4 MB upload first, a runbook
+>   title field — *kept (Adam, decision 19, 2026-09-30)*. The upload half of the stage measurement stays owed — stage must accept a 4 MB upload first, a runbook
 >   change. And a submitted upload Filament stops before the handler — a validation failure, or a call the user may no
 >   longer make — leaves its staged files for the intake sweep's 24 hours, as an abandoned upload does. The staging gate
 >   is asked when a file is staged, and admits only users who may upload then — so a user who never could has nothing
@@ -4520,7 +4522,8 @@ bulk paths both arrive, and restore likewise.
 >   utf8mb4_unicode_ci and MySQL 8.4's utf8mb4_0900_ai_ci `ß` for `ss` and an NFD spelling beside the NFC too — and
 >   admits the rest: under MariaDB 10.6's utf8mb4_general_ci, which reads `ß` as `s` and weighs a combining mark,
 >   `STRASSE.png` beside `straße.png` and an NFD spelling beside the NFC, and under a `_bin` collation every pair
->   (review of slice 5c; Codex, #155). **Open, for Adam:** whether paths should be unique as the volumes fold them.
+>   (review of slice 5c; Codex, #155). **Open, for Adam** — *answered 2026-09-30: with the import and insert-path work
+>   (decision 24), in the amendment below.* Whether paths should be unique as the volumes fold them.
 > - **The third write under 2b.** 5a's cleanup kept a private copy that differed from the published one, and left the
 >   rest to 5b. The cleanup and prune's `removeExtra()` now share one step: under the lock, while the row names the disk
 >   its state says and that disk holds the copy kept, it hashes the kept copy and every copy it would remove before the
@@ -4616,7 +4619,8 @@ bulk paths both arrive, and restore likewise.
 >   all — core's private disk while another is the private one, and a served disk that is neither the target, the disk
 >   a row names nor a configured one: custody's survey, a trash, an erasure's disposal, a withdrawal and prune's scan
 >   leave out one whose root's stat is refused, as one that does not exist, so a copy there is never found; open, for
->   Adam, since trash, erasure and withdrawal ask it too. The target, the disk a row names and both configured disks are
+>   Adam, since trash, erasure and withdrawal ask it too — *answered 2026-09-30: such a root fails the step that asks
+>   it (decision 25), built as the amendment below records.* The target, the disk a row names and both configured disks are
 >   built whatever it says: for one of those, such a root makes the check list its rows `unknown`, sent to the disk's
 >   configuration, and every `--force` fail (T159), and prune's listing of it fails.
 > - **The unique-path migration sets no lock timeout (Adam, decision 10, 2026-09-26)**, as `…000008` and `…000009` set
@@ -4763,7 +4767,8 @@ bulk paths both arrive, and restore likewise.
 >   forced prune fail alike, and pass alike once the copy can be read, when prune removes it. A copy a disk's listing
 >   leaves out, one on a disk prune cannot tell apart from another it scans, the target's own beside a copy prune keeps
 >   for a hand, and the copy decision 6 leaves on the disk its row names, are reconcile's alone (*What it leaves*).
-> - **Custody does not hold a read-through disk (open, for Adam).** Laravel's `read-through` driver reads a file from
+> - **Custody does not hold a read-through disk (open, for Adam — *answered 2026-09-30: it still does not, decision 22,
+>   in the amendment below*).** Laravel's `read-through` driver reads a file from
 >   its primary, or from its fallback when the primary lacks it — copying it into the primary as it does — deletes the
 >   path from both halves, and lists its primary alone. Custody's rules take a disk as one place it reads and removes as
 >   one: hashed through a read-through disk, a copy only its fallback held was written into its primary; removed through
@@ -4773,8 +4778,8 @@ bulk paths both arrive, and restore likewise.
 >   nor removes a copy through one (`MediaBytes::refuseReadThrough()`, T168), and a configured public or private disk
 >   that is one — configured as one, scoped over one, or built as one by a driver of the host's own — is refused as an
 >   unsafe configuration is (T179), as is a served one whose half reaches the private disk — however it is built, but
->   one a host's own driver builds, with no url of its own and served only through a half, is not seen to be served: see
->   below. The check opens no copy there, and prune keeps an extra copy there for a hand, with that reason — and advises
+>   one a host's own driver builds, with no url of its own and served only through a half, is not seen to be served (a
+>   limit Adam accepted, decision 23, 2026-09-30): see below. The check opens no copy there, and prune keeps an extra copy there for a hand, with that reason — and advises
 >   removing it only where custody would have, a served copy of a file kept off the web, once the file is where it
 >   belongs, checked against the recorded checksum: anywhere else it may be the only one that matches (T167). One that
 >   holds a path on neither half is passed by every step that removes from every served disk: a disposal, and a
@@ -5226,7 +5231,7 @@ bulk paths both arrive, and restore likewise.
 >   default line's other name and most lines printed as they are had no test that could fail; and the records misplaced
 >   the path index, left out the cost of asking whether a disk overlaps the target, and said reconcile unchanged. Each
 >   is built as above, and tested — but a local disk's root whose stat is refused, still taken to hold nothing, which is
->   open for Adam. By its twenty-sixth, a round with four major findings, of two defects: a row written past `MediaFile`
+>   open for Adam (*answered 2026-09-30, decision 25*). By its twenty-sixth, a round with four major findings, of two defects: a row written past `MediaFile`
 >   at a path ending in the partial suffix lost its only file to a forced prune, as another row's partial copy — now
 >   `MediaFile` refuses such a path, prune's table decides byte for byte before the suffix does, and the removal under
 >   the lock asks the table for the very name; and a read-through disk's presence check read a stat its local half
@@ -5295,10 +5300,11 @@ automatically waits for the measurement below.
 >   - A public disk served from another origin — an object store, a CDN, or this host on another scheme or port — keeps
 >     its whole URL: its path on the admin's host would answer 404.
 >   - Only the types `MediaDelivery::INLINE` lists are drawn. A sanitised SVG is a badge, as it is an attachment when
->     served, until someone decides otherwise there.
+>     served, until someone decides otherwise there — *kept (Adam, decision 21, 2026-09-30)*.
 >   - A card shows no field columns, no type and no status. Filament draws a card's columns asking only whether each is
 >     hidden, never whether it was toggled off, so a type's field columns — hidden by default in a table — would all be
->     drawn on every card, and the column manager would toggle nothing. A file's fields are on its own page.
+>     drawn on every card, and the column manager would toggle nothing. A file's fields are on its own page — *kept
+>     (Adam, decision 20, 2026-09-30)*.
 >   - An image's `alt` is empty, because the title under it already names it and a screen reader would read it twice.
 >   - A tile is the original file, cropped to the square: there are no derivatives in v1.0 (ADR-041).
 > - **Not yet:** loading private tiles automatically, which still waits for the measurement below.
@@ -5314,6 +5320,53 @@ generic failure, as does anything else — `MediaLibrary` rethrows whatever inte
 `QueryException` is a `RuntimeException`, so catching that type and showing its message would put SQL and its
 bindings in a notification. A refusal by the web server or by PHP's upload limits never reaches Kitsune's code and
 arrives as Livewire's own "failed to upload".
+
+> ⚠️ **Amended 2026-09-30 — Adam's answers to the eight questions still open (decisions 18–25).** Each is marked where
+> it was asked. Two change what is built, and were built; six keep what is.
+>
+> - **A staged file the intake disk did not keep is refused at staging (Adam, decision 18, 2026-09-30).** Livewire's
+>   endpoint does not check its own writes: on a full disk it signed the empty path and answered 200, FilePond showed
+>   the file as uploaded, and the editor learned otherwise only by submitting (decision 4's *What this costs*). Now the
+>   staging gate, once the endpoint has answered 200, asks the intake disk for every path it signed. One that is not
+>   there — the empty path, a path whose file is gone, a signature this application did not make, anything that is not
+>   a signed string — refuses the whole upload in Livewire's own shape: 422, with an error keyed `files.N` for each file
+>   not stored, which Livewire raises on the upload field as it raises the endpoint rule's refusals, before anything is
+>   submitted — *"This file was not uploaded: the server could not store it. Try again, and tell whoever runs this site
+>   if it happens again."* The files the same request did store are removed with their sidecars, since the browser will
+>   never ask for them and a disk short of space is the last place to leave them for the sweep. The refusal is
+>   reported, naming the intake disk and how many of the upload's files it did not store, never a path — and how many
+>   of those it did store it would not remove, which are left to the sweep: the intake disk answers `false` rather than
+>   throw, so a refused removal went unsaid (Codex, #160). The sweep still
+>   runs after such a write, which is when the space it frees matters. The handler's unnamed refusal of a missing staged
+>   file stays, for a submit built by hand (`GuardUploadStaging::refusingWhatWasNotStored()`).
+> - **A file's title stays its name (Adam, decision 19).** The upload modal gains no title field; a title is edited on
+>   the entry's own page, as any field is.
+> - **A card shows no field columns, no type and no status (Adam, decision 20).** A file's fields are on its own page.
+> - **A sanitised SVG stays a badge (Adam, decision 21)**, as it is an attachment when served.
+> - **Custody still holds no read-through disk (Adam, decision 22).** It asks one only whether it holds a file, and
+>   neither reads nor removes a copy through one, as decision 5 records; holding each half as a disk of its own waits
+>   for a host that needs it.
+> - **A host driver's read-through disk served only through a half stays uncounted as served (Adam, decision 23)** — a
+>   limit accepted, not a defect owed: a host whose own driver builds one can give it a url of its own, and it is
+>   counted.
+> - **Paths unique as the volumes fold them wait for the import and insert-path work (Adam, decision 24).** Until then
+>   two rows whose paths differ only in a spelling a folding volume reads as one name one file there, as decision 5 and
+>   *What this costs* record. It is decided with the insert path, which is where such a row is written.
+> - **A local disk's root whose stat is refused fails the step that asks it (Adam, decision 25, 2026-09-30).**
+>   `MediaDisks::mayHold()` read a root with `is_dir()`, which answers false for a root the volume will not stat — a
+>   directory above it the user may not search, an I/O error, a network mount reconnecting — as for one that is not
+>   there, so every step that asked left that disk out, and a trashed file's copy on a served disk was taken to be held
+>   nowhere. It now asks the volume as slice 5c asks it of a name (`MediaBytes::statOf()`): a root that is not there, or
+>   is no directory, holds nothing, as before; anything else throws `MediaCustodyFailure` with the reason `root`, naming
+>   the disk and never a server path. So a trash or an erasure of a public file, or of one on a served disk, is refused
+>   with nothing moved (`MediaWithdrawalRefused::UNKNOWN_ROOT`), and the admin says so; a private file on a disk nothing
+>   serves is passed, as decision 5's rule for it says, and an erasure's disposal after the commit says it could not ask
+>   that disk and still cleans the rest; reconcile lists each row `unknown`, sent to the disk, and every `--force`
+>   fails; prune does not build that disk, a configured one included (Codex, #160) — building would try to create its
+>   root — says it could not be listed, and fails; custody's settle and cleanup fail the step. A root is asked without the slash every resolved root ends in, so
+>   a file where a root should be is still no directory rather than a refusal. What it costs: every step that asks such
+>   a disk fails until its root can be looked at, so a network mount that is reconnecting stops the trash of a public
+>   file until it is back.
 
 ### The measurement this entry still owes
 
@@ -5765,11 +5818,17 @@ made before boot stops the deploy.
 **A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
 staged file throws `FileNotPreviewableException`.
 
-**A staging write that fails answers 200.** Livewire does not check its own writes, so on a full disk the endpoint
+~~**A staging write that fails answers 200.**~~ **A staging write that fails is refused at staging — amended
+2026-09-30 (Adam, decision 18).** Livewire does not check its own writes, so on a full disk the endpoint
 ~~returns a signed path to a file that is not there~~ signs the empty path, which Livewire resolves to its staging
 directory (measured in review of decision 3), and the sweep runs as though the upload had succeeded. Decision 3's
 handler must refuse a staged file that is missing — and does, unnamed, since no sidecar is at that path; the sidecar
-Livewire wrote first, and any bytes that fitted, are left to the sweep.
+Livewire wrote first, and any bytes that fitted, are left to the sweep. Now the staging gate asks the intake disk for
+every path the endpoint signed, once it has answered: one that is not there refuses the upload, 422 on the field in
+Kitsune's words, before anything is submitted — and reports it, for the disk an operator has to see to. What it costs
+is what a full disk costs anyway: every upload is refused until the disk has room, the files the same request did store
+are removed rather than kept, and the sidecar written beside a failed write, which no signed path names, is still the
+sweep's.
 
 **The admin's tenant scope is widened for media.** Decision 2 changes a framework scope ADR-021 relies on, for media
 types, by exactly the rule `SiteScope` already applies. The agreement between the two encodings becomes a test
@@ -5870,7 +5929,8 @@ MariaDB. One whose paths differ only in a spelling a volume folds and the engine
 beside `media/photo.png` on SQLite and PostgreSQL, `STRASSE.png` beside `straße.png` under MariaDB 10.6's
 utf8mb4_general_ci — is admitted, and on such a volume the two entries share one file, and a step acting for one acts on
 the other's: prune's removal of an extra copy, the cleanup, a trash, settle, an erasure's disposal. Whether paths should
-be unique as the volumes fold them is open, for Adam (decision 5, decision 8). An import that writes a path in a form
+be unique as the volumes fold them is open, for Adam (decision 5, decision 8) — *answered 2026-09-30: with the import
+and insert-path work (decision 24)*. An import that writes a path in a form
 the disks read as another is refused through `MediaFile`, and not through the query builder, which is the insert-path
 gap. So is a path written as a BLOB on SQLite, whose index and the migration's check compare within a storage class: a
 TEXT row and a BLOB row can name one path there, and only a write past `MediaFile` binds one; custody's lookups ask for
@@ -6402,12 +6462,14 @@ When it lands:
 >   SIGINT, SIGQUIT, SIGTERM and SIGHUP; the control's served disk given the media tree (I') walks.
 >
 > **Not yet, and not 5c's**: whether custody holds a `read-through` disk, each half as a disk of its own (open, for
-> Adam) — until then it asks one only whether it holds a file; whether paths should be unique as the volumes fold them
-> (open, for Adam, decision 8) — until then two rows whose paths differ only in a spelling a folding volume reads as one
-> name one file there; a local disk's root whose stat is refused, taken to hold nothing as one that does not exist
+> Adam — *answered 2026-09-30: not yet, decision 22*) — until then it asks one only whether it holds a file; whether
+> paths should be unique as the volumes fold them (open, for Adam, decision 8 — *answered 2026-09-30: with the
+> insert-path work, decision 24*) — until then two rows whose paths differ only in a spelling a folding volume reads as
+> one name one file there; ~~a local disk's root whose stat is refused, taken to hold nothing as one that does not exist
 > (`MediaDisks::mayHold()`; open, for Adam, decision 9) — until then every step that asks it leaves that disk out, a
-> trash, an erasure and a withdrawal among them; a host driver's read-through disk with no url of its own, served only through a half, not counted
-> as served (recorded); where both a read-through disk and its primary set a prefix, the pass's stat of a name other
+> trash, an erasure and a withdrawal among them~~ — *built 2026-09-30: such a root fails the step (decision 25)*; a
+> host driver's read-through disk with no url of its own, served only through a half, not counted as served (recorded;
+> accepted by Adam, decision 23); where both a read-through disk and its primary set a prefix, the pass's stat of a name other
 > than the one listed (recorded); and on SQLite a TEXT row and a BLOB row naming one path, which the index and the
 > migration's check admit, and a row written past `MediaFile` at a path ending in the partial suffix, whose file a
 > trash, an erasure's disposal, settle and prune's removal of an extra copy delete beside the row at the path without
@@ -6504,6 +6566,39 @@ When it lands:
 >
 > **Not yet, and not decision 6's to close:** loading private tiles automatically, and the stage measurement it waits
 > on — which tiles now make possible to take.
+
+> ⚠️ **Amended 2026-09-30 — decisions 18 and 25 landed**, and each guard was removed in turn and its test watched fail,
+> beside a run of the same tests passing unmutated: 19 mutations, all in the PHP suite. By family:
+> - **Staging** (7: `UploadStagingGateTest`) — a file a full disk staged as nothing refused in Livewire's shape and
+>   reported, its sidecar left to the sweep; of two files, the one not stored refused by its index and the one stored
+>   removed; the disk asked, not the answer read; the sweep still run after a refused write; a stored file the disk
+>   would not remove counted in the report, and nothing said of one it did (Codex, #160). The control: every file
+>   stored answers as the endpoint did. A signed path whose file is not on the disk, a signature this application did
+>   not make and a path that is not a string are refused as well.
+> - **The root** (4: `MediaDisksTest`, `MediaReconcileCommandTest`) — a root behind a loop of links, itself or above
+>   it, refused with the reason `root`, naming the disk and not the path; a root not there, below one not there, a
+>   file, below a file, and one there, with its slash or without, answered as before — asked without the resolved
+>   root's slash, and asked whether it is a directory; the refusal its own, not a name's. Run as a user other than
+>   root, a root below a directory it may not search is refused too; root ignores a directory's mode, so there that case
+>   is skipped, and the loop stands for it.
+> - **Withdrawal and disposal** (5: `MediaWithdrawalTest`) — a trash and an erasure of a public file refused past such
+>   a served disk, naming it, with nothing moved, and passed where its root is not there; a private file on a disk
+>   nothing serves passed, its trash and its erasure alike; the erasure's disposal saying it could not ask that disk,
+>   and cleaning the rest.
+> - **Prune** (3: `MediaPruneCommandTest`) — a served disk, a disk a row names, the configured public and private disks
+>   (Codex, #160) and core's private disk, each behind such a root, not built and said to be unlisted, the run failing,
+>   read-only and forced; a root not there holding nothing, or built as before where the disk is one prune always
+>   scans.
+>
+> Reconcile's case besides (`MediaReconcileCommandTest`): a row beside such a served disk `unknown`, sent to the disk,
+> and every `--force` failing with the file where it was; with a root not there, not listed. In the browser,
+> `media-upload.spec.js`: a file refused at staging shows on the field, in its words, before Upload is pressed, with
+> nothing staged, beside a PNG that completes — the path decision 18's refusal travels. It is driven by the endpoint
+> rule's refusal, not a full disk: the browser suite runs as root, which no disk mode stops, and a staging directory
+> made unwritable another way fails Livewire with a 500 before its write, not by a write that answers false.
+>
+> **Not yet, and not these decisions' to close:** Livewire's own *"failed to upload"*, shown where the endpoint itself
+> fails — a staging directory that cannot be created, a web server's or PHP's upload limit — as decision 7 records.
 
 ---
 

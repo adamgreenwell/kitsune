@@ -902,6 +902,75 @@ it('trashes a public file past a served disk with no root', function (?string $r
 })->with(['no root' => [null], 'an empty root' => ['']]);
 
 /*
+ * Decision 25. A served disk whose root cannot be looked at may hold a copy the web serves: taken to hold nothing, as a
+ * disk whose root is not there is (T125), it was left out, and the trash committed with that copy on the web. So a trash
+ * and an erasure are refused, naming the disk, and nothing moves.
+ *
+ * ⚠️ A LOOP OF LINKS ON THE WAY TO THE ROOT, which refuses a stat for a reason other than absence — ELOOP — as surely as
+ * a directory above it the user may not search, and which root, running this suite here, cannot see past, where it
+ * ignores a directory's mode. The control is a root that is not there, below a directory that is.
+ */
+it('refuses a trash and an erasure past a served disk whose root cannot be looked at, and passes one whose root is not there', function (bool $erasure, bool $looped): void {
+    $base = sys_get_temp_dir().'/kitsune-withdrawal-unrooted-'.bin2hex(random_bytes(4));
+    mkdir($base);
+    $this->roots[] = $base;
+    symlink($base.'/loop', $base.'/loop');
+    config(['filesystems.disks.unrooted-cdn' => ['driver' => 'local', 'root' => $base.($looped ? '/loop/cdn' : '/missing/cdn'), 'url' => 'https://unrooted.example.test']]);
+    [$entry, $path] = withdrawable();
+
+    if (! $looped) {
+        $erasure ? $entry->forceDelete() : $entry->delete();
+
+        expect(DB::table('entries')->where('id', $entry->id)->exists())->toBe(! $erasure)
+            ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => $erasure ? null : $this->checksum]);
+
+        return;
+    }
+
+    $refused = refusedBy(fn () => $erasure ? $entry->forceDelete() : $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::UNKNOWN_ROOT)
+        ->and($refused->disk)->toBe('unrooted-cdn')
+        ->and($refused->getMessage())->toContain('whether a disk the web serves holds a copy cannot be told, because its root cannot be looked at: [unrooted-cdn]')
+        ->and($refused->getMessage())->toContain('may search every directory above that disk\'s root')
+        ->and($refused->getMessage())->not->toContain($base)
+        ->and(bytesChanged())->toBe([])
+        ->and(DB::table('entries')->where('id', $entry->id)->exists())->toBeTrue()
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(namedDisk($entry))->toBe('public')
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+})->with(['the trash' => false, 'the erasure' => true])->with(['cannot be looked at' => true, 'the control: not there' => false]);
+
+/*
+ * Decision 25, and the rule above `withdraw()`: a private file on a disk nothing serves was never on a served disk, so
+ * one whose root cannot be looked at does not block its trash or its erasure. The erasure's disposal, after its commit,
+ * cannot ask that disk either — said so, naming the disk and the file, while every other disk is still cleaned.
+ */
+it('passes a private file past a served disk whose root cannot be looked at, and says the erasure could not ask it', function (bool $erasure): void {
+    $base = sys_get_temp_dir().'/kitsune-withdrawal-unrooted-'.bin2hex(random_bytes(4));
+    mkdir($base);
+    $this->roots[] = $base;
+    symlink($base.'/loop', $base.'/loop');
+    config(['filesystems.disks.unrooted-cdn' => ['driver' => 'local', 'root' => $base.'/loop/cdn', 'url' => 'https://unrooted.example.test']]);
+    [$entry, $path] = withdrawable('private');
+    Log::spy();
+
+    $erasure ? $entry->forceDelete() : $entry->delete();
+
+    expect(DB::table('entries')->where('id', $entry->id)->exists())->toBe(! $erasure)
+        ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => $erasure ? null : $this->checksum]);
+
+    $unasked = fn (string $message): bool => str_starts_with($message, "Kitsune could not ask [unrooted-cdn] for [{$path}], the file of force-deleted entry {$entry->id}")
+        && str_contains($message, 'its root cannot be looked at')
+        && str_contains($message, 'ADR-042 decision 25')
+        && ! str_contains($message, $base);
+
+    $erasure
+        ? Log::shouldHaveReceived('warning')->withArgs($unasked)->once()
+        : Log::shouldNotHaveReceived('warning');
+})->with(['the trash' => false, 'the erasure' => true]);
+
+/*
  * T39. A trash inside a transaction that then rolls back comes back through the listener.
  */
 it('puts the file back when an enclosing transaction rolls back', function (): void {

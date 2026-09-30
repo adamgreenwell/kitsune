@@ -54,6 +54,12 @@ final class MediaWithdrawalRefused extends RuntimeException
      */
     public const MISNAMED = 'misnamed';
 
+    /**
+     * Whether a disk the web serves holds a copy cannot be told: its root cannot be looked at, for a reason other than its
+     * not being there (Adam, decision 25) — so it is not taken to hold nothing, and a retry fails the same way until then.
+     */
+    public const UNKNOWN_ROOT = 'unknown_root';
+
     public function __construct(
         public readonly int $entryId,
         public readonly string $reason,
@@ -86,12 +92,14 @@ final class MediaWithdrawalRefused extends RuntimeException
                 self::CHANGED => 'a copy changed while it was read, on',
                 self::READ_THROUGH => 'a copy is on a read-through disk, which custody neither reads nor removes a copy through:',
                 self::MISNAMED => 'its row\'s path is not written as the disks read it, on',
+                self::UNKNOWN_ROOT => 'whether a disk the web serves holds a copy cannot be told, because its root cannot be looked at:',
                 default => 'the private disk and the disk holding the file are one place:',
             },
             $disk,
             match ($reason) {
                 self::READ_THROUGH => 'The log names the file: compare that copy with the others by hand (a partial copy, one custody did not finish writing, needs none), and take it off the read-through disk through the disk each half is — a retry fails the same way until then.',
                 self::MISNAMED => 'The log names the row: correct media_files.path to the path its file is under, as the disks read it, unless another row names that path — a file under the row\'s literal name moved by hand to such a path first — and a retry fails the same way until then.',
+                self::UNKNOWN_ROOT => 'See that the user running this may search every directory above that disk\'s root; a retry fails the same way until then.',
                 default => 'The log names the file; retry once the disk answers.',
             },
         ), 0, $previous);

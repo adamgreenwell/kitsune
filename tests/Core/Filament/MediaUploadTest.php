@@ -231,7 +231,9 @@ describe('the handler', function (): void {
      * ⚠️ WHAT A FULL DISK REALLY HANDS THE HANDLER, driven through Livewire's own endpoint and round trip. Livewire
      * writes the sidecar, then the file; the file's write answers false, and the endpoint signs the empty path — so the
      * upload arrives named for Livewire's staging directory, with no sidecar there (decision 4's *What this costs*). It
-     * is refused unnamed, and the sidecar Livewire wrote first is not that file: it is left to the intake sweep.
+     * is refused unnamed, and the sidecar Livewire wrote first is not that file: it is left to the intake sweep. The gate
+     * refuses such an upload at staging now (decision 18, `UploadStagingGateTest`); this is the handler's own refusal,
+     * for one that reaches it all the same.
      */
     it('refuses an upload a full disk staged as nothing, unnamed, and leaves its sidecar to the sweep', function (): void {
         // The endpoint signs what it answers with the application key, which this suite does not set.
