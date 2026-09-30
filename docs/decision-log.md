@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33 and 31 record what was built, and *Enforced by* reports each · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33, 31 and 30 record what was built — 30 for a file stored public, its made-public half waiting on decision 32 — *Measured — decision 30* records what that slice measured, *Enforced by* reports each, and decision 30 leaves one question open, for Adam: whether a JPEG stored public before it is stripped · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3964,8 +3964,10 @@ permission — to one who holds `create` but not `publish`.
 
 Visibility starts at *private* every time the modal opens, with no carried-over last choice: ADR-041 makes public
 an explicit act. Choosing *public* asks for confirmation, and the confirmation says two things plainly — that a
-public file is served to anyone with its URL, and that a photo may carry the location it was taken in (see *What
-this costs*).
+public file is served to anyone with its URL, and ~~that a photo may carry the location it was taken in~~ what
+becomes of where a photo was made — *amended 2026-09-30: a JPEG loses the GPS coordinates in its EXIF and XMP data
+as it is made public, and what else a photo holds and every other file are served as uploaded (Adam, decision 30,
+as built)* (see *What this costs*).
 
 The media UI's words go through translation keys in a `kitsune` namespace that core begins shipping with this
 work, rather than bare strings, so that this work does not add to the gap ADR-018's rule 1 leaves across the rest
@@ -3981,8 +3983,9 @@ of the admin (see *Open questions*).
 >   Public and private files go up in separate uploads.
 > - **The confirmation is an acknowledgement (Adam, decision 15, 2026-09-29).** Choosing *public* shows the two
 >   statements — a public file is served to anyone who has its link, and a photo may carry the place it was taken,
->   which nothing removes — beside a box to tick. Unticked, the files are stored private, and each file's line in the
->   result says so.
+>   ~~which nothing removes~~ — *amended 2026-09-30: a JPEG's GPS coordinates are removed as it is made public, and
+>   the confirmation says so, naming what stays (Adam, decision 30, as built)* — beside a box to tick. Unticked, the
+>   files are stored private, and each file's line in the result says so.
 > - **The File section shows what is stored and a link (Adam, decision 16, 2026-09-29):** the file's type, size,
 >   dimensions where known, visibility, whether it is shared or this site's only, when it was stored — in the site's
 >   timezone — and *Open file* through `MediaDelivery::urlFor()`'s answer — the direct URL for a file on the public
@@ -5489,6 +5492,87 @@ arrives as Livewire's own "failed to upload".
 > - **Not yet:** a trashed entry's own page, its history among it — the list is where it is restored or erased — and
 >   restoring a trashed entry's older version, which waits on that page.
 
+> ⚠️ **Amended 2026-09-30 — decision 30 as built, for a file stored public.**
+>
+> - **A JPEG stored public loses the GPS data in its EXIF and XMP** (`MediaLocation`, through `JpegLocation`,
+>   `ExifLocation` and `XmpLocation`), in `MediaLibrary::store()` after the SVG sanitiser and before any byte is
+>   written. The stream, the checksum, the size and the dimensions read the stripped copy, a temporary removed on every
+>   path — and when the process ends, should a fatal error pass the `finally` — and no original is kept (ADR-041's
+>   departure 2). A JPEG with none of it is stored as uploaded, with no copy made, and a private file is never opened
+>   for it.
+>   - *EXIF.* Every directory a reader follows — IFD0 and its chain, the EXIF and interoperability directories, SubIFDs,
+>     each pointer read as the most forgiving reader reads it, whatever its type — loses its GPS pointer, and the GPS
+>     directory and every value it names are overwritten with zeros.
+>   - *XMP.* A packet mentioning location loses each property named for GPS, latitude or longitude in any namespace — an
+>     exposure's `ISOSpeedLatitude` aside — everything in a drone's (`drone-dji`) and a phone's cell-tower namespace,
+>     and any image it embeds as base64: blanked with spaces, then read by libxml as it was with them removed and as
+>     blanked, which must be one document.
+>   - *The copies.* The EXIF thumbnail's own block, a preview's, the images after the picture — a gain map, a stereo
+>     pair's other frame — a block split over segments, XMP kept in EXIF (0x02BC), Photoshop's copies (0x0422, 0x0424)
+>     and XMP under ExifTool's other headers. Extended XMP naming location or embedding an image is zeroed whole, its
+>     identifier with it.
+> - **Overwritten, never re-encoded, never moved.** The decision's *removing bytes* is built as overwriting them where
+>   they stand. The file keeps its length, so every offset in it — EXIF's, a maker note's, the thumbnail's, the
+>   Multi-Picture index's — points where it did, and `size_bytes` is the upload's. Orientation sorts before the pointer
+>   and keeps its place. The picture's tables and scans, the colour profile, the Multi-Picture index, gain-map metadata
+>   and JFIF's and Adobe's segments are never written, which a check before any byte is written holds. `$size` is read
+>   from the copy all the same, for decision 32 — a read no test can drive while the length cannot change.
+> - **Refused as public where it cannot be removed with certainty**, in words that say why and offer private: EXIF
+>   damaged where a GPS pointer is; GPS bytes other EXIF data points into too; XMP mentioning location that is not
+>   UTF-8, not well-formed, or would change beyond its location; a block carrying location inside a part of the file
+>   that is not metadata — a comment, a colour profile, a segment a damaged marker hides, one written with no `FF`
+>   before its marker, as PHP's reader reads one — or running across the segment holding it; and more than
+>   `LocationBudget` reads — segments, blocks, directory entries, images, 32 XMP packets, 1,024 attributes on one
+>   element — so a file built to make the walk fan out is refused in bounded time. Damage no reader could follow is left
+>   as uploaded.
+> - **The confirmation says so** — *"A public file is served to anyone who has its link. A JPEG loses the GPS
+>   coordinates in its EXIF and XMP data as it is made public, and its picture and orientation stay as uploaded. What
+>   else a photo holds — a place name, a camera maker's own records, a motion photo's video — and every other type of
+>   file are served as uploaded, and can still say where they were made. Unless this is ticked, the files are stored
+>   private."* — in place of decision 15's warning. It names JPEG alone, and a test holds the formats it names to
+>   `MediaLocation::STRIPPED`.
+> - **The other formats `MediaIntake` accepts**, looked at from their specifications and the sanitiser's behaviour, not
+>   from files real devices wrote:
+>
+>   | Format | Where location lives | Removable the same way? |
+>   |---|---|---|
+>   | PNG | an `eXIf` chunk; XMP in `iTXt`; hex EXIF in *Raw profile* text chunks | yes — `ExifLocation` and `XmpLocation` over the chunk, its CRC recomputed; compressed chunks dropped by name |
+>   | WebP | RIFF `EXIF` and `XMP ` chunks | yes, in place; no checksum |
+>   | AVIF | an `Exif` item and an XMP item, placed by `iloc` | yes, keeping the items' lengths; removing one moves every offset |
+>   | GIF | an XMP application extension | yes; no producer is known to write GPS there |
+>   | SVG | the sanitiser removes RDF and XMP; a photo embedded as a `data:` URI keeps its EXIF | for the embedded photo: decoded, stripped, encoded again at the same length |
+>   | PDF | XMP streams; embedded JPEGs with their own EXIF; earlier revisions | not the same way: offsets and compressed streams need a PDF parser |
+>   | MP4 | `©xyz` (Android), Apple's ISO 6709 key, 3GPP `loci`; a camera's telemetry track | the boxes, retyped `free` in place; telemetry is harder |
+>   | WebM | no standard tag | an EBML Void of the same length would do |
+>   | MP3 | free-text frames; cover art is a JPEG | the frames, and `JpegLocation` on the cover |
+>   | TXT, CSV | only what they say | not applicable |
+>
+>   MP4 is worth the most after JPEG: an Android phone's video carries its location whenever the camera tags it.
+> - **Measured on real files** — the 89 JPEGs of the `exif-samples` corpus, cameras and iPhone and Nokia HDR among them:
+>   21 stripped, 68 with nothing to remove, none refused, and none left with GPS or with its orientation, thumbnail or
+>   pixels changed (*Measured — decision 30*).
+> - **Defaults taken, for Adam to overrule.**
+>   - *Overwritten, not cut out* — cutting would move every offset after the cut.
+>   - *XMP's GPS goes with EXIF's*, by name in any namespace, with a drone's and a cell tower's namespaces whole: an
+>     export mirrors one into the other, and without it the confirmation would promise a removal the packet undoes.
+>   - *Place names stay* — IPTC's city, XMP's `photoshop:City` and IPTC location names, a maker note's — and so do a
+>     camera maker's own records, a thermal camera's GPS record among them, a motion photo's video and anything else
+>     after the images: none is EXIF or XMP, and the confirmation names them.
+>   - *Extended XMP carrying location or an image is zeroed whole* — a depth map, or the picture before an edit, with it
+>     — rather than decoded and asked.
+>   - *Refused as public, not stored private in its place*, where the location cannot be removed with certainty: public
+>     was chosen, and the uploader is told why it is not.
+>   - *A GPS directory an earlier editor unlinked and left behind stays*: nothing points at it, so no reader finds it,
+>     though a search of the bytes would.
+>   - *A signed file's Content Credentials read as altered* once anything in it is overwritten.
+> - **Open, for Adam** — whether a JPEG stored public before this is stripped. Built to the letter, it keeps its
+>   location, at its URL and when a restore publishes it again; a backfill rewrites `checksum` with the bytes, the lift
+>   decision 32 makes, and could run as its step (*Open questions*).
+> - **Not yet:** a file made public under decision 32 — `MediaLocation::strippedCopy()` is the step it calls, on a copy
+>   of the stored bytes and before any byte reaches the public disk, rewriting `checksum` and `size_bytes` with
+>   `visibility` in the same step; the formats above; and Firefox and Safari, which read orientation from an EXIF block
+>   this never retypes or empties, unmeasured.
+
 ### The measurement this entry still owes
 
 ADR-041 said the media UI *"should arrive with a measurement"* of what a grid of private tiles costs at the ADR-027
@@ -5912,6 +5996,24 @@ and not on stage, so none of it is the measurement this entry still owes.
   request to `/storage/…` on the page's own origin, answered by the web server. An upload's re-render was not measured
   here, and stays with the stage measurement.
 
+### Measured — decision 30, 2026-09-30
+
+Taken where this slice was built — PHP 8.4, the browser suite's Chromium — and not on stage, so none of it is the
+measurement this entry still owes.
+
+- **Real files.** The 89 JPEGs of the `exif-samples` corpus (github.com/ianare/exif-samples): 21 stripped and 68 with
+  nothing to remove, none refused. The 17 that carried GPS carry none a reader finds once stripped: ext-exif reads no
+  GPS from any, the same orientation from every one, and the thumbnail from every one that had one; GD draws the same
+  pixels; each keeps its length; and each, stripped again, has nothing left. Each took between 1 and 44 ms.
+- **Orientation as drawn.** The browser suite's 16×8 photo, orientation 6, is drawn 8×16 by Chromium from `/storage/…`
+  once stripped, beside its EXIF, XMP, extended XMP, gain map and trailing bytes.
+- **Sweeps.** Every prefix of that photo, and five values of every byte of its EXIF block, in both byte orders, end
+  refused or with no GPS pointer a reader finds and the orientation it read — with no PHP error.
+- **Cost at the ceiling.** A 64 MiB JPEG with GPS whose scan data is stuffed as densely as a file can be — `FF 00` in
+  every other byte — strips in about a second: the plan, the copy and the second plan. One whose stuffing is a
+  camera's, in a third of that. Either at 8 MiB of memory against a 128M limit. The file built with the most XMP the
+  budget lets through — 32 packets, each an element with a thousand attributes — in about a second more.
+
 ### What this costs
 
 **Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
@@ -5958,10 +6060,18 @@ rather than an assumption, and the cost to the media list's query plan is measur
 **A shared file travels, and can be changed from anywhere in the org.** See decision 2. *This site only* exists for
 the file that should not.
 
-**A public photo can carry its location.** A camera JPEG's EXIF block often holds GPS coordinates, and a public
-file is served exactly as uploaded. Nothing in this design strips it. The confirmation an editor sees on choosing
-*public* (decision 3) names it, and removing it is an open question — *decided 2026-09-30: stripped from a JPEG as it
-is made public (Adam, decision 30), and not yet built; until it is, this cost stands.*
+~~**A public photo can carry its location.**~~ **A public JPEG loses its EXIF and XMP GPS; what else it holds, other
+formats and a JPEG stored public before decision 30 can still say where they were made — amended 2026-09-30 (Adam,
+decision 30, as built).** A camera JPEG's EXIF block often holds GPS coordinates, and a public file ~~is served
+exactly as uploaded. Nothing in this design strips it. The confirmation an editor sees on choosing *public* (decision
+3) names it, and removing it is an open question — *decided 2026-09-30: stripped from a JPEG as it is made public
+(Adam, decision 30), and not yet built; until it is, this cost stands.*~~ is served as stored — a JPEG stored public
+without them. What it costs: a JPEG whose location cannot be removed with certainty is refused as public; an extended
+XMP carrying location loses its depth map or its picture before an edit with it; a place name, a camera maker's own
+records, a motion photo's video and every other format are served as uploaded — an Android video's location among them
+— and the confirmation says so; a signed file's credentials read as altered; a JPEG stored public before decision 30
+keeps its location, and a restore publishes it again as it was; and until decision 32 is built, nothing makes a file
+public after upload.
 
 **Private thumbnails are worse to use until they are measured.** A grid of placeholders that load on click is a
 real cost to an editor, and it is paid until the number exists.
@@ -6320,6 +6430,10 @@ When it lands:
   property is refused on each of Kitsune's panel pages. Core calls no `temporaryUrl()` for media.
 - **Visibility.** The control opens at *private* every time; choosing *public* requires the confirmation, and a
   file uploaded without it is stored private.
+- **Location** *(decision 30, 2026-09-30).* A JPEG stored public is written without the GPS data of any EXIF block or
+  XMP packet it holds, asserted by reading the stored bytes and, in the browser, what `/storage/…` serves; its pixels
+  byte for byte and its orientation as Chromium draws it; its row describing the stored bytes; a private one byte for
+  byte as uploaded; and a file it cannot strip with certainty refused as public, in words that offer private.
 - **Authorisation.** A user without `create` sees no Upload; one with `create` but not `publish` sees it disabled
   with the reason; a forged call from either stores nothing on any disk.
 - **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance and
@@ -6777,6 +6891,9 @@ When it lands:
 
 ## Open questions
 
+- **Is a JPEG stored public before decision 30 stripped?** It keeps its location at its URL, and a restore publishes
+  it again as it was. A backfill rewrites `checksum` with the bytes — decision 32's lift — and could run as its step.
+  Raised by ADR-042 decision 30, as built.
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
   admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
   to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
