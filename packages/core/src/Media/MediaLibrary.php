@@ -83,10 +83,9 @@ final class MediaLibrary
          * on an `article` loaded a moment ago is an attribute anybody can set, and the flag is only a promise once
          * it is the stored one, which the type's own guard then locks. One primary-key read, before any byte.
          */
-        $isMedia = $type->exists
-            && (bool) EntryType::query()->whereKey($type->getKey())->value('is_media');
+        $stored = $type->exists ? EntryType::query()->whereKey($type->getKey())->first() : null;
 
-        if (! $isMedia) {
+        if ($stored === null || $stored->is_media !== true) {
             throw new MediaRefused(sprintf(
                 'Refusing [%s]: [%s] is not a media type, so it has no way to show a file. Files are uploaded '
                 .'into a type that was created to hold them, and an existing type cannot be switched to one '
@@ -123,6 +122,24 @@ final class MediaLibrary
 
         /* The refusals, before a single byte is written anywhere. */
         ['extension' => $extension, 'mime' => $mime] = MediaIntake::accept($originalName, $absolutePath, $size);
+
+        /*
+         * ⚠️ AND THE FILES THE TYPE NAMES, asked of its stored settings as the flag is — Adam, decision 33. Within what
+         * `MediaIntake` accepts, which has already refused a file whose bytes disagree with its name: a type narrows,
+         * and a type that names none accepts every format. A list the type cannot have saved fails closed.
+         */
+        $accepts = MediaFormats::namedBy($stored->settings, (string) $stored->handle);
+        $format = MediaFormats::of($extension);
+
+        if ($accepts !== null && ! in_array($format, $accepts, true)) {
+            throw new MediaRefused(sprintf(
+                'Refusing [%s]: [%s] takes only %s files, and this file\'s format is %s. Nothing was stored.',
+                $originalName,
+                $stored->name,
+                MediaFormats::sentence($accepts),
+                $format === null ? '['.$extension.']' : MediaFormats::ALL[$format]['name'],
+            ));
+        }
 
         /*
          * ⚠️ SANITISED BEFORE ANY BYTE IS WRITTEN, AND THE ORIGINAL IS NEVER STORED — ADR-041's departure 2.

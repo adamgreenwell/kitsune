@@ -269,6 +269,64 @@ test.describe('entity type builder', () => {
         }
     });
 
+    /*
+     * ADR-042 decision 33: a media type names the formats it accepts, from its create page on, and they change on its
+     * edit page. Asked of the stored settings: every format ticked is none named, which accepts any.
+     */
+    test('names the files a media type accepts, and changes them afterwards', async ({ page }) => {
+        const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+            cwd: path.join(__dirname, '..', 'skeleton'),
+            encoding: 'utf8',
+        }).trim();
+        const settings = () => JSON.parse(tinker(
+            "echo json_encode(\\Kitsune\\Core\\Models\\EntryType::query()->where('handle', 'press_file')->value('settings'));",
+        ));
+        const format = (name) => page.getByRole('checkbox', { name, exact: true });
+
+        try {
+            await page.goto(`${SITE}/entry-types/create`);
+
+            const create = page.locator('form');
+
+            await create.locator('[id$=".handle"]').fill('press_file');
+            await create.locator('[id$=".name"]').fill('Press file');
+            await create.locator('[id$=".plural_name"]').fill('Press files');
+
+            // No list until the type holds media; then every format, ticked.
+            await expect(format('PDF')).toHaveCount(0);
+            await page.getByRole('switch', { name: 'Holds media' }).click();
+            await expect(format('PDF')).toBeChecked();
+            await expect(format('JPEG')).toBeChecked();
+
+            await page.getByText('Deselect all', { exact: true }).click();
+            await format('PDF').check();
+            await page.getByRole('button', { name: 'Create', exact: true }).click();
+            await page.waitForURL(/\/entry-types\/\d+\/edit/);
+
+            expect(settings()).toEqual({ accepts: ['pdf'] });
+
+            await expect(format('PDF')).toBeChecked();
+            await expect(format('PNG')).not.toBeChecked();
+            await format('PNG').check();
+            await page.getByRole('button', { name: 'Save changes' }).click();
+            await expect(page.locator('.fi-no-notification').filter({ hasText: 'Saved' })).toBeVisible();
+
+            expect(settings()).toEqual({ accepts: ['png', 'pdf'] });
+
+            await page.getByText('Select all', { exact: true }).click();
+            await page.getByRole('button', { name: 'Save changes' }).click();
+            await expect(page.locator('.fi-no-notification').filter({ hasText: 'Saved' }).first()).toBeVisible();
+
+            expect(settings()).toBeNull();
+
+            // The control: a type that holds no media shows no list.
+            await editType(page, 'Article');
+            await expect(format('PDF')).toHaveCount(0);
+        } finally {
+            tinker("\\Kitsune\\Core\\Models\\EntryType::query()->where('handle', 'press_file')->first()?->delete();");
+        }
+    });
+
     test('creates a field and reports it as indexed', async ({ page }) => {
         await editType(page, 'Article');
         await page.getByRole('button', { name: 'New field' }).click();

@@ -14,6 +14,7 @@ use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -119,8 +120,9 @@ class DatabaseSeeder extends Seeder
         $rivalUser->orgs()->attach($orgB->id);
 
         // A global system type, available to every org (org_id NULL), and a media type: its entries come from
-        // uploaded files, and `MediaLibrary::store()` refuses any type not declared as one (ADR-042).
-        $image = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'is_media' => true, 'icon' => 'heroicon-o-photo']);
+        // uploaded files, and `MediaLibrary::store()` refuses any type not declared as one (ADR-042) — images alone
+        // (Adam, decision 33).
+        $image = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'is_media' => true, 'icon' => 'heroicon-o-photo', 'settings' => [MediaFormats::SETTING => MediaFormats::IMAGES]]);
 
         $article = EntryType::create(['org_id' => $orgA->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles', 'icon' => 'heroicon-o-document-text']);
         $product = EntryType::create(['org_id' => $orgA->id, 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products', 'icon' => 'heroicon-o-shopping-bag']);

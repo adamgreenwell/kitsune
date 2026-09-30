@@ -22,6 +22,24 @@ class EditEntryType extends EditRecord
 
     protected static string $resource = EntryTypeResource::class;
 
+    /** The formats the type accepts, from `settings.accepts` — ADR-042 decision 33. */
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        /** @var EntryType $record */
+        $record = $this->getRecord();
+
+        return EntryTypeResource::acceptsFromSettings($data, $record);
+    }
+
+    /** ...and back into it, keeping the rest of `settings` as the record holds it. */
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        /** @var EntryType $record */
+        $record = $this->getRecord();
+
+        return EntryTypeResource::acceptsIntoSettings($data, $record);
+    }
+
     protected function getHeaderActions(): array
     {
         return [

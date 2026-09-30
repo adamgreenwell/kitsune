@@ -20,6 +20,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Filament\Icons;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -447,6 +448,39 @@ class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadin
         ));
     }
 
+    /**
+     * `settings.accepts` names the formats a media type accepts — ADR-042 decision 33 — and only a media type holds
+     * files to name. Refused here, with the type's own words, on every evented save; a list written past the model is
+     * refused where it is read (`MediaFormats::namedBy()`), which fails closed.
+     */
+    private function guardAccepts(): void
+    {
+        $accepts = is_array($this->settings) ? ($this->settings[MediaFormats::SETTING] ?? null) : null;
+
+        if ($accepts === null) {
+            return;
+        }
+
+        if ($this->is_media !== true) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] cannot name the files it accepts: it is not a media type, so it holds none (ADR-042 '
+                .'decision 33).',
+                $this->handle,
+            ));
+        }
+
+        $problem = MediaFormats::problemWith($accepts);
+
+        if ($problem !== null) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] cannot name the files it accepts as %s. Name one or more of: %s (ADR-042 decision 33).',
+                $this->handle,
+                $problem,
+                implode(', ', array_keys(MediaFormats::ALL)),
+            ));
+        }
+    }
+
     private function guardOrgMove(): void
     {
         if (! $this->exists || ! $this->isDirty('org_id')) {
@@ -674,6 +708,8 @@ class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadin
         // for is the quiet kind of wrong, and the author would go looking in the
         // stylesheet.
         static::saving(fn (self $type) => $type->guardIcon());
+
+        static::saving(fn (self $type) => $type->guardAccepts());
 
         static::saving(function (self $type): void {
             if ($type->subject_field_id === null) {

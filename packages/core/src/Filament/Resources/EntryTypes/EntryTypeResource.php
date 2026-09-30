@@ -15,12 +15,14 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Facades\Filament;
+use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
@@ -35,6 +37,7 @@ use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\CreateEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\ListEntryTypes;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Tenancy\Context;
@@ -152,6 +155,23 @@ class EntryTypeResource extends Resource
                             ? __('kitsune::media.type.holds_media_locked')
                             : __('kitsune::media.type.holds_media_help'))
                         ->disabled(fn (?EntryType $record): bool => $record?->exists === true)
+                        ->live()
+                        ->columnSpanFull(),
+                    /*
+                     * ⚠️ THE FILES A MEDIA TYPE ACCEPTS — Adam, decision 33. Kept under `settings.accepts` by the pages,
+                     * which leave the rest of `settings` as it was (`acceptsIntoSettings()`). Every format ticked is the
+                     * setting left out, which accepts every format, one added later included; the model refuses a list
+                     * that names none, or names something that is not a format.
+                     */
+                    CheckboxList::make('media_accepts')
+                        ->label(__('kitsune::media.type.accepts'))
+                        ->helperText(__('kitsune::media.type.accepts_help'))
+                        ->options(array_map(static fn (array $format): string => $format['name'], MediaFormats::ALL))
+                        ->default(array_keys(MediaFormats::ALL))
+                        ->required()
+                        ->bulkToggleable()
+                        ->columns(4)
+                        ->visible(fn (Get $get): bool => (bool) $get('is_media'))
                         ->columnSpanFull(),
                 ])
                 ->columns(2),
@@ -380,6 +400,59 @@ class EntryTypeResource extends Resource
      * none may change it. Ownership is the test rather than a policy, because
      * Phase 3's RBAC is what will supply policies and this cannot wait for it.
      */
+    /**
+     * The formats a media type's form shows ticked: those its settings name, or every one where it names none — ADR-042
+     * decision 33. One whose list cannot be read shows none ticked, so saving asks for a choice rather than keep it.
+     *
+     * @param  array<string, mixed>  $data  the form's data, filled from the record
+     * @return array<string, mixed>
+     */
+    public static function acceptsFromSettings(array $data, EntryType $record): array
+    {
+        if ($record->is_media !== true) {
+            return $data;
+        }
+
+        try {
+            $data['media_accepts'] = MediaFormats::namedBy($record->settings, (string) $record->handle) ?? array_keys(MediaFormats::ALL);
+        } catch (RuntimeException) {
+            $data['media_accepts'] = [];
+        }
+
+        return $data;
+    }
+
+    /**
+     * The form's formats, into `settings.accepts`, with the rest of `settings` as the record holds it — ADR-042 decision
+     * 33. Every format ticked leaves the key out; a form that showed no list — a type that holds no media — changes
+     * nothing.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    public static function acceptsIntoSettings(array $data, ?EntryType $record): array
+    {
+        if (! array_key_exists('media_accepts', $data)) {
+            return $data;
+        }
+
+        $ticked = (array) $data['media_accepts'];
+        unset($data['media_accepts']);
+
+        $accepts = array_values(array_filter(array_keys(MediaFormats::ALL), static fn (string $format): bool => in_array($format, $ticked, true)));
+        $settings = is_array($record?->settings) ? $record->settings : [];
+
+        if (count($accepts) === count(MediaFormats::ALL)) {
+            unset($settings[MediaFormats::SETTING]);
+        } else {
+            $settings[MediaFormats::SETTING] = $accepts;
+        }
+
+        $data['settings'] = $settings === [] ? null : $settings;
+
+        return $data;
+    }
+
     public static function ownsRecord(EntryType $record): bool
     {
         return $record->org_id !== null && (int) $record->org_id === app(Context::class)->orgId();
