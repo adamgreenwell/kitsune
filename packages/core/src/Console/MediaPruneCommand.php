@@ -173,6 +173,20 @@ final class MediaPruneCommand extends Command
         $kitsune = array_values(array_unique([$public, $private]));
         $unrooted = [];
 
+        // The configured disks are scanned whatever they hold, and one whose root is not there is built, as before — but
+        // not one whose root cannot be looked at, which building would try to create (Adam, decision 25; Codex, #160).
+        foreach ($kitsune as $disk) {
+            if (! is_array($config->get("filesystems.disks.{$disk}"))) {
+                continue;
+            }
+
+            try {
+                self::mayHold($config, $disk, $unrooted);
+            } catch (Throwable) {
+                // One that cannot be asked at all is asked again by its listing, which says what is wrong with it.
+            }
+        }
+
         // ...but not core's private disk where it is the configured private disk under another name — one place, as custody
         // takes it: its listing is that disk's, and every private file would be listed twice, an orphan removed and then
         // failing as unheld, a copy of itself offered as extra and kept (review of slice 5c). One that cannot be told from

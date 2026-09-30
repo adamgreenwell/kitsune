@@ -133,16 +133,16 @@ final class GuardUploadStaging
             return $response;
         }
 
-        foreach ($stored as $staged) {
-            $disk->delete([$staged, $staged.'.json']);
-        }
+        // The intake disk answers `false` rather than throw, so a removal it refused is counted, and said (Codex, #160).
+        $kept = count(array_filter($stored, static fn (string $staged): bool => ! $disk->delete([$staged, $staged.'.json'])));
 
         report(new RuntimeException(sprintf(
-            'The intake disk [%s] did not store %d of the %d files one upload staged, and the upload was refused. Check '
+            'The intake disk [%s] did not store %d of the %d files one upload staged, and the upload was refused%s. Check '
             .'that the disk has space and that PHP may write to it (ADR-042 decision 18).',
             MediaDisks::INTAKE,
             count($errors),
             count($paths),
+            $kept === 0 ? '' : sprintf('; %d of the files it did store could not be removed, and are left to the intake sweep', $kept),
         )));
 
         return response()->json(['message' => self::NOT_STORED, 'errors' => $errors], 422);

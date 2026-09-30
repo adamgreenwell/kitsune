@@ -819,11 +819,12 @@ it('scans no served disk that is, or cannot be told from, a media disk, and buil
  * Decision 25. A disk whose root cannot be looked at may hold what prune lists — a copy custody could not remove from a
  * served disk, the one an operator most needs to see, above all — so it is not taken to hold nothing, as one whose root
  * is not there is (T95): it is not built, which would try to create its root, and the run says it could not be listed,
- * and fails. A served disk, a disk a row names, and core's own private disk where the private disk points elsewhere.
+ * and fails. A served disk, a disk a row names, each configured disk (Codex, #160), and core's own private disk where the
+ * private disk points elsewhere.
  *
  * ⚠️ A LOOP OF LINKS ON THE WAY TO THE ROOT stands for every refusal that is not an absence: root, which runs this suite
  * here, cannot see past it, where it ignores a directory's mode. The control is a root that is not there — which a disk
- * a row names is still built with, and listed, creating it, as before.
+ * a row names and a configured one are still built with, and listed, creating it, as before.
  */
 it('fails a run that cannot look at a disk\'s root, where one whose root is not there holds nothing', function (string $which, bool $looped, bool $force): void {
     $base = sys_get_temp_dir().'/kitsune-prune-unrooted-'.bin2hex(random_bytes(4));
@@ -844,6 +845,15 @@ it('fails a run that cannot look at a disk\'s root, where one whose root is not 
 
                 return 'unrooted';
             })(),
+            'the configured public disk', 'the configured private disk' => (static function () use ($root, $which): string {
+                $which = $which === 'the configured public disk' ? 'public' : 'private';
+                config([
+                    "filesystems.disks.host-{$which}" => ['driver' => 'local', 'root' => $root],
+                    "kitsune.media.disks.{$which}" => "host-{$which}",
+                ]);
+
+                return "host-{$which}";
+            })(),
             'core\'s private disk' => (static function () use ($root): string {
                 Storage::fake('host-private');
                 config([
@@ -861,12 +871,12 @@ it('fails a run that cannot look at a disk\'s root, where one whose root is not 
 
         expect(str_contains($output, "Could not list [{$disk}]: Refusing to go on with [/] on the [{$disk}] disk: whether the disk holds anything cannot be told, because its root cannot be looked at"))->toBe($looped)
             ->and($output)->not->toContain($base)
-            ->and(file_exists($base.'/missing'))->toBe(! $looped && $which === 'named by a row')
+            ->and(file_exists($base.'/missing'))->toBe(! $looped && ! in_array($which, ['served', 'core\'s private disk'], true))
             ->and($exit)->toBe($looped ? 1 : 0);
     } finally {
         exec('rm -rf '.escapeshellarg($base));
     }
-})->with(['served', 'named by a row', 'core\'s private disk'])
+})->with(['served', 'named by a row', 'the configured public disk', 'the configured private disk', 'core\'s private disk'])
     ->with(['cannot be looked at' => true, 'the control: not there' => false])
     ->with(['read-only' => false, 'forced' => true]);
 

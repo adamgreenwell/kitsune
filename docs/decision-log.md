@@ -5334,7 +5334,9 @@ arrives as Livewire's own "failed to upload".
 >   submitted — *"This file was not uploaded: the server could not store it. Try again, and tell whoever runs this site
 >   if it happens again."* The files the same request did store are removed with their sidecars, since the browser will
 >   never ask for them and a disk short of space is the last place to leave them for the sweep. The refusal is
->   reported, naming the intake disk and how many of the upload's files it did not store, never a path. The sweep still
+>   reported, naming the intake disk and how many of the upload's files it did not store, never a path — and how many
+>   of those it did store it would not remove, which are left to the sweep: the intake disk answers `false` rather than
+>   throw, so a refused removal went unsaid (Codex, #160). The sweep still
 >   runs after such a write, which is when the space it frees matters. The handler's unnamed refusal of a missing staged
 >   file stays, for a submit built by hand (`GuardUploadStaging::refusingWhatWasNotStored()`).
 > - **A file's title stays its name (Adam, decision 19).** The upload modal gains no title field; a title is edited on
@@ -5360,8 +5362,8 @@ arrives as Livewire's own "failed to upload".
 >   with nothing moved (`MediaWithdrawalRefused::UNKNOWN_ROOT`), and the admin says so; a private file on a disk nothing
 >   serves is passed, as decision 5's rule for it says, and an erasure's disposal after the commit says it could not ask
 >   that disk and still cleans the rest; reconcile lists each row `unknown`, sent to the disk, and every `--force`
->   fails; prune does not build that disk — building would try to create its root — says it could not be listed, and
->   fails; custody's settle and cleanup fail the step. A root is asked without the slash every resolved root ends in, so
+>   fails; prune does not build that disk, a configured one included (Codex, #160) — building would try to create its
+>   root — says it could not be listed, and fails; custody's settle and cleanup fail the step. A root is asked without the slash every resolved root ends in, so
 >   a file where a root should be is still no directory rather than a refusal. What it costs: every step that asks such
 >   a disk fails until its root can be looked at, so a network mount that is reconnecting stops the trash of a public
 >   file until it is back.
@@ -6566,10 +6568,11 @@ When it lands:
 > on — which tiles now make possible to take.
 
 > ⚠️ **Amended 2026-09-30 — decisions 18 and 25 landed**, and each guard was removed in turn and its test watched fail,
-> beside a run of the same tests passing unmutated: 16 mutations, all in the PHP suite. By family:
-> - **Staging** (5: `UploadStagingGateTest`) — a file a full disk staged as nothing refused in Livewire's shape and
+> beside a run of the same tests passing unmutated: 19 mutations, all in the PHP suite. By family:
+> - **Staging** (7: `UploadStagingGateTest`) — a file a full disk staged as nothing refused in Livewire's shape and
 >   reported, its sidecar left to the sweep; of two files, the one not stored refused by its index and the one stored
->   removed; the disk asked, not the answer read; the sweep still run after a refused write. The control: every file
+>   removed; the disk asked, not the answer read; the sweep still run after a refused write; a stored file the disk
+>   would not remove counted in the report, and nothing said of one it did (Codex, #160). The control: every file
 >   stored answers as the endpoint did. A signed path whose file is not on the disk, a signature this application did
 >   not make and a path that is not a string are refused as well.
 > - **The root** (4: `MediaDisksTest`, `MediaReconcileCommandTest`) — a root behind a loop of links, itself or above
@@ -6582,9 +6585,10 @@ When it lands:
 >   a served disk, naming it, with nothing moved, and passed where its root is not there; a private file on a disk
 >   nothing serves passed, its trash and its erasure alike; the erasure's disposal saying it could not ask that disk,
 >   and cleaning the rest.
-> - **Prune** (2: `MediaPruneCommandTest`) — a served disk, a disk a row names and core's private disk, each behind such
->   a root, not built and said to be unlisted, the run failing, read-only and forced; a root not there holding nothing,
->   as before.
+> - **Prune** (3: `MediaPruneCommandTest`) — a served disk, a disk a row names, the configured public and private disks
+>   (Codex, #160) and core's private disk, each behind such a root, not built and said to be unlisted, the run failing,
+>   read-only and forced; a root not there holding nothing, or built as before where the disk is one prune always
+>   scans.
 >
 > Reconcile's case besides (`MediaReconcileCommandTest`): a row beside such a served disk `unknown`, sent to the disk,
 > and every `--force` failing with the file where it was; with a root not there, not listed. In the browser,

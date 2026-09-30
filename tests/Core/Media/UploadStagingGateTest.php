@@ -596,6 +596,30 @@ describe('a file the intake disk did not store', function (): void {
             ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(1)
             ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.png.json');
         notStoredReported(1, 2);
+        Exceptions::assertNotReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'could not be removed'));
+    });
+
+    /*
+     * ...and says so where the disk would not remove it: the intake disk answers `false` rather than throw, and a
+     * refusal that went unsaid left the operator a disk short of space and no word of what was on it (Codex, #160).
+     */
+    it('says which files it stored and could not remove, and leaves them to the sweep', function (): void {
+        $disk = RefusingDisk::install(MediaDisks::INTAKE, $this->root);
+        $disk->onOperation(4, function () use ($disk): void {
+            $disk->failWrites = true;
+            $disk->failDeletes = true;
+        });
+
+        $response = throughGateStoring([UploadedFile::fake()->image('one.png', 2, 2), UploadedFile::fake()->image('two.png', 2, 2)]);
+        $disk->failWrites = false;
+        $disk->failDeletes = false;
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true)['errors'])->toBe(['files.1' => [GuardUploadStaging::NOT_STORED]])
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(3);
+        Exceptions::assertReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'did not store 1 of the 2 files')
+            && str_contains($e->getMessage(), '1 of the files it did store could not be removed, and are left to the intake sweep')
+            && ! str_contains($e->getMessage(), $this->root));
     });
 
     /** The control: the same store on the same disk, writing both. */
