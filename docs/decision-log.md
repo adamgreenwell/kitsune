@@ -5733,8 +5733,8 @@ and not on stage, so none of it is the measurement this entry still owes.
   (200 runs each). `entry_id` is unique on every engine, so each has the index; PostgreSQL, MySQL and MariaDB were not
   measured here, and nothing is claimed for them. `MediaTilesTest` draws two tiles and six in the same number of
   queries.
-- **What a list asks the route that authorises first.** Nothing on load, nothing on a sort and nothing on a page change,
-  with private tiles on both pages; one request when a private tile is clicked, answered 200. A public tile is one
+- **What a list asks the route that authorises first.** Nothing on load, and nothing on a search, a sort or a page
+  change, with private tiles on both pages; one request when a private tile is clicked, answered 200. A public tile is one
   request to `/storage/…` on the page's own origin, answered by the web server. An upload's re-render was not measured
   here, and stays with the stage measurement.
 
@@ -6497,8 +6497,8 @@ When it lands:
 > from `APP_URL`'s host — each failing the one test that names it, with every sign-in setup passing: the media list is a
 > grid of tiles, with no card a link and View and Edit kept, where an article list stays a table; a public tile loads
 > with the page from the page's own origin; a private tile makes no request to the route that authorises first until
-> it is clicked, then one, and the page stays on the list; none on a sort or a page change, with the grid kept after
-> each; and a PDF is a badge naming its type, never fetched. `accessibility.spec.js` scans the media list. The media
+> it is clicked, then one, and the page stays on the list; none on a search, a sort or a page change — over files of
+> the spec's own, two pages of them — with the grid kept after each; and a PDF is a badge naming its type, never fetched. `accessibility.spec.js` scans the media list. The media
 > specs that read a media list read its cards.
 >
 > **Not yet, and not decision 6's to close:** loading private tiles automatically, and the stage measurement it waits
