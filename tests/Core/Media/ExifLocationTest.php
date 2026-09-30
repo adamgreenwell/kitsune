@@ -98,6 +98,12 @@ it('removes a GPS pointer from any directory it is in', function (bool $little, 
             J::u32($little, 34).J::u32($little, 52)
             .J::u16($little, 1).J::entry($little, 0x0112, 3, 1, J::u16($little, 1)).J::u32($little, 0)
             .J::u16($little, 1).$gps(70).J::u32($little, 0).gpsDirectory($little, 70)),
+        // One SubIFD, its offset in the entry itself.
+        'a single SubIFD' => exifWith($little, [J::entry($little, 0x014A, 4, 1, J::u32($little, 26))], J::u16($little, 1).$gps(44).J::u32($little, 0).gpsDirectory($little, 44)),
+        // IFD0 → the EXIF directory (26) → the interoperability directory (44), which holds it.
+        'the interoperability directory' => exifWith($little, [J::entry($little, 0x8769, 4, 1, J::u32($little, 26))],
+            J::u16($little, 1).J::entry($little, 0xA005, 4, 1, J::u32($little, 44)).J::u32($little, 0)
+            .J::u16($little, 1).$gps(62).J::u32($little, 0).gpsDirectory($little, 62)),
     };
 
     $stripped = exifStripped($tiff);
@@ -105,7 +111,65 @@ it('removes a GPS pointer from any directory it is in', function (bool $little, 
     expect(J::gpsPointers(J::jpeg([J::exif($stripped)])))->toBe(0)
         ->and(J::gpsPointers(J::jpeg([J::exif($tiff)])))->toBe(1)
         ->and(J::sentinels($stripped))->toBe([]);
-})->with('byte orders')->with(['IFD1', 'the EXIF directory', 'a SubIFD']);
+})->with('byte orders')->with(['IFD1', 'the EXIF directory', 'a SubIFD', 'a single SubIFD', 'the interoperability directory']);
+
+/*
+ * ⚠️ A POINTER READ AS THE MOST FORGIVING READER READS IT (review of decision 30). PHP's reader follows the EXIF
+ * directory's pointer and the GPS pointer whatever their type, and ExifTool a single integer of any width: a pointer
+ * typed otherwise than TIFF says still leads a reader to the GPS, so it leads here too.
+ */
+it('follows an EXIF directory pointer of any type a reader follows, to the GPS pointer inside', function (bool $little, int $type, int $count, Closure $value): void {
+    $tiff = exifWith($little, [J::entry($little, 0x8769, $type, $count, $value($little, 26))],
+        J::u16($little, 1).J::entry($little, 0x8825, 4, 1, J::u32($little, 44)).J::u32($little, 0).gpsDirectory($little, 44));
+
+    expect(J::sentinels(exifStripped($tiff)))->toBe([]);
+})->with('byte orders')->with([
+    'IFD' => [13, 1, fn (bool $little, int $at): string => J::u32($little, $at)],
+    'SLONG' => [9, 1, fn (bool $little, int $at): string => J::u32($little, $at)],
+    'SSHORT' => [8, 1, fn (bool $little, int $at): string => J::u16($little, $at)],
+    'BYTE' => [1, 1, fn (bool $little, int $at): string => chr($at)],
+    'four UNDEFINED bytes' => [7, 4, fn (bool $little, int $at): string => J::u32($little, $at)],
+    'a SHORT holding four bytes' => [3, 1, fn (bool $little, int $at): string => J::u32($little, $at)],
+]);
+
+it('removes a GPS pointer of any type a reader follows, and what it names', function (bool $little, int $type, int $count): void {
+    $tiff = exifWith($little, [J::entry($little, 0x8825, $type, $count, J::u32($little, 26))], gpsDirectory($little, 26));
+    $stripped = exifStripped($tiff);
+
+    expect(J::sentinels($stripped))->toBe([])
+        ->and(substr($stripped, 8, 2))->toBe(J::u16($little, 0));
+})->with('byte orders')->with(['SLONG' => [9, 1], 'four UNDEFINED bytes' => [7, 4], 'IFD' => [13, 1]]);
+
+it('queues a directory many pointers name once, and pays for it once', function (bool $little): void {
+    // Thirty-two SubIFDs, all the one empty directory at 30: queued and paid for as they came, the budget runs out.
+    $tiff = exifWith($little, [J::entry($little, 0x014A, 4, 32, J::u32($little, 26))], J::u32($little, 158).str_repeat(J::u32($little, 158), 32).J::u16($little, 0).J::u32($little, 0));
+
+    expect(ExifLocation::edits($tiff, new LocationBudget(entries: 4)))->toBe([]);
+})->with('byte orders');
+
+it('walks a block of thousands of SubIFD entries naming the same directories, in bounded time', function (bool $little): void {
+    $entries = [];
+
+    for ($i = 0; $i < 2000; $i++) {
+        $entries[] = J::entry($little, 0x014A, 4, 32, J::u32($little, 8 + 2 + 12 * 2000 + 4));
+    }
+
+    $tiff = exifWith($little, $entries, str_repeat(J::u32($little, 8 + 2 + 12 * 2000 + 4 + 128), 32).J::u16($little, 0).J::u32($little, 0));
+    $started = hrtime(true);
+
+    expect(ExifLocation::edits($tiff, new LocationBudget))->toBe([])
+        ->and((hrtime(true) - $started) / 1e9)->toBeLessThan(5.0);
+})->with('byte orders');
+
+/* As a real camera file has it (exif-samples' `45-gps_ifd.jpg`): the GPS pointer, with no values, naming the EXIF directory. */
+it('removes a GPS pointer naming a directory walked as another, where it holds no GPS tag, and keeps that directory', function (bool $little): void {
+    $exif = J::u16($little, 1).J::entry($little, 0x9000, 7, 4, '0232').J::u32($little, 0);
+    $tiff = exifWith($little, [J::entry($little, 0x8769, 4, 1, J::u32($little, 38)), J::entry($little, 0x8825, 4, 0, J::u32($little, 38))], $exif);
+    $stripped = exifStripped($tiff);
+
+    expect(substr($stripped, 8, 2))->toBe(J::u16($little, 1))
+        ->and(substr($stripped, 38))->toBe($exif);
+})->with('byte orders');
 
 it('zeroes a directory two pointers name, once', function (bool $little): void {
     // IFD0 (8..38) names GPS at 56, and so does the EXIF directory at 38.
@@ -208,11 +272,15 @@ it('refuses GPS data sharing bytes with other EXIF data, and edits nothing', fun
         // The same directory named as the EXIF directory and as GPS.
         'one directory named as EXIF and as GPS' => exifWith($little, [J::entry($little, 0x8769, 4, 1, J::u32($little, 38)), J::entry($little, 0x8825, 4, 1, J::u32($little, 38))],
             gpsDirectory($little, 38)),
+        // IFD1's thumbnail is the GPS latitude's own bytes.
+        'the thumbnail' => exifWith($little, [J::entry($little, 0x8825, 4, 1, J::u32($little, 26))],
+            J::u16($little, 1).J::entry($little, 0x0002, 5, 3, J::u32($little, 44)).J::u32($little, 0).str_repeat(J::RATIONAL, 3)
+            .J::u16($little, 2).J::entry($little, 0x0201, 4, 1, J::u32($little, 44)).J::entry($little, 0x0202, 4, 1, J::u32($little, 24)).J::u32($little, 0), 68),
     };
 
     expect(fn () => ExifLocation::edits($tiff, new LocationBudget))
         ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::GPS_SHARED));
-})->with('byte orders')->with(['a GPS value inside the maker note', 'a value inside the entries that move', 'one directory named as EXIF and as GPS']);
+})->with('byte orders')->with(['a GPS value inside the maker note', 'a value inside the entries that move', 'one directory named as EXIF and as GPS', 'the thumbnail']);
 
 it('spends its budget on every entry it reads', function (bool $little): void {
     expect(fn () => ExifLocation::edits(J::tiff($little), new LocationBudget(entries: 3)))

@@ -183,7 +183,7 @@ final class ExifLocation
         $edits = [];
 
         foreach ($xmp as [$from, $to]) {
-            foreach (XmpLocation::edits(substr($tiff, $from, $to - $from)) as [$offset, $replacement, $zero]) {
+            foreach (XmpLocation::edits(substr($tiff, $from, $to - $from), $budget) as [$offset, $replacement, $zero]) {
                 $edits[] = [$from + $offset, $replacement, $zero];
             }
         }
@@ -203,6 +203,15 @@ final class ExifLocation
         foreach (array_keys($gps) as $directory) {
             // A pointer to nowhere is simply removed: there is nothing there to zero.
             if ($directory < 8 || $directory + 2 > $length) {
+                continue;
+            }
+
+            /*
+             * A pointer to a directory walked as something else — a camera that wrote the EXIF directory's offset as
+             * the GPS one — names no GPS where that directory holds no GPS tag: the pointer goes, the directory stays.
+             * One that does hold a GPS tag is read as GPS by whoever follows the pointer, and is refused below.
+             */
+            if (isset($seen[$directory]) && ! self::holdsGpsTags($tiff, $directory, $little)) {
                 continue;
             }
 
@@ -262,6 +271,20 @@ final class ExifLocation
         }
 
         return $edits;
+    }
+
+    /** Whether a directory holds any tag of GPS's own numbering, 0x0000 to 0x001F. */
+    private static function holdsGpsTags(string $tiff, int $directory, bool $little): bool
+    {
+        $count = self::unsigned($tiff, $directory, 2, $little);
+
+        for ($k = 0; $k < $count && $directory + 2 + 12 * $k + 2 <= strlen($tiff); $k++) {
+            if (self::unsigned($tiff, $directory + 2 + 12 * $k, 2, $little) <= 0x1F) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -46,8 +46,11 @@ final class XmpLocation
         'http://developer.sonyericsson.com/cell/1.0/',
     ];
 
-    /** A property name that is location, in any namespace. `SubjectLocation` is a point in the picture, and stays. */
-    public const NAME = '/gps|latitude|longitude|longtitude/i';
+    /**
+     * A property name that is location, in any namespace. `SubjectLocation` is a point in the picture, and
+     * `ISOSpeedLatitudeyyy` an exposure's latitude: both stay.
+     */
+    public const NAME = '/gps|(?<!isospeed)latitude|longitude|longtitude/i';
 
     /** What a packet must mention before it is read at all: the names, the dropped namespaces, a base64 JPEG. */
     public const MENTIONS = '~gps|latitude|longitude|longtitude|www\.dji\.com/drone-dji|developer\.sonyericsson\.com/cell|/9j/~i';
@@ -59,11 +62,14 @@ final class XmpLocation
      *
      * @throws LocationUnremovable
      */
-    public static function edits(string $payload): array
+    public static function edits(string $payload, ?LocationBudget $budget = null): array
     {
         if (self::matches(self::MENTIONS, str_replace("\0", '', $payload)) === 0) {
             return [];
         }
+
+        $budget ??= new LocationBudget;
+        $budget->spend('packets');
 
         $first = strpos($payload, '<');
         $last = strrpos($payload, '>');
@@ -83,12 +89,17 @@ final class XmpLocation
             throw new LocationUnremovable(LocationUnremovable::XMP_UNREADABLE);
         }
 
-        $ranges = self::locations($xml);
-        $blanked = $xml;
+        $ranges = self::locations($xml, $budget->attributes);
+        // In one pass: a packet can hold thousands of properties, and a copy of it for each is quadratic.
+        $blanked = '';
+        $cursor = 0;
 
         foreach ($ranges as [$from, $to]) {
-            $blanked = substr_replace($blanked, str_repeat(' ', $to - $from), $from, $to - $from);
+            $blanked .= substr($xml, $cursor, $from - $cursor).str_repeat(' ', $to - $from);
+            $cursor = $to;
         }
+
+        $blanked .= substr($xml, $cursor);
 
         // Always, once the packet mentions any of it: a tokenizer that missed a property is caught here, not trusted.
         self::audit($xml, $blanked);
@@ -174,9 +185,9 @@ final class XmpLocation
      *
      * @return list<array{0: int, 1: int}>
      *
-     * @throws LocationUnremovable
+     * @throws LocationUnremovable for a packet this cannot read, or an element with more attributes than `$maxAttributes`
      */
-    private static function locations(string $xml): array
+    private static function locations(string $xml, int $maxAttributes): array
     {
         $at = 0;
         $stack = [];
@@ -265,6 +276,10 @@ final class XmpLocation
                     throw new LocationUnremovable(LocationUnremovable::XMP_MALFORMED);
                 }
 
+                if (count($attributes) >= $maxAttributes) {
+                    throw new LocationUnremovable(LocationUnremovable::TOO_MANY);
+                }
+
                 $value = html_entity_decode(substr($attribute[2], 1, -1), ENT_XML1 | ENT_QUOTES, 'UTF-8');
                 $attributes[] = [$attribute[1], $value, $cursor, $cursor + strlen($attribute[0])];
 
@@ -349,13 +364,14 @@ final class XmpLocation
     /** Remove, as libxml sees them, the properties `locations()` blanks — the other half of the audit. */
     private static function prune(DOMElement $element): void
     {
-        foreach (iterator_to_array($element->attributes) as $attribute) {
+        // As a list: keyed, PHP keys attributes by local name, and `drone-dji:Version` would hide behind `crs:Version`.
+        foreach (iterator_to_array($element->attributes, false) as $attribute) {
             if (self::names((string) $attribute->namespaceURI, (string) $attribute->localName) || self::embedsImage($attribute->value)) {
                 $element->removeAttributeNode($attribute);
             }
         }
 
-        foreach (iterator_to_array($element->childNodes) as $child) {
+        foreach (iterator_to_array($element->childNodes, false) as $child) {
             if (! $child instanceof DOMElement) {
                 continue;
             }

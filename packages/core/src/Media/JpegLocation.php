@@ -193,6 +193,17 @@ final class JpegLocation
             throw new RuntimeException('Cannot strip media: no temporary file could be made.');
         }
 
+        /*
+         * ⚠️ AND GONE WHEN THE PROCESS ENDS, whoever owns it by then. The caller removes it in a `finally`, which a fatal
+         * error — a time limit, memory — never reaches: a copy as large as the upload would be left in the temp
+         * directory for good.
+         */
+        register_shutdown_function(static function () use ($copy): void {
+            if (is_file($copy)) {
+                @unlink($copy);
+            }
+        });
+
         try {
             if (! @copy($path, $copy)) {
                 throw new RuntimeException("Cannot strip media: [{$path}] could not be copied.");
@@ -343,7 +354,7 @@ final class JpegLocation
                 default => $marker + 2 + $length,
             };
             $block = $bytes->read($content, max(0, min($end, $content + 0xFFFF) - $content));
-            $found = $kind === 'EXIF' ? ExifLocation::edits($block, $budget) : XmpLocation::edits($block);
+            $found = $kind === 'EXIF' ? ExifLocation::edits($block, $budget) : XmpLocation::edits($block, $budget);
 
             if ($found === []) {
                 continue;
@@ -639,7 +650,7 @@ final class JpegLocation
                 $handled[$segment['payload']] = true;
                 $offset = str_starts_with($payload, self::XMP) ? strlen(self::XMP) : 0;
 
-                foreach (XmpLocation::edits(substr($payload, $offset)) as [$at, $replacement, $zero]) {
+                foreach (XmpLocation::edits(substr($payload, $offset), $budget) as [$at, $replacement, $zero]) {
                     $edits[] = [$segment['payload'] + $offset + $at, $replacement, $zero];
                 }
             }
@@ -722,7 +733,7 @@ final class JpegLocation
 
             $found = match ($id) {
                 0x0422 => ExifLocation::edits(substr($block, $data, $size), $budget),
-                0x0424 => XmpLocation::edits(substr($block, $data, $size)),
+                0x0424 => XmpLocation::edits(substr($block, $data, $size), $budget),
                 default => [],
             };
 
@@ -803,13 +814,12 @@ final class JpegLocation
         $kept = [];
 
         foreach ($changing as $edit) {
-            foreach ($kept as $earlier) {
-                if ($earlier[2] && $edit[0] >= $earlier[0] && $edit[0] + strlen($edit[1]) <= $earlier[0] + strlen($earlier[1])) {
-                    continue 2;
-                }
-            }
-
+            // Kept edits are in order and apart, so only the last can reach this one.
             $last = $kept === [] ? null : $kept[count($kept) - 1];
+
+            if ($last !== null && $last[2] && $edit[0] + strlen($edit[1]) <= $last[0] + strlen($last[1])) {
+                continue;
+            }
 
             if ($last !== null && $edit[0] < $last[0] + strlen($last[1])) {
                 throw new LocationUnremovable(LocationUnremovable::BLOCKS_OVERLAP);

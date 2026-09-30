@@ -143,6 +143,8 @@ it('refuses location inside a segment it may not write, and leaves one without l
     'the Multi-Picture index' => [fn (string $block): string => J::segment(0xE2, "MPF\0".$block)],
     'Adobe\'s segment' => [fn (string $block): string => J::segment(0xEE, 'Adobe'.$block)],
     'a quantisation table' => [fn (string $block): string => J::segment(0xDB, $block)],
+    'JFIF\'s segment' => [fn (string $block): string => J::segment(0xE0, "JFIF\0\x01\x02\0\0\x01\0\x01\0\0".$block)],
+    'ISO gain-map metadata' => [fn (string $block): string => J::segment(0xE2, "urn:iso:std:iso:ts:21496:-1\0".$block)],
 ]);
 
 it('refuses XMP carrying location inside a segment it may not write', function (): void {
@@ -150,6 +152,21 @@ it('refuses XMP carrying location inside a segment it may not write', function (
 
     expectRefused(J::jpeg([J::segment(0xFE, $xmp)]), LocationUnremovable::OUT_OF_PLACE);
 });
+
+it('refuses XMP headed as ExifTool also reads it, carrying location inside a segment it may not write', function (): void {
+    $xmp = J::segment(0xE1, "XMP\0".J::packet('<rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="SENTINEL-XMP0"/>'));
+
+    expectRefused(J::jpeg([J::segment(0xFE, $xmp)]), LocationUnremovable::OUT_OF_PLACE);
+});
+
+/* PHP's reader takes the byte after a segment for the next marker, `FF` or not (review of decision 30). */
+it('refuses an EXIF block written with no FF before its marker, as PHP\'s reader reads one', function (bool $little): void {
+    $bare = substr(J::exif(J::gpsOnlyTiff($little)), 1);
+    $jfif = J::segment(0xE0, "JFIF\0\x01\x02\0\0\x01\0\x01\0\0");
+
+    expectRefused("\xFF\xD8".$bare.J::body(), LocationUnremovable::OUT_OF_PLACE);
+    expectRefused("\xFF\xD8".$jfif.$bare.J::body(), LocationUnremovable::OUT_OF_PLACE);
+})->with('byte orders');
 
 it('refuses location a damaged marker hides from the walk', function (): void {
     // The APP1's marker read as fill: the whole block, its thumbnail among it, is inside a segment of no known kind.
@@ -221,6 +238,13 @@ it('zeroes extended XMP naming GPS, across its chunks, identifier and all, and l
     expect(substr($out, $at, strlen(implode('', $other))))->toBe(implode('', $other));
 });
 
+it('zeroes extended XMP holding a drone\'s properties alone', function (): void {
+    $in = J::jpeg(J::extended('<rdf:Description xmlns:drone-dji="http://www.dji.com/drone-dji/1.0/" drone-dji:FlightYawDegree="SENTINEL-EXT-DJI"/>', str_repeat('D', 32)));
+    [$out] = jpegStripped($in);
+
+    expect(J::sentinels($out))->toBe([])->and(strlen($out))->toBe(strlen($in));
+});
+
 it('zeroes extended XMP embedding an image, rather than decoding it to ask', function (): void {
     $in = J::jpeg(J::extended('<GImage:Data>'.base64_encode(J::base()).'</GImage:Data>', str_repeat('C', 32)));
     [$out] = jpegStripped($in);
@@ -272,6 +296,48 @@ it('refuses more images after the picture than its budget', function (): void {
 
 it('refuses a file that does not begin as a JPEG does', function (): void {
     expectRefused('GIF89a', LocationUnremovable::NOT_JPEG);
+});
+
+/*
+ * ⚠️ IN BOUNDED TIME AND MEMORY, whatever the file (review of decision 30). Each candidate is found by PCRE, paid for
+ * before it is read, and read a segment at most.
+ */
+it('refuses a file dense in EXIF identifiers as too many', function (): void {
+    expectRefused(J::jpeg([J::segment(0xFE, str_repeat("Exif\0\0II*\0", 5000))]), LocationUnremovable::TOO_MANY);
+});
+
+it('reads a block with no usable length a segment at most, in bounded memory', function (): void {
+    $filler = str_repeat('<x a="gps"/>', 400_000);
+    $path = J::file(J::jpeg([], "\xFF\xE1\0\0http://ns.adobe.com/xap/1.0/\0<x:xmpmeta gps=\"1\">".$filler));
+    memory_reset_peak_usage();
+    $before = memory_get_peak_usage();
+
+    try {
+        JpegLocation::plan($path);
+    } catch (LocationUnremovable) {
+        // Refused is as good as stripped here: what is asserted is what it cost.
+    }
+
+    expect(memory_get_peak_usage() - $before)->toBeLessThan(8 * 1024 * 1024);
+});
+
+it('walks trailing bytes dense in APP1 markers in bounded time', function (): void {
+    $in = J::jpeg([J::exif(J::gpsOnlyTiff(true))], str_repeat("\xFF\xE1\xFF\xFF", 512 * 1024));
+    $started = hrtime(true);
+    [$out] = jpegStripped($in);
+
+    expect(J::sentinels($out))->toBe([])
+        ->and((hrtime(true) - $started) / 1e9)->toBeLessThan(5.0);
+});
+
+/* A JPEG after the picture that fails the strict walk is trailing bytes, and its thumbnail within them no image of its own. */
+it('leaves a trailing JPEG that is not quite one, with a thumbnail and no location, unrefused', function (): void {
+    $withThumbnail = J::header(true).J::u16(true, 1).J::entry(true, 0x0112, 3, 1, J::u16(true, 1)).J::u32(true, 26)
+        .J::u16(true, 2).J::entry(true, 0x0201, 4, 1, J::u32(true, 56)).J::entry(true, 0x0202, 4, 1, J::u32(true, strlen(J::base()))).J::u32(true, 0)
+        .J::base();
+    $trailer = "\xFF\xD8\x00".J::exif($withThumbnail).J::body();
+
+    expect(JpegLocation::planBytes(J::jpeg([], $trailer))['edits'])->toBe([]);
 });
 
 /*

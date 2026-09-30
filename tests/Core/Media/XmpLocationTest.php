@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Kitsune\Core\Media\LocationBudget;
 use Kitsune\Core\Media\LocationUnremovable;
 use Kitsune\Core\Media\XmpLocation;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg as J;
@@ -67,7 +68,38 @@ it('blanks each form of a GPS property, the packet keeping its length', function
     'an element in a default namespace' => ['<rdf:Description rdf:about=""><GPSLatitude xmlns="http://ns.adobe.com/exif/1.0/">SENTINEL-D</GPSLatitude></rdf:Description>'],
     'a vendor\'s name in lower case' => ['<rdf:Description rdf:about="" xmlns:v="urn:vendor" v:gpsTrack="SENTINEL-V"/>'],
     'an embedded image' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/"><g:Data>/9j/SENTINEL-IMAGE</g:Data></rdf:Description>'],
+    'an embedded image as an attribute' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/" g:Data="/9j/SENTINEL-ATTR-IMAGE"/>'],
+    'two location attributes sharing a local name' => ['<rdf:Description rdf:about="" '.XMP_EXIF.' xmlns:v="urn:vendor" exif:GPSLatitude="SENTINEL-ONE" v:GPSLatitude="SENTINEL-TWO"/>'],
 ]);
+
+/*
+ * ⚠️ AS A DRONE WRITES IT (review of decision 30). DJI's packet puts `drone-dji:Version` before `crs:Version` on one
+ * description: libxml keys attributes by local name, so a pruning that read them keyed saw one `Version` and refused.
+ */
+it('strips a drone\'s packet and keeps the attribute that shares a name with one it drops', function (): void {
+    $packet = J::packet('<rdf:Description rdf:about="" xmlns:drone-dji="http://www.dji.com/drone-dji/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"'
+        .' drone-dji:Version="SENTINEL-DJI-VERSION" drone-dji:GpsLatitude="SENTINEL-DJI-LAT" crs:Version="7.0" crs:HasSettings="False"/>');
+    $blanked = xmpBlanked($packet);
+
+    expect(J::sentinels($blanked))->toBe([])
+        ->and($blanked)->toContain('crs:Version="7.0"')->toContain('crs:HasSettings="False"');
+});
+
+it('refuses a blanked packet that leaves a location attribute a same-named one would hide', function (): void {
+    $xml = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:drone-dji="http://www.dji.com/drone-dji/1.0/"'
+        .' xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" drone-dji:Version="1" crs:Version="7.0"/></rdf:RDF></x:xmpmeta>';
+
+    expect(fn () => XmpLocation::audit($xml, $xml))
+        ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::XMP_MIXED));
+});
+
+it('keeps an exposure\'s latitude, which is no place', function (): void {
+    $blanked = xmpBlanked(J::packet('<rdf:Description rdf:about="" '.XMP_EXIF.' xmlns:exifEX="http://cipa.jp/exif/1.0/" exif:GPSLatitude="SENTINEL-G"'
+        .' exifEX:ISOSpeedLatitudeyyy="200" exifEX:ISOSpeedLatitudezzz="400"/>'));
+
+    expect(J::sentinels($blanked))->toBe([])
+        ->and($blanked)->toContain('exifEX:ISOSpeedLatitudeyyy="200"')->toContain('exifEX:ISOSpeedLatitudezzz="400"');
+});
 
 it('keeps what is not GPS', function (): void {
     $xpath = xmpDocument(xmpBlanked(J::packet(J::description())));
@@ -141,3 +173,30 @@ it('throws, rather than reading no match, when a pattern cannot run', function (
 it('names none of the gain-map, container, panorama or camera vocabulary', function (string $local): void {
     expect(XmpLocation::names('http://ns.google.com/photos/1.0/container/', $local))->toBeFalse();
 })->with(['Version', 'GainMapMin', 'HDRCapacityMax', 'Directory', 'Item', 'Semantic', 'Mime', 'Length', 'ProjectionType', 'PoseHeadingDegrees', 'MotionPhoto', 'SubjectLocation', 'City']);
+
+/*
+ * ⚠️ IN BOUNDED TIME (review of decision 30). libxml checks an element's attributes against one another, so a packet
+ * built with thousands on one element costs it seconds to read, twice: an element may carry `LocationBudget`'s
+ * `attributes`, and a file may have `packets` read.
+ */
+it('refuses an element with more attributes than its budget, and reads one with as many', function (): void {
+    $packet = fn (int $attributes): string => J::packet('<rdf:Description rdf:about="" '.XMP_EXIF.' xmlns:a="urn:a" exif:GPSLatitude="SENTINEL-G"'
+        .implode('', array_map(fn (int $i): string => " a:x{$i}=\"1\"", range(1, $attributes - 4))).'/>');
+
+    expect(J::sentinels(xmpBlanked($packet(1_024))))->toBe([])
+        ->and(fn () => XmpLocation::edits($packet(1_025)))
+        ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::TOO_MANY));
+});
+
+it('reads as many packets as its budget, and refuses one more', function (): void {
+    $budget = new LocationBudget(packets: 2);
+    $packet = J::packet('<rdf:Description rdf:about="" '.XMP_EXIF.' exif:GPSLatitude="1"/>');
+
+    XmpLocation::edits($packet, $budget);
+    XmpLocation::edits($packet, $budget);
+    // A packet naming none of it is never read, and costs nothing.
+    XmpLocation::edits(J::packet('<rdf:Description rdf:about=""/>'), $budget);
+
+    expect(fn () => XmpLocation::edits($packet, $budget))
+        ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::TOO_MANY));
+});

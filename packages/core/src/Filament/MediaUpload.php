@@ -340,8 +340,9 @@ final class MediaUpload
              * ⚠️ THE CONFIRMATION IS AN ACKNOWLEDGEMENT, AND WITHOUT IT THE FILES ARE STORED PRIVATE (decision 3; Adam,
              * 2026-09-29). It says the two things plainly: a public file is served to anyone with its link, and what
              * becomes of where a photo was made — a JPEG's GPS coordinates, in its EXIF and XMP data, are removed as it
-             * is made public (Adam, decision 30; `MediaLocation`), and a place name, a motion photo's video and every
-             * other format are served as uploaded (*What this costs*). ⚠️ IT CLAIMS WHAT `MediaLocation::STRIPPED`
+             * is made public (Adam, decision 30; `MediaLocation`), and what else a photo holds — a place name, a camera
+             * maker's own records, a motion photo's video — and every other format are served as uploaded (*What this
+             * costs*). ⚠️ IT CLAIMS WHAT `MediaLocation::STRIPPED`
              * STRIPS AND NO MORE, and a test holds the formats it names to that list: widening the list changes these
              * words in the same change.
              */
