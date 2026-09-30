@@ -1,4 +1,6 @@
 // @ts-check
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 
 /*
@@ -432,5 +434,46 @@ test.describe('a relation pointing at something the editor may not view', () => 
         await expect(page.getByLabel('Reading minutes')).toHaveValue('42');
         await expect(page.getByRole('combobox', { name: 'Related products' }))
             .toContainText(/you may not view this entry type/);
+    });
+});
+
+/*
+ * ADR-042 decision 31: the trash is listed to whoever may view the list, and restoring or deleting forever is asked of
+ * `delete`, as `architecture.md` publishes — so this reader, holding `view` and `update` on articles and not `delete`,
+ * sees a trashed article and neither action. The admin's own trash test, `media-trash.spec.js`, is the control: an owner
+ * sees both on the same row.
+ */
+test.describe('the trash', () => {
+    const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+        cwd: path.join(__dirname, '..', 'skeleton'),
+        encoding: 'utf8',
+    }).trim();
+    const title = 'Trash probe for the reader';
+    const remove = () => tinker("\\Kitsune\\Core\\Models\\Entry::withoutScopeBecause('removing a browser-test fixture', fn ($q) => $q->withTrashed()->where('title', "
+        + JSON.stringify(title) + ")->get())->each(function ($entry) { app(\\Kitsune\\Core\\Tenancy\\Context::class)->setOrg(\\Kitsune\\Core\\Models\\Org::query()->findOrFail($entry->org_id)); $entry->forceDelete(); });");
+
+    test.beforeEach(() => {
+        remove();
+        tinker("$site = \\Kitsune\\Core\\Models\\Site::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('slug', 'golfdom')->firstOrFail());"
+            + ' app(\\Kitsune\\Core\\Tenancy\\Context::class)->setOrg(\\Kitsune\\Core\\Models\\Org::query()->findOrFail($site->org_id));'
+            + ' app(\\Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + " $type = \\Kitsune\\Core\\Models\\EntryType::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('handle', 'article')->where('org_id', $site->org_id)->firstOrFail());"
+            + ` \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $type->id, 'title' => '${title}', 'status' => 'draft'])->delete();`);
+    });
+
+    test.afterEach(() => remove());
+
+    test('is listed, with no way to restore or delete forever, to a reader who may not delete', async ({ page }) => {
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.locator('.fi-ta').getByPlaceholder('Search').fill(title);
+        await page.getByRole('button', { name: 'Filter' }).click();
+        await page.locator('select[wire\\:model="tableDeferredFilters.trashed.value"]').selectOption('0');
+        await page.getByRole('button', { name: 'Apply filters' }).click();
+        await page.keyboard.press('Escape');
+
+        const row = page.locator('.fi-ta-row').filter({ hasText: title });
+        await expect(row).toHaveCount(1);
+        await expect(row.getByRole('button', { name: 'Restore' })).toHaveCount(0);
+        await expect(row.getByRole('button', { name: 'Delete forever' })).toHaveCount(0);
     });
 });

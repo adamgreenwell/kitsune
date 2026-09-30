@@ -78,6 +78,15 @@ final class MediaTileColumn extends Column implements HasEmbeddedView
             return ['kind' => self::MISSING, 'src' => null, 'label' => __('kitsune::media.tile.missing')];
         }
 
+        /*
+         * ⚠️ A TRASHED ENTRY'S TILE FETCHES NOTHING — ADR-042 decision 31. The trash lists it, and the route that authorises
+         * first resolves live entries alone, as its pages do: a preview would be a broken image. Its file is off the web
+         * already, so a badge says where it is.
+         */
+        if ($entry->trashed()) {
+            return ['kind' => self::BADGE, 'src' => null, 'label' => __('kitsune::media.tile.trashed')];
+        }
+
         $type = self::typeLabel($file);
 
         if (MediaDelivery::dispositionFor($file) !== 'inline') {

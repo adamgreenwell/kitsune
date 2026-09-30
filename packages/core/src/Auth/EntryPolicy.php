@@ -94,10 +94,11 @@ class EntryPolicy
      * bypass inside these methods rather than in `Gate::before`, there was nothing above to rescue it: the
      * narrower blast radius is bought with exactly this, that every ability has to be spelled out.
      *
-     * ⚠️ ALL THREE, THOUGH ONLY ONE IS REACHABLE TODAY. The toolbar carries `DeleteBulkAction` alone, but
-     * adding a trash filter with restore actions is one line in a Resource — and the failure mode is a
-     * refusal for everybody, which reads as a broken button rather than as a missing method. Defining the
-     * family closes the trap once instead of leaving it for whoever adds the second action.
+     * ⚠️ ALL THREE, ~~THOUGH ONLY ONE IS REACHABLE TODAY~~ AND ALL THREE REACHABLE SINCE THE TRASH (ADR-042
+     * decision 31). The toolbar carried `DeleteBulkAction` alone, but adding a trash filter with restore
+     * actions was one line in a Resource — and the failure mode is a refusal for everybody, which reads as
+     * a broken button rather than as a missing method. Defining the family closed the trap once, and the
+     * trash's `RestoreBulkAction` and `ForceDeleteBulkAction` ask the other two.
      *
      * They resolve against the CURRENT type rather than a record, because there is no record: the whole
      * point of the bulk ability is that it is asked once for the selection.

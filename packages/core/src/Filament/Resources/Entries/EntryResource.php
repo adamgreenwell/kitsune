@@ -14,6 +14,10 @@ use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Actions\ForceDeleteAction;
+use Filament\Actions\ForceDeleteBulkAction;
+use Filament\Actions\RestoreAction;
+use Filament\Actions\RestoreBulkAction;
 use Filament\Actions\ViewAction;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
@@ -32,6 +36,7 @@ use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\Layout\Stack;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\PaginationMode;
+use Filament\Tables\Filters\TrashedFilter;
 use Filament\Tables\Table;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
@@ -40,6 +45,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Number;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -453,14 +459,46 @@ class EntryResource extends Resource
             TextColumn::make('status')->badge()->sortable(),
             SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
             ...self::fieldColumns(),
-        ]);
+        ])->recordUrl(self::rowUrl(...));
+
+        $warning = static fn (): string => __(self::listsMedia() ? 'kitsune::trash.erase_warning_media' : 'kitsune::trash.erase_warning');
 
         return $table
+            /*
+             * ⚠️ THE TRASH — ADR-042 decision 31. Filament's filter, and its actions: a trashed entry is restored, or deleted
+             * forever, and is not opened — its pages resolve live entries alone. Delete forever erases what is in the
+             * trash and nothing else, and one it cannot erase is named (`EntryTrash`). Authorised by the policy, where
+             * `restore` and `forceDelete` resolve against `delete`, as `architecture.md` publishes.
+             */
+            ->filters([
+                TrashedFilter::make()
+                    ->label(__('kitsune::trash.filter'))
+                    ->placeholder(__('kitsune::trash.without'))
+                    ->trueLabel(__('kitsune::trash.with'))
+                    ->falseLabel(__('kitsune::trash.only')),
+            ])
             // Record links are exactly what 500s without isPersistent: true.
-            ->recordActions([ViewAction::make(), EditAction::make()])
+            ->recordActions([
+                ViewAction::make()->hidden(static fn (Entry $record): bool => $record->trashed()),
+                EditAction::make()->hidden(static fn (Entry $record): bool => $record->trashed()),
+                RestoreAction::make(),
+                ForceDeleteAction::make()
+                    ->label(__('kitsune::trash.erase'))
+                    ->modalHeading(__('kitsune::trash.erase'))
+                    ->modalDescription($warning)
+                    ->modalSubmitActionLabel(__('kitsune::trash.erase'))
+                    ->using(EntryTrash::forceDeleteOne(...)),
+            ])
             // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5).
             ->toolbarActions([BulkActionGroup::make([
                 DeleteBulkAction::make()->using(MediaDeletionNotice::deleteEach(...)),
+                RestoreBulkAction::make()->using(EntryTrash::restoreEach(...)),
+                ForceDeleteBulkAction::make()
+                    ->label(__('kitsune::trash.erase_selected'))
+                    ->modalHeading(__('kitsune::trash.erase_selected'))
+                    ->modalDescription($warning)
+                    ->modalSubmitActionLabel(__('kitsune::trash.erase'))
+                    ->using(EntryTrash::forceDeleteEach(...)),
             ])])
             ->defaultSort(self::DEFAULT_SORT, 'desc')
             ->paginationMode(static fn (): PaginationMode => self::paginationModeFor(
@@ -504,6 +542,26 @@ class EntryResource extends Resource
             ->contentGrid(['md' => 2, 'lg' => 3, 'xl' => 4])
             ->recordUrl(null)
             ->modifyQueryUsing(static fn (Builder $query): Builder => $query->with('mediaFile'));
+    }
+
+    /**
+     * A row's link — its view page, or else its edit page, as Filament's own is — and none for a trashed entry.
+     *
+     * ⚠️ FILAMENT'S OWN LINKS A TRASHED ROW TO A 404. It skips a hidden *View* and *Edit*, then falls back to the view
+     * page for any record the policy lets the user view, and that page resolves live entries alone. A trashed entry is
+     * restored or deleted forever from the list, and not opened (ADR-042 decision 31; Codex, #163). A media list's cards
+     * carry no link at all (`asTiles()`).
+     */
+    private static function rowUrl(Entry $record): ?string
+    {
+        $page = match (true) {
+            $record->trashed() => null,
+            static::canView($record) => 'view',
+            static::canEdit($record) => 'edit',
+            default => null,
+        };
+
+        return $page === null ? null : static::getUrl($page, ['type' => $record->type_handle, 'record' => $record]);
     }
 
     /**

@@ -232,6 +232,15 @@ describe('a tile', function (): void {
         expect(MediaTileColumn::tileFor(asListed($entry)))->toBe(['kind' => MediaTileColumn::BADGE, 'src' => null, 'label' => 'PDF']);
     })->with(['private' => 'private', 'public' => 'public']);
 
+    /* The trash lists a trashed entry, and the route resolves live ones alone: its tile fetches nothing (decision 31). */
+    it('is a badge saying so for a trashed entry, public or private, with nothing to fetch', function (string $visibility): void {
+        $entry = tiled(TILE_PNG, 'old.png', $this->type, $visibility);
+        $entry->delete();
+
+        expect(MediaTileColumn::tileFor(Entry::withTrashed()->with('mediaFile')->findOrFail($entry->getKey())))
+            ->toBe(['kind' => MediaTileColumn::BADGE, 'src' => null, 'label' => 'In the trash']);
+    })->with(['private' => 'private', 'public' => 'public']);
+
     it('says so for an entry with no file recorded', function (): void {
         $entry = tiled(TILE_PNG, 'gone.png', $this->type);
         DB::table('media_files')->where('entry_id', $entry->getKey())->delete();
@@ -314,7 +323,8 @@ describe('the media list', function (): void {
     /*
      * ⚠️ NO RECORD LINK, because the whole card would be one `<a>` and a private tile's button would sit inside it; and
      * NO TYPE, STATUS OR FIELD COLUMNS, because a card draws every column not hidden — toggled off or not. The article
-     * list is the control: it keeps its table, its link and its columns.
+     * list is the control: it keeps its table and its columns. Its link, and a trashed row's lack of one, are
+     * `EntryTrashTest`'s.
      */
     it('is a grid of tiles, titles and when each changed, with no record link, where an article list stays a table', function () use ($table): void {
         $entry = tiled(TILE_PNG, 'logo.png', $this->type, 'public');
@@ -331,7 +341,6 @@ describe('the media list', function (): void {
         $articles = $table();
 
         expect($articles->getContentGrid())->toBeNull()
-            ->and($articles->hasCustomRecordUrl())->toBeFalse()
             ->and($articles->getColumn('media_tile'))->toBeNull()
             ->and(array_keys($articles->getColumns()))->toContain('title', 'type_handle', 'status', 'updated_at');
     });
