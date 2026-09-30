@@ -55,7 +55,8 @@ const READER_STATE = '.playwright/admin-reader-auth.json';
 async function mediaEntryId(page, title) {
     await page.goto(`/admin/${SITE}/c/image`);
 
-    const row = page.locator('.fi-ta-row').filter({ hasText: title }).first();
+    // A media list is a grid of tiles (ADR-042 decision 6), so each entry is a card rather than a table row.
+    const row = page.locator('.fi-ta-record').filter({ hasText: title }).first();
     await expect(row).toBeVisible();
 
     await row.locator('a[href*="/c/image/"]').first().click();

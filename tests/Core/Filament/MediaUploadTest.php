@@ -522,7 +522,8 @@ describe('a media type\'s pages', function (): void {
 
     it('withholds the status control and column for a media type, and keeps them for another', function (): void {
         $status = fn (): bool => uploadComponents(EntryResource::form(Schema::make(app(EditEntry::class))))['status']->isHidden();
-        $column = fn (): bool => EntryResource::table(Table::make(app(ListEntries::class)))->getColumn('status')->isHidden();
+        // Withheld: a media list's tiles carry no status column at all (decision 6), and another type's shows one.
+        $column = fn (): bool => EntryResource::table(Table::make(app(ListEntries::class)))->getColumn('status')?->isHidden() ?? true;
 
         expect($status())->toBeTrue()->and($column())->toBeTrue();
 
@@ -578,7 +579,13 @@ describe('a media type\'s pages', function (): void {
     });
 
     /* Decision 16's other half: whether a file is served to anyone with its link, and where that link goes. */
+    /*
+     * ⚠️ ON THE HOST SERVING THE ADMIN (decision 6): the disk's URL is APP_URL's, absolute, and the link is its path — a
+     * disk faked with no URL at all would give the path either way, and could not tell the two apart.
+     */
     it('shows a public, shared file as public, shared, and linked to the public disk\'s direct URL', function (): void {
+        config(['app.url' => 'http://localhost']);
+        Storage::fake('public', ['url' => 'http://localhost/storage']);
         $entry = storedMedia(UPLOAD_ACTION_PNG, 'photo.png', $this->type, 'public', siteOnly: false);
         $path = MediaFile::query()->where('entry_id', $entry->id)->value('path');
 
@@ -586,7 +593,8 @@ describe('a media type\'s pages', function (): void {
 
         expect($components['media_file_visibility']->getState())->toBe('Public')
             ->and($components['media_file_sharing']->getState())->toBe('Every site in the organisation')
-            ->and($components['media_file_link']->getUrl())->toBe(Storage::disk('public')->url($path));
+            ->and(Storage::disk('public')->url($path))->toBe('http://localhost/storage/'.$path)
+            ->and($components['media_file_link']->getUrl())->toBe('/storage/'.$path);
     });
 
     /*

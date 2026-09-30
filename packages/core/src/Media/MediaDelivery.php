@@ -104,16 +104,80 @@ final class MediaDelivery
     /** The same answer as `urlFor()`, for a row the caller has already read — so the File section does not read it again. */
     public static function urlForFile(Entry $entry, MediaFile $file): ?string
     {
-        /*
-         * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A direct URL is the public disk's, and only a
-         * row naming it has its bytes there: a public file awaiting publication still names the private disk, and a
-         * row naming `local` would be handed `/storage/{path}`, the public link's path, where the file is not — or where
-         * a stale copy could be. Every other row is delivered as private, through the route that authorises first.
-         */
-        if ($file->isPublic() && $file->disk === MediaDisks::configured(app('config'), 'public')) {
-            return Storage::disk($file->disk)->url($file->path);
+        return self::servesDirectly($file) ? Storage::disk($file->disk)->url($file->path) : self::privateRoute($entry, true);
+    }
+
+    /**
+     * Where the admin loads this file from: `urlForFile()`'s answer on the host serving the admin — ADR-042 decision 6.
+     *
+     * ⚠️ NOT `APP_URL`'s HOST, WHICH IS WHAT `urlForFile()` ANSWERS WITH. That one stays absolute because it answers for
+     * consumers that are not the admin — ADR-041's direct URL a CDN can cache — and a local public disk's absolute form
+     * is built from `APP_URL`, which names another host whenever the admin is served on a site's own host, and in the
+     * browser suite, where it is `http://localhost` while the admin is served at `127.0.0.1:8125`. So a direct URL on
+     * `APP_URL`'s own origin is given as its path, and the route that authorises first as the path the router builds.
+     *
+     * ⚠️ A PUBLIC DISK SERVED FROM ANOTHER ORIGIN KEEPS ITS OWN URL. A host may point `kitsune.media.disks.public` at an
+     * object store, or give its disk the URL of a CDN; that URL names the host holding the bytes, not `APP_URL`, and its
+     * path on the admin's host would answer 404. Only an answer on `APP_URL`'s scheme, host and port loses them.
+     */
+    public static function adminUrlForFile(Entry $entry, MediaFile $file): ?string
+    {
+        return self::servesDirectly($file) ? self::onThisOrigin(Storage::disk($file->disk)->url($file->path)) : self::privateRoute($entry, false);
+    }
+
+    /**
+     * Whether a row's bytes are served directly, by the web server, rather than by the route that authorises first.
+     *
+     * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A direct URL is the public disk's, and only a row
+     * naming it has its bytes there: a public file awaiting publication still names the private disk, and a row naming
+     * `local` would be handed `/storage/{path}`, the public link's path, where the file is not — or where a stale copy
+     * could be. Every other row is delivered as private, through the route that authorises first.
+     */
+    public static function servesDirectly(MediaFile $file): bool
+    {
+        return $file->isPublic() && $file->disk === MediaDisks::configured(app('config'), 'public');
+    }
+
+    /**
+     * A URL's path, query and fragment when it is on `APP_URL`'s origin; the URL itself otherwise.
+     *
+     * An origin is a scheme, a host and a port, compared as a browser compares them: the scheme and host without regard
+     * to case, and a port left out read as its scheme's default. A URL with no host is already a path and is kept.
+     *
+     * ⚠️ A URL WITH NO SCHEME TAKES `APP_URL`'s — Codex, #159. A browser reads `//example.test/storage` with the page's
+     * scheme, so on `APP_URL`'s host it is `APP_URL`'s origin; read as no scheme at all, it matched nothing, and the tile
+     * was fetched from `APP_URL`'s host after all.
+     */
+    private static function onThisOrigin(string $url): string
+    {
+        $here = parse_url((string) config('app.url'));
+        $there = parse_url($url);
+
+        if (! is_array($here) || ! is_array($there) || ! isset($here['host'], $there['host'])) {
+            return $url;
         }
 
+        $scheme = strtolower($here['scheme'] ?? '');
+
+        $origin = static fn (array $parts, string $scheme): string => sprintf(
+            '%s://%s:%d',
+            $scheme,
+            strtolower($parts['host']),
+            $parts['port'] ?? ($scheme === 'https' ? 443 : 80),
+        );
+
+        if ($origin($here, $scheme) !== $origin($there, strtolower($there['scheme'] ?? $scheme))) {
+            return $url;
+        }
+
+        return ($there['path'] ?? '/')
+            .(isset($there['query']) ? '?'.$there['query'] : '')
+            .(isset($there['fragment']) ? '#'.$there['fragment'] : '');
+    }
+
+    /** The route that authorises first, for this entry at the panel's current site, or null where there is none. */
+    private static function privateRoute(Entry $entry, bool $absolute): ?string
+    {
         $name = self::routeName();
         $tenant = app()->bound('filament') ? Filament::getTenant() : null;
 
@@ -126,7 +190,7 @@ final class MediaDelivery
             return null;
         }
 
-        return route($name, ['tenant' => $tenant, 'media' => $entry->getKey()]);
+        return route($name, ['tenant' => $tenant, 'media' => $entry->getKey()], $absolute);
     }
 
     /**

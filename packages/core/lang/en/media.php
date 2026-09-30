@@ -72,4 +72,11 @@ return [
         'open' => 'Open file',
         'missing' => 'No file is recorded for this entry.',
     ],
+    'tile' => [
+        'show' => 'Show preview',
+        // Begins with the words the button shows, so it is the name a voice user speaks (WCAG 2.5.3, label in name).
+        'show_label' => 'Show preview of ":title"',
+        'private' => 'Private',
+        'missing' => 'No file',
+    ],
 ];

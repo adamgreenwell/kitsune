@@ -213,7 +213,7 @@ test.describe('uploading through the media list', () => {
             await upload(page, [png(`${title}.png`)]);
 
             await expect(page.locator('.fi-no-notification').filter({ hasText: 'The file was uploaded' })).toBeVisible({ timeout: 15_000 });
-            await expect(page.locator('.fi-ta-row').filter({ hasText: title })).toBeVisible();
+            await expect(page.locator('.fi-ta-record').filter({ hasText: title })).toBeVisible();
 
             const row = stored(title);
             expect(row).not.toBeNull();
@@ -263,15 +263,15 @@ test.describe('uploading through the media list', () => {
 
             /*
              * Its File section says so, and links to the public disk's direct URL rather than the panel's route — served,
-             * with no PHP in the path. The URL is absolute on APP_URL's host (`http://localhost` here, not the suite's
-             * server — decision 6), so its path is fetched at ours.
+             * with no PHP in the path. On the host serving the admin (decision 6): a path, with no scheme and no host, where
+             * the absolute URL would have named APP_URL's (`http://localhost` here, not the suite's server).
              */
             await page.goto(`/admin/golfdom/c/image/${row.id}/edit`);
             const section = page.locator('.fi-section').filter({ hasText: 'File' }).first();
             await expect(section).toContainText('Public');
-            const href = new URL(String(await section.getByRole('link', { name: 'Open file' }).getAttribute('href')));
-            expect(href.pathname).toBe(`/storage/${row.path}`);
-            const served = await page.request.get(href.pathname);
+            const href = String(await section.getByRole('link', { name: 'Open file' }).getAttribute('href'));
+            expect(href).toBe(`/storage/${row.path}`);
+            const served = await page.request.get(href);
             expect(served.status()).toBe(200);
             expect(served.headers()['content-type']).toContain('image/png');
             expect(served.headers()['content-disposition']).toBeUndefined();
@@ -345,7 +345,7 @@ test.describe('a file uploaded through the panel, across sites', () => {
             expect(keptRow?.site_id).not.toBeNull();
 
             await page.goto('/admin/golfdom-fr/c/image');
-            await expect(page.locator('.fi-ta-row').filter({ hasText: shared })).toBeVisible();
+            await expect(page.locator('.fi-ta-record').filter({ hasText: shared })).toBeVisible();
             await expect(page.getByText(kept)).toHaveCount(0);
 
             expect((await page.request.get(`/admin/golfdom-fr/media/${sharedRow.id}`)).status()).toBe(200);
@@ -417,10 +417,14 @@ test.describe('a media entry\'s pages', () => {
             await upload(page, [png(`${title}.png`)]);
             await expect(page.locator('.fi-no-notification').filter({ hasText: 'The file was uploaded' })).toBeVisible({ timeout: 15_000 });
 
-            // The list shows no status for a media type — beside its Type column, so the header is seen to have rendered.
+            // The list shows no status for a media type — beside its tiles, so the grid is seen to have rendered, and with
+            // no Status among what it sorts by, the one place a grid would offer the column.
             await page.goto('/admin/golfdom/c/image');
-            await expect(page.getByRole('columnheader', { name: 'Type', exact: true })).toBeVisible();
+            await expect(page.locator('[data-kitsune-tile]').first()).toBeVisible();
             await expect(page.locator('.fi-ta').getByRole('button', { name: 'Status', exact: true })).toHaveCount(0);
+            const sortable = await page.locator('.fi-ta select[x-model="column"] option').evaluateAll((options) => options.map((o) => o.value));
+            expect(sortable).toContain('title');
+            expect(sortable).not.toContain('status');
 
             const { id } = stored(title);
 
@@ -438,6 +442,7 @@ test.describe('a media entry\'s pages', () => {
             // The control: an article's edit page and list keep their status.
             await page.goto('/admin/golfdom/c/article');
             await expect(page.locator('.fi-ta').getByRole('button', { name: 'Status', exact: true })).toHaveCount(1);
+            await expect(page.locator('[data-kitsune-tile]')).toHaveCount(0);
             await page.locator('.fi-ta-row a[href*="/edit"]').first().click();
             await expect(page.locator('[id="form.status"]')).toBeVisible();
         } finally {
