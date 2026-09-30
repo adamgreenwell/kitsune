@@ -144,3 +144,17 @@ it('says so when a file shrinks while it is read', function (): void {
 
     expect(fn () => $file->read(JpegBytes::WINDOW + 10, 10))->toThrow(RuntimeException::class, 'changed while it was read');
 });
+
+it('finds the marker that ends scan data past stuffing, restarts and fill, and across two windows', function (): void {
+    $scan = str_repeat("\xFF\x00\x12\xFF\xD3", 10);
+    $bytes = JpegBytes::ofString($scan."\xFF\xFF\xFF\xD9");
+
+    expect($bytes->nextMarker(0, strlen($scan) + 4))->toBe(strlen($scan) + 2)
+        ->and($bytes->nextMarker(0, strlen($scan) + 3))->toBeNull();
+
+    // The window's last byte an `FF`, its marker the next window's first.
+    $file = JpegBytes::ofFile(J::file(str_repeat("\x12", JpegBytes::WINDOW - 1)."\xFF\xD9"));
+
+    expect($file->nextMarker(0, JpegBytes::WINDOW + 1))->toBe(JpegBytes::WINDOW - 1);
+    $file->close();
+});

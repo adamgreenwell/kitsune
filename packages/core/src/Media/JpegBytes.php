@@ -138,6 +138,50 @@ final class JpegBytes
         return null;
     }
 
+    /**
+     * Where the next marker that ends scan data begins — an `FF` followed by anything but stuffing (`00`), a restart
+     * (`D0`–`D7`) or more fill — at or after `$from` and before `$limit`, or null.
+     *
+     * ⚠️ ASKED OF PCRE, NOT A LOOP OVER EVERY `FF`. Scan data holds an `FF 00` every few hundred bytes, and a file built
+     * to hold one every other byte would otherwise walk 64 MiB a byte at a time, twice, inside one upload's request.
+     *
+     * @throws RuntimeException where the pattern could not run
+     */
+    public function nextMarker(int $from, int $limit): ?int
+    {
+        $limit = min($limit, $this->size);
+        $from = max(0, $from);
+
+        while ($from + 2 <= $limit) {
+            if ($from < $this->windowAt || $from + 2 > $this->windowAt + strlen($this->window)) {
+                $this->load($from);
+            }
+
+            $found = preg_match('/\xFF[^\x00\xD0-\xD7\xFF]/', $this->window, $match, PREG_OFFSET_CAPTURE, $from - $this->windowAt);
+
+            if ($found === false) {
+                throw new RuntimeException('Scan data could not be searched: '.preg_last_error_msg());
+            }
+
+            if ($found === 1) {
+                $at = $this->windowAt + $match[0][1];
+
+                return $at + 2 <= $limit ? $at : null;
+            }
+
+            $windowEnd = $this->windowAt + strlen($this->window);
+
+            if ($windowEnd >= $limit) {
+                return null;
+            }
+
+            // The window's last byte may be an `FF` whose marker is the next window's first.
+            $from = max($from + 1, $windowEnd - 1);
+        }
+
+        return null;
+    }
+
     public function close(): void
     {
         if (is_resource($this->handle)) {

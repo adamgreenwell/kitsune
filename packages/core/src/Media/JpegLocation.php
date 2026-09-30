@@ -361,6 +361,17 @@ final class JpegLocation
         $mapped = null;
 
         while (true) {
+            // Inside scan data, straight to the marker that ends it: stuffing, restarts and fill are the scan's own.
+            if ($scanning) {
+                $next = $bytes->nextMarker($at, $limit);
+
+                if ($next === null) {
+                    break;
+                }
+
+                $at = $next;
+            }
+
             if ($at >= $limit) {
                 if ($strict && ! $scanning) {
                     return null;
