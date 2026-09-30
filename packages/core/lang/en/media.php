@@ -81,5 +81,6 @@ return [
         'show_label' => 'Show preview of ":title"',
         'private' => 'Private',
         'missing' => 'No file',
+        'trashed' => 'In the trash',
     ],
 ];

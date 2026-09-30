@@ -93,6 +93,14 @@ final class MediaDeletionNotice
         $reported = false;
 
         foreach ($records as $record) {
+            /*
+             * Already in the trash — the trash filter lists live and trashed entries together (ADR-042 decision 31) — and
+             * trashed again, its date would move and an audit row be written, for nothing.
+             */
+            if (method_exists($record, 'trashed') && $record->trashed()) {
+                continue;
+            }
+
             try {
                 if ($record->delete()) {
                     $deleted++;

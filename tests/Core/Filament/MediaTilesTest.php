@@ -232,6 +232,15 @@ describe('a tile', function (): void {
         expect(MediaTileColumn::tileFor(asListed($entry)))->toBe(['kind' => MediaTileColumn::BADGE, 'src' => null, 'label' => 'PDF']);
     })->with(['private' => 'private', 'public' => 'public']);
 
+    /* The trash lists a trashed entry, and the route resolves live ones alone: its tile fetches nothing (decision 31). */
+    it('is a badge saying so for a trashed entry, public or private, with nothing to fetch', function (string $visibility): void {
+        $entry = tiled(TILE_PNG, 'old.png', $this->type, $visibility);
+        $entry->delete();
+
+        expect(MediaTileColumn::tileFor(Entry::withTrashed()->with('mediaFile')->findOrFail($entry->getKey())))
+            ->toBe(['kind' => MediaTileColumn::BADGE, 'src' => null, 'label' => 'In the trash']);
+    })->with(['private' => 'private', 'public' => 'public']);
+
     it('says so for an entry with no file recorded', function (): void {
         $entry = tiled(TILE_PNG, 'gone.png', $this->type);
         DB::table('media_files')->where('entry_id', $entry->getKey())->delete();
