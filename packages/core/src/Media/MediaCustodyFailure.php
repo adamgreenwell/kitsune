@@ -23,7 +23,8 @@ use Throwable;
  * there cannot be told), `matches` (a copy the keeper read as absent is there, and is the one that matches), `aliased`
  * (every disk reads the name as another path), `refused` (every disk refuses the name), `misnamed` (a row's path is not written as the disks read it), `read-through-unclaimed` (an orphan or partial copy on a
  * read-through disk), `unheld` (the disk holds no file under the name a listing gave), `read-through` (custody neither reads nor removes a copy
- * through a read-through disk). The message names the disk and the path the application stores, never a
+ * through a read-through disk), `root` (whether a local disk holds anything cannot be told: its root cannot be looked at,
+ * and its path is `/`). The message names the disk and the path the application stores, never a
  * server path.
  */
 final class MediaCustodyFailure extends RuntimeException
@@ -60,6 +61,9 @@ final class MediaCustodyFailure extends RuntimeException
                     .'name holds a backslash, which the listing gives as a slash, or a link the listing left out, on the file or '
                     .'on a directory above it: remove it by hand if it is still there',
                 'unreadable' => 'it exists and cannot be read',
+                'root' => 'whether the disk holds anything cannot be told, because its root cannot be looked at for a reason other '
+                    .'than its not being there — see that the user running this may search every directory above it (ADR-042 '
+                    .'decision 25)',
                 'matches' => 'it matches the recorded checksum and the copy kept does not — it read as absent a moment before',
                 default => 'whether it exists cannot be told',
             },

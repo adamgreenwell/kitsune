@@ -816,6 +816,61 @@ it('scans no served disk that is, or cannot be told from, a media disk, and buil
 });
 
 /*
+ * Decision 25. A disk whose root cannot be looked at may hold what prune lists — a copy custody could not remove from a
+ * served disk, the one an operator most needs to see, above all — so it is not taken to hold nothing, as one whose root
+ * is not there is (T95): it is not built, which would try to create its root, and the run says it could not be listed,
+ * and fails. A served disk, a disk a row names, and core's own private disk where the private disk points elsewhere.
+ *
+ * ⚠️ A LOOP OF LINKS ON THE WAY TO THE ROOT stands for every refusal that is not an absence: root, which runs this suite
+ * here, cannot see past it, where it ignores a directory's mode. The control is a root that is not there — which a disk
+ * a row names is still built with, and listed, creating it, as before.
+ */
+it('fails a run that cannot look at a disk\'s root, where one whose root is not there holds nothing', function (string $which, bool $looped, bool $force): void {
+    $base = sys_get_temp_dir().'/kitsune-prune-unrooted-'.bin2hex(random_bytes(4));
+    mkdir($base);
+    symlink($base.'/loop', $base.'/loop');
+    $root = $base.($looped ? '/loop/cdn' : '/missing/cdn');
+
+    try {
+        $disk = match ($which) {
+            'served' => (static function () use ($root): string {
+                config(['filesystems.disks.unrooted' => ['driver' => 'local', 'root' => $root, 'url' => 'https://unrooted.example.test']]);
+
+                return 'unrooted';
+            })(),
+            'named by a row' => (function () use ($root): string {
+                config(['filesystems.disks.unrooted' => ['driver' => 'local', 'root' => $root]]);
+                DB::table('media_files')->where('id', storedForPrune($this->imageType)->getKey())->update(['disk' => 'unrooted']);
+
+                return 'unrooted';
+            })(),
+            'core\'s private disk' => (static function () use ($root): string {
+                Storage::fake('host-private');
+                config([
+                    'filesystems.disks.host-private.root' => Storage::disk('host-private')->path(''),
+                    'kitsune.media.disks.private' => 'host-private',
+                    'filesystems.disks.'.MediaDisks::PRIVATE.'.root' => $root,
+                ]);
+
+                return MediaDisks::PRIVATE;
+            })(),
+        };
+
+        $exit = Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []);
+        $output = Artisan::output();
+
+        expect(str_contains($output, "Could not list [{$disk}]: Refusing to go on with [/] on the [{$disk}] disk: whether the disk holds anything cannot be told, because its root cannot be looked at"))->toBe($looped)
+            ->and($output)->not->toContain($base)
+            ->and(file_exists($base.'/missing'))->toBe(! $looped && $which === 'named by a row')
+            ->and($exit)->toBe($looped ? 1 : 0);
+    } finally {
+        exec('rm -rf '.escapeshellarg($base));
+    }
+})->with(['served', 'named by a row', 'core\'s private disk'])
+    ->with(['cannot be looked at' => true, 'the control: not there' => false])
+    ->with(['read-only' => false, 'forced' => true]);
+
+/*
  * T174. A served read-through disk whose half is the public disk reaches the public disk's files, so it cannot be told
  * apart from it, and is not scanned: scanned, it listed the public file as its own extra copy, and removing that removed
  * the public file (review of slice 5c).

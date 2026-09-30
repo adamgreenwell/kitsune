@@ -3285,6 +3285,39 @@ describe('a copy that cannot be read', function (): void {
             ->and($exit)->toBe(1);
     });
 
+    // ...and so is one, where a served disk's root cannot be looked at: it may hold the row's file, so which disks hold it
+    // cannot be told, and a forced run changes nothing — where one whose root is not there holds nothing, and a row where
+    // it belongs is not listed (Adam, decision 25). A loop of links on the way to the root stands for every refusal that
+    // is not an absence: root, which runs this suite here, cannot see past it, where it ignores a directory's mode.
+    it('sends a row to its configuration while a served disk\'s root cannot be looked at', function (bool $looped): void {
+        $base = sys_get_temp_dir().'/kitsune-reconcile-unrooted-'.bin2hex(random_bytes(4));
+        mkdir($base);
+        $this->roots[] = $base;
+        symlink($base.'/loop', $base.'/loop');
+        config(['filesystems.disks.unrooted' => ['driver' => 'local', 'root' => $base.($looped ? '/loop/cdn' : '/missing/cdn'), 'url' => 'https://unrooted.example.test']]);
+        [$id, $path] = reconcileFile('public', ['public' => RECONCILE_PNG]);
+
+        foreach ([[], ['--force' => true]] as $options) {
+            [$exit, $output] = reconcileRun($options);
+
+            if (! $looped) {
+                expect(reconcileLine($output, $id))->toBeNull()
+                    ->and(file_exists($base.'/missing'))->toBeFalse()
+                    ->and($exit)->toBe(0);
+
+                continue;
+            }
+
+            expect(reconcileLine($output, $id))->toContain('Refusing to go on with [/] on the [unrooted] disk: whether the disk holds anything cannot be told, because its root cannot be looked at')
+                ->and(reconcileLine($output, $id))->toStartWith('unknown ')
+                ->and($output)->toContain($options === [] ? 'make the disk reachable, or its configuration whole' : '→ failed')
+                ->and($output)->not->toContain($base)
+                ->and(reconcileHeld($path, ['public']))->toBe(['public' => hash('sha256', RECONCILE_PNG)])
+                ->and(reconcileNamed($id))->toBe('public')
+                ->and($exit)->toBe(1);
+        }
+    })->with(['cannot be looked at' => true, 'the control: not there' => false]);
+
     // ...but not one whose root exists, with the prefix below it missing: Flysystem creates nothing, the disk is built,
     // and it holds nothing — whatever the root's mode (review of slice 5c).
     it('builds a local disk whose root exists though its prefix below it does not', function (bool $scoped): void {

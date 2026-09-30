@@ -164,12 +164,13 @@ final class MediaUpload
             /*
              * ⚠️ A STAGED FILE THAT IS NOT THERE IS REFUSED, NEVER BY PATH — `store()`'s own refusal of an unreadable
              * file names the absolute path. Livewire does not check its own writes: on a full disk the file's write
-             * answers false and the endpoint signs the empty path (decision 4's *What this costs*), so the upload
-             * arrives named for Livewire's staging directory, with no sidecar there, and is refused unnamed; the
-             * sidecar Livewire wrote first, and any bytes that fitted, are not that file, and are left to the intake
-             * sweep. Without a sidecar that names it — gone, empty or unreadable — an upload has no name at all, and
-             * Livewire would make one up from its staging directory's; a file whose bytes went while its sidecar
-             * stayed is refused by that name.
+             * answers false and the endpoint signs the empty path (decision 4's *What this costs*). The staging gate now
+             * refuses that at staging (`GuardUploadStaging`, decision 18), so the editor is told before submitting; one
+             * that arrives here all the same — a submit built by hand — is named for Livewire's staging directory, with
+             * no sidecar there, and is refused unnamed; the sidecar Livewire wrote first, and any bytes that fitted, are
+             * not that file, and are left to the intake sweep. Without a sidecar that names it — gone, empty or
+             * unreadable — an upload has no name at all, and Livewire would make one up from its staging directory's; a
+             * file whose bytes went while its sidecar stayed is refused by that name.
              */
             if ($name === null || ! is_file($file->getRealPath())) {
                 return ['name' => $name, 'outcome' => self::REFUSED, 'reason' => __('kitsune::media.upload.incomplete')];

@@ -435,7 +435,15 @@ final class MediaDisks
      * configuration holds, so a root left unset — an optional disk whose environment variable is empty — throws when the
      * disk is built. Such a disk holds nothing, and asking it would stop whatever asked.
      *
+     * ⚠️ A ROOT THAT CANNOT BE LOOKED AT FAILS THE STEP — Adam, decision 25, 2026-09-30. `is_dir()` answered false for a
+     * root the volume refused to stat — a directory above it the user may not search, an I/O error, a network mount
+     * reconnecting — as for one that is not there, so every step that asks left that disk out: a trash, an erasure and a
+     * withdrawal among them, and a served disk still holding a trashed file was taken to hold nothing. Absence is read as
+     * the volume says it (`MediaBytes::statOf()`, slice 5c's rule for a name); anything else is refused, and the step
+     * stops with nothing done, until the root can be looked at.
+     *
      * @throws RuntimeException for a disk that is not configured
+     * @throws MediaCustodyFailure `root`, for a local disk whose root the volume will not say is there or not
      */
     public static function mayHold(Repository $config, string $disk): bool
     {
@@ -447,7 +455,19 @@ final class MediaDisks
         }
 
         if ($resolved['driver'] === 'local') {
-            return $resolved['root'] !== null && is_dir($resolved['root']);
+            if ($resolved['root'] === null) {
+                return false;
+            }
+
+            try {
+                // Without the slash a resolved root ends in, which would refuse a file where the root should be as unknown
+                // (ENOTDIR) rather than say it is there and no directory.
+                $stat = MediaBytes::statOf($disk, '/', '/'.trim($resolved['root'], '/'));
+            } catch (MediaCustodyFailure) {
+                throw new MediaCustodyFailure('root', $disk, '/');
+            }
+
+            return $stat !== null && ($stat['mode'] & 0170000) === 0040000;
         }
 
         return true;

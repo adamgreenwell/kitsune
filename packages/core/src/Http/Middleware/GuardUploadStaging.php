@@ -16,12 +16,18 @@ use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\Guard;
 use Illuminate\Contracts\Validation\Factory as ValidationFactory;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Session\Middleware\AuthenticateSession;
+use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaStaging;
+use Livewire\Features\SupportFileUploads\FileUploadConfiguration;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 
@@ -46,6 +52,10 @@ final class GuardUploadStaging
 
     public const MALFORMED = 'Refusing this upload: it must arrive as a list of files.';
 
+    /** What a file the intake disk did not store is answered with — ADR-042 decision 18. */
+    public const NOT_STORED = 'This file was not uploaded: the server could not store it. Try again, and tell whoever '
+        .'runs this site if it happens again.';
+
     public function handle(Request $request, Closure $next): Response
     {
         if (! Permissions::mayStageUploads(self::user($request))) {
@@ -65,16 +75,77 @@ final class GuardUploadStaging
 
         $response = $next($request);
 
-        if ($response->isSuccessful()) {
-            // A sweep that fails is reported, never thrown: the upload it follows has already been accepted.
-            try {
-                MediaStaging::sweep();
-            } catch (Throwable $failed) {
-                report($failed);
+        if (! $response->isSuccessful()) {
+            return $response;
+        }
+
+        /*
+         * A sweep that fails is reported, never thrown: the upload it follows has already been accepted. It runs when a
+         * write failed too, which is when the space it frees matters.
+         */
+        try {
+            MediaStaging::sweep();
+        } catch (Throwable $failed) {
+            report($failed);
+        }
+
+        return self::refusingWhatWasNotStored($response);
+    }
+
+    /**
+     * The endpoint's answer, or a refusal of every file it answered for but did not store — ADR-042 decision 18.
+     *
+     * ⚠️ LIVEWIRE DOES NOT CHECK ITS OWN WRITES. On a full disk its `storeAs()` answers false, the endpoint signs the empty
+     * path, and answers 200: FilePond showed the file as uploaded, and the editor found out only when they submitted
+     * (decision 4's *What this costs*). So each path it signed is asked of the intake disk here, and a file that is not
+     * there is refused in Livewire's own shape — 422, keyed `files.N` — which Livewire raises on the field as it raises
+     * the endpoint rule's refusals, before anything is submitted.
+     *
+     * ⚠️ AND WHAT IT DID STORE FOR THAT REQUEST IS REMOVED, file and sidecar: the browser is told the upload failed and will
+     * never ask for it, and a disk short of space is the last place to leave it for the sweep. A sidecar written for a file
+     * whose own write failed has no name the answer carries, and stays for the sweep, as it did. The failure is reported,
+     * because an operator has a disk to see to.
+     */
+    private static function refusingWhatWasNotStored(Response $response): Response
+    {
+        $paths = $response instanceof JsonResponse ? ($response->getData(true)['paths'] ?? null) : null;
+
+        if (! is_array($paths) || ! array_is_list($paths)) {
+            return $response;
+        }
+
+        $disk = Storage::disk(MediaDisks::INTAKE);
+        $stored = [];
+        $errors = [];
+
+        foreach ($paths as $index => $signed) {
+            $path = is_string($signed) ? TemporaryUploadedFile::extractPathFromSignedPath($signed) : false;
+            $staged = is_string($path) && $path !== '' ? FileUploadConfiguration::path($path, false) : null;
+
+            if ($staged !== null && $disk->exists($staged)) {
+                $stored[] = $staged;
+            } else {
+                $errors["files.{$index}"] = [self::NOT_STORED];
             }
         }
 
-        return $response;
+        if ($errors === []) {
+            return $response;
+        }
+
+        foreach ($stored as $staged) {
+            $disk->delete([$staged, $staged.'.json']);
+        }
+
+        report(new RuntimeException(sprintf(
+            'The intake disk [%s] did not store %d of the %d files one upload staged, and the upload was refused. Check '
+            .'that the disk has space and that PHP may write to it (ADR-042 decision 18).',
+            MediaDisks::INTAKE,
+            count($errors),
+            count($paths),
+        )));
+
+        return response()->json(['message' => self::NOT_STORED, 'errors' => $errors], 422);
     }
 
     /**

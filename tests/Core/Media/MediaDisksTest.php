@@ -12,6 +12,7 @@ use Illuminate\Config\Repository;
 use Illuminate\Filesystem\FilesystemServiceProvider;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\KitsuneServiceProvider;
+use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 
@@ -917,4 +918,61 @@ describe('unsafe and coinciding media disks', function (): void {
         expect(fn () => MediaDisks::refuseCoincidingMediaDisks(config(), 'public', 'scoped-public'))
             ->toThrow(RuntimeException::class, 'share their media/ directory');
     });
+});
+
+/*
+ * Whether a local disk can hold anything, from its root — ADR-042 decision 25.
+ *
+ * ⚠️ A LOOP OF LINKS ON THE WAY TO THE ROOT, which refuses a stat for a reason other than absence — ELOOP — as surely as
+ * a directory above it the user may not search, and which root, running this suite here, cannot see past, where it
+ * ignores a directory's mode; that case runs too wherever the suite is not root. Every refusal has its controls: a root
+ * not there, a file where it should be, and a root that is there.
+ */
+describe('whether a local disk can hold anything', function (): void {
+    beforeEach(function (): void {
+        $this->base = sys_get_temp_dir().'/kitsune-may-hold-'.bin2hex(random_bytes(4));
+        mkdir($this->base.'/there', 0777, true);
+        symlink($this->base.'/loop', $this->base.'/loop');
+        file_put_contents($this->base.'/file', 'a file');
+    });
+
+    afterEach(function (): void {
+        exec('chmod -R u+rwx '.escapeshellarg($this->base).' 2>/dev/null; rm -rf '.escapeshellarg($this->base));
+    });
+
+    it('refuses to say for a root that cannot be looked at, naming the disk and not the server path', function (string $under): void {
+        config(['filesystems.disks.unrooted' => ['driver' => 'local', 'root' => $this->base.$under]]);
+
+        expect(fn () => MediaDisks::mayHold(config(), 'unrooted'))->toThrow(function (MediaCustodyFailure $failure): void {
+            expect($failure->reason)->toBe('root')
+                ->and($failure->getMessage())->toStartWith('Refusing to go on with [/] on the [unrooted] disk: whether the disk holds anything cannot be told, because its root cannot be looked at')
+                ->and($failure->getMessage())->toContain('ADR-042 decision 25')
+                ->and($failure->getMessage())->not->toContain($this->base);
+        });
+    })->with(['a loop as its root' => ['/loop'], 'a loop above it' => ['/loop/cdn']]);
+
+    it('refuses to say for a root below a directory it may not search', function (): void {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            test()->markTestSkipped('root ignores a directory\'s mode');
+        }
+
+        mkdir($this->base.'/sealed/cdn', 0777, true);
+        chmod($this->base.'/sealed', 0666);
+        config(['filesystems.disks.unrooted' => ['driver' => 'local', 'root' => $this->base.'/sealed/cdn']]);
+
+        expect(fn () => MediaDisks::mayHold(config(), 'unrooted'))->toThrow(MediaCustodyFailure::class, 'its root cannot be looked at');
+    });
+
+    it('says a disk holds nothing where its root is not there, or is no directory, and may hold where it is', function (string $under, bool $holds): void {
+        config(['filesystems.disks.rooted' => ['driver' => 'local', 'root' => $this->base.$under]]);
+
+        expect(MediaDisks::mayHold(config(), 'rooted'))->toBe($holds);
+    })->with([
+        'not there' => ['/missing', false],
+        'below a directory not there' => ['/missing/cdn', false],
+        'a file where it should be' => ['/file', false],
+        'below a file' => ['/file/cdn', false],
+        'there' => ['/there', true],
+        'there, written with a trailing slash' => ['/there/', true],
+    ]);
 });
