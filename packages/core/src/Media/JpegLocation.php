@@ -681,10 +681,13 @@ final class JpegLocation
         $names = false;
 
         foreach ($chunks as [, $payload, $end]) {
-            $text = $carry.str_replace("\0", '', $bytes->read($payload + self::EXTENDED_HEADER, $end - $payload - self::EXTENDED_HEADER));
+            $text = $carry.$bytes->read($payload + self::EXTENDED_HEADER, $end - $payload - self::EXTENDED_HEADER);
+            // Matched as a reader decodes it, references and all (Codex, #164); the carry is raw, so a reference split
+            // between two chunks is whole when it is decoded.
+            $read = XmpLocation::decoded($text);
 
-            if (XmpLocation::matches('/[<:][A-Za-z0-9_.\-]*(?:gps|latitude|longitude|longtitude)|[>"\'\s]\/9j\//i', $text) === 1
-                || str_contains($text, 'www.dji.com/drone-dji') || str_contains($text, 'developer.sonyericsson.com/cell')) {
+            if (XmpLocation::matches('/[<:][A-Za-z0-9_.\-]*(?:gps|latitude|longitude|longtitude)|[>"\'\s]\/9j\//i', $read) === 1
+                || str_contains($read, 'www.dji.com/drone-dji') || str_contains($read, 'developer.sonyericsson.com/cell')) {
                 $names = true;
 
                 break;

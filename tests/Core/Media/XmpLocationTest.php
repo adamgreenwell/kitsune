@@ -69,6 +69,10 @@ it('blanks each form of a GPS property, the packet keeping its length', function
     'a vendor\'s name in lower case' => ['<rdf:Description rdf:about="" xmlns:v="urn:vendor" v:gpsTrack="SENTINEL-V"/>'],
     'an embedded image' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/"><g:Data>/9j/SENTINEL-IMAGE</g:Data></rdf:Description>'],
     'an embedded image as an attribute' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/" g:Data="/9j/SENTINEL-ATTR-IMAGE"/>'],
+    // As an XML reader reads them, references decoded (Codex, #164).
+    'an embedded image written with a character reference' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/"><g:Data>&#47;9j/SENTINEL-REF-IMAGE</g:Data></rdf:Description>'],
+    'an embedded image as an attribute, with a hexadecimal reference' => ['<rdf:Description rdf:about="" xmlns:g="http://ns.google.com/photos/1.0/image/" g:Data="&#x2F;9j/SENTINEL-HEX-IMAGE"/>'],
+    'a drone\'s namespace written with a reference' => ['<rdf:Description rdf:about="" xmlns:d="http://www.dji.com&#47;drone-dji/1.0/" d:AbsoluteAltitude="SENTINEL-REF-DJI"/>'],
     'two location attributes sharing a local name' => ['<rdf:Description rdf:about="" '.XMP_EXIF.' xmlns:v="urn:vendor" exif:GPSLatitude="SENTINEL-ONE" v:GPSLatitude="SENTINEL-TWO"/>'],
 ]);
 

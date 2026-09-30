@@ -262,6 +262,13 @@ it('zeroes extended XMP holding a drone\'s properties alone', function (): void 
     expect(J::sentinels($out))->toBe([])->and(strlen($out))->toBe(strlen($in));
 });
 
+it('zeroes extended XMP embedding an image written with a character reference', function (): void {
+    $in = J::jpeg(J::extended('<GImage:Data>&#47;9j/SENTINEL-EXT-REF</GImage:Data>', str_repeat('R', 32)));
+    [$out] = jpegStripped($in);
+
+    expect(J::sentinels($out))->toBe([])->and(strlen($out))->toBe(strlen($in));
+});
+
 it('zeroes extended XMP embedding an image, rather than decoding it to ask', function (): void {
     $in = J::jpeg(J::extended('<GImage:Data>'.base64_encode(J::base()).'</GImage:Data>', str_repeat('C', 32)));
     [$out] = jpegStripped($in);

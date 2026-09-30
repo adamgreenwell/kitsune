@@ -64,7 +64,8 @@ final class XmpLocation
      */
     public static function edits(string $payload, ?LocationBudget $budget = null): array
     {
-        if (self::matches(self::MENTIONS, str_replace("\0", '', $payload)) === 0) {
+        // As a reader reads it: `&#47;9j/` is `/9j/`, and a namespace's URI may be written with references too (Codex, #164).
+        if (self::matches(self::MENTIONS, self::decoded($payload)) === 0) {
             return [];
         }
 
@@ -108,6 +109,12 @@ final class XmpLocation
             static fn (array $range): array => [$first + $range[0], str_repeat(' ', $range[1] - $range[0]), false],
             $ranges,
         );
+    }
+
+    /** Text as an XML reader sees it for matching: its NULs dropped and its character and entity references decoded. */
+    public static function decoded(string $text): string
+    {
+        return html_entity_decode(str_replace("\0", '', $text), ENT_XML1 | ENT_QUOTES, 'UTF-8');
     }
 
     /** Whether a property in `$namespace` called `$local` is location. */

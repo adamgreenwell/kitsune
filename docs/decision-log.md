@@ -5503,10 +5503,10 @@ arrives as Livewire's own "failed to upload".
 >   - *EXIF.* Every directory a reader follows — IFD0 and its chain, the EXIF and interoperability directories, SubIFDs,
 >     each pointer read as the most forgiving reader reads it, whatever its type — loses its GPS pointer, and the GPS
 >     directory and every value it names are overwritten with zeros.
->   - *XMP.* A packet mentioning location loses each property named for GPS, latitude or longitude in any namespace — an
->     exposure's `ISOSpeedLatitude` aside — everything in a drone's (`drone-dji`) and a phone's cell-tower namespace,
->     and any image it embeds as base64: blanked with spaces, then read by libxml as it was with them removed and as
->     blanked, which must be one document.
+>   - *XMP.* A packet mentioning location — its character references decoded first, as a reader reads it (Codex, #164) —
+>     loses each property named for GPS, latitude or longitude in any namespace — an exposure's `ISOSpeedLatitude` aside
+>     — everything in a drone's (`drone-dji`) and a phone's cell-tower namespace, and any image it embeds as base64:
+>     blanked with spaces, then read by libxml as it was with them removed and as blanked, which must be one document.
 >   - *The copies.* The EXIF thumbnail's own block, a preview's, the images after the picture — a gain map, a stereo
 >     pair's other frame — a block split over segments, XMP kept in EXIF (0x02BC), Photoshop's copies (0x0422, 0x0424)
 >     and XMP under ExifTool's other headers. Extended XMP naming location or embedding an image is zeroed whole, its
@@ -6889,8 +6889,8 @@ When it lands:
 > and neither action, `restore` and `forceDelete` asked of another permission in turn.
 
 > ⚠️ **Amended 2026-09-30 — decision 30 landed, for a file stored public**, and each guard was removed in turn and its
-> test watched fail, beside a run of the same tests passing unmutated: 101 mutations, 97 in the PHP suite and four in
-> the browser, of which 98 were caught. By family:
+> test watched fail, beside a run of the same tests passing unmutated: 103 mutations, 99 in the PHP suite and four in
+> the browser, of which 100 were caught. By family:
 > - **EXIF** (25: `ExifLocationTest`, both byte orders) — the pointer unlinked, the entries after it moved up, the count
 >   dropped and the freed bytes zeroed; the GPS directory and its values zeroed, and no further than the block; every
 >   directory a reader follows — the next chain, the EXIF and interoperability directories, one SubIFD and a list of
@@ -6898,13 +6898,13 @@ When it lands:
 >   that move, refused, and damage where a pointer is; the directory cap, each directory queued once; the three spends
 >   of the budget; XMP kept in EXIF; and a pointer to a directory walked as another, dropped where it holds no GPS tag
 >   and refused where it does.
-> - **XMP** (20: `XmpLocationTest`, 17 caught) — the attribute, element and empty-element forms blanked; the drone and
+> - **XMP** (21: `XmpLocationTest`, 18 caught) — the attribute, element and empty-element forms blanked; the drone and
 >   cell-tower namespaces; the name rule's case, its exposure latitude and its want of *location*; the mentions filter
 >   and its NULs; the UTF-8 check; the audit, and a pattern's failure never read as no match; an embedded image; the
 >   attributes pruned as a list; the attribute and packet budgets; and the blanking itself. Three survive, as defence in
 >   depth: the tokenizer's own refusal of a mismatched end tag, an undeclared prefix and a DTD, each of which libxml's
 >   audit refuses in its place.
-> - **The walk, the blocks and the sweep** (30: `JpegLocationTest`) — stray bytes, fill, and scan data skipped by PCRE
+> - **The walk, the blocks and the sweep** (31: `JpegLocationTest`) — stray bytes, fill, and scan data skipped by PCRE
 >   in bounded time; a JPEG after the picture walked strictly; the picture's own segments, JFIF's and ISO gain-map
 >   metadata never written; the segment budget; EXIF in capitals, and a block split over segments; extended XMP's
 >   detection, its carry across chunks, its identifier zeroed with it, a clean one kept and a drone's zeroed; ExifTool's
