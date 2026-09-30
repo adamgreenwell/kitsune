@@ -205,7 +205,8 @@ it('strips Photoshop\'s copies of EXIF and XMP, in one segment or two, and keeps
 })->with(['one segment' => [false], 'two' => [true]]);
 
 it('zeroes extended XMP naming GPS, across its chunks, identifier and all, and leaves another alone', function (): void {
-    $named = J::extended(str_repeat(' ', 45).'<exif:GPSLatitude>SENTINEL-EXT</exif:GPSLatitude>', str_repeat('A', 32));
+    // The one name is split between the first chunk and the second, and is whole in neither: `<v:Longi` and `tude/>`.
+    $named = J::extended(str_repeat(' ', 52).'<v:Longitude/>SENTINEL-EXT', str_repeat('A', 32));
     $other = J::extended('<dc:title>kept</dc:title>', str_repeat('B', 32));
     $in = J::jpeg([J::xmp(J::packet('<rdf:Description rdf:about=""/>')), ...$named, ...$other]);
     [$out] = jpegStripped($in);
