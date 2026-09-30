@@ -40,18 +40,12 @@ return new class extends Migration
         }
     }
 
-    /** Only the list this wrote, and only where it is still that list. */
-    public function down(): void
-    {
-        foreach ($this->imageTypes() as $id => $settings) {
-            if (($settings[self::ACCEPTS] ?? null) !== self::IMAGES) {
-                continue;
-            }
-
-            unset($settings[self::ACCEPTS]);
-            DB::table('entry_types')->where('id', $id)->update(['settings' => $settings === [] ? null : json_encode($settings)]);
-        }
-    }
+    /**
+     * ⚠️ NOTHING — review of #162. A list this wrote and one someone had already chosen, the images alone, read the same,
+     * so taking it back would take an operator's choice with it and widen their type to every format. Left, it narrows
+     * the type as it did, and code rolled back past decision 33 reads no list at all.
+     */
+    public function down(): void {}
 
     /** @return array<int, array<string, mixed>> each global `image` media type's settings, by id */
     private function imageTypes(): array

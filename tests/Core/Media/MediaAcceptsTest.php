@@ -251,12 +251,9 @@ describe('the migration naming the image type\'s', function (): void {
             ->and(settingsOf($chosen->id))->toBeNull()
             ->and(settingsOf($notMedia->id))->toBeNull();
 
-        // Run again, it changes nothing; and down takes back only the list it wrote, keeping the rest.
+        // Run again, it changes nothing.
         acceptsMigration()->up();
         expect(settingsOf($global->id))->toBe(['keep' => 1, MediaFormats::SETTING => MediaFormats::IMAGES]);
-
-        acceptsMigration()->down();
-        expect(settingsOf($global->id))->toBe(['keep' => 1]);
     });
 
     it('leaves a global image type that holds no media as it is', function (): void {
@@ -277,13 +274,24 @@ describe('the migration naming the image type\'s', function (): void {
         expect(settingsOf($global->id))->toBe([MediaFormats::SETTING => ['png']]);
     });
 
-    it('writes images to a global image type with no settings, and down leaves it with none', function (): void {
+    it('writes images to a global image type with no settings', function (): void {
         $global = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true]);
 
         acceptsMigration()->up();
-        expect(settingsOf($global->id))->toBe([MediaFormats::SETTING => MediaFormats::IMAGES]);
 
+        expect(settingsOf($global->id))->toBe([MediaFormats::SETTING => MediaFormats::IMAGES]);
+    });
+
+    /*
+     * ⚠️ DOWN CHANGES NOTHING — review of #162. The images alone, chosen before the migration ran, read as the list it
+     * would have written: taking back "its own" took an operator's choice, and widened their type to every format.
+     */
+    it('changes nothing on the way down, a list chosen before it ran as the images alone included', function (): void {
+        $chosen = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true, 'settings' => [MediaFormats::SETTING => MediaFormats::IMAGES]]);
+
+        acceptsMigration()->up();
         acceptsMigration()->down();
-        expect(settingsOf($global->id))->toBeNull();
+
+        expect(settingsOf($chosen->id))->toBe([MediaFormats::SETTING => MediaFormats::IMAGES]);
     });
 });

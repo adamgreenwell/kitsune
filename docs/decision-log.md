@@ -5440,8 +5440,10 @@ arrives as Livewire's own "failed to upload".
 >   rest of it as it was. A type that holds no media shows no list, and its settings are not touched.
 > - **`image`, images alone.** The skeleton seeds it so, and a migration (`…000011`) names the images for an
 >   installation's global `image` media type that names nothing yet — no org's admin can edit a global type, and
->   `deploy/release.sh` never seeds. An org's own types, and a list already chosen, are left as they are; its `down`
->   takes back only the list it wrote.
+>   `deploy/release.sh` never seeds. An org's own types, and a list already chosen, are left as they are. Its `down`
+>   changes nothing: the images alone, chosen before it ran, read as the list it writes, so taking "its own" back
+>   would take an operator's choice and widen their type to every format; left, the list narrows the type as it did,
+>   and code rolled back past this decision reads none (Codex, #162).
 > - **Defaults taken, for Adam to overrule.**
 >   - A type names formats, not extensions and not families: "JPEG", never `.jpg` and `.jpeg` apart, and never "images"
 >     as one choice.
@@ -6688,7 +6690,7 @@ When it lands:
 > fails — a staging directory that cannot be created, a web server's or PHP's upload limit — as decision 7 records.
 
 > ⚠️ **Amended 2026-09-30 — decision 33 landed**, and each guard was removed in turn and its test watched fail, beside a
-> run of the same tests passing unmutated: 36 mutations, 31 in the PHP suite and five in the browser. By family:
+> run of the same tests passing unmutated: 35 mutations, 30 in the PHP suite and five in the browser. By family:
 > - **The formats** (8: `MediaAcceptsTest`) — every extension `MediaIntake` accepts one format's, JPEG's two included;
 >   the images `MediaIntake`'s images, SVG among them; named in their own order; a CSV told to the browser as a CSV; and
 >   a list refused where it is empty, keyed, holds something that is not a format, or names one twice.
@@ -6703,9 +6705,9 @@ When it lands:
 > - **The form** (7: `EntryTypeAcceptsTest`) — filled from the settings, every format where none is named and none where
 >   the list cannot be read; saved in the formats' own order, every one ticked leaving the key out, the rest of
 >   `settings` kept, and nothing written for a type that holds no media or a form that showed no list.
-> - **The migration** (6: `MediaAcceptsTest`) — the global `image` media type alone, not an org's, another global
->   type's or one that holds no media; a list already chosen kept on the way up and down; and `down` taking back only
->   its own, leaving no settings where there were none.
+> - **The migration** (5: `MediaAcceptsTest`) — the global `image` media type alone, not an org's, another global
+>   type's or one that holds no media; a list already chosen kept on the way up; and `down` changing nothing, the
+>   images alone chosen before it ran among what it keeps (Codex, #162).
 >
 > In the browser, `entity-type-builder.spec.js` (4) — a media type's formats chosen on its create page, where the list
 > appears once *Holds media* is on, changed on its edit page, and every one ticked saved as none named, where an
