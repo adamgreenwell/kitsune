@@ -5275,8 +5275,8 @@ automatically waits for the measurement below.
 >   last changed, with View and Edit. It searches, sorts by title or by when it changed, selects and pages as the table
 >   did. Every other type's list is the table it was.
 > - **The helper is `MediaDelivery::adminUrlForFile()`.** A direct URL on `APP_URL`'s origin — its scheme, host and
->   port, compared as a browser compares them, so the host in any case and a default port written or not — is given as
->   its path; the route that authorises first as the path the router builds. `urlFor()` and `urlForFile()` stay
+>   port, compared as a browser compares them, so the host in any case, a default port written or not, and a URL with no
+>   scheme read with `APP_URL`'s (Codex, #159) — is given as its path; the route that authorises first as the path the router builds. `urlFor()` and `urlForFile()` stay
 >   absolute. In the browser suite, where `APP_URL` is `http://localhost` and the admin is served at `127.0.0.1:8125`,
 >   a public tile's request goes to the page's own origin and is answered.
 > - **The File section's *Open file* uses it too.** Decision 16 named `APP_URL`'s host only until this helper existed.
@@ -6482,10 +6482,11 @@ When it lands:
 > (decision 1 records it; that command reports what it leaves).
 
 > ⚠️ **Amended 2026-09-30 — decision 6 landed**, and each guard was removed in turn and its test watched fail, beside a
-> run of the same tests passing unmutated: 16 mutations, 14 in the PHP suite and two in the browser. By family:
-> - **The admin's URL** (6: `MediaTilesTest`) — a direct URL made a path on `APP_URL`'s origin, and kept whole on
->   another: the host compared in any case, a default port written or not, the scheme compared, and a host `APP_URL`'s
->   name ends in kept apart; the route as a path; `urlFor()` absolute beside both.
+> run of the same tests passing unmutated: 17 mutations, 15 in the PHP suite and two in the browser. By family:
+> - **The admin's URL** (7: `MediaTilesTest`) — a direct URL made a path on `APP_URL`'s origin, and kept whole on
+>   another: the host compared in any case, a default port written or not, the scheme compared, a URL with no scheme
+>   read with `APP_URL`'s (Codex, #159), and a host `APP_URL`'s name ends in kept apart; the route as a path; `urlFor()`
+>   absolute beside both.
 > - **The tile** (4: `MediaTilesTest`) — its kind by how the file is served rather than its visibility; only the
 >   `INLINE` types drawn; a deferred tile's one image inside its `<template>`, and its route only in `data-src`.
 > - **The grid** (3: `MediaTilesTest`) — a media list tiled and an article list not; no record link on a card; the

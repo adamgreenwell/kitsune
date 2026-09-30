@@ -139,6 +139,9 @@ describe('the URL the admin loads a file from', function (): void {
         'the default port written out' => ['https://example.test', 'https://example.test:443/storage'],
         'the default port written out on APP_URL' => ['http://example.test:80', 'http://example.test/storage'],
         'APP_URL with a trailing slash' => ['http://example.test/', 'http://example.test/storage'],
+        // A browser reads a URL with no scheme with the page's; the admin page is on APP_URL's scheme (Codex, #159).
+        'a protocol-relative disk URL on APP_URL\'s host' => ['https://example.test', '//example.test/storage'],
+        'a protocol-relative disk URL, on http' => ['http://example.test', '//example.test/storage'],
     ]);
 
     /*
@@ -158,6 +161,8 @@ describe('the URL the admin loads a file from', function (): void {
         'another scheme' => 'https://localhost/storage',
         'another scheme on the same port' => 'https://localhost:80/storage',
         'a host APP_URL\'s ends in' => 'http://notlocalhost/storage',
+        'a protocol-relative CDN' => '//cdn.example.test/media',
+        'protocol-relative on another port' => '//localhost:8080/storage',
     ]);
 
     it('keeps a disk URL that is already a path', function (): void {

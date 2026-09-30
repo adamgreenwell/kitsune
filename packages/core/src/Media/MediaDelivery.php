@@ -143,6 +143,10 @@ final class MediaDelivery
      *
      * An origin is a scheme, a host and a port, compared as a browser compares them: the scheme and host without regard
      * to case, and a port left out read as its scheme's default. A URL with no host is already a path and is kept.
+     *
+     * ⚠️ A URL WITH NO SCHEME TAKES `APP_URL`'s — Codex, #159. A browser reads `//example.test/storage` with the page's
+     * scheme, so on `APP_URL`'s host it is `APP_URL`'s origin; read as no scheme at all, it matched nothing, and the tile
+     * was fetched from `APP_URL`'s host after all.
      */
     private static function onThisOrigin(string $url): string
     {
@@ -153,14 +157,16 @@ final class MediaDelivery
             return $url;
         }
 
-        $origin = static fn (array $parts): string => sprintf(
+        $scheme = strtolower($here['scheme'] ?? '');
+
+        $origin = static fn (array $parts, string $scheme): string => sprintf(
             '%s://%s:%d',
-            $scheme = strtolower($parts['scheme'] ?? ''),
+            $scheme,
             strtolower($parts['host']),
             $parts['port'] ?? ($scheme === 'https' ? 443 : 80),
         );
 
-        if ($origin($here) !== $origin($there)) {
+        if ($origin($here, $scheme) !== $origin($there, strtolower($there['scheme'] ?? $scheme))) {
             return $url;
         }
 
