@@ -6010,9 +6010,10 @@ measurement this entry still owes.
 - **Sweeps.** Every prefix of that photo, and five values of every byte of its EXIF block, in both byte orders, end
   refused or with no GPS pointer a reader finds and the orientation it read — with no PHP error.
 - **Cost at the ceiling.** A 64 MiB JPEG with GPS whose scan data is stuffed as densely as a file can be — `FF 00` in
-  every other byte — strips in about a second: the plan, the copy and the second plan. One whose stuffing is a
-  camera's, in a third of that. Either at 8 MiB of memory against a 128M limit. The file built with the most XMP the
-  budget lets through — 32 packets, each an element with a thousand attributes — in about a second more.
+  every other byte — strips in about a second: the plan, the copy and the second plan. One stuffed an `FF 00` in every
+  eight bytes, far denser than a camera's, in half that. Either at 8 MiB of memory against a 128M limit. The file
+  built with the most XMP the budget lets through — 32 packets, each an element with 1,024 attributes — in under a
+  second.
 
 ### What this costs
 
@@ -6886,6 +6887,49 @@ When it lands:
 > at its URL again, where the trash had taken it off — *Restore*, the bulk action's guard and the row's own link removed
 > in turn; and `permissions.spec.js` (2) — a reader holding `view` and `update` and not `delete` sees a trashed article
 > and neither action, `restore` and `forceDelete` asked of another permission in turn.
+
+> ⚠️ **Amended 2026-09-30 — decision 30 landed, for a file stored public**, and each guard was removed in turn and its
+> test watched fail, beside a run of the same tests passing unmutated: 101 mutations, 97 in the PHP suite and four in
+> the browser, of which 98 were caught. By family:
+> - **EXIF** (25: `ExifLocationTest`, both byte orders) — the pointer unlinked, the entries after it moved up, the count
+>   dropped and the freed bytes zeroed; the GPS directory and its values zeroed, and no further than the block; every
+>   directory a reader follows — the next chain, the EXIF and interoperability directories, one SubIFD and a list of
+>   them — and a pointer read as SHORT, as BYTE and out of line; GPS bytes shared with a claim, or under the entries
+>   that move, refused, and damage where a pointer is; the directory cap, each directory queued once; the three spends
+>   of the budget; XMP kept in EXIF; and a pointer to a directory walked as another, dropped where it holds no GPS tag
+>   and refused where it does.
+> - **XMP** (20: `XmpLocationTest`, 17 caught) — the attribute, element and empty-element forms blanked; the drone and
+>   cell-tower namespaces; the name rule's case, its exposure latitude and its want of *location*; the mentions filter
+>   and its NULs; the UTF-8 check; the audit, and a pattern's failure never read as no match; an embedded image; the
+>   attributes pruned as a list; the attribute and packet budgets; and the blanking itself. Three survive, as defence in
+>   depth: the tokenizer's own refusal of a mismatched end tag, an undeclared prefix and a DTD, each of which libxml's
+>   audit refuses in its place.
+> - **The walk, the blocks and the sweep** (30: `JpegLocationTest`) — stray bytes, fill, and scan data skipped by PCRE
+>   in bounded time; a JPEG after the picture walked strictly; the picture's own segments, JFIF's and ISO gain-map
+>   metadata never written; the segment budget; EXIF in capitals, and a block split over segments; extended XMP's
+>   detection, its carry across chunks, its identifier zeroed with it, a clean one kept and a drone's zeroed; ExifTool's
+>   `<?xpacket` fallback and its thermal-camera precedence; Photoshop's two copies, and its APP13 joined; the sweep
+>   itself, what `blocks()` handled passed over, a block out of place or across its segment refused, the sweep's budget
+>   and a no-length block read a segment at most; the bare `Exif\0` and `XMP\0` identifiers; and the image and block
+>   budgets.
+> - **The plan and the copy** (9: `JpegLocationTest`, `MediaLocationTest`) — an edit inside a zeroed range taken with
+>   it, and any other overlap refused; the copy's checks on order, on length and on lying inside metadata; the copy
+>   planned again; the file given never written; and the windows' overlap, for a pattern and for a needle.
+> - **The library** (6: `MediaLibraryTest`) — the step, run for *public* alone, its copy what is written and removed, a
+>   null left as the upload, and the format asked rather than assumed.
+> - **The seam and the confirmation** (7: `MediaLocationTest`, `MediaUploadTest`) — JPEG alone, the format asked, each
+>   reason's words, a refusal an uploader's, and the confirmation's words, the formats they name and the key they are
+>   read from.
+>
+> In the browser, `media-upload.spec.js` (4) — a public JPEG fetched at `/storage/…` without its GPS data, its length,
+> size and checksum the row's, its picture byte for byte, drawn 8×16, beside a private one opened through the panel byte
+> for byte as uploaded; and the confirmation's words: the step removed, run for private files too, the EXIF block zeroed
+> whole in place of its GPS data, and the old words, each in turn.
+>
+> Three guards mutation found no test could reach were removed rather than kept: the sweep's second cap on a read, the
+> copy's check that an edit ends inside the file — every editable range does — and the plan's filter of edits that
+> change nothing. One read no test can drive is kept and named: `$size` read from a copy whose length cannot change, for
+> decision 32.
 
 ---
 
