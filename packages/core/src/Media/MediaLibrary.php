@@ -58,7 +58,9 @@ final class MediaLibrary
      *                                console command is importing
      * @param  string  $originalName  what the caller called it. Used for the title, never for the location.
      *
-     * @throws MediaRefused for a file, visibility or type the library refuses, in words an uploader is shown (decision 7)
+     * @throws MediaRefused for a file, visibility or type the library refuses — a JPEG stored public whose GPS data
+     *                      cannot be removed with certainty among them (decision 30) — in words an uploader is shown
+     *                      (decision 7)
      * @throws RuntimeException for any other failure, whose message is not for an uploader
      */
     public static function store(
@@ -142,17 +144,18 @@ final class MediaLibrary
         }
 
         /*
-         * ⚠️ SANITISED BEFORE ANY BYTE IS WRITTEN, AND THE ORIGINAL IS NEVER STORED — ADR-041's departure 2.
-         * `rich_text` keeps its pre-sanitisation original in `entry_revisions.unsanitized_values`, a column
-         * `snapshot()` does not expose; a file has no equivalent hiding place, because a stored original is a
-         * file waiting for a delivery path that forgets which one is which. So this rebinds `$source` and
-         * everything downstream reads the sanitised file: the stream, the checksum, the size and the
-         * dimensions. Leaving any one of them on `$absolutePath` writes a row that describes bytes nobody
-         * stored — and `size_bytes` in particular is sent verbatim as `Content-Length`, so a stale one is a
-         * truncated or hanging response for every SVG.
+         * ⚠️ SANITISED OR STRIPPED BEFORE ANY BYTE IS WRITTEN, AND THE ORIGINAL IS NEVER STORED — ADR-041's departure
+         * 2, and Adam's decision 30. `rich_text` keeps its pre-sanitisation original in
+         * `entry_revisions.unsanitized_values`, a column `snapshot()` does not expose; a file has no equivalent hiding
+         * place, because a stored original is a file waiting for a delivery path that forgets which one is which. So
+         * this rebinds `$source` and everything downstream reads the sanitised or stripped file: the stream, the
+         * checksum, the size and the dimensions. Leaving any one of them on `$absolutePath` writes a row that describes
+         * bytes nobody stored — and `size_bytes` in particular is sent verbatim as `Content-Length`, so a stale one is a
+         * truncated or hanging response for every such file.
          */
         $source = $absolutePath;
-        $sanitised = null;
+        /** @var list<string> $temporaries */
+        $temporaries = [];
 
         /*
          * ⚠️ THE `try` OPENS BEFORE THE TEMPORARY EXISTS, AND REVIEW FOUND WHY THAT MATTERS. It used to open
@@ -162,8 +165,8 @@ final class MediaLibrary
          */
         try {
             if (MediaIntake::isGuarded($extension)) {
-                $sanitised = self::sanitisedCopy($absolutePath, $originalName);
-                $source = $sanitised;
+                $source = self::sanitisedCopy($absolutePath, $originalName);
+                $temporaries[] = $source;
                 $size = (int) filesize($source);
 
                 /*
@@ -174,15 +177,37 @@ final class MediaLibrary
                 MediaIntake::refuseIfTooLarge($size, $originalName, MediaIntake::GUARDED_MAX_BYTES);
             }
 
+            /*
+             * ⚠️ A FILE STORED PUBLIC LOSES WHERE IT WAS MADE BEFORE ANY BYTE IS WRITTEN — Adam, ADR-042 decision 30.
+             * After the sanitiser, so what is stripped is what would be stored. `MediaLocation` answers null for a
+             * format it does not strip — every one but JPEG — and for a JPEG with nothing to remove, and `$source` stays
+             * as it was. A private file is never opened for this: it is served only to those who may view it, and
+             * keeps what it was uploaded with.
+             *
+             * ⚠️ NO CEILING RE-CHECK, AND `$size` READ FROM THE COPY ALL THE SAME. The copy is the upload overwritten
+             * where its GPS data was, the same length byte for byte, so it cannot pass a ceiling the upload did not.
+             * `$size` is taken from it so that a strip which ever shortens a file cannot leave the row describing the
+             * original — a read no test can drive while the length cannot change, and ADR-042 says so.
+             */
+            if ($visibility === 'public') {
+                $stripped = MediaLocation::strippedCopy($source, $format, $originalName);
+
+                if ($stripped !== null) {
+                    $temporaries[] = $stripped;
+                    $source = $stripped;
+                    $size = (int) filesize($source);
+                }
+            }
+
             return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId);
         } finally {
             /*
-             * ⚠️ `finally`, SO THE TEMPORARY GOES ON BOTH PATHS. A sanitised copy left in the system temp
-             * directory on every upload is an accumulating artifact of a security boundary, which is the last
+             * ⚠️ `finally`, SO EVERY TEMPORARY GOES ON BOTH PATHS. A sanitised or stripped copy left in the system
+             * temp directory on every upload is an accumulating artifact of a security boundary, which is the last
              * place to leak files.
              */
-            if ($sanitised !== null) {
-                @unlink($sanitised);
+            foreach ($temporaries as $temporary) {
+                @unlink($temporary);
             }
         }
     }
@@ -333,7 +358,7 @@ final class MediaLibrary
      * ⚠️ `tempnam()` IN THE SYSTEM TEMP DIRECTORY, NEVER ON A DISK. Sanitised bytes are not the stored
      * artifact yet — the row write can still fail — and writing them to `local` or `public` first would put a
      * file under `media/` that no row claims and that `kitsune:media-prune` would report as an orphan on every
-     * upload.
+     * upload. `JpegLocation::copyWith()` writes a stripped copy the same way, for the same reason.
      *
      * @throws RuntimeException
      */

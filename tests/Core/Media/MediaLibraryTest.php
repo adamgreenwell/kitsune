@@ -10,9 +10,12 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\JpegLocation;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Media\SanitisesSvg;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -20,6 +23,7 @@ use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\SvgSanitizer\EnshrinedSvgSanitiser;
 
 /*
@@ -440,4 +444,145 @@ it('leaves no temporary behind when the re-check refuses the grown file', functi
         ->and(DB::table('entries')->count())->toBe(0);
 
     app()->forgetInstance(SanitisesSvg::class);
+});
+
+/*
+ * ────────────────────────────────  A JPEG stored public, without where it was made  ────────────────────────────────
+ *
+ * Adam, ADR-042 decision 30. The stripped bytes are the stored ones, so every column describes them as a sanitised
+ * SVG's do; a private file is never opened for it; and nothing of the original is kept anywhere.
+ */
+
+function aLocatedJpeg(string $bytes): string
+{
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    file_put_contents($path, $bytes);
+
+    return $path;
+}
+
+function strippedTemporaries(): int
+{
+    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []);
+}
+
+it('stores a public JPEG without the GPS data it carried, every other byte as uploaded', function (): void {
+    $upload = LocatedJpeg::photo(true);
+    $entry = MediaLibrary::store(aLocatedJpeg($upload), 'photo.jpg', $this->imageType, 'public');
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    $stored = Storage::disk($media->disk)->get($media->path);
+
+    expect(LocatedJpeg::sentinels($stored))->toBe([])
+        ->and(LocatedJpeg::gpsPointers($stored))->toBe(0)
+        ->and(LocatedJpeg::orientationOf($stored))->toBe(6)
+        ->and($stored)->toContain('Kept City')->toEndWith('TRAILER-KEPT')
+        ->and($media->disk)->toBe('public')
+        ->and($media->mime)->toBe('image/jpeg')
+        ->and([$media->width, $media->height])->toBe([16, 8]);
+
+    for ($at = strpos($upload, LocatedJpeg::body()); $at !== false; $at = strpos($upload, LocatedJpeg::body(), $at + 1)) {
+        expect(substr($stored, $at, strlen(LocatedJpeg::body())))->toBe(LocatedJpeg::body());
+    }
+});
+
+it('describes the stripped bytes in every column, not the original', function (): void {
+    $source = aLocatedJpeg(LocatedJpeg::photo(false));
+    $entry = MediaLibrary::store($source, 'photo.jpg', $this->imageType, 'public');
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    $stored = Storage::disk($media->disk)->get($media->path);
+
+    expect($media->size_bytes)->toBe(strlen($stored))
+        ->and($media->size_bytes)->toBe(filesize($source))
+        ->and($media->checksum)->toBe(hash('sha256', $stored))
+        ->and($media->checksum)->not->toBe(hash_file('sha256', $source));
+});
+
+it('keeps a private JPEG byte for byte, never opening it for this', function (): void {
+    $source = aLocatedJpeg(LocatedJpeg::photo(true));
+    $entry = MediaLibrary::store($source, 'photo.jpg', $this->imageType);
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    expect($media->checksum)->toBe(hash_file('sha256', $source))
+        ->and(Storage::disk($media->disk)->get($media->path))->toBe(LocatedJpeg::photo(true));
+});
+
+it('keeps a public JPEG with nothing to remove byte for byte, and makes no temporary', function (): void {
+    $before = strippedTemporaries();
+    $entry = MediaLibrary::store(aLocatedJpeg(LocatedJpeg::base()), 'plain.jpg', $this->imageType, 'public');
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    expect($media->checksum)->toBe(hash('sha256', LocatedJpeg::base()))
+        ->and(strippedTemporaries())->toBe($before);
+});
+
+it('still sanitises a public SVG, which is not stripped', function (): void {
+    withSvgSanitiser();
+
+    $entry = MediaLibrary::store(hostileSvg(), 'logo.svg', $this->imageType, 'public');
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    expect(strtolower(Storage::disk($media->disk)->get($media->path)))->not->toContain('<script');
+
+    app()->forgetInstance(SanitisesSvg::class);
+});
+
+it('keeps no copy of the original on any disk', function (): void {
+    MediaLibrary::store(aLocatedJpeg(LocatedJpeg::photo(true)), 'photo.jpg', $this->imageType, 'public');
+
+    foreach (['public', MediaDisks::PRIVATE] as $disk) {
+        foreach (Storage::disk($disk)->allFiles() as $file) {
+            expect(LocatedJpeg::sentinels(Storage::disk($disk)->get($file)))->toBe([]);
+        }
+    }
+});
+
+it('leaves no stripped temporary behind, on success, on a refusal and on a failed row write', function (): void {
+    $before = strippedTemporaries();
+
+    MediaLibrary::store(aLocatedJpeg(LocatedJpeg::photo(true)), 'photo.jpg', $this->imageType, 'public');
+    expect(fn () => MediaLibrary::store(aLocatedJpeg(LocatedJpeg::unremovable()), 'shared.jpg', $this->imageType, 'public'))
+        ->toThrow(MediaRefused::class);
+
+    Entry::creating(function (): void {
+        throw new RuntimeException('row write failed, for the sake of argument');
+    });
+
+    expect(fn () => MediaLibrary::store(aLocatedJpeg(LocatedJpeg::photo(true)), 'doomed.jpg', $this->imageType, 'public'))
+        ->toThrow(RuntimeException::class, 'for the sake of argument');
+
+    expect(strippedTemporaries())->toBe($before);
+});
+
+it('refuses a public JPEG whose GPS data cannot be removed with certainty, and writes nothing', function (): void {
+    expect(fn () => MediaLibrary::store(aLocatedJpeg(LocatedJpeg::unremovable()), 'shared.jpg', $this->imageType, 'public'))
+        ->toThrow(MediaRefused::class, 'Refusing [shared.jpg] as public: its GPS data shares bytes with other EXIF data');
+
+    expect(DB::table('entries')->count())->toBe(0)
+        ->and(DB::table('media_files')->count())->toBe(0)
+        ->and(Storage::disk('public')->allFiles('media'))->toBe([])
+        ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles('media'))->toBe([]);
+
+    // Private, the same file is stored as it was uploaded.
+    $entry = MediaLibrary::store(aLocatedJpeg(LocatedJpeg::unremovable()), 'shared.jpg', $this->imageType);
+
+    expect(MediaFile::query()->where('entry_id', $entry->getKey())->value('checksum'))->toBe(hash('sha256', LocatedJpeg::unremovable()));
+});
+
+it('refuses by the type\'s own formats before it strips anything', function (): void {
+    $this->imageType->update(['settings' => [MediaFormats::SETTING => ['png']]]);
+    $before = strippedTemporaries();
+
+    expect(fn () => MediaLibrary::store(aLocatedJpeg(LocatedJpeg::unremovable()), 'shared.jpg', $this->imageType, 'public'))
+        ->toThrow(MediaRefused::class, 'takes only PNG files');
+
+    expect(strippedTemporaries())->toBe($before);
+});
+
+/* Decision 32 will strip a stored file as it is made public: a file stripped once strips to itself, checksum and all. */
+it('stores the same checksum when a stripped file is stored public again', function (): void {
+    $first = MediaLibrary::store(aLocatedJpeg(LocatedJpeg::photo(true)), 'photo.jpg', $this->imageType, 'public');
+    $stored = MediaFile::query()->where('entry_id', $first->getKey())->firstOrFail();
+    $again = MediaLibrary::store(aLocatedJpeg(Storage::disk('public')->get($stored->path)), 'again.jpg', $this->imageType, 'public');
+
+    expect(MediaFile::query()->where('entry_id', $again->getKey())->value('checksum'))->toBe($stored->checksum);
 });
