@@ -140,6 +140,39 @@ it('removes a GPS pointer of any type a reader follows, and what it names', func
         ->and(substr($stripped, 8, 2))->toBe(J::u16($little, 0));
 })->with('byte orders')->with(['SLONG' => [9, 1], 'four UNDEFINED bytes' => [7, 4], 'IFD' => [13, 1]]);
 
+it('follows an EXIF directory pointer held out of line, as PHP\'s reader follows one', function (bool $little): void {
+    // Two LONGs, so the entry holds their offset (26); PHP's reader takes the first, 34, for the EXIF directory.
+    $tiff = exifWith($little, [J::entry($little, 0x8769, 4, 2, J::u32($little, 26))],
+        J::u32($little, 34).J::u32($little, 0)
+        .J::u16($little, 1).J::entry($little, 0x8825, 4, 1, J::u32($little, 52)).J::u32($little, 0).gpsDirectory($little, 52));
+
+    expect(J::sentinels(exifStripped($tiff)))->toBe([]);
+})->with('byte orders');
+
+it('pays for every directory it queues', function (bool $little): void {
+    // Thirty-one empty SubIFDs of its own: thirty-three entries' worth to read, with the queue — ten is not enough.
+    $list = '';
+    $directories = '';
+
+    for ($i = 0; $i < 31; $i++) {
+        $list .= J::u32($little, 26 + 4 * 31 + 6 * $i);
+        $directories .= J::u16($little, 0).J::u32($little, 0);
+    }
+
+    $tiff = exifWith($little, [J::entry($little, 0x014A, 4, 31, J::u32($little, 26))], $list.$directories);
+
+    expect(ExifLocation::edits($tiff, new LocationBudget))->toBe([])
+        ->and(fn () => ExifLocation::edits($tiff, new LocationBudget(entries: 10)))
+        ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::TOO_MANY));
+})->with('byte orders');
+
+it('pays for the entries of the GPS directory it zeroes', function (bool $little): void {
+    // IFD0, queued and one entry, and GPS's two: four.
+    expect(ExifLocation::edits(J::gpsOnlyTiff($little), new LocationBudget(entries: 4)))->not->toBe([])
+        ->and(fn () => ExifLocation::edits(J::gpsOnlyTiff($little), new LocationBudget(entries: 3)))
+        ->toThrow(fn (LocationUnremovable $e) => expect($e->reason)->toBe(LocationUnremovable::TOO_MANY));
+})->with('byte orders');
+
 it('queues a directory many pointers name once, and pays for it once', function (bool $little): void {
     // Thirty-two SubIFDs, all the one empty directory at 30: queued and paid for as they came, the budget runs out.
     $tiff = exifWith($little, [J::entry($little, 0x014A, 4, 32, J::u32($little, 26))], J::u32($little, 158).str_repeat(J::u32($little, 158), 32).J::u16($little, 0).J::u32($little, 0));

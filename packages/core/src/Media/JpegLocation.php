@@ -179,8 +179,8 @@ final class JpegLocation
         foreach ($plan['edits'] as [$at, $replacement]) {
             $length = strlen($replacement);
 
-            // In order and apart — and, since `$previous` starts at -1, never before the file's first byte.
-            if ($at <= $previous || $length < 1 || $at + $length > $size || ! self::inside([$at, $at + $length], $plan['editable'])) {
+            // In order and apart — and, since `$previous` starts at -1 and every editable range lies in the file, inside it.
+            if ($at <= $previous || $length < 1 || ! self::inside([$at, $at + $length], $plan['editable'])) {
                 throw new RuntimeException('A plan to strip a JPEG of its location was inconsistent at '.$at.'.');
             }
 
@@ -295,7 +295,7 @@ final class JpegLocation
 
         array_push($edits, ...self::sweep($bytes, $editable, $handled, $budget));
 
-        return ['edits' => self::settle($bytes, $edits, $editable), 'editable' => $editable];
+        return ['edits' => self::settle($edits, $editable), 'editable' => $editable];
     }
 
     /**
@@ -353,7 +353,7 @@ final class JpegLocation
                 $length < 2 => min($range[1] ?? $size, $marker + 4 + 0xFFFF),
                 default => $marker + 2 + $length,
             };
-            $block = $bytes->read($content, max(0, min($end, $content + 0xFFFF) - $content));
+            $block = $bytes->read($content, max(0, $end - $content));
             $found = $kind === 'EXIF' ? ExifLocation::edits($block, $budget) : XmpLocation::edits($block, $budget);
 
             if ($found === []) {
@@ -794,8 +794,8 @@ final class JpegLocation
     }
 
     /**
-     * The edits that change something, in order: one inside a range already zeroed goes with it, and any other overlap
-     * is refused. Each must lie inside one editable range, or the plan is a fault.
+     * The edits in order: one inside a range already zeroed goes with it, and any other overlap is refused. Each must lie
+     * inside one editable range, or the plan is a fault.
      *
      * @param  list<Edit>  $edits
      * @param  list<Range>  $editable
@@ -803,17 +803,12 @@ final class JpegLocation
      *
      * @throws LocationUnremovable
      */
-    private static function settle(JpegBytes $bytes, array $edits, array $editable): array
+    private static function settle(array $edits, array $editable): array
     {
-        $changing = array_values(array_filter(
-            $edits,
-            static fn (array $edit): bool => $bytes->read($edit[0], strlen($edit[1])) !== $edit[1],
-        ));
-
-        usort($changing, static fn (array $a, array $b): int => [$a[0], -strlen($a[1])] <=> [$b[0], -strlen($b[1])]);
+        usort($edits, static fn (array $a, array $b): int => [$a[0], -strlen($a[1])] <=> [$b[0], -strlen($b[1])]);
         $kept = [];
 
-        foreach ($changing as $edit) {
+        foreach ($edits as $edit) {
             // Kept edits are in order and apart, so only the last can reach this one.
             $last = $kept === [] ? null : $kept[count($kept) - 1];
 

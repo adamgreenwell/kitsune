@@ -124,6 +124,23 @@ it('reads fill bytes, stuffing and restart markers as a decoder does', function 
         ->and(strlen($out))->toBe(strlen($in));
 });
 
+it('strips past fill bytes before a segment, as a decoder skips them', function (): void {
+    $in = "\xFF\xD8\xFF\xFF".J::exif(J::gpsOnlyTiff(true)).J::body();
+    [$out] = jpegStripped($in);
+
+    expect(J::sentinels($out))->toBe([])->and(strlen($out))->toBe(strlen($in));
+});
+
+it('walks scan data stuffed as densely as a file can be, in bounded time', function (): void {
+    // 16 MiB of `FF 00`: walked an `FF` at a time, about four seconds; asked of PCRE, a tenth of one.
+    $in = pictureHeader().str_repeat("\xFF\x00", 8 * 1024 * 1024)."\xFF\xD9".J::secondary();
+    $started = hrtime(true);
+    [$out] = jpegStripped($in);
+
+    expect(J::sentinels(substr($out, -2000)))->toBe([])
+        ->and((hrtime(true) - $started) / 1e9)->toBeLessThan(1.5);
+});
+
 it('strips an EXIF block after the first scan, where a progressive encoder may put one', function (): void {
     $body = J::body();
     $in = "\xFF\xD8".substr($body, 0, 656).J::exif(J::gpsOnlyTiff(true)).substr($body, 656);
@@ -307,7 +324,7 @@ it('refuses a file dense in EXIF identifiers as too many', function (): void {
 });
 
 it('reads a block with no usable length a segment at most, in bounded memory', function (): void {
-    $filler = str_repeat('<x a="gps"/>', 400_000);
+    $filler = str_repeat('<x a="gps"/>', 1_400_000);
     $path = J::file(J::jpeg([], "\xFF\xE1\0\0http://ns.adobe.com/xap/1.0/\0<x:xmpmeta gps=\"1\">".$filler));
     memory_reset_peak_usage();
     $before = memory_get_peak_usage();
