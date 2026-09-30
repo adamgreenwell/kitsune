@@ -417,8 +417,9 @@ was buying is GPL-2.0-or-later (Standing Principle #11). The bytes landed in #14
 puts a file in with [ADR-042](decision-log.md): shared by default as ADR-021 said, uploaded through
 `EntryResource` with core owning the staging, and withdrawn from the web on delete. A product's image is a `relation`
 to a media entry an editor has uploaded, which is all [ADR-040](decision-log.md) asked of media ("the only thing
-missing is the bytes"). What ADR-042 still owes — the media list's tiles (decision 6) and the measurement behind
-them — changes how the list shows files, not whether a product can have one. The **DAM** starter is Phase 5's, and
+missing is the bytes"). The media list's tiles (decision 6) landed as a grid of cards; what ADR-042 still owes — the
+stage measurement that decides whether private tiles load by themselves — changes how the list shows files, not whether
+a product can have one. The **DAM** starter is Phase 5's, and
 waits on widening `EntryTypeDeclaration` (above).
 
 ## Phase 6 — v1.0 hardening

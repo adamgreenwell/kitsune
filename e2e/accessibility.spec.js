@@ -27,6 +27,8 @@ const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
 const PAGES = [
     ['dashboard', `/admin/${SITE}`],
     ['entry list', `/admin/${SITE}/c/article`],
+    // A media type's list is a grid of tiles, with buttons and images an article list has none of (ADR-042 decision 6).
+    ['media list', `/admin/${SITE}/c/image`],
     ['entry create', `/admin/${SITE}/c/article/create`],
     ['entry edit', `/admin/${SITE}/c/article/1/edit`],
     ['related records', `/admin/${SITE}/c/article/1/related`],

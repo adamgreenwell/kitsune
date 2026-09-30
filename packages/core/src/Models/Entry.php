@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -2008,6 +2009,21 @@ class Entry extends Model implements RequiresModelSave
     public function site(): BelongsTo
     {
         return $this->belongsTo(Site::class);
+    }
+
+    /**
+     * A media entry's file, for the media list to load with its page — ADR-042 decision 6.
+     *
+     * ⚠️ ONE QUERY FOR THE PAGE, NOT ONE PER TILE. The ADR asks that the list's query count stay constant rather than
+     * grow by a row; `MediaDelivery::fileFor()` reads one row per call and stays for the callers that hold one entry.
+     * `MediaFile` is `#[Unscoped]` and reached through its entry, so what this loads is scoped by the entries it hangs
+     * off — which the list has already read through its scope.
+     *
+     * @return HasOne<MediaFile, $this>
+     */
+    public function mediaFile(): HasOne
+    {
+        return $this->hasOne(MediaFile::class);
     }
 
     /**

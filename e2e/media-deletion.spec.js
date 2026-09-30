@@ -71,7 +71,7 @@ test('names every entry a bulk delete could not take off the web', async ({ page
         await page.goto(`/admin/${SITE}/c/image`);
 
         for (const title of ['Pinned scorecard', 'Withdrawn scorecard']) {
-            await page.locator('.fi-ta-row').filter({ hasText: title }).getByRole('checkbox').check();
+            await page.locator('.fi-ta-record').filter({ hasText: title }).getByRole('checkbox').check();
         }
 
         await page.getByRole('button', { name: /bulk actions/i }).click();

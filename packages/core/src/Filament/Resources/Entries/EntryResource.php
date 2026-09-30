@@ -29,6 +29,7 @@ use Filament\Support\Icons\Heroicon;
 use function Filament\Support\original_request;
 
 use Filament\Tables\Columns\Column;
+use Filament\Tables\Columns\Layout\Stack;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\PaginationMode;
 use Filament\Tables\Table;
@@ -40,6 +41,7 @@ use Illuminate\Support\Number;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\MediaDeletionNotice;
+use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
@@ -228,10 +230,11 @@ class EntryResource extends Resource
     /**
      * What a media entry's file is: the stored facts, and a link to open it — ADR-042 decision 3 (Adam, 2026-09-29).
      *
-     * ⚠️ NO PREVIEW, AND NO `ImageEntry` OR `temporaryUrl()`. A preview of a private file is decision 6's tile, which is
-     * its own slice; `ImageEntry` hands its state to a disk as a path and mints a temporary URL that skips `EntryPolicy`
-     * on `local` (decision 4), and `UploadSurfaceTest` fails the build on either. The link is `MediaDelivery`'s: the
-     * direct URL for a file on the public disk, the route that authorises first for everything else.
+     * ⚠️ NO PREVIEW, AND NO `ImageEntry` OR `temporaryUrl()`. A preview lives on the list, as decision 6's tile;
+     * `ImageEntry` hands its state to a disk as a path and mints a temporary URL that skips `EntryPolicy` on `local`
+     * (decision 4), and `UploadSurfaceTest` fails the build on either. The link is `MediaDelivery::adminUrlForFile()`'s:
+     * the direct URL for a file on the public disk, the route that authorises first for everything else — each on the
+     * host serving the admin.
      *
      * ⚠️ ON THE VIEW PAGE TOO, which renders this form. The row is read once each time the section's contents are built,
      * and only on a media type's page for a saved entry: every other type's edit and view pages ask nothing of
@@ -253,7 +256,8 @@ class EntryResource extends Resource
                     return [TextEntry::make('media_file_missing')->hiddenLabel()->state(__('kitsune::media.file.missing'))];
                 }
 
-                $url = MediaDelivery::urlForFile($record, $file);
+                // On the host serving the admin, not `APP_URL`'s — decision 6's helper, which decision 16 waited for.
+                $url = MediaDelivery::adminUrlForFile($record, $file);
 
                 return [
                     TextEntry::make('media_file_type')->label(__('kitsune::media.file.type'))->state($file->mime),
@@ -434,21 +438,24 @@ class EntryResource extends Resource
 
     public static function table(Table $table): Table
     {
+        // The same reasoning as the form input: a list of entry titles in one
+        // org can hold several scripts, and the cell has to resolve each on its
+        // own content rather than on the panel's direction.
+        $title = TextColumn::make('title')->searchable()->sortable()
+            ->extraAttributes(['dir' => 'auto']);
+
+        $table = self::listsMedia() ? self::asTiles($table, $title) : $table->columns([
+            $title,
+            TextColumn::make('type_handle')->badge()->label('Type'),
+            // Withheld for a media type, as its control is (ADR-042 decision 3): `store()` creates media entries published
+            // and delivery never reads status. A status set before this, or restored from a revision saved then, stays
+            // stored and has no effect. A media list is tiles, which carry none (`asTiles()`).
+            TextColumn::make('status')->badge()->sortable(),
+            SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
+            ...self::fieldColumns(),
+        ]);
+
         return $table
-            ->columns([
-                // The same reasoning as the form input: a list of entry titles in one
-                // org can hold several scripts, and the cell has to resolve each on its
-                // own content rather than on the panel's direction.
-                TextColumn::make('title')->searchable()->sortable()
-                    ->extraAttributes(['dir' => 'auto']),
-                TextColumn::make('type_handle')->badge()->label('Type'),
-                // Withheld for a media type, as its control is (ADR-042 decision 3): `store()` creates media entries published
-                // and delivery never reads status. A status set before this, or restored from a revision saved then, stays
-                // stored and has no effect.
-                TextColumn::make('status')->badge()->sortable()->hidden(static fn (): bool => self::listsMedia()),
-                SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
-                ...self::fieldColumns(),
-            ])
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([ViewAction::make(), EditAction::make()])
             // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5).
@@ -468,6 +475,35 @@ class EntryResource extends Resource
             ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,
             ) === PaginationMode::Simple);
+    }
+
+    /**
+     * A media type's list as a grid of tiles — ADR-042 decision 6, laid out as Adam chose (decision 17, 2026-09-30).
+     *
+     * ⚠️ NO RECORD LINK ON THE CARD, BECAUSE A PRIVATE TILE IS CLICKED TO LOAD. Filament wraps a card's whole content in
+     * one `<a>` to the record, so the tile's button would sit inside a link — invalid, and read by a screen reader as a
+     * link holding a button — and a click on it would be the link's too. The card keeps View and Edit as its actions.
+     *
+     * ⚠️ THE PAGE'S FILES IN ONE QUERY, NOT ONE PER TILE. The ADR asks that the list's query count stay constant rather
+     * than grow with its rows, and `MediaTileColumn` reads `Entry::mediaFile()`, which this loads for the page.
+     *
+     * ⚠️ DECIDED AS THE TABLE IS BUILT, WHICH IS ONLY SAFE BECAUSE THE TYPE IS BOUND BY THEN. `IdentifyEntryType` is
+     * persistent middleware, and Livewire applies it once a snapshot is verified — before the component boots and builds
+     * its table — so a sort or a page change builds the grid again rather than a table.
+     *
+     * ⚠️ A TILE, ITS TITLE AND WHEN IT CHANGED — NO TYPE, NO STATUS, NO FIELD COLUMNS. Every tile is of the one type the
+     * page is for; a media type's status is withheld (decision 3); and Filament draws a card's columns asking only
+     * whether each is hidden, never whether it was toggled off, so a type's field columns — hidden by default in a table,
+     * toggled on one at a time — would all be drawn on every card, and the column manager would toggle nothing. A file's
+     * fields are on its own page (a default taken, for Adam to overrule). `updated_at` stays, so the grid sorts by it.
+     */
+    private static function asTiles(Table $table, TextColumn $title): Table
+    {
+        return $table
+            ->columns([Stack::make([MediaTileColumn::make(), $title, SiteTime::column('updated_at')->sortable()])->space(2)])
+            ->contentGrid(['md' => 2, 'lg' => 3, 'xl' => 4])
+            ->recordUrl(null)
+            ->modifyQueryUsing(static fn (Builder $query): Builder => $query->with('mediaFile'));
     }
 
     /**

@@ -90,14 +90,15 @@ test.describe('a shared file travels across the org', () => {
     test('is listed at a second site, where a file kept to the first is not', async ({ page }) => {
         await page.goto('/admin/golfdom-fr/c/image');
 
-        await expect(page.locator('.fi-ta-row').filter({ hasText: 'Shared course photo' })).toBeVisible();
+        // A media list is a grid of tiles (ADR-042 decision 6): each entry is a card.
+        await expect(page.locator('.fi-ta-record').filter({ hasText: 'Shared course photo' })).toBeVisible();
         await expect(page.getByText('Course map')).toHaveCount(0);
 
         // The control: the first site lists both.
         await page.goto('/admin/golfdom/c/image');
 
-        await expect(page.locator('.fi-ta-row').filter({ hasText: 'Shared course photo' })).toBeVisible();
-        await expect(page.locator('.fi-ta-row').filter({ hasText: 'Course map' })).toBeVisible();
+        await expect(page.locator('.fi-ta-record').filter({ hasText: 'Shared course photo' })).toBeVisible();
+        await expect(page.locator('.fi-ta-record').filter({ hasText: 'Course map' })).toBeVisible();
     });
 
     test('is served and opened at a second site, where a file kept to the first answers 404', async ({ page }) => {
@@ -162,7 +163,7 @@ test.describe('the media list, and a shared file\'s links', () => {
      */
     test('pages a media list without a total, and an article list with one', async ({ page }) => {
         await page.goto('/admin/golfdom/c/image');
-        await expect(page.locator('.fi-ta-row').first()).toBeVisible();
+        await expect(page.locator('.fi-ta-record').first()).toBeVisible();
         await expect(page.getByText(/Showing \d+ to \d+ of \d+/)).toHaveCount(0);
 
         // Counted, not required visible: Filament hides the overview at narrow widths, and it is there to count.

@@ -214,7 +214,8 @@ test.describe('isolation, from the attacker side', () => {
     test('does not show another org\'s content under a type both orgs share', async ({ page, browser }) => {
         await page.goto(`/admin/${SITE}/c/image`);
 
-        await expect(page.locator('.fi-ta-row').filter({ hasText: 'Course map' })).toBeVisible();
+        // A media list is a grid of tiles (ADR-042 decision 6): each entry is a card rather than a table row.
+        await expect(page.locator('.fi-ta-record').filter({ hasText: 'Course map' })).toBeVisible();
         await expect(page.getByText('Rival private asset')).toHaveCount(0);
 
         const rival = await browser.newContext({ storageState: '.playwright/admin-rival-auth.json' });
@@ -222,7 +223,7 @@ test.describe('isolation, from the attacker side', () => {
 
         await rivalPage.goto('/admin/rival-golfdom/c/image');
 
-        await expect(rivalPage.locator('.fi-ta-row').filter({ hasText: 'Rival private asset' })).toBeVisible();
+        await expect(rivalPage.locator('.fi-ta-record').filter({ hasText: 'Rival private asset' })).toBeVisible();
 
         await rival.close();
     });
