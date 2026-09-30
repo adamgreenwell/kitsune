@@ -19,6 +19,8 @@ return [
         'holds_media' => 'Holds media',
         'holds_media_help' => 'Entries of this type are uploaded files rather than written in a form. Decide now: it cannot be changed once the type exists.',
         'holds_media_locked' => 'Decided when this type was created, and fixed from then on.',
+        'accepts' => 'Accepts',
+        'accepts_help' => 'The kinds of file an upload to this type may be. With every one ticked, it accepts any file this site accepts, including kinds added later.',
     ],
     'dashboard' => [
         'site_own' => 'this site\'s own, not the files shared across the organisation',
@@ -34,6 +36,7 @@ return [
         'heading' => 'Upload files',
         'submit' => 'Upload',
         'files' => 'Files',
+        'accepts' => 'Takes :formats files.',
         'visibility' => 'Visibility',
         'private' => 'Private',
         'private_help' => 'Opened only by people signed in here who may view this type.',

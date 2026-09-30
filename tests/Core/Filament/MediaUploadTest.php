@@ -15,6 +15,7 @@ use Filament\Forms\Components\Radio;
 use Filament\Infolists\Components\ImageEntry;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
 use Illuminate\Database\QueryException;
@@ -24,6 +25,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\MediaFileUpload;
 use Kitsune\Core\Filament\MediaUpload;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -31,6 +33,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Media\MediaRefused;
@@ -467,6 +470,101 @@ describe('who may upload', function (): void {
             ->and($visibility->getDefaultState())->toBe('private')
             ->and($components['public_confirmed'])->toBeInstanceOf(Checkbox::class)
             ->and($components['site_only']->getDefaultState())->toBeFalse();
+    });
+});
+
+/** What a field says under itself — its helper text — or null. */
+function helperUnder(FileUpload $field): ?string
+{
+    foreach ($field->getChildSchema(FileUpload::BELOW_CONTENT_SCHEMA_KEY)?->getComponents() ?? [] as $component) {
+        if ($component instanceof Text) {
+            return (string) $component->getContent();
+        }
+    }
+
+    return null;
+}
+
+/*
+ * The files a type accepts — ADR-042 decision 33. The browser is told them and checks them before anything is staged,
+ * the field names them, and the library refuses what the type does not name; no rule on the field stands between.
+ */
+describe('the files a type accepts', function (): void {
+    beforeEach(function (): void {
+        ($this->grant)('view', 'create', 'publish');
+
+        $this->narrowTo = function (?array $accepts): void {
+            $this->type->settings = $accepts === null ? null : [MediaFormats::SETTING => $accepts];
+            $this->type->save();
+            app()->instance(EntryType::class, $this->type->fresh());
+        };
+        $this->field = fn (): MediaFileUpload => uploadComponents(MediaUpload::action()->getSchema(Schema::make(app(ListEntries::class))))['files'];
+    });
+
+    it('tells the browser the formats the type names, by name, and names them under the field', function (): void {
+        ($this->narrowTo)(['jpeg', 'png']);
+
+        expect(($this->field)()->getAcceptedFileTypes())->toBe(['image/jpeg', 'image/png'])
+            ->and(($this->field)()->getMimeTypeMap())->toBe(MediaFormats::browserMap())
+            ->and(helperUnder(($this->field)()))->toBe('Takes JPEG and PNG files.');
+    });
+
+    // The control: a type naming none has the browser check nothing, and nothing named.
+    it('tells the browser nothing for a type naming none', function (): void {
+        ($this->narrowTo)(null);
+
+        expect(($this->field)()->getAcceptedFileTypes())->toBeNull()
+            ->and(($this->field)()->getMimeTypeMap())->toBe([])
+            ->and(helperUnder(($this->field)()))->toBeNull();
+    });
+
+    /* No `mimetypes:` rule, which asks the intake disk for each staged file, and throws for one that is not there. */
+    it('adds no rule of its own, so a submit whose staged file is missing still reaches the handler', function (): void {
+        ($this->narrowTo)(['png']);
+        $file = stagedForUpload(UPLOAD_ACTION_PNG, 'photo.png');
+        unlink($file->getRealPath());
+        $rules = ($this->field)()->getValidationRules();
+
+        $environment = app()['env'];
+        app()['env'] = 'production';
+
+        try {
+            expect(collect($rules)->filter(fn (mixed $rule): bool => is_string($rule) && str_starts_with($rule, 'mimetypes'))->all())->toBe([])
+                ->and(validator(['files' => [$file]], ['files' => $rules])->passes())->toBeTrue();
+        } finally {
+            app()['env'] = $environment;
+        }
+    });
+
+    it('refuses a file the type does not name in the library\'s words, stores the rest, and leaves nothing staged', function (): void {
+        ($this->narrowTo)(['png']);
+
+        $results = MediaUpload::store($this->user, $this->type, [
+            stagedForUpload("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", 'rules.pdf'),
+            stagedForUpload(UPLOAD_ACTION_PNG, 'photo.png'),
+        ], 'private', false, false);
+
+        expect($results)->toBe([
+            ['name' => 'rules.pdf', 'outcome' => MediaUpload::REFUSED, 'reason' => 'Refusing [rules.pdf]: [Image] takes only PNG files, and this file\'s format is PDF. Nothing was stored.'],
+            ['name' => 'photo.png', 'outcome' => MediaUpload::STORED, 'reason' => null],
+        ])
+            ->and(MediaFile::query()->pluck('mime')->all())->toBe(['image/png'])
+            ->and(stillStaged())->toBe([]);
+    });
+
+    /* A list written past the model fails closed: every file a generic failure, reported, and the field guesses nothing. */
+    it('stores nothing into a type whose list cannot be read, reports it, and names nothing under the field', function (): void {
+        Exceptions::fake();
+        DB::table('entry_types')->where('id', $this->type->id)->update(['settings' => json_encode([MediaFormats::SETTING => ['jpg']])]);
+        app()->instance(EntryType::class, $this->type->fresh());
+
+        expect(($this->field)()->getAcceptedFileTypes())->toBeNull()
+            ->and(helperUnder(($this->field)()))->toBeNull()
+            ->and(MediaUpload::store($this->user, $this->type, [stagedForUpload(UPLOAD_ACTION_PNG, 'photo.png')], 'private', false, false))
+            ->toBe([['name' => 'photo.png', 'outcome' => MediaUpload::FAILED, 'reason' => null]])
+            ->and(MediaFile::query()->count())->toBe(0);
+
+        Exceptions::assertReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'Entry type [image] names the files it accepts as a list holding [jpg]'));
     });
 });
 

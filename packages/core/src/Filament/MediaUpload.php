@@ -12,7 +12,6 @@ namespace Kitsune\Core\Filament;
 
 use Filament\Actions\Action;
 use Filament\Forms\Components\Checkbox;
-use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Radio;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Utilities\Get;
@@ -21,11 +20,13 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Media\MediaBytes;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Models\EntryType;
 use Livewire\Features\SupportFileUploads\FileUploadConfiguration;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -295,9 +296,17 @@ final class MediaUpload
      */
     private static function fields(): array
     {
+        $formats = self::formats();
+
         return [
-            FileUpload::make('files')
+            /*
+             * ⚠️ TOLD THE FORMATS ITS TYPE NAMES, FOR THE BROWSER TO CHECK before anything is staged, and named under the
+             * field (Adam, decision 33) — no server rule: `MediaLibrary::store()` refuses what the type does not name.
+             */
+            MediaFileUpload::make('files')
                 ->label(__('kitsune::media.upload.files'))
+                ->formats($formats)
+                ->helperText($formats === null ? null : __('kitsune::media.upload.accepts', ['formats' => MediaFormats::sentence($formats)]))
                 ->multiple()
                 ->required()
                 /*
@@ -366,6 +375,23 @@ final class MediaUpload
     }
 
     /** Why a user who may not upload here stored nothing, naming both permissions. */
+    /**
+     * The formats the type names, or null where it names none — or where what it names cannot be read, which
+     * `MediaLibrary::store()` refuses, failing closed, and which the field does not guess at.
+     *
+     * @return list<string>|null
+     */
+    private static function formats(): ?array
+    {
+        $type = app(EntryType::class);
+
+        try {
+            return MediaFormats::namedBy($type->settings, (string) $type->handle);
+        } catch (RuntimeException) {
+            return null;
+        }
+    }
+
     private static function needsPermission(EntryType $type): string
     {
         return __('kitsune::media.upload.needs_permission', [

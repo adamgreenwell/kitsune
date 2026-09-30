@@ -40,7 +40,13 @@ const IN_GOLFDOM = "$site = \\Kitsune\\Core\\Models\\Site::withoutScopeBecause('
     + ' app(\\Kitsune\\Core\\Tenancy\\Context::class)->setOrg(\\Kitsune\\Core\\Models\\Org::query()->findOrFail($site->org_id));'
     + ' app(\\Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);';
 
-/** This spec's files, stored as an upload stores them, shared across the org: a private PDF — a type delivery never renders — and five private images. */
+/**
+ * This spec's files, stored as an upload stores them, shared across the org: a private PDF — a type delivery never
+ * renders — and five private images.
+ *
+ * ⚠️ THE PDF AS ONE STORED BEFORE `image` NAMED THE FILES IT ACCEPTS (ADR-042 decision 33), which it keeps: the type's
+ * list is set aside for that one store, below the model, and put back whatever happens.
+ */
 function storeFixtures() {
     const titles = PRIVATE_TITLES.map((title) => `'${title}'`).join(', ');
 
@@ -48,7 +54,10 @@ function storeFixtures() {
         + " $type = \\Kitsune\\Core\\Models\\EntryType::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('handle', 'image')->whereNull('org_id')->firstOrFail());"
         + " $store = function (string $bytes, string $name, string $title) use ($type) { $path = tempnam(sys_get_temp_dir(), 'kitsune-tiles-'); file_put_contents($path, $bytes);"
         + " try { \\Kitsune\\Core\\Media\\MediaLibrary::store($path, $name, $type, 'private', $title); } finally { @unlink($path); } };"
-        + ` $store("%PDF-1.4\\n1 0 obj<<>>endobj\\ntrailer<<>>\\n%%EOF\\n", 'rules.pdf', '${PDF_TITLE}');`
+        + " $settings = \\Illuminate\\Support\\Facades\\DB::table('entry_types')->where('id', $type->id)->value('settings');"
+        + " \\Illuminate\\Support\\Facades\\DB::table('entry_types')->where('id', $type->id)->update(['settings' => null]);"
+        + ` try { $store("%PDF-1.4\\n1 0 obj<<>>endobj\\ntrailer<<>>\\n%%EOF\\n", 'rules.pdf', '${PDF_TITLE}'); }`
+        + " finally { \\Illuminate\\Support\\Facades\\DB::table('entry_types')->where('id', $type->id)->update(['settings' => $settings]); }"
         + ` foreach ([${titles}] as $title) { $store(base64_decode('${PNG_BASE64}'), 'probe.png', $title); }`);
 }
 

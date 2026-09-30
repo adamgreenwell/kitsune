@@ -195,7 +195,7 @@ entry_types
   is_system          bool                 -- undeletable
   is_media           bool                 -- media type: set at creation, locked; MediaLibrary::store() refuses any other type (ADR-042)
   ordering
-  settings           json                 -- revisions on/off, sluggable, publishable
+  settings           json                 -- revisions on/off, sluggable, publishable; a media type's `accepts`, the formats it takes (ADR-042 decision 33)
   timestamps
   UNIQUE (org_id, handle)
 

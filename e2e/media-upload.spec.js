@@ -237,6 +237,40 @@ test.describe('uploading through the media list', () => {
         await expect(page.getByRole('dialog').getByText('its contents are')).toHaveCount(0);
     });
 
+    /*
+     * ⚠️ A FILE THE TYPE DOES NOT TAKE IS REFUSED ON THE FIELD, BEFORE ANYTHING IS STAGED — ADR-042 decision 33. `image`
+     * takes images alone, the field names them, and the browser checks a file's name against them: a PDF never reaches
+     * the endpoint. The library's own refusal, for a file past the browser, is `MediaUploadTest`'s.
+     */
+    test('refuses on the field a file the type does not take, before anything is staged', async ({ page }) => {
+        const staged = [];
+        page.on('request', (request) => {
+            // Livewire's upload route carries a hash of the application: `/livewire-{hash}/upload-file`.
+            if (/^\/livewire[^/]*\/upload-file$/.test(new URL(request.url()).pathname)) {
+                staged.push(request.url());
+            }
+        });
+
+        await page.goto('/admin/golfdom/c/image');
+        await uploadButton(page).click();
+
+        const dialog = page.getByRole('dialog');
+        await expect(dialog.getByText('Takes JPEG, PNG, GIF, WebP, AVIF and SVG files.')).toBeVisible();
+        await addFiles(dialog, [{ name: 'upload-probe-rules.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n') }]);
+
+        await expect(dialog.locator('.filepond--item[data-filepond-item-state="load-invalid"]')).toHaveCount(1, { timeout: 20_000 });
+        await expect(dialog.locator('.filepond--item[data-filepond-item-state="processing-complete"]')).toHaveCount(0);
+        expect(staged).toEqual([]);
+        expect(intake()).toEqual([]);
+
+        // The control: an image the type takes is staged, on the same field.
+        await page.goto('/admin/golfdom/c/image');
+        await uploadButton(page).click();
+        await addFiles(page.getByRole('dialog'), [png('upload-probe-rules.png')]);
+        await expect(page.getByRole('dialog').locator('.filepond--item[data-filepond-item-state="processing-complete"]')).toHaveCount(1, { timeout: 20_000 });
+        expect(staged).toHaveLength(1);
+    });
+
     test('offers Upload on a media list, and no create page, where an article list keeps both', async ({ page }) => {
         await page.goto('/admin/golfdom/c/image');
         await expect(page.getByRole('button', { name: 'Upload', exact: true })).toBeVisible();

@@ -33,7 +33,7 @@ class CreateEntryType extends CreateRecord
     {
         $data['org_id'] = app(Context::class)->orgId();
 
-        return $data;
+        return EntryTypeResource::acceptsIntoSettings($data, null);
     }
 
     /** Fields come next, and the type has to exist before they can. */
