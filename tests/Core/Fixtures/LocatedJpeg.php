@@ -298,29 +298,26 @@ final class LocatedJpeg
     }
 
     /**
-     * How many GPS directories any EXIF block anywhere in the bytes still points at — from IFD0, its chain, the EXIF
-     * and interoperability directories — found by searching for every APP1 that could be one, wherever it sits. A
-     * pointer counts where a reader could follow it: its whole entry there, and a directory where it points.
+     * How many GPS directories any EXIF block anywhere in the bytes still points at — from IFD0, its chain, SubIFDs, the
+     * EXIF and interoperability directories — found by searching for every `Exif\0` that could begin one, wherever it
+     * sits, with or without an APP1 marker before it. A pointer is read as PHP's reader reads it: four bytes, in the
+     * entry for a value of four bytes or fewer and at its offset for a longer one, whatever the type — and it counts
+     * where a directory is there to follow.
      */
     public static function gpsPointers(string $bytes): int
     {
         $found = 0;
         $from = 0;
 
-        while (($at = strpos($bytes, "\xFF\xE1", $from)) !== false) {
-            $from = $at + 1;
-
-            if (preg_match('/\G(.{0,4})Exif\0./s', $bytes, $match, 0, $at + 4) !== 1) {
-                continue;
-            }
-
-            $tiff = substr($bytes, $at + 4 + strlen($match[1]) + 6);
-            $little = str_starts_with($tiff, 'II');
+        while (preg_match('/exif\0./is', $bytes, $match, PREG_OFFSET_CAPTURE, $from) === 1) {
+            $from = $match[0][1] + 1;
+            $tiff = substr($bytes, $match[0][1] + 6);
 
             if (! str_starts_with($tiff, 'II') && ! str_starts_with($tiff, 'MM')) {
                 continue;
             }
 
+            $little = str_starts_with($tiff, 'II');
             $queue = [self::read($tiff, 4, 4, $little)];
             $seen = [];
 
@@ -334,15 +331,29 @@ final class LocatedJpeg
                 $seen[$ifd] = true;
 
                 for ($k = 0; $k < $count && $ifd + 2 + 12 * $k + 12 <= strlen($tiff); $k++) {
-                    $tag = self::read($tiff, $ifd + 2 + 12 * $k, 2, $little);
-                    $target = self::read($tiff, $ifd + 2 + 12 * $k + 8, self::read($tiff, $ifd + 2 + 12 * $k + 2, 2, $little) === 3 ? 2 : 4, $little);
+                    $entry = $ifd + 2 + 12 * $k;
+                    $tag = self::read($tiff, $entry, 2, $little);
+                    $sizes = [1 => 1, 2 => 1, 3 => 2, 4 => 4, 5 => 8, 6 => 1, 7 => 1, 8 => 2, 9 => 4, 10 => 8, 11 => 4, 12 => 8, 13 => 4];
+                    $values = (int) self::read($tiff, $entry + 4, 4, $little);
+                    $slot = self::read($tiff, $entry + 8, 4, $little);
+                    $target = $values * ($sizes[self::read($tiff, $entry + 2, 2, $little)] ?? 1) <= 4 ? $slot : self::read($tiff, (int) $slot, 4, $little);
 
                     if ($tag === 0x8825 && $target !== null && $target >= 8 && self::read($tiff, $target, 2, $little) !== null) {
                         $found++;
                     }
 
                     if ($tag === 0x8769 || $tag === 0xA005) {
-                        $queue[] = self::read($tiff, $ifd + 2 + 12 * $k + 8, 4, $little);
+                        $queue[] = $target;
+                    }
+
+                    if ($tag === 0x014A) {
+                        if ($values <= 1) {
+                            $queue[] = $target;
+                        } else {
+                            for ($j = 0; $j < min($values, 32); $j++) {
+                                $queue[] = self::read($tiff, (int) $slot + 4 * $j, 4, $little);
+                            }
+                        }
                     }
                 }
 

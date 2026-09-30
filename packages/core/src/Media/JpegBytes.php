@@ -149,34 +149,49 @@ final class JpegBytes
      */
     public function nextMarker(int $from, int $limit): ?int
     {
+        return $this->search('/\xFF[^\x00\xD0-\xD7\xFF]/', $from, $limit, 2)[0] ?? null;
+    }
+
+    /**
+     * The next match of `$pattern` wholly at or after `$from` and before `$limit` — where it begins, and what it
+     * matched — or null. `$longest` is the longest match the pattern can make, which windows overlap by.
+     *
+     * @return array{0: int, 1: string}|null
+     *
+     * @throws RuntimeException where the pattern could not run
+     */
+    public function search(string $pattern, int $from, int $limit, int $longest): ?array
+    {
         $limit = min($limit, $this->size);
         $from = max(0, $from);
 
-        while ($from + 2 <= $limit) {
-            if ($from < $this->windowAt || $from + 2 > $this->windowAt + strlen($this->window)) {
+        while ($from < $limit) {
+            if ($from < $this->windowAt || $from >= $this->windowAt + strlen($this->window)) {
                 $this->load($from);
             }
 
-            $found = preg_match('/\xFF[^\x00\xD0-\xD7\xFF]/', $this->window, $match, PREG_OFFSET_CAPTURE, $from - $this->windowAt);
+            $found = preg_match($pattern, $this->window, $match, PREG_OFFSET_CAPTURE, $from - $this->windowAt);
 
             if ($found === false) {
-                throw new RuntimeException('Scan data could not be searched: '.preg_last_error_msg());
-            }
-
-            if ($found === 1) {
-                $at = $this->windowAt + $match[0][1];
-
-                return $at + 2 <= $limit ? $at : null;
+                throw new RuntimeException('A file could not be searched: '.preg_last_error_msg());
             }
 
             $windowEnd = $this->windowAt + strlen($this->window);
+
+            if ($found === 1) {
+                $at = $this->windowAt + $match[0][1];
+                $text = $match[0][0];
+
+                return $at + strlen($text) <= $limit ? [$at, $text] : null;
+            }
 
             if ($windowEnd >= $limit) {
                 return null;
             }
 
-            // The window's last byte may be an `FF` whose marker is the next window's first.
-            $from = max($from + 1, $windowEnd - 1);
+            // A match may begin in the last bytes of this window and end in the next: the next window starts there.
+            $from = max($from + 1, $windowEnd - $longest + 1);
+            $this->load($from);
         }
 
         return null;

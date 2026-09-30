@@ -67,7 +67,24 @@ final class ExifLocation
         $u16 = static fn (int $at): int => self::unsigned($tiff, $at, 2, $little);
         $u32 = static fn (int $at): int => self::unsigned($tiff, $at, 4, $little);
 
-        $queue = [$u32(4)];
+        /*
+         * ⚠️ EACH DIRECTORY QUEUED ONCE, AND PAID FOR AS IT IS QUEUED. A SubIFD entry names up to 32 directories, and a
+         * block can hold thousands of such entries naming the same few: queued and drained as they came, that is
+         * quadratic, and nothing refuses it.
+         */
+        $queue = [];
+        $queued = [];
+        $enqueue = static function (int $directory) use (&$queue, &$queued, $length, $budget): void {
+            if ($directory < 8 || $directory + 2 > $length || isset($queued[$directory])) {
+                return;
+            }
+
+            $queued[$directory] = true;
+            $budget->spend('entries');
+            $queue[] = $directory;
+        };
+        $enqueue($u32(4));
+        $next = 0;
         $seen = [];
         /** @var array<int, array{count: int, remove: list<int>}> $tables */
         $tables = [];
@@ -77,12 +94,8 @@ final class ExifLocation
         $xmp = [];
         $damaged = false;
 
-        while ($queue !== []) {
-            $at = array_shift($queue);
-
-            if ($at < 8 || $at + 2 > $length || isset($seen[$at])) {
-                continue;
-            }
+        while ($next < count($queue)) {
+            $at = $queue[$next++];
 
             if (count($seen) >= self::MAX_DIRECTORIES) {
                 throw new LocationUnremovable(LocationUnremovable::EXIF_DAMAGED);
@@ -115,11 +128,11 @@ final class ExifLocation
                 };
 
                 if ($tag === self::GPS_POINTER) {
-                    // Never a claim: the pointer goes, and what it names is what is zeroed.
+                    // Never a claim: the pointer goes, and what it names — as any reader reads it — is what is zeroed.
                     $tables[$at]['remove'][] = $k;
 
-                    if ($pointer !== null) {
-                        $gps[$pointer] = true;
+                    foreach (self::pointers($tiff, $entry, $type, $values, $size, $little) as $directory) {
+                        $gps[$directory] = true;
                     }
 
                     continue;
@@ -132,17 +145,15 @@ final class ExifLocation
                 }
 
                 // The EXIF and interoperability directories, and SubIFDs: a GPS pointer can sit in any of them.
-                if (($tag === 0x8769 || $tag === 0xA005) && $pointer !== null) {
-                    $queue[] = $pointer;
+                if ($tag === 0x8769 || $tag === 0xA005 || ($tag === 0x014A && $values <= 1)) {
+                    foreach (self::pointers($tiff, $entry, $type, $values, $size, $little) as $directory) {
+                        $enqueue($directory);
+                    }
                 }
 
-                if ($tag === 0x014A && ($type === 4 || $type === 13)) {
-                    if ($values === 1) {
-                        $queue[] = $u32($entry + 8);
-                    } elseif ($value !== null) {
-                        for ($j = 0; $j < min($values, self::MAX_DIRECTORIES) && $value + 4 * $j + 4 <= $length; $j++) {
-                            $queue[] = $u32($value + 4 * $j);
-                        }
+                if ($tag === 0x014A && $values > 1 && $value !== null) {
+                    for ($j = 0; $j < min($values, self::MAX_DIRECTORIES) && $value + 4 * $j + 4 <= $length; $j++) {
+                        $enqueue($u32($value + 4 * $j));
                     }
                 }
 
@@ -165,7 +176,7 @@ final class ExifLocation
             }
 
             if ($fits) {
-                $queue[] = $u32($at + 2 + 12 * $count);
+                $enqueue($u32($at + 2 + 12 * $count));
             }
         }
 
@@ -251,6 +262,38 @@ final class ExifLocation
         }
 
         return $edits;
+    }
+
+    /**
+     * Every directory a reader could take a pointer entry to name.
+     *
+     * ⚠️ AS THE MOST FORGIVING READER READS IT, NOT AS TIFF SAYS IT SHOULD BE WRITTEN. PHP's reads four bytes whatever the
+     * entry's type — in the entry for a value of four bytes or fewer, at its offset for a longer one — and ExifTool reads
+     * a single integer of the entry's own width. An EXIF directory typed SLONG, a GPS pointer typed UNDEFINED: each
+     * leads a reader to the directory, and each is followed here.
+     *
+     * @return list<int>
+     */
+    private static function pointers(string $tiff, int $entry, int $type, int $values, int $size, bool $little): array
+    {
+        $length = strlen($tiff);
+        $found = [];
+
+        if ($values * max($size, 1) <= 4) {
+            $found[] = self::unsigned($tiff, $entry + 8, 4, $little);
+
+            if ($values === 1 && ($type === 3 || $type === 8)) {
+                $found[] = self::unsigned($tiff, $entry + 8, 2, $little);
+            }
+
+            if ($values === 1 && ($type === 1 || $type === 6)) {
+                $found[] = ord($tiff[$entry + 8]);
+            }
+        } elseif (($at = self::unsigned($tiff, $entry + 8, 4, $little)) + 4 <= $length) {
+            $found[] = self::unsigned($tiff, $at, 4, $little);
+        }
+
+        return array_values(array_unique(array_filter($found, static fn (int $at): bool => $at >= 8 && $at + 2 <= $length)));
     }
 
     /**

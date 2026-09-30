@@ -36,8 +36,8 @@ use Throwable;
  * restart markers read as scan data — and so is each JPEG after its end: a gain map, a stereo frame, an image appended by
  * a phone, each with blocks of its own. EXIF is recognised by ExifTool's own rule, including a block split over several
  * segments and a block in capitals; XMP by the standard header and by ExifTool's fallback; Photoshop's copies of both
- * inside its APP13; and a block nested inside another segment — the EXIF thumbnail's own, a preview's — by looking inside
- * each application segment, and inside the bytes after the last image, for another.
+ * inside its APP13; and every other block in the file — the EXIF thumbnail's own, a preview's, one after the last image,
+ * one where no edit may go — by the identifier a reader looks for (`sweep()`).
  *
  * ⚠️ EDITED ONLY WHERE METADATA IS. The segments that change how a picture is drawn — the colour profile, the
  * Multi-Picture index, ISO gain-map metadata, Adobe's and JFIF's — are never written, however their bytes read, and a
@@ -55,6 +55,12 @@ final class JpegLocation
     private const EXIF = '/^(.{0,4})Exif\0./is';
 
     private const XMP = "http://ns.adobe.com/xap/1.0/\0";
+
+    /**
+     * What the sweep looks for: `Exif\0` in any case, one byte, and a TIFF byte order; XMP's standard header; and the
+     * `XMP\0` ExifTool also reads, inside an APP1 alone.
+     */
+    private const IDENTIFIERS = '/(?i:exif)\x00[\x00-\xFF](?:II|MM)|http:\/\/ns\.adobe\.com\/xap\/1\.0\/\x00|\xFF\xE1[\x00-\xFF]{2}XMP\x00/';
 
     private const EXTENDED = "http://ns.adobe.com/xmp/extension/\0";
 
@@ -269,70 +275,124 @@ final class JpegLocation
 
         $editable = $unmapped;
         $edits = [];
+        $handled = [];
 
         foreach ($images as $image) {
             array_push($editable, ...$image['editable']);
-            array_push($edits, ...self::blocks($bytes, $image, $budget));
+            array_push($edits, ...self::blocks($bytes, $image, $budget, $handled));
         }
 
-        array_push($edits, ...self::nested($bytes, $editable, $budget));
-        self::refuseOutOfPlace($bytes, $images, $editable, $budget);
+        array_push($edits, ...self::sweep($bytes, $editable, $handled, $budget));
 
         return ['edits' => self::settle($bytes, $edits, $editable), 'editable' => $editable];
     }
 
     /**
-     * Every block that reads as EXIF or XMP anywhere in the file, which neither the segments nor the editable ranges
-     * account for, refused where it carries location.
+     * Every other EXIF and XMP block in the file, wherever it sits, found by its identifier: stripped where it lies inside
+     * an editable range, and refused where it carries location anywhere else.
      *
-     * ⚠️ FAIL CLOSED WHERE NO EDIT MAY GO. A block inside a comment, a colour profile, a segment no reader follows or
-     * one a damaged marker hides is not metadata any decoder reads — and it is still bytes served to anyone with the
-     * link, which a search finds. It cannot be edited without writing what the picture is drawn from, so a file
-     * holding one with location is refused as public rather than stored with it.
+     * ⚠️ FOUND BY WHAT A READER LOOKS FOR, NOT BY WHERE A SEGMENT SAYS IT IS. The EXIF thumbnail's own block, a
+     * preview's, one in bytes after the last image are metadata inside metadata, and are stripped in place. One inside
+     * a comment, a colour profile, a table, a segment a damaged marker hides — or written with no `FF` before its
+     * marker, which PHP's reader takes for a segment all the same — is bytes served to anyone with the link, which no
+     * edit may reach without writing what the picture is drawn from: a file holding one with location is refused as
+     * public (`OUT_OF_PLACE`), and one running across the segment holding it too (`BLOCKS_OVERLAP`).
      *
-     * @param  list<Image>  $images
+     * ⚠️ IN BOUNDED TIME AND MEMORY. PCRE finds each candidate — an `Exif\0` with a byte order after it, XMP's header —
+     * a window at a time; each costs the budget before a byte of it is read; and no read is longer than one segment.
+     *
      * @param  list<Range>  $editable
+     * @param  array<int, true>  $handled  the identifiers `blocks()` has already read, by where each begins
+     * @return list<Edit>
      *
      * @throws LocationUnremovable
      */
-    private static function refuseOutOfPlace(JpegBytes $bytes, array $images, array $editable, LocationBudget $budget): void
+    private static function sweep(JpegBytes $bytes, array $editable, array $handled, LocationBudget $budget): array
     {
-        $segments = [];
-
-        foreach ($images as $image) {
-            foreach ($image['segments'] as $segment) {
-                $segments[$segment['at']] = true;
-            }
-        }
-
+        $edits = [];
         $size = $bytes->size();
-        $cursor = 0;
+        $from = 0;
 
-        while (($at = $bytes->find("\xFF\xE1", $cursor, $size)) !== null) {
-            $cursor = $at + 1;
+        while (($hit = $bytes->search(self::IDENTIFIERS, $from, $size, strlen(self::XMP))) !== null) {
+            [$at, $text] = $hit;
+            $from = $at + 1;
+            $kind = match (true) {
+                str_starts_with($text, "\xFF\xE1") => 'XMP0',
+                str_starts_with($text, 'http') => 'XMP',
+                default => 'EXIF',
+            };
+            $identifier = $kind === 'XMP0' ? $at + 4 : $at;
 
-            if (isset($segments[$at]) || self::inside([$at, $at + 2], $editable) || $at + 4 > $size) {
-                continue;
-            }
-
-            $length = (int) unpack('n', $bytes->read($at + 2, 2))[1];
-            $payload = $bytes->read($at + 4, $length < 2 ? 0xFFFF : $length - 2);
-            $exif = XmpLocation::matches(self::EXIF, $payload, $match) === 1;
-
-            if (! $exif && ! str_starts_with($payload, 'http') && ! str_starts_with($payload, "XMP\0")) {
+            if (isset($handled[$identifier])) {
                 continue;
             }
 
             $budget->spend('blocks');
-            $offset = str_starts_with($payload, self::XMP) ? strlen(self::XMP) : 0;
-            $found = $exif
-                ? ExifLocation::edits(substr($payload, strlen($match[1]) + 6), $budget)
-                : XmpLocation::edits(substr($payload, $offset));
+            $content = $identifier + match ($kind) {
+                'EXIF' => 6,
+                'XMP' => strlen(self::XMP),
+                default => 4,
+            };
+            $marker = self::app1Before($bytes, $identifier, $kind === 'EXIF' ? 4 : 0);
+            $range = $marker === null ? null : self::holding([$marker, $marker + 2], $editable);
+            $length = $marker === null ? 0 : (int) unpack('n', $bytes->read($marker + 2, 2))[1];
+            $end = match (true) {
+                $marker === null => $content + 0xFFFF,
+                // A length that cannot be one is not a reason to look away; a segment's worth is read, and no more.
+                $length < 2 => min($range[1] ?? $size, $marker + 4 + 0xFFFF),
+                default => $marker + 2 + $length,
+            };
+            $block = $bytes->read($content, max(0, min($end, $content + 0xFFFF) - $content));
+            $found = $kind === 'EXIF' ? ExifLocation::edits($block, $budget) : XmpLocation::edits($block);
 
-            if ($found !== []) {
+            if ($found === []) {
+                continue;
+            }
+
+            if ($range === null) {
                 throw new LocationUnremovable(LocationUnremovable::OUT_OF_PLACE);
             }
+
+            if ($end > $range[1]) {
+                throw new LocationUnremovable(LocationUnremovable::BLOCKS_OVERLAP);
+            }
+
+            foreach ($found as [$offset, $replacement, $zero]) {
+                $edits[] = [$content + $offset, $replacement, $zero];
+            }
         }
+
+        return $edits;
+    }
+
+    /** Where the APP1 marker holding an identifier begins — `FF E1`, a length, and as many stray bytes as allowed. */
+    private static function app1Before(JpegBytes $bytes, int $identifier, int $stray): ?int
+    {
+        for ($k = 0; $k <= $stray && $identifier - 4 - $k >= 0; $k++) {
+            if ($bytes->read($identifier - 4 - $k, 2) === "\xFF\xE1") {
+                return $identifier - 4 - $k;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The editable range a range lies wholly inside, or null.
+     *
+     * @param  Range  $range
+     * @param  list<Range>  $editable
+     * @return Range|null
+     */
+    private static function holding(array $range, array $editable): ?array
+    {
+        foreach ($editable as $candidate) {
+            if ($range[0] >= $candidate[0] && $range[1] <= $candidate[1]) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -495,11 +555,12 @@ final class JpegLocation
      * The EXIF, XMP, extended-XMP and Photoshop blocks among one JPEG's own segments, as edits.
      *
      * @param  Image  $image
+     * @param  array<int, true>  $handled  where each identifier read here begins, for `sweep()` to pass over
      * @return list<Edit>
      *
      * @throws LocationUnremovable
      */
-    private static function blocks(JpegBytes $bytes, array $image, LocationBudget $budget): array
+    private static function blocks(JpegBytes $bytes, array $image, LocationBudget $budget, array &$handled): array
     {
         $segments = $image['segments'];
         $edits = [];
@@ -538,6 +599,7 @@ final class JpegLocation
 
             if (XmpLocation::matches(self::EXIF, $payload, $match) === 1) {
                 $budget->spend('blocks');
+                $handled[$segment['payload'] + strlen($match[1])] = true;
                 $slices = [[$segment['payload'] + strlen($match[1]) + 6, $segment['end']]];
 
                 // A block too long for one segment continues in the next, which says `Exif\0\0` and no TIFF header.
@@ -549,6 +611,7 @@ final class JpegLocation
                     }
 
                     self::continuing($slices);
+                    $handled[$segments[$i + 1]['payload']] = true;
                     $slices[] = [$segments[$i + 1]['payload'] + 6, $segments[$i + 1]['end']];
                     $i++;
                 }
@@ -573,6 +636,7 @@ final class JpegLocation
 
             if (str_starts_with($payload, 'http') || str_starts_with($payload, "XMP\0") || XmpLocation::matches('/<(?:exif:|\?xpacket)/', $payload) === 1) {
                 $budget->spend('blocks');
+                $handled[$segment['payload']] = true;
                 $offset = str_starts_with($payload, self::XMP) ? strlen(self::XMP) : 0;
 
                 foreach (XmpLocation::edits(substr($payload, $offset)) as [$at, $replacement, $zero]) {
@@ -673,71 +737,6 @@ final class JpegLocation
     }
 
     /**
-     * EXIF and XMP blocks nested in an editable range — inside another segment, or in the bytes after the last image.
-     *
-     * @param  list<Range>  $editable
-     * @return list<Edit>
-     *
-     * @throws LocationUnremovable
-     */
-    private static function nested(JpegBytes $bytes, array $editable, LocationBudget $budget): array
-    {
-        $edits = [];
-        $size = $bytes->size();
-
-        foreach ($editable as [$from, $to]) {
-            $cursor = $from;
-
-            while (($at = $bytes->find("\xFF\xE1", $cursor, $to)) !== null) {
-                $cursor = $at + 1;
-
-                if ($at + 4 > $size) {
-                    break;
-                }
-
-                $length = (int) unpack('n', $bytes->read($at + 2, 2))[1];
-                // A length that cannot be one is not a reason to look away: a search reads what follows `Exif\0` anyway.
-                $end = $length < 2 ? $to : min($size, $at + 2 + $length);
-                $payload = $bytes->read($at + 4, $end - $at - 4);
-                $exif = XmpLocation::matches(self::EXIF, $payload, $match) === 1;
-
-                if (! $exif && ! str_starts_with($payload, 'http') && ! str_starts_with($payload, "XMP\0")) {
-                    continue;
-                }
-
-                $budget->spend('blocks');
-
-                if ($end > $to) {
-                    // Across the segment holding it: its end cannot be edited without writing the next header.
-                    if ($exif || XmpLocation::matches(XmpLocation::MENTIONS, str_replace("\0", '', $payload)) === 1) {
-                        throw new LocationUnremovable(LocationUnremovable::BLOCKS_OVERLAP);
-                    }
-
-                    continue;
-                }
-
-                if ($exif) {
-                    $tiff = $at + 4 + strlen($match[1]) + 6;
-
-                    foreach (ExifLocation::edits(substr($payload, $tiff - $at - 4), $budget) as [$offset, $replacement, $zero]) {
-                        $edits[] = [$tiff + $offset, $replacement, $zero];
-                    }
-
-                    continue;
-                }
-
-                $offset = str_starts_with($payload, self::XMP) ? strlen(self::XMP) : 0;
-
-                foreach (XmpLocation::edits(substr($payload, $offset)) as [$within, $replacement, $zero]) {
-                    $edits[] = [$at + 4 + $offset + $within, $replacement, $zero];
-                }
-            }
-        }
-
-        return $edits;
-    }
-
-    /**
      * Edits found in a block joined from several segments, cut back into each segment's own bytes — so a header or an
      * identifier between them is never written.
      *
@@ -832,12 +831,6 @@ final class JpegLocation
      */
     private static function inside(array $range, array $editable): bool
     {
-        foreach ($editable as [$from, $to]) {
-            if ($range[0] >= $from && $range[1] <= $to) {
-                return true;
-            }
-        }
-
-        return false;
+        return self::holding($range, $editable) !== null;
     }
 }

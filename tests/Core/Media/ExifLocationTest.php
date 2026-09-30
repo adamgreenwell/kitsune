@@ -103,7 +103,7 @@ it('removes a GPS pointer from any directory it is in', function (bool $little, 
     $stripped = exifStripped($tiff);
 
     expect(J::gpsPointers(J::jpeg([J::exif($stripped)])))->toBe(0)
-        ->and(J::gpsPointers(J::jpeg([J::exif($tiff)])))->toBe($where === 'a SubIFD' ? 0 : 1)
+        ->and(J::gpsPointers(J::jpeg([J::exif($tiff)])))->toBe(1)
         ->and(J::sentinels($stripped))->toBe([]);
 })->with('byte orders')->with(['IFD1', 'the EXIF directory', 'a SubIFD']);
 
