@@ -19,6 +19,7 @@ use Filament\Tables\Filters\TrashedFilter;
 use Filament\Tables\Table;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -270,6 +271,11 @@ describe('the list', function (): void {
         Role::create(['handle' => 'trash-owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($user->getKey());
         $this->actingAs($user);
         PanelTenancy::enter(Site::query()->where('slug', 'trash-main')->firstOrFail());
+
+        // The pages a row can link to, which a test's panel does not register.
+        Route::get('/admin/{tenant:slug}/c/{type}/{record}', static fn (): string => '')->name('filament.admin.resources.c.view');
+        Route::get('/admin/{tenant:slug}/c/{type}/{record}/edit', static fn (): string => '')->name('filament.admin.resources.c.edit');
+        app('router')->getRoutes()->refreshNameLookups();
     });
 
     /** The list's table, built as its page builds it, for the type bound. */
@@ -300,6 +306,10 @@ describe('the list', function (): void {
             expect($actions[$class]->record($trashed)->isVisible())->toBeTrue()
                 ->and($actions[$class]->record($live)->isVisible())->toBeFalse();
         }
+
+        // And its row links nowhere, where Filament's own link would have fallen back to its view page, and a 404.
+        expect($table->getRecordUrl($trashed))->toBeNull()
+            ->and($table->getRecordUrl($live))->toBe(url("/admin/trash-main/c/article/{$live->getRouteKey()}"));
     });
 
     it('says what deleting forever takes with it, the file too on a media list', function (EntryType|string $type, string $words): void {

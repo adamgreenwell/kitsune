@@ -5461,8 +5461,9 @@ arrives as Livewire's own "failed to upload".
 > - **Every entry list has a trash.** Filament's trash filter, named for the trash — *Not in the trash*, the default;
 >   *Everything, the trash included*; *Only the trash* — on every type's list, a media type's cards among them. A
 >   trashed entry offers *Restore* and *Delete forever* where a live one offers *View* and *Edit*, and is not opened:
->   its pages resolve live entries alone. The bulk actions are *Delete selected*, *Restore selected* and *Delete
->   selected forever*.
+>   its pages resolve live entries alone, so its row links nowhere, where Filament's own link falls back past a hidden
+>   *View* to the view page, and a 404 (Codex, #163). The bulk actions are *Delete selected*, *Restore selected* and
+>   *Delete selected forever*.
 > - **A trashed file's tile says so** — a badge, *In the trash*, where its preview was — and fetches nothing: the route
 >   that authorises first resolves live entries alone, and would answer the preview's request with a 404.
 > - **Who may is `delete`.** `restore` and `forceDelete`, and their bulk abilities, resolve against
@@ -6749,7 +6750,7 @@ When it lands:
 > file stored before `image` named its formats, which it keeps.
 
 > ⚠️ **Amended 2026-09-30 — decision 31 landed**, and each guard was removed in turn and its test watched fail, beside a
-> run of the same tests passing unmutated: 21 mutations, 17 in the PHP suite and four in the browser. By family:
+> run of the same tests passing unmutated: 25 mutations, 20 in the PHP suite and five in the browser. By family:
 > - **Delete forever** (7: `EntryTrashTest`) — a trashed entry erased with its file, and nothing said; a live one named
 >   and left, alone and in a selection; an erasure custody refused named and kept in the trash, and any other failure
 >   thrown; every entry left named in one notice, with those erased counted, in place of Filament's own only where
@@ -6757,19 +6758,20 @@ When it lands:
 > - **Restore** (2: `EntryTrashTest`) — a live entry in the selection left unsaved, with no audit row, and a restore that
 >   fails counted and reported. A restored public file on the public disk again is asserted there too.
 > - **Delete** (1: `EntryTrashTest`) — a trashed entry in a selection not trashed again, its date kept.
-> - **The list** (6: `EntryTrashTest`) — the trash filter, named *Trash*; *View* and *Edit* hidden on a trashed entry and
->   shown on a live one, where *Restore* and *Delete forever* are the other way about; the warning with *its file* on a
->   media list alone; *Delete forever* named so, on its button and its confirmation.
+> - **The list** (9: `EntryTrashTest`) — the trash filter, named *Trash*; *View* and *Edit* hidden on a trashed entry
+>   and shown on a live one, where *Restore* and *Delete forever* are the other way about; a trashed row linking
+>   nowhere, and a live one to its view page before its edit page, the link the list's own; the warning with *its file*
+>   on a media list alone; *Delete forever* named so, on its button and its confirmation.
 > - **The tile** (1: `MediaTilesTest`) — a trashed file's tile a badge saying so, public or private, with nothing to
 >   fetch.
 >
-> In the browser, `media-trash.spec.js` (2) — the trash listed by the filter and a trashed article restored from it,
-> with no *View* or *Edit* on its row; one deleted forever after a confirmation saying what it takes; a live article
-> selected beside a trashed one named and left by *Delete selected forever*, the trashed one erased; and a trashed
-> public image's card, its tile the badge and no preview, restored, its file answering at its URL again, where the trash
-> had taken it off — *Restore* and the bulk action's guard removed in turn; and `permissions.spec.js` (2) — a reader
-> holding `view` and `update` and not `delete` sees a trashed article and neither action, `restore` and `forceDelete`
-> asked of another permission in turn.
+> In the browser, `media-trash.spec.js` (3) — the trash listed by the filter and a trashed article restored from it,
+> with no *View* or *Edit* on its row, and no link, where a live row has one; one deleted forever after a confirmation
+> saying what it takes; a live article selected beside a trashed one named and left by *Delete selected forever*, the
+> trashed one erased; and a trashed public image's card, its tile the badge and no preview, restored, its file answering
+> at its URL again, where the trash had taken it off — *Restore*, the bulk action's guard and the row's own link removed
+> in turn; and `permissions.spec.js` (2) — a reader holding `view` and `update` and not `delete` sees a trashed article
+> and neither action, `restore` and `forceDelete` asked of another permission in turn.
 
 ---
 

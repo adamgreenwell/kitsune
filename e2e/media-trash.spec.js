@@ -71,6 +71,9 @@ async function showTrash(page, value) {
     await expect(page.getByRole('button', { name: 'Apply filters' })).toBeHidden();
 }
 
+/** A link to one of the list's entries, its row's or an action's. */
+const ENTRY_LINK = 'a[href*="/c/article/"]';
+
 /** A row, or a card, of the list, by its title. */
 const record = (page, title) => page.locator('.fi-ta-row, .fi-ta-record').filter({ hasText: title });
 
@@ -95,6 +98,8 @@ test('lists the trash, and restores a trashed entry from it', async ({ page }) =
     await page.locator('.fi-ta').getByPlaceholder('Search').fill(PROBE);
     await expect(record(page, `${PROBE} live`)).toHaveCount(1);
     await expect(record(page, `${PROBE} trashed`)).toHaveCount(0);
+    // The control: a live row links to its entry.
+    await expect(record(page, `${PROBE} live`).locator(ENTRY_LINK).first()).toBeVisible();
 
     await showTrash(page, '0');
     await expect(record(page, `${PROBE} trashed`)).toHaveCount(1);
@@ -106,6 +111,8 @@ test('lists the trash, and restores a trashed entry from it', async ({ page }) =
     await expect(trashed.getByRole('button', { name: 'Delete forever' })).toBeVisible();
     await expect(trashed.getByRole('link', { name: 'Edit' })).toHaveCount(0);
     await expect(trashed.getByRole('link', { name: 'View' })).toHaveCount(0);
+    // Nor its row: Filament's own link would fall back to the view page, and a 404 (Codex, #163).
+    await expect(trashed.locator(ENTRY_LINK)).toHaveCount(0);
 
     await trashed.getByRole('button', { name: 'Restore' }).click();
     await (await confirm(page, 'Restore')).getByRole('button', { name: 'Restore', exact: true }).click();

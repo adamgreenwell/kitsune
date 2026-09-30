@@ -459,7 +459,7 @@ class EntryResource extends Resource
             TextColumn::make('status')->badge()->sortable(),
             SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
             ...self::fieldColumns(),
-        ]);
+        ])->recordUrl(self::rowUrl(...));
 
         $warning = static fn (): string => __(self::listsMedia() ? 'kitsune::trash.erase_warning_media' : 'kitsune::trash.erase_warning');
 
@@ -542,6 +542,26 @@ class EntryResource extends Resource
             ->contentGrid(['md' => 2, 'lg' => 3, 'xl' => 4])
             ->recordUrl(null)
             ->modifyQueryUsing(static fn (Builder $query): Builder => $query->with('mediaFile'));
+    }
+
+    /**
+     * A row's link — its view page, or else its edit page, as Filament's own is — and none for a trashed entry.
+     *
+     * ⚠️ FILAMENT'S OWN LINKS A TRASHED ROW TO A 404. It skips a hidden *View* and *Edit*, then falls back to the view
+     * page for any record the policy lets the user view, and that page resolves live entries alone. A trashed entry is
+     * restored or deleted forever from the list, and not opened (ADR-042 decision 31; Codex, #163). A media list's cards
+     * carry no link at all (`asTiles()`).
+     */
+    private static function rowUrl(Entry $record): ?string
+    {
+        $page = match (true) {
+            $record->trashed() => null,
+            static::canView($record) => 'view',
+            static::canEdit($record) => 'edit',
+            default => null,
+        };
+
+        return $page === null ? null : static::getUrl($page, ['type' => $record->type_handle, 'record' => $record]);
     }
 
     /**
