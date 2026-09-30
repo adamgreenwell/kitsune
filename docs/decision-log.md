@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24) · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which closes four of the open questions below · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4025,7 +4025,8 @@ of the admin (see *Open questions*).
 > - **Defaults taken, for Adam to overrule.** A file's title is its name, as `store()` makes it: the modal has no
 >   title field — *kept (Adam, decision 19, 2026-09-30)*. The upload half of the stage measurement stays owed — stage must accept a 4 MB upload first, a runbook
 >   change. And a submitted upload Filament stops before the handler — a validation failure, or a call the user may no
->   longer make — leaves its staged files for the intake sweep's 24 hours, as an abandoned upload does. The staging gate
+>   longer make — leaves its staged files for the intake sweep's 24 hours, as an abandoned upload does — *kept (Adam,
+>   decision 26, 2026-09-30)*. The staging gate
 >   is asked when a file is staged, and admits only users who may upload then — so a user who never could has nothing
 >   staged, and one whose `create` or `publish` is withdrawn between staging and submitting leaves only what they
 >   staged while they held it, for the sweep.
@@ -5298,15 +5299,17 @@ automatically waits for the measurement below.
 >   `<a>`, which would hold the button, and a click on it would be the link's too.
 > - **Defaults taken, for Adam to overrule.**
 >   - A public disk served from another origin — an object store, a CDN, or this host on another scheme or port — keeps
->     its whole URL: its path on the admin's host would answer 404.
+>     its whole URL: its path on the admin's host would answer 404 — *kept (Adam, decision 27, 2026-09-30)*.
 >   - Only the types `MediaDelivery::INLINE` lists are drawn. A sanitised SVG is a badge, as it is an attachment when
 >     served, until someone decides otherwise there — *kept (Adam, decision 21, 2026-09-30)*.
 >   - A card shows no field columns, no type and no status. Filament draws a card's columns asking only whether each is
 >     hidden, never whether it was toggled off, so a type's field columns — hidden by default in a table — would all be
 >     drawn on every card, and the column manager would toggle nothing. A file's fields are on its own page — *kept
 >     (Adam, decision 20, 2026-09-30)*.
->   - An image's `alt` is empty, because the title under it already names it and a screen reader would read it twice.
->   - A tile is the original file, cropped to the square: there are no derivatives in v1.0 (ADR-041).
+>   - An image's `alt` is empty, because the title under it already names it and a screen reader would read it twice —
+>     *kept (Adam, decision 28, 2026-09-30)*.
+>   - A tile is the original file, cropped to the square: there are no derivatives in v1.0 (ADR-041) — *kept (Adam,
+>     decision 29, 2026-09-30)*.
 > - **Not yet:** loading private tiles automatically, which still waits for the measurement below.
 
 **7. A refusal Kitsune makes is shown as Kitsune wrote it, escaped as text, and nothing else is.** `MediaIntake`'s
@@ -5367,6 +5370,36 @@ arrives as Livewire's own "failed to upload".
 >   a file where a root should be is still no directory rather than a refusal. What it costs: every step that asks such
 >   a disk fails until its root can be looked at, so a network mount that is reconnecting stops the trash of a public
 >   file until it is back.
+
+> ⚠️ **Amended 2026-09-30 — Adam's answers to eight more (decisions 26–33).** Four keep what is built; four decide
+> what is not, and each of those is a slice of its own, which records what it built here when it lands. Each is marked
+> where it was asked.
+>
+> - **Staged files a refused submit leaves stay the sweep's (Adam, decision 26).** A submit Filament stops before the
+>   handler — a validation failure, or a call the user may no longer make — leaves what was staged for the intake
+>   sweep's 24 hours: removed at once, a form error would take the files an editor is about to submit again.
+> - **A public tile served from another origin keeps its whole URL (Adam, decision 27)** — an object store, a CDN, or
+>   this host on another scheme or port. Relayed through the admin, every tile would cost the server what the other
+>   origin serves for nothing.
+> - **A tile's `alt` stays empty (Adam, decision 28):** the title under it names it, once.
+> - **A tile stays the original, cropped to its square (Adam, decision 29)** — an even grid, where a very wide or very
+>   tall image shows its middle.
+> - **Location data is stripped from a JPEG as it is made public (Adam, decision 30)** — stored public, or made public
+>   under decision 32. Its EXIF GPS data is removed by removing bytes, not by encoding the image again, so its pixels are
+>   the ones uploaded and its orientation reads as it did. The confirmation for *public* then says so, rather than warn.
+>   Which other types `MediaIntake` accepts carry location, and whether each can lose it the same way, the slice finds
+>   out and records; a private file is served only to those who may view it, and keeps what it was uploaded with.
+> - **A trash view with restore (Adam, decision 31).** Each list offers its trashed entries, with *Restore* — which for
+>   a public file publishes it again, as decision 5 already does — and *Delete forever* for whoever may erase. Erasing
+>   has no undo, so who may is a permission of its own, which the slice proposes under ADR-033.
+> - **A file's visibility can change after upload, both ways (Adam, decision 32).** Whoever may publish the type may
+>   switch it; making a file public asks for the same acknowledgement as uploading it public (decision 15); the bytes
+>   move as a trash and a restore move them, under decision 5's rules; and each switch is audited. It lifts
+>   `visibility` out of `MediaFile::columnsFixedAtCreation()`, for that path alone.
+> - **Each media type names the files it accepts (Adam, decision 33)** — `image`, images alone — within what
+>   `MediaIntake` accepts, never beyond it. A file the type does not take is refused in words naming what it does take:
+>   by the handler always, and on the field before submitting wherever the slice can ask there — the staging endpoint
+>   is told no type today.
 
 ### The measurement this entry still owes
 
@@ -5839,7 +5872,8 @@ the file that should not.
 
 **A public photo can carry its location.** A camera JPEG's EXIF block often holds GPS coordinates, and a public
 file is served exactly as uploaded. Nothing in this design strips it. The confirmation an editor sees on choosing
-*public* (decision 3) names it, and removing it is an open question.
+*public* (decision 3) names it, and removing it is an open question — *decided 2026-09-30: stripped from a JPEG as it
+is made public (Adam, decision 30), and not yet built; until it is, this cost stands.*
 
 **Private thumbnails are worse to use until they are measured.** A grid of placeholders that load on click is a
 real cost to an editor, and it is paid until the number exists.
@@ -6616,7 +6650,8 @@ When it lands:
 - **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
-- **Location data in public photos.** A camera JPEG's EXIF block often holds GPS coordinates, and a public file is
+- **Location data in public photos** — *decided 2026-09-30 (ADR-042, decision 30): stripped from a JPEG as it is made
+  public, not yet built.* A camera JPEG's EXIF block often holds GPS coordinates, and a public file is
   served as uploaded. ADR-042 records the exposure, and the confirmation it decides will name it where an editor
   chooses *public*; nothing removes it. Stripping it without re-encoding is a byte-level segment removal that core has not written, and has to deal
   with EXIF orientation; re-encoding instead needs an image extension core does not require
@@ -6624,10 +6659,12 @@ When it lands:
   build-failing"* — and core's Filament layer carries bare English throughout. ADR-042's media UI is to go through a
   `kitsune` translation namespace so as not to add to it. Either the check is built and the rest extracted, or
   ADR-018 is amended to say when
-- **The admin has no trash view and no restore.** Soft delete is reversible in the model and in nothing an editor
+- **The admin has no trash view and no restore** — *decided 2026-09-30 (ADR-042, decision 31): a trash view with
+  restore, not yet built.* Soft delete is reversible in the model and in nothing an editor
   can reach. ADR-042 decided that restoring a public file moves its bytes back, which is only useful once something
   can call it
-- **A file's visibility cannot change after upload.** Nothing decides whether flipping private to public is allowed,
+- **A file's visibility cannot change after upload** — *decided 2026-09-30 (ADR-042, decision 32): it can, both ways,
+  not yet built.* Nothing decides whether flipping private to public is allowed,
   which action gates it, or how it is audited. (`disk` becomes mutable under ADR-042's decision 5; `visibility` does
   not — and since 2026-09-24 it is fixed at creation, refused at every door (`MediaFile::columnsFixedAtCreation()`),
   so a decision allowing it lifts that guard and moves the file as a trash or a restore does.)
@@ -6641,7 +6678,8 @@ When it lands:
   migration it has already recorded. Each of those changes is therefore absent from any database migrated before it.
   ADR-042 adds `is_media` by a new migration for this reason; whether earlier changes need the same, and whether
   in-place edits stop before v1.0, is undecided
-- **Which files a media type accepts.** A media type accepts anything `MediaIntake` accepts: an mp3 uploaded to
+- **Which files a media type accepts** — *decided 2026-09-30 (ADR-042, decision 33): each media type names them, not
+  yet built.* A media type accepts anything `MediaIntake` accepts: an mp3 uploaded to
   `image` becomes an image entry. Whether a type constrains its accepted MIME types is undecided
 - **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
   `client_max_body_size` is not one, and stage's PHP upload limits are recorded nowhere; a real 4 MB upload settles
