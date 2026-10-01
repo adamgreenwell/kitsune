@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Filament\Actions\CreateAction;
 use Filament\Forms\Components\Checkbox;
+use Filament\Forms\Components\Field;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Radio;
 use Filament\Infolists\Components\ImageEntry;
@@ -36,6 +37,7 @@ use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaLocation;
 use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -44,6 +46,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -474,9 +477,9 @@ describe('who may upload', function (): void {
 });
 
 /** What a field says under itself — its helper text — or null. */
-function helperUnder(FileUpload $field): ?string
+function helperUnder(Field $field): ?string
 {
-    foreach ($field->getChildSchema(FileUpload::BELOW_CONTENT_SCHEMA_KEY)?->getComponents() ?? [] as $component) {
+    foreach ($field->getChildSchema(Field::BELOW_CONTENT_SCHEMA_KEY)?->getComponents() ?? [] as $component) {
         if ($component instanceof Text) {
             return (string) $component->getContent();
         }
@@ -808,4 +811,60 @@ describe('decision 7\'s refusals', function (): void {
         'a path it cannot read' => 'path',
         'a sanitiser that vanished' => 'sanitiser',
     ]);
+});
+
+/*
+ * Where a photo was made — Adam, ADR-042 decision 30. The confirmation says what becomes of it, in words held to the
+ * formats `MediaLocation` strips, and the handler stores a JPEG it confirms public without it.
+ */
+describe('where a photo was made', function (): void {
+    beforeEach(fn () => ($this->grant)('view', 'create', 'publish'));
+
+    it('says what becomes of a JPEG\'s GPS data where public is chosen, rather than warn that nothing removes it', function (): void {
+        $components = uploadComponents(MediaUpload::action()->getSchema(Schema::make(app(ListEntries::class))));
+        $warning = helperUnder($components['public_confirmed']);
+
+        expect($warning)->toBe(__('kitsune::media.upload.public_warning'))
+            ->toContain('A JPEG loses the GPS coordinates in its EXIF and XMP data as it is made public')
+            ->toContain('every other type of file are served as uploaded')
+            ->not->toContain('nothing removes that');
+    });
+
+    it('names in the confirmation exactly the formats whose location is removed', function (): void {
+        $warning = __('kitsune::media.upload.public_warning');
+
+        foreach (MediaFormats::ALL as $format => ['name' => $name]) {
+            expect(preg_match('/\b'.preg_quote($name, '/').'\b/', $warning))
+                ->toBe(in_array($format, MediaLocation::STRIPPED, true) ? 1 : 0, "The confirmation's words and {$name}");
+        }
+    });
+
+    it('stores a public JPEG without its GPS data once public is confirmed', function (): void {
+        $results = MediaUpload::store($this->user, $this->type, [stagedForUpload(LocatedJpeg::photo(true), 'photo.jpg')], 'public', true, false);
+        $media = MediaFile::query()->firstOrFail();
+
+        expect($results[0]['outcome'])->toBe(MediaUpload::STORED)
+            ->and($media->visibility)->toBe('public')
+            ->and(LocatedJpeg::sentinels(Storage::disk($media->disk)->get($media->path)))->toBe([]);
+    });
+
+    it('stores it as uploaded where public is not confirmed, since it is stored private', function (): void {
+        $results = MediaUpload::store($this->user, $this->type, [stagedForUpload(LocatedJpeg::photo(true), 'photo.jpg')], 'public', false, false);
+
+        expect($results[0]['outcome'])->toBe(MediaUpload::KEPT_PRIVATE)
+            ->and(MediaFile::query()->value('checksum'))->toBe(hash('sha256', LocatedJpeg::photo(true)));
+    });
+
+    it('refuses a public JPEG it cannot strip, in the library\'s words, and stores the rest', function (): void {
+        $results = MediaUpload::store($this->user, $this->type, [
+            stagedForUpload(LocatedJpeg::unremovable(), 'shared.jpg'),
+            stagedForUpload(LocatedJpeg::photo(true), 'photo.jpg'),
+        ], 'public', true, false);
+
+        expect($results[0]['outcome'])->toBe(MediaUpload::REFUSED)
+            ->and($results[0]['reason'])->toStartWith('Refusing [shared.jpg] as public: its GPS data shares bytes with other EXIF data')
+            ->and($results[1]['outcome'])->toBe(MediaUpload::STORED)
+            ->and(MediaFile::query()->count())->toBe(1)
+            ->and(stillStaged())->toBe([]);
+    });
 });

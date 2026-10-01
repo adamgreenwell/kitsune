@@ -1,4 +1,5 @@
 // @ts-check
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -53,11 +54,25 @@ function intake() {
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const png = (name) => ({ name, mimeType: 'image/png', buffer: PNG });
 
+/**
+ * Bytes from the PHP suite's own fixture (`tests/Core/Fixtures/LocatedJpeg.php`), which needs no autoloader — CI's browser
+ * job installs the skeleton alone.
+ */
+function locatedJpeg(expression) {
+    return Buffer.from(execFileSync('php', ['-r', `require 'tests/Core/Fixtures/LocatedJpeg.php'; echo base64_encode(\\Kitsune\\Core\\Tests\\Fixtures\\LocatedJpeg::${expression});`], {
+        cwd: path.join(__dirname, '..'),
+        encoding: 'utf8',
+    }), 'base64');
+}
+
+const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
 /** The media_files row and entry for an uploaded title, or null. */
 function stored(title) {
     const row = tinker("$e = \\Kitsune\\Core\\Models\\Entry::withoutScopeBecause('reading a browser-test upload', fn ($q) => $q->where('title', "
-        + JSON.stringify(title) + ")->first()); echo json_encode($e === null ? null : ['id' => $e->id, 'site_id' => $e->site_id, 'status' => $e->status,"
-        + " 'visibility' => DB::table('media_files')->where('entry_id', $e->id)->value('visibility'), 'disk' => DB::table('media_files')->where('entry_id', $e->id)->value('disk'), 'path' => DB::table('media_files')->where('entry_id', $e->id)->value('path')]);");
+        + JSON.stringify(title) + ")->first()); $f = $e === null ? null : DB::table('media_files')->where('entry_id', $e->id)->first();"
+        + " echo json_encode($e === null ? null : ['id' => $e->id, 'site_id' => $e->site_id, 'status' => $e->status,"
+        + " 'visibility' => $f->visibility, 'disk' => $f->disk, 'path' => $f->path, 'checksum' => $f->checksum, 'size_bytes' => (int) $f->size_bytes]);");
 
     return JSON.parse(row);
 }
@@ -366,9 +381,68 @@ test.describe('uploading through the media list', () => {
             await expect(dialog.getByText(/served to anyone who has its link/)).toHaveCount(0);
             await dialog.getByRole('radio', { name: /^Public/ }).check();
             await expect(dialog.getByText(/served to anyone who has its link/)).toBeVisible();
-            await expect(dialog.getByText(/may also carry the place it was taken/)).toBeVisible();
+            await expect(dialog.getByText(/loses the GPS coordinates in its EXIF and XMP data as it is made public/)).toBeVisible();
+            await expect(dialog.getByText(/every other type of file are served as uploaded/)).toBeVisible();
         } finally {
             removeUploads([title]);
+        }
+    });
+
+    /*
+     * ⚠️ WHERE A PHOTO WAS MADE, GONE FROM WHAT THE WEB SERVES — Adam, ADR-042 decision 30. Asked of the web server, at
+     * the file's public URL, and of the browser, which must still draw it turned as it was: Orientation 6 makes the 16×8
+     * picture 8 wide and 16 tall. The control is the same photo uploaded private, served through the panel as uploaded.
+     */
+    test('serves a public JPEG without its GPS data, its picture and orientation as uploaded, beside a private one kept as it was', async ({ page }) => {
+        const titles = ['upload-probe-located-public', 'upload-probe-located-private'];
+        const photo = locatedJpeg('photo(true)');
+        const body = locatedJpeg('body()');
+
+        try {
+            await page.goto('/admin/golfdom/c/image');
+            await upload(page, [{ name: `${titles[0]}.jpg`, mimeType: 'image/jpeg', buffer: photo }], { visibility: 'public', confirm: true });
+            await expect(page.locator('.fi-no-notification').filter({ hasText: 'The file was uploaded' })).toBeVisible({ timeout: 15_000 });
+
+            const row = stored(titles[0]);
+            const served = await page.request.get(`/storage/${row.path}`);
+            expect(served.status()).toBe(200);
+            expect(served.headers()['content-type']).toContain('image/jpeg');
+            const bytes = await served.body();
+
+            expect(bytes.length).toBe(photo.length);
+            expect(row.size_bytes).toBe(bytes.length);
+            expect(row.checksum).toBe(sha256(bytes));
+            expect(row.checksum).not.toBe(sha256(photo));
+            expect(bytes.includes('SENTINEL-')).toBe(false);
+            expect(bytes.includes('GGGGPPPP')).toBe(false);
+            for (const kept of ['TRAILER-KEPT', 'Kept City', 'PAYLOAD!', 'hdrgm:Version="1.0"']) {
+                expect(bytes.includes(kept)).toBe(true);
+            }
+            for (let at = photo.indexOf(body); at !== -1; at = photo.indexOf(body, at + 1)) {
+                expect(bytes.subarray(at, at + body.length).equals(body)).toBe(true);
+            }
+
+            const drawn = await page.evaluate(async (src) => {
+                const image = new Image();
+                image.src = src;
+                await image.decode();
+
+                return [image.naturalWidth, image.naturalHeight];
+            }, `/storage/${row.path}`);
+            expect(drawn).toEqual([8, 16]);
+
+            await page.goto('/admin/golfdom/c/image');
+            await upload(page, [{ name: `${titles[1]}.jpg`, mimeType: 'image/jpeg', buffer: photo }], { visibility: 'private' });
+            await expect(page.locator('.fi-no-notification').filter({ hasText: 'The file was uploaded' }).last()).toBeVisible({ timeout: 15_000 });
+
+            const kept = stored(titles[1]);
+            expect(kept.visibility).toBe('private');
+            expect(kept.checksum).toBe(sha256(photo));
+            const opened = await page.request.get(`/admin/golfdom/media/${kept.id}`);
+            expect(opened.status()).toBe(200);
+            expect((await opened.body()).equals(photo)).toBe(true);
+        } finally {
+            removeUploads(titles);
         }
     });
 

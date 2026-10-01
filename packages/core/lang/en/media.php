@@ -43,7 +43,7 @@ return [
         'public' => 'Public',
         'public_help' => 'Opened by anyone who has its link.',
         'public_confirm' => 'Make these files public',
-        'public_warning' => 'A public file is served to anyone who has its link. A photo may also carry the place it was taken, and nothing removes that from a public file. Unless this is ticked, the files are stored private.',
+        'public_warning' => 'A public file is served to anyone who has its link. A JPEG loses the GPS coordinates in its EXIF and XMP data as it is made public, and its picture and orientation stay as uploaded. What else a photo holds — a place name, a camera maker\'s own records, a motion photo\'s video — and every other type of file are served as uploaded, and can still say where they were made. Unless this is ticked, the files are stored private.',
         'site_only' => 'This site only',
         'site_only_help' => 'Unticked, the files are shared with every site in the organisation.',
         'needs_publish' => 'Uploading needs permission to publish :type (:permission): a file is published as it is stored.',
