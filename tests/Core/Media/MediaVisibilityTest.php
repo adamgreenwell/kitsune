@@ -586,6 +586,13 @@ describe('what is refused', function (): void {
 
             return $entry;
         }, 'public', MediaVisibilityRefused::MISSING, 'holds no copy of its file'],
+        // A file its row does not call a JPEG, whose bytes cannot be asked: taken as one, and refused where it is not.
+        'a PNG missing from the disk its row names' => [function (): Entry {
+            $entry = visStored(VISIBILITY_PNG, 'logo.png');
+            unlink(Storage::disk(MediaDisks::PRIVATE)->path(visRow($entry)['path']));
+
+            return $entry;
+        }, 'public', MediaVisibilityRefused::MISSING, 'holds no copy of its file'],
         'unreadable' => [function (): Entry {
             $entry = visStored(LocatedJpeg::photo(true));
             $private = $this->disks[MediaDisks::PRIVATE];

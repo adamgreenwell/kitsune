@@ -152,6 +152,10 @@ it('refuses to open, hash, copy or delete a copy through a read-through disk, wr
         ->and(fn () => MediaBytes::copyVerified('rt', 'bytes-source', $path, hash('sha256', 'bytes')))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(fn () => MediaBytes::copyVerified('bytes-source', 'rt', 'media/1/2026/09/photo.png', $this->hash))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(fn () => MediaBytes::delete('rt', $path))->toThrow(MediaCustodyFailure::class, 'it is a read-through disk, which custody neither reads nor removes a copy through')
+        // ...and decision 32's reads and rewrite: a file's first bytes, its copy into a temporary, its bytes replaced.
+        ->and(fn () => MediaBytes::head('rt', $path, 3))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
+        ->and(fn () => MediaBytes::toTemporary('rt', $path, hash('sha256', 'bytes')))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
+        ->and(fn () => MediaBytes::replaceVerified('rt', $path, __FILE__, hash_file('sha256', __FILE__)))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(MediaBytes::present('rt', $path))->toBeTrue()
         ->and(array_filter(RefusingDisk::$log, static fn (array $event): bool => $event['bytes'] || $event['event'] === 'readStream'))->toBe([])
         ->and(is_file($primary->root().'/'.$path))->toBeFalse()
