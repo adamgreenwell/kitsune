@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33, 31 and 30 record what was built — 30 for a file stored public, its made-public half waiting on decision 32 — *Measured — decision 30* records what that slice measured, *Enforced by* reports each, and decision 30 leaves one question open, for Adam: whether a JPEG stored public before it is stripped · **Amended 2026-10-01** — decision 32 records what was built — *Make public* and *Make private* on a media entry's pages, for whoever may publish its type, each audited; a file made private as a trash withdraws it; a JPEG made public only once its one copy is on the private disk, stripped there under custody's lock with its `checksum` and `size_bytes` rewritten in the statement that writes its `visibility`, and published after the commit; and a file read as a JPEG by its bytes as well as its row — and *Measured — decision 32* and *Enforced by* report it; decision 30's open question is moot (Adam, 2026-10-01): no installation has uploaded anything, so no JPEG was stored public before it, and no backfill is built; and two questions are left open, for Adam: whether custody should refuse to publish a JPEG whose kept copy does not match its checksum, and ~~whether a list switches many files at once~~ *whether a list switches many files at once — answered the same day: it does (Adam, decision 34)*; decision 34 records what was built — *Make selected public* and *Make selected private* on a media list, for whoever may publish its type, one acknowledgement for the selection, each file switched on its own through decision 32's door, one notification saying what became of every file, at most 50 at a time and none started past the request's budget — and *Measured — decision 34* and *Enforced by* report it; decision 31's note that Filament asks the policy for each record of a bulk action is corrected; and decision 34 leaves one question open, for Adam: whether *Make private* should reach a file in the trash · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28; and `visibility`, with a JPEG made public `checksum` and `size_bytes`, change after creation through the visibility switch alone, amended 2026-10-01) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33, 31 and 30 record what was built — 30 for a file stored public, its made-public half waiting on decision 32 — *Measured — decision 30* records what that slice measured, *Enforced by* reports each, and decision 30 leaves one question open, for Adam: whether a JPEG stored public before it is stripped · **Amended 2026-10-01** — decision 32 records what was built — *Make public* and *Make private* on a media entry's pages, for whoever may publish its type, each audited; a file made private as a trash withdraws it; a JPEG made public only once its one copy is on the private disk, stripped there under custody's lock with its `checksum` and `size_bytes` rewritten in the statement that writes its `visibility`, and published after the commit; and a file read as a JPEG by its bytes as well as its row — and *Measured — decision 32* and *Enforced by* report it; decision 30's open question is moot (Adam, 2026-10-01): no installation has uploaded anything, so no JPEG was stored public before it, and no backfill is built; and two questions are left open, for Adam: whether custody should refuse to publish a JPEG whose kept copy does not match its checksum, and ~~whether a list switches many files at once~~ *whether a list switches many files at once — answered the same day: it does (Adam, decision 34)*; decision 34 records what was built — *Make selected public* and *Make selected private* on a media list, for whoever may publish its type, one acknowledgement for the selection, each file switched on its own through decision 32's door, one notification saying what became of every file, at most 50 at a time and none started past the request's budget — and *Measured — decision 34* and *Enforced by* report it; decision 31's note that Filament asks the policy for each record of a bulk action is corrected; and decision 34 leaves one question open, for Adam: whether *Make private* should reach a file in the trash; and Adam's request that *Delete selected* take decision 34's bound and budget (decision 35), and what was built — on a media list, *Delete selected*, *Restore selected* and *Delete selected forever* each act on at most 50 at a time, fetched in one bounded query, none started past the request's budget, each entry on its own outside any transaction, one notification of Kitsune's saying what became of every entry, and the selection kept unless every entry is as asked — with *Measured — decision 35* and *Enforced by* reporting it; an entry loaded from the trash is erased only while it is still there, on every list; decision 34's *Not yet* line on *Delete selected* is struck and its default that *Delete selected* always clears a selection amended; decisions 5 and 31, which keep Filament's count for a failure not Kitsune's, are amended for a media list; and decision 35 leaves one question open, for Adam: whether a list that holds no media should bound its selection too · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28; and `visibility`, with a JPEG made public `checksum` and `size_bytes`, change after creation through the visibility switch alone, amended 2026-10-01) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4279,7 +4279,9 @@ private disk points (Adam, decision 6, 2026-09-25). It repairs both residues thi
 `Entry::query()->delete()` over public media compensates every move made so far when any one fails, and refuses the
 whole delete. The admin's `DeleteBulkAction` deletes record by record, so there each file is withdrawn or refused on
 its own, and the result names which were withdrawn and which were refused, rather than Filament's generic
-partial-failure text. A single delete's refusal is a notification naming the file, never a 500.
+partial-failure text *— and on a media list, since decision 35, at most 50 at a time within the request's budget, in
+one notification of Kitsune's that counts those deleted as well (decision 35, as built)*. A single delete's refusal is a
+notification naming the file, never a 500.
 
 ⚠️ **The cost of doing it inside the write.** The rows stay locked while their bytes move and are checksummed. For two local disks on
 one filesystem a move can be a rename; across filesystems or drivers it is a copy of up to 64 MiB, and on SQLite
@@ -4387,9 +4389,11 @@ bulk paths both arrive, and restore likewise.
 >   configured public disk; every other row, `local`'s included, is delivered through the route that authorises first.
 > - **The admin, as decided; built.** The bulk delete deletes each entry on its own, names every entry it could not
 >   take off the web and counts the rest, and replaces Filament's own "could not be deleted" when every failure was such
->   a refusal — any other failure keeps Filament's count, which is what reports it; a single delete's refusal is a
->   notification naming the entry, and leaves the page's record as it was. Both are escaped as text (decision 7),
->   because Filament keeps markup in a notification.
+>   a refusal — any other failure keeps Filament's count, which is what reports it *— on a list that holds no media;
+>   on a media list, since decision 35, Filament never loads the selection and has no count: Kitsune's is the only
+>   notification, and a failure not Kitsune's is reported once and named in words that claim nothing (decision 35, as
+>   built)*; a single delete's refusal is a notification naming the entry, and leaves the page's record as it was.
+>   Both are escaped as text (decision 7), because Filament keeps markup in a notification.
 > - **Prune keeps and lists.** ~~A file no row claims whose path a row names on the other media disk, where that row's
 >   own disk does not hold it, is the live copy in the wrong place.~~ A file at a path any row names, on any disk, is
 >   kept and listed, whatever disk it is on and whatever it holds: each may be the only good copy — until 5b, which
@@ -5484,14 +5488,16 @@ arrives as Livewire's own "failed to upload".
 >   no media — because the database takes an erased entry's revisions and its relations, both ways, with it. It is
 >   decision 5's erasure: every copy the web serves withdrawn before the commit, the rest disposed of after, and the
 >   erasure audited. One custody refuses is named, as a refused trash is (`EntryTrash`), and stays in the trash; any
->   other failure is Filament's.
+>   other failure is Filament's *— on a list that holds no media; on a media list it is named in Kitsune's one
+>   notification (decision 35)*. *An entry restored since the list loaded it is not erased: the erasure refuses an
+>   instance loaded from the trash that is no longer there, under its own lock (review of decision 35).*
 > - **Defaults taken, for Adam to overrule.**
 >   - *Delete forever* takes what is in the trash and nothing else. Filament's filter can list live and trashed entries
 >     together, and its bulk action would erase a live one outright, past the trash; a live entry in the selection is
 >     named — *"it is not in the trash. Move it to the trash first."* — and left.
 >   - A selection mixing the two is otherwise taken as meant: *Delete selected* leaves what is already trashed as it
 >     was, rather than trash it again and move its date, and *Restore selected* leaves what is live, rather than save
->     it again for nothing.
+>     it again for nothing. *On a media list each is counted and said (decision 35).*
 >   - The trash is emptied by hand: nothing deletes a trashed entry forever on a schedule.
 > - **Not yet:** a trashed entry's own page, its history among it — the list is where it is restored or erased — and
 >   restoring a trashed entry's older version, which waits on that page.
@@ -5739,13 +5745,120 @@ arrives as Livewire's own "failed to upload".
 >   - No early stop: every file is tried, since one refused does not say another is.
 >   - A trashed file is named, not skipped, and one already private made private counts as already so.
 >   - The list's order; one notification; generic failures named together and never worded as certain.
->   - The selection kept unless every file is as asked; *Delete selected* always clears it.
+>   - ~~The selection kept unless every file is as asked; *Delete selected* always clears it.~~ *The selection kept
+>     unless every file is as asked — and since decision 35, on a media list, unless every entry *Delete selected*,
+>     *Restore selected* or *Delete selected forever* reaches is as asked; on every other list *Delete selected* still
+>     clears it.*
 >   - The modal counts the selection and its shared files on each render of the open modal.
 > - **Open, for Adam** — whether *Make private* should reach a file in the trash (*Open questions*).
-> - **Not yet:** the same bound and budget for *Delete selected*, which a select-all reaches across the list and whose
->   fifty 64 MiB trashes take about 32 s (*Measured — decision 32*); a card's checkbox named by its file — Filament
->   names it *"Select/deselect item 12 for bulk actions"*, by entry id, which a lang string cannot change; a console
->   command switching many files; and the stage measurement (*The measurement this entry still owes*).
+> - **Not yet:** ~~the same bound and budget for *Delete selected*, which a select-all reaches across the list and whose
+>   fifty 64 MiB trashes take about 32 s (*Measured — decision 32*);~~ *built for a media list, with *Restore selected*
+>   and *Delete selected forever* — decision 35, as built, below; a list that holds no media is left open (*Open
+>   questions*);* a card's checkbox named by its file — Filament names it *"Select/deselect item 12 for bulk
+>   actions"*, by entry id, which a lang string cannot change; a console command switching many files; and the stage
+>   measurement (*The measurement this entry still owes*).
+
+> ⚠️ **Amended 2026-10-01 — Adam's request that *Delete selected* take decision 34's bound and budget (decision 35).**
+> It was decision 34's first *Not yet*. A media list's *Delete selected* had Filament load its whole selection before
+> deleting any of it, however the selection was made — a page ticked after another, or a request written by hand — and
+> fifty 64 MiB trashes take about 32 s (*Measured — decision 32*), past PHP's usual limit, where a run stopped part-way
+> ends in an error with every entry before it deleted and none of it said.
+>
+> - **A media list's selection is removed as it is switched (Adam, decision 35).** *Delete selected* takes decision
+>   34's bound, budget and one notification, and so do *Restore selected* and *Delete selected forever*, which loaded
+>   their selections the same way; a restored public file costs more than a trash (*Measured — decision 5*).
+
+> ⚠️ **Amended 2026-10-01 — decision 35 as built.**
+>
+> - **Where.** A media list's *Delete selected*, *Restore selected* and *Delete selected forever*, after decision 34's
+>   two (`MediaBulkRemoval`). They stay Filament's own `DeleteBulkAction`, `RestoreBulkAction` and
+>   `ForceDeleteBulkAction`, so who may is still the policy's `deleteAny`, `restoreAny` and `forceDeleteAny` —
+>   `entry.{type}.delete` — and each is hidden by the trash filter as Filament hides it. A host's
+>   `authorizeIndividualRecords()` is asked of each entry, as Filament asks it of the records it loads, and an entry it
+>   refuses is named in its answer's words. Every other list's three are as they were (*Open questions*).
+> - **Handed the selection as a query, never as records.** A handler that takes records has Filament load the whole
+>   selection, sorted and eager-loaded, before it sees any; one that takes the query loads nothing and fetches itself.
+>   Filament then counts nothing, so its own notifications are off and the handler says success or failure itself.
+> - **Bounded and budgeted, as decision 34's switch** (`BulkSelection`, which all five share). At most 50, fetched in one
+>   query of at most 51 in the list's order, or none — refused whole, nothing changed, the modal saying so before it is
+>   submitted: *"At most 50 entries are deleted at a time, and 51 are selected, so as it is nothing will be deleted.
+>   Select fewer first."* Refused, not cut, since under *Everything* a cut would fetch the same 50 already as asked on
+>   every run. No entry started once half PHP's `max_execution_time`, at most 15 s, has passed since the handler began,
+>   before the fetch (Codex, #166); the first entry that needs work always started; the rest counted, not tried, and
+>   left selected. An entry that needs no work — in the trash for *Delete selected*, out of it for *Restore selected* —
+>   is counted whatever the budget and is never the first tried; a live entry selected for *Delete selected forever*,
+>   and one a host's `authorizeIndividualRecords()` refuses, is named whatever the budget, since naming it writes
+>   nothing.
+> - **Each entry on its own, outside any transaction.** One after another in the list's order, each committing — and,
+>   restored, publishing; erased, disposing — before the next begins. None encloses them, a host panel's
+>   `databaseTransactions()` included: one would hold every trash's lock, on SQLite the database's write lock, to its
+>   end, and put every publication and disposal after the loop and past the budget.
+> - **An entry loaded from the trash is erased only while it is still there.** A run goes on for up to 15 s, and an
+>   entry restored meanwhile is live: the erasure asks, under the lock it already takes, whether an instance loaded from
+>   the trash is still in it, and refuses one that is not (`Entry::refuseIfTheRowMovedUnderneath()`) — on every list,
+>   since every erasure of a loaded instance passes there. An instance loaded live is still erased, as a choice made
+>   about a live entry. On a media list the entry is named as live, in decision 31's words; nothing is reported.
+> - **One notification, Kitsune's alone, saying what became of every entry**, escaped (decision 7), its title answering
+>   whether it worked in a colour that does not contradict it.
+>   - A refusal is named: a file that could not leave the web, in decision 5's words; an erasure custody refused; a
+>     live entry in *Delete selected forever*, *"it is not in the trash. Move it to the trash first."*, as decision 31
+>     has it.
+>   - A failure not Kitsune's to word: the first is reported, its message unshown. Its row is read again, for a COMMIT
+>     that reported failure may have landed, and counted as what it now is, or named with the others in one line,
+>     *"… may not have been deleted: something went wrong"*.
+>   - A restored public file whose publication failed is named, with one `kitsune:media-reconcile --entry=… --force`;
+>     its entry is restored, which is no failure. One whose file cannot be read afterwards is named so too, never said
+>     to be on the web.
+>   - Entries removed and entries already as asked are counted; already so is no failure.
+>   - Selected entries no longer on the list are read where they are now, in one statement, through the list's own
+>     query — its type, site and organisation, below its filters, so another site's or organisation's entry is never
+>     read. One the action would have made so — trashed since, for *Delete selected*; out of the trash, for *Restore
+>     selected*; found nowhere, for *Delete selected forever* — is counted as already so, which is how a second run sees
+>     the first's work; the rest are said, *"no longer on this list, and left as it was"*.
+> - **The selection kept unless every entry is as asked**, so a run the budget stopped goes on with what was ticked.
+>   While it is kept the bar's count includes the entries the run already removed, which the next run counts as already
+>   so. Decision 34's default that *Delete selected* always clears it is amended for a media list.
+> - **Review found** — an adversarial review, each finding reproduced by an independent skeptic: thirteen confirmed,
+>   one of them by two reviewers, and all fixed.
+>   - *Delete selected forever* erased an entry restored while the run went on, deciding from the row as the list had
+>     loaded it. It is now refused under the erasure's own lock, on every list.
+>   - An entry another editor trashed or restored since the list loaded it was written again: its date moved, and a
+>     change nobody made was audited. Each entry is now read again just before its write.
+>   - Where the keys that left the list are now was read in two statements, so a change between them could count fewer
+>     than none.
+>   - A host's `authorizeIndividualRecords()` was passed over, since Filament asks it only of the records it loads.
+>   - Nine tests would have let a mutation pass: a transaction around the whole selection; the escaping of four of the
+>     body's lines; Restore's and Delete forever's reading of the keys that left; a restore with one file published and
+>     another not; an erasure whose COMMIT landed; the title's and colour's order; every other list's three; a file whose
+>     state cannot be read after its restore; and a failure reported once across the loop and the read after it.
+>   - The browser told a restore published from one not yet published by words both begin with, and left the page at
+>     ten a page without waiting for the server to keep it.
+>   - Kept, as the recorded default: a key *Delete selected forever* cannot find through the list reads as already
+>     deleted forever (*Defaults*, below).
+> - **Defaults taken, for Adam to overrule.**
+>   - Media lists only; every other list is unchanged (*Open questions*).
+>   - All three removals, not *Delete selected* alone.
+>   - At most 50, refused whole, counting every entry the selection's query holds — the trash included under
+>     *Everything*.
+>   - Decision 34's budget: half the limit, at most 15 s, from the handler's start; the first entry that needs work
+>     always started, the rest counted and left selected.
+>   - One notification, Kitsune's, on success too: a media list no longer shows Filament's *"Deleted"* or
+>     *"Restored"*; every other list keeps them.
+>   - The selection kept unless every entry is as asked — a live entry in *Delete selected forever* included.
+>   - Entries already as asked counted, not failed: decision 31's skips, said aloud.
+>   - Selected entries gone from the list read where they are now; those the action would have made so counted as
+>     already so, the rest said as gone. A key the list cannot find, in *Delete selected forever*, reads as already
+>     deleted forever: only a request written by hand holds a key this list never listed, and a read outside the
+>     list's scope would tell it what other organisations hold.
+>   - Failures not Kitsune's read again and named together in words that claim nothing; only the first reported.
+>   - A restored file not yet published is no failure: named with its reconcile command, and the selection cleared.
+>   - No transaction around any of the three, a host's included.
+>   - The modal notes the bound above 50, and *Delete selected forever* says what it takes; Filament's own headings
+>     are kept.
+>   - The words count entries, and never claim that a deleted file left the web.
+> - **Open, for Adam** — whether a list that holds no media should bound its selection too (*Open questions*).
+> - **Not yet:** the modal counting the selection's shared files, as decision 34's does; a console command removing or
+>   emptying many at once; and the stage measurement (*The measurement this entry still owes*).
 
 ### The measurement this entry still owes
 
@@ -5762,6 +5875,9 @@ time and peak memory for several files at that ceiling, against PHP-FPM's `max_e
 *Added 2026-10-01 (decision 34):* and a *Make selected public* there, for a page of 50 files at 4 MB and at 12 MiB,
 and of 10 at 64 MiB — how many files the budget reaches, wall and CPU time, and peak memory, with FPM's
 `request_terminate_timeout` and nginx's `fastcgi_read_timeout` recorded beside them.
+
+*Added 2026-10-01 (decision 35):* and a *Delete selected* and a *Restore selected* there, of 50 files at 4 MB and of
+10 at 64 MiB — how many the budget reaches, wall and CPU time, and peak memory, beside FPM's and nginx's timeouts.
 
 **Before the code merges**, not later: the media list's and the relation picker's query plans and timings at 100k
 rows on all four engines, under decision 2's widened scope, with the shape that keeps an ordered index read pinned
@@ -6225,6 +6341,29 @@ owes.
   private again: 0.11 s each. A page of fifty 1×1 PNGs made public: 0.27 s, 5.4 ms a file.
 - **The open modal.** Six queries for its heading and its description with fifty selected, 4.9 ms.
 
+### Measured — decision 35, 2026-10-01
+
+Taken where this slice was built — PHP 8.4, SQLite, local disks — through the handler, as the system, under a
+`max_execution_time` of 30 s and so a budget of 15 s; not on stage, so none of it is the measurement this entry still
+owes.
+
+- **A page of large public files stops at the budget and says so.** Fifty of 63 MiB, *Delete selected*: 22 trashed in
+  15.27 s, 0.69 s each, 94% of it CPU time, which PHP's limit counts; the 22nd ended 0.27 s past the budget, and the
+  notice said 28 were not tried. *Restore selected* on fifty in the trash: 14 restored in 16.05 s, 1.15 s each, 96% CPU
+  — a restore costs more than a trash, as *Measured — decision 5* has it — the 14th ending 1.05 s past.
+- **Deleting forever from the trash is cheap.** The same fifty, already private: 1.94 s, 0.04 s each, 18% CPU — their
+  bytes are unlinked, not read.
+- **Smaller files fit whole.** Fifty of 4 MiB: trashed in 2.05 s, restored in 3.89 s. Fifty 1×1 PNGs trashed in
+  0.16 s, 3 ms each.
+- **Memory.** At most 2.4 MiB above the call's start at its peak, whatever the files' size.
+- **The open modal.** One query and 1.4 ms for its words with 51 selected; refused on submit in two queries, 12.6 ms,
+  51 rows loaded.
+- **A list that holds no media, unchanged** (*Open questions*). A select-all *Delete selected* of articles as Filament's
+  path runs it — the selection fetched whole, then each deleted on its own — on SQLite files, each delete committing:
+  1,000 in 3.0 s (1.8 s CPU, 6.4 MiB at its peak); 10,000 in 32.9 s, 3.3 ms each (19.3 s CPU, 48.7 MiB). Past a 30 s
+  wall clock where FPM or nginx counts one, and PHP's 30 s of CPU spent at about 15,000. (Inside the test suite's
+  enclosing transaction the same 10,000 took 105 s, each write slower than the last; that is the harness, not the path.)
+
 ### What this costs
 
 **Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
@@ -6297,7 +6436,16 @@ editor runs it again on the selection it leaves (*Measured — decision 34*). On
 write lock for its own holds — the switch, its publication and its cleanup — and releases it between files, so a
 rival save, trash or upload during a selection fails as busy during each hold, as during any one switch; on
 PostgreSQL, MySQL and MariaDB it serialises only what touches the same file. **A selection of more than 50 is split
-by hand.**
+by hand** *— on a media list, its removals too since decision 35; every other list's still loads its whole selection
+(*Open questions*)*.
+
+**A media list's selection is deleted, restored or deleted forever one entry after another, inside one request, for
+up to 15 s** (decision 35). A trash copies and re-hashes each public file, and a restore publishes and cleans up after
+each commit, more than a trash costs, both mostly CPU time, which PHP's limit counts — so a page of large public files
+takes more than one run, and the editor runs it again on the selection it leaves (*Measured — decision 35*). While a
+selection is kept, the bar's count includes the entries a run already removed. On SQLite each entry takes the
+database's write lock for its own holds and releases it between entries. **And an erasure of an entry loaded from the
+trash reads its row once more under the lock it already holds**, on every list.
 
 **Private thumbnails are worse to use until they are measured.** A grid of placeholders that load on click is a
 real cost to an editor, and it is paid until the number exists.
@@ -6678,6 +6826,20 @@ When it lands:
   failed; files gone from the list said. More than 50 are refused whole, loading no more than 51, and no file is
   started past the budget, the first always tried. The selection is kept unless every file is as asked. Asserted
   from the rows, the audit log, the disks and the session, and in the browser at `/storage/…`.
+- **A media list's selection removed** *(decision 35, 2026-10-01).* *Delete selected*, *Restore selected* and *Delete
+  selected forever* on a media list stay Filament's own, authorised by the policy's bulk abilities and hidden by the
+  trash filter as Filament hides them, asking a host's `authorizeIndividualRecords()` of each entry, and run outside
+  any transaction under a host's `databaseTransactions()`; every other list's are as they were. Each entry is removed
+  on its own: at a real level 0, a refusal between two others leaves both removed, a COMMIT that does not land leaves
+  only its own entry, one that lands is counted — a trash's and an erasure's alike — and a restored public file is
+  published before the next restore begins. More than 50 are refused whole, loading no more than 51, the modal saying
+  so first. No entry is started past the budget, the first needing work always. An entry loaded from the trash and
+  restored since is not erased, on any list. One notification per call: each refusal named, escaped; a failure not the
+  editor's reported once and named in words that claim nothing; a restored file not yet published named with its
+  command; entries already so counted, not failed; entries gone from the list said, read in one statement, those the
+  action would have made so counted as already so, another site's or organisation's never read. The selection is kept
+  unless every entry is as asked. Asserted from the rows, the disks, the audit log and the session, and in the browser
+  at `/storage/…`.
 - **Authorisation.** A user without `create` sees no Upload; one with `create` but not `publish` sees it disabled
   with the reason; a forged call from either stores nothing on any disk.
 - **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance and
@@ -6689,8 +6851,10 @@ When it lands:
   nothing, leaving the file on the private disk; a soft delete withdraws a public copy at the file's path that the row
   does not name, and when that copy is the only one it is moved rather than deleted; a truncated private copy at the
   path does not count as a copy — withdrawal re-copies, and the public source survives; the admin's bulk delete names
-  which files were withdrawn and which refused, and the admin shows a refused delete as a notification naming the file
-  rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row names on the other media disk —
+  which files were withdrawn and which refused *— and on a media list counts those deleted and names those refused in
+  one notification, at most 50 at a time within the request's budget (decision 35)*, and the admin shows a refused
+  delete as a notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a
+  live row names on the other media disk —
   while the row is not settled on its own disk; once it is, it removes it as an extra copy (5b) — and
   `kitsune:media-reconcile` reports it read-only and moves it with `--force`, ~~never deleting a sole copy~~ deleting no
   copy until the kept copy is verified on the disk the row's state says — a differing one removed with both hashes
@@ -7242,6 +7406,49 @@ When it lands:
 > In the browser, `media-visibility.spec.js` (4) — the modal's heading counting the selection, and its description,
 > each way.
 
+> ⚠️ **Amended 2026-10-01 — decision 35 landed**, and each guard was removed in turn and its test watched fail, beside a
+> run of the same tests passing unmutated: 152 mutations, 142 in the PHP suite and ten in the browser.
+>
+> - **The first run.** Of the first 122, run before review, 111 were caught. The eleven that survived each pointed at a
+>   test missing, and each was added: a restore throwing custody's refusal; an entry, a file and an erasure whose row
+>   cannot be read again; Restore's reading of a key still in the trash that left the list; the whole selection
+>   already so, those that left included, counted whole; the title's count beside entries already so, and beside
+>   files not yet published; nothing said under *none*; and an entry with no title, named by its number.
+> - **The review's twenty**, added with its fixes, and the whole set run again on the code as it merges: 141 caught at
+>   first. The one survivor was every other list's *Restore selected* given back to Filament's own, which restores a
+>   live entry again with no row to show for it; the test now listens for the restore it must not hear.
+>
+> By family, all in `MediaBulkRemovalTest` but where named:
+> - **The actions** (17; one in `EntryTrashTest`) — on a media list alone, every other list's three as they were
+>   through the page, Filament's classes and labels, each given its own verb, the modal's note, no transaction under a
+>   host's, Filament's notices off, the selection cleared on success alone.
+> - **The bound** (16; one in `BulkSelectionTest`) — the query's limit and its use, fifty and fifty-one, the refusal's
+>   words per verb, a failure, danger and kept, escaped; the modal's note at fifty-one, per verb, counted, not fetched.
+> - **The budget** (12; two in `BulkSelectionTest`) — the gate's three clauses, at the deadline, half the limit, at
+>   most fifteen, fifteen with none, PHP's limit read, the clock before the fetch; what needs no write never the first.
+> - **What needs no write** (6) — already so each way, counted; a live entry in *Delete forever* named whatever the
+>   budget, in decision 31's words, escaped.
+> - **The removals** (23; one in `MediaBulkRemovalLevelZeroTest`) — each verb's own write and its result; refusals
+>   caught and worded per verb, a restore's never; reported once; read again, per verb, and claiming nothing unread; a
+>   model event that said no; a restored file not yet published, its command and its ids.
+> - **What left the list** (11) — the keys read, through the list's own query, the trash included, per verb; read
+>   failing, reported once and said; gone and already counted.
+> - **Status** (4) — not tried and failed not done, success otherwise, the one notification sent.
+> - **The notification** (31) — each title in its order and colour, persistent where it must stay, each line and its
+>   count, the command, the separator, the escaping.
+> - **What the page hands it** (5; two in `BulkSelectionTest`) — the keys selected, unique, none under a select-all,
+>   the list's query, titles quoted.
+> - **The review's fixes** (17; one in `StaleRowWriteTest`, one in `MediaBulkRemovalLevelZeroTest`) — the erasure's
+>   guard, and not on an instance loaded live; an entry restored since named as live, and claiming nothing unread; one
+>   statement; a host's `authorizeIndividualRecords()` asked, its message, escaped, whatever the budget; each counted
+>   line escaped; an erasure whose COMMIT landed; each entry read again before its write; no transaction around the
+>   selection.
+>
+> In the browser, `media-bulk-removal.spec.js` (10) — Filament's notices back on, each way; the selection cleared
+> always and never; the modal's note and its erasure warning; the bound; the media list wired as any other; and the
+> handler's injected page. An eleventh, the selection's query renamed, survived as no mutation at all: Filament
+> resolves a `Builder` by its type when its name is not one it knows, and was replaced by one that breaks.
+
 ---
 
 ## Open questions
@@ -7256,6 +7463,14 @@ When it lands:
   trashed while public stays set public, and a restore publishes it again; its visibility can be changed only by
   restoring it — which publishes it — and then making it private. *Make selected private* over *Everything* says so
   of each such file. Raised by ADR-042 decision 34, as built.
+- **Should a list that holds no media bound its selection too?** Decision 35 bounds a media list's *Delete selected*,
+  *Restore selected* and *Delete selected forever*; every other list's still have Filament load the whole selection
+  before the first entry is touched, and its *Select all* selects the whole filtered list across pages. An article's
+  trash costs about 3 ms, so a select-all of 10,000 takes 33 s (*Measured — decision 35*) and the budget would bind
+  there only for large selections; the bound would bind sooner, refusing a *Select all* of more than 50 that an editor
+  has today, unless that list's select-all became its page too or it took a larger bound. Unbounded, a large enough
+  selection reaches PHP's time or memory limit and ends in an error, every entry before it removed and none of it
+  said. Raised by ADR-042 decision 35, as built.
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
   admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
   to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it

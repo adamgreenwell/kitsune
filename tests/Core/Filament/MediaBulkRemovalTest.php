@@ -338,9 +338,17 @@ describe('the actions', function (): void {
             collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === $name)->call();
         };
 
-        // Delete selected leaves the one already in the trash as it was; Restore selected, the live one.
+        // Delete selected leaves the one already in the trash as it was; Restore selected, the live one — not
+        // restored again, so no host listening for a restore hears of one that did not happen.
+        $restoring = [];
+        Entry::restoring(static function (Entry $entry) use (&$restoring): void {
+            $restoring[] = (int) $entry->id;
+        });
+        $audits = DB::table('audit_log')->count();
         $call('restore');
         expect(DB::table('entries')->where('id', $live->id)->value('updated_at'))->toBe($updatedAt)
+            ->and($restoring)->toBe([(int) $trashed->id])
+            ->and(DB::table('audit_log')->count())->toBe($audits + 1)
             ->and(bulkRmWhere($trashed))->toBe('live');
 
         $trashed->refresh()->delete();
