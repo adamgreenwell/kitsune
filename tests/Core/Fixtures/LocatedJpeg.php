@@ -379,7 +379,7 @@ final class LocatedJpeg
     /** A temporary file holding the bytes, for the caller to remove. */
     public static function file(string $bytes, string $prefix = 'kitsune-loc-'): string
     {
-        $path = (string) tempnam(sys_get_temp_dir(), $prefix);
+        $path = (string) tempnam(sys_get_temp_dir(), $prefix.getmypid().'-');
         file_put_contents($path, $bytes);
 
         return $path;

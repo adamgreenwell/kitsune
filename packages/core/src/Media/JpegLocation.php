@@ -49,6 +49,7 @@ use Throwable;
  */
 final class JpegLocation
 {
+    /** What a copy is named in the system's temporary directory: this, the process's id, and a dash. */
     public const TEMPORARY_PREFIX = 'kitsune-jpeg-';
 
     /** ExifTool's rule: up to four stray bytes, then `Exif\0` in any case, and something after it. */
@@ -187,7 +188,7 @@ final class JpegLocation
             $previous = $at + $length - 1;
         }
 
-        $copy = tempnam(sys_get_temp_dir(), self::TEMPORARY_PREFIX);
+        $copy = tempnam(sys_get_temp_dir(), self::TEMPORARY_PREFIX.getmypid().'-');
 
         if ($copy === false) {
             throw new RuntimeException('Cannot strip media: no temporary file could be made.');

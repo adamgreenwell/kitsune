@@ -23,14 +23,15 @@ use Kitsune\Core\Tests\Fixtures\LocatedJpeg as J;
  */
 
 afterEach(function (): void {
-    foreach ([...glob(sys_get_temp_dir().'/kitsune-loc-*') ?: [], ...glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []] as $leftover) {
+    // This process's own: a parallel run's other processes have theirs in flight.
+    foreach ([...glob(sys_get_temp_dir().'/kitsune-loc-'.getmypid().'-*') ?: [], ...glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.getmypid().'-*') ?: []] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function locationTemporaries(): int
 {
-    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []);
+    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.getmypid().'-*') ?: []);
 }
 
 it('strips JPEG alone', function (): void {
