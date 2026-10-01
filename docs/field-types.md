@@ -700,7 +700,8 @@ media_files
 > it, so an import writes no path ending in that suffix.
 
 > ⚠️ **Amended 2026-10-01 by ADR-042 decision 32:** `visibility` changes after creation through *Make public* and *Make
-> private* alone, and with it — where a JPEG made public is stripped of its location — `checksum` and `size_bytes`,
+> private* alone *— one file from its page, or a selection from its list as *Make selected public* and *Make selected
+> private*, each file through the same switch (amended 2026-10-01, ADR-042 decision 34)* — and with it — where a JPEG made public is stripped of its location — `checksum` and `size_bytes`,
 > rewritten in the same statement. Every model door still refuses all three.
 
 A "media picker" field is therefore just **`relation` constrained to media entry types**. No new storage strategy, no second permission model, no parallel search index.
