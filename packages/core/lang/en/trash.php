@@ -25,6 +25,4 @@ return [
     'not_trashed' => 'it is not in the trash. Move it to the trash first.',
     'not_erased' => '":title" was not deleted forever',
     'not_erased_line' => '":title" was not deleted forever: :reason',
-    'not_erased_bulk' => '{1} One entry was not deleted forever|[2,*] :count entries were not deleted forever',
-    'erased_bulk' => '{1} The other entry was deleted forever.|[2,*] The other :count entries were deleted forever.',
 ];

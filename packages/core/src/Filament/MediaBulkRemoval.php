@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament;
 
 use Carbon\CarbonInterface;
+use Closure;
 use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\ForceDeleteBulkAction;
@@ -25,8 +26,9 @@ use Kitsune\Core\Models\Entry;
 use Throwable;
 
 /**
- * A media list's *Delete selected*, *Restore selected* and *Delete selected forever*, at most fifty at a time within
- * the request's budget — Adam, ADR-042 decision 35.
+ * Every entry list's *Delete selected*, *Restore selected* and *Delete selected forever*, at most fifty at a time within
+ * the request's budget — Adam, ADR-042 decisions 35 (a media list's) and 36 (every other list's). Named for the list it
+ * was built for, as `MediaDeletionNotice` serves every entry's *Delete*.
  *
  * @internal
  *
@@ -35,15 +37,19 @@ use Throwable;
  * `forceDeleteAny`, and each is hidden by the trash filter as Filament hides it: never `authorize()`, `hidden()` or
  * `action()` here, which would replace them. `using()` replaces only the body that loads the whole selection.
  *
- * ⚠️ HANDED A QUERY, NEVER RECORDS, BOUNDED AND BUDGETED, as every selection on a media list is (`BulkSelection`): at
+ * ⚠️ HANDED A QUERY, NEVER RECORDS, BOUNDED AND BUDGETED, as every bounded selection is (`BulkSelection`): at
  * most fifty, fetched in one query of at most fifty-one, or none; none started once the budget has passed, the clock
  * taken before the fetch and the first that needs work always started.
  *
- * ⚠️ EACH ENTRY ON ITS OWN, outside any transaction, a host's included: each commits — and, restored, publishes; erased,
- * disposes — before the next begins. One around the loop would hold every trash's lock, on SQLite the database's write
+ * ⚠️ EACH ENTRY ON ITS OWN, outside any transaction, a host's included: each commits — and, a file restored, publishes; a
+ * file erased, disposes — before the next begins. One around the loop would hold every trash's lock, on SQLite the database's write
  * lock, to its end, and put every publication and disposal after it, past the budget.
  *
  * ⚠️ ONE NOTIFICATION, KITSUNE'S ALONE, ESCAPED (decision 7), saying what became of every entry.
+ *
+ * ⚠️ A LIST THAT HOLDS NO MEDIA IS TOLD NOTHING OF FILES (decision 36). Its *Delete selected forever* says the list's own
+ * warning, which `EntryResource` hands in as its row's *Delete forever* says it, and its restore never asks whether a
+ * file is published: it has none, and a read that failed would claim one not yet published, with a command to run.
  */
 final class MediaBulkRemoval
 {
@@ -54,24 +60,30 @@ final class MediaBulkRemoval
     public const ERASE = 'erase';
 
     /**
-     * A media list's three, bounded and budgeted (decision 35).
+     * Every entry list's three, bounded and budgeted (decisions 35 and 36).
      *
+     * @param  Closure(): string  $warning  what deleting forever takes with it — the list's own, as its row's *Delete forever* says it
+     * @param  bool  $listsMedia  whether the list's entries hold files, whose restore publishes them
      * @return list<BulkAction>
      */
-    public static function bound(DeleteBulkAction $delete, RestoreBulkAction $restore, ForceDeleteBulkAction $erase): array
+    public static function bound(DeleteBulkAction $delete, RestoreBulkAction $restore, ForceDeleteBulkAction $erase, Closure $warning, bool $listsMedia): array
     {
-        return [self::configure($delete, self::DELETE), self::configure($restore, self::RESTORE), self::configure($erase, self::ERASE)];
+        return [
+            self::configure($delete, self::DELETE, $warning, $listsMedia),
+            self::configure($restore, self::RESTORE, $warning, $listsMedia),
+            self::configure($erase, self::ERASE, $warning, $listsMedia),
+        ];
     }
 
     /**
-     * The modal's words: what deleting forever takes with it, and the bound, before it is submitted — or null, for
-     * Filament's own confirmation.
+     * The modal's words: what deleting forever takes with it, said by *Delete selected forever* alone, and the bound,
+     * before it is submitted — or null, for Filament's own confirmation.
      *
      * @internal
      */
-    public static function note(string $verb, int $selected): ?string
+    public static function note(string $verb, int $selected, ?string $warning = null): ?string
     {
-        $sentences = $verb === self::ERASE ? [__('kitsune::trash.erase_warning_media')] : [];
+        $sentences = $verb === self::ERASE && $warning !== null ? [$warning] : [];
 
         if ($selected > BulkSelection::MOST_AT_ONCE) {
             $sentences[] = __("kitsune::media.removal.{$verb}.too_many_note", ['max' => BulkSelection::MOST_AT_ONCE, 'count' => $selected]);
@@ -88,8 +100,9 @@ final class MediaBulkRemoval
      * @param  Builder<Entry>  $selected
      * @param  ?list<string>  $keys  the keys the editor selected, where the selection is a list of keys
      * @param  ?Builder<Entry>  $list  the list's own query — its type, site and organisation — below its filters
+     * @param  bool  $listsMedia  whether the entries hold files, as `each()` has it
      */
-    public static function selected(BulkAction $action, Builder $selected, string $verb, ?array $keys = null, ?Builder $list = null): void
+    public static function selected(BulkAction $action, Builder $selected, string $verb, ?array $keys = null, ?Builder $list = null, bool $listsMedia = true): void
     {
         // ⚠️ THE CLOCK FIRST, so a slow fetch spends the budget rather than extending it (Codex, #166).
         $until = BulkSelection::deadline();
@@ -101,7 +114,7 @@ final class MediaBulkRemoval
             return;
         }
 
-        self::each($action, $records, $verb, $until, $keys, $list);
+        self::each($action, $records, $verb, $until, $keys, $list, $listsMedia);
     }
 
     /**
@@ -113,8 +126,10 @@ final class MediaBulkRemoval
      * @param  ?CarbonInterface  $until  none started after it; null for no budget
      * @param  ?list<string>  $keys  the keys the editor selected; those not in `$records` have left the list since
      * @param  ?Builder<Entry>  $list  the list's own query, where those that left are read
+     * @param  bool  $listsMedia  whether the entries hold files: a restore then asks each whether it is published. True
+     *                            where unsaid, the direction that never leaves a media file's failed publication unsaid.
      */
-    public static function each(BulkAction $action, iterable $records, string $verb, ?CarbonInterface $until = null, ?array $keys = null, ?Builder $list = null): void
+    public static function each(BulkAction $action, iterable $records, string $verb, ?CarbonInterface $until = null, ?array $keys = null, ?Builder $list = null, bool $listsMedia = true): void
     {
         $budget = BulkSelection::within($until);
         $refused = $failed = $awaiting = $seen = [];
@@ -220,8 +235,12 @@ final class MediaBulkRemoval
                 continue;
             }
 
-            // ⚠️ RESTORED, AND NOT YET ON THE WEB: its publication runs after the commit and logs its failure (decision 5).
-            if ($verb === self::RESTORE && self::awaitsPublication($record)) {
+            /*
+             * ⚠️ RESTORED, AND NOT YET ON THE WEB, where the list holds media: its publication runs after the commit and logs
+             * its failure (decision 5). An entry of a list that holds none has no file to ask after, and a read that failed
+             * would claim one (decision 36).
+             */
+            if ($verb === self::RESTORE && $listsMedia && self::awaitsPublication($record)) {
                 $awaiting[(int) $record->getKey()] = $title;
 
                 continue;
@@ -256,17 +275,22 @@ final class MediaBulkRemoval
         self::summary($verb, count($seen) - $vanished, $notDone, $refused, $failed, $notTried, $awaiting, $done, $already, $gone)->send();
     }
 
-    private static function configure(DeleteBulkAction|RestoreBulkAction|ForceDeleteBulkAction $action, string $verb): BulkAction
+    /**
+     * @param  Closure(): string  $warning
+     */
+    private static function configure(DeleteBulkAction|RestoreBulkAction|ForceDeleteBulkAction $action, string $verb, Closure $warning, bool $listsMedia): BulkAction
     {
         return BulkSelection::oneByOne($action)
             // Counted, never fetched; null falls back to Filament's own confirmation.
-            ->modalDescription(static fn (Builder $selectedRecordsQuery): ?string => self::note($verb, BulkSelection::countOf($selectedRecordsQuery)))
+            ->modalDescription(static fn (Builder $selectedRecordsQuery): ?string => self::note($verb, BulkSelection::countOf($selectedRecordsQuery), $warning()))
+            // ⚠️ By these names: Filament resolves a closure's parameters by name before type.
             ->using(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire) => self::selected(
                 $action,
                 $selectedRecordsQuery,
                 $verb,
                 BulkSelection::keysSelected($livewire),
                 $livewire->getTable()->getQuery(),
+                $listsMedia,
             ));
     }
 

@@ -8,7 +8,6 @@
 
 declare(strict_types=1);
 
-use Filament\Actions\DeleteBulkAction;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Media\MediaDisks;
@@ -128,44 +127,4 @@ it('lets any other failure through', function (): void {
     expect(fn () => MediaDeletionNotice::deleteOne($entry))->toThrow(RuntimeException::class, 'the audit row could not be written');
 
     expect(sentNotices())->toBe([]);
-});
-
-it('deletes each entry on its own, and names every one that stayed, escaped', function (): void {
-    $refused = ($this->store)('<i>Scorecard</i>', 'public');
-    $deleted = ($this->store)('Private notes', 'private');
-    $this->disks['public']->failDeletes = true;
-
-    $action = DeleteBulkAction::make();
-    MediaDeletionNotice::deleteEach($action, [$refused, $deleted]);
-
-    $notices = sentNotices();
-
-    expect(stillLive($refused))->toBeTrue()
-        ->and(stillLive($deleted))->toBeFalse()
-        ->and($notices)->toHaveCount(1)
-        ->and($notices[0]['title'])->toBe('One entry was not deleted; its file could not be taken off the web')
-        ->and($notices[0]['body'])->toStartWith('&quot;&lt;i&gt;Scorecard&lt;/i&gt;&quot; was not deleted: Refusing to trash entry '.$refused->id)
-        ->and($notices[0]['body'])->toEndWith('The other entry was deleted, and its file taken off the web.')
-        ->and($notices[0]['body'])->not->toContain('Private notes')
-        // Instead of Filament's own "could not be deleted", which says less, and would say it twice.
-        ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeTrue();
-});
-
-/** Any other failure keeps Filament's own count, which is the only thing that reports it. */
-it('keeps Filament\'s notification when a failure was not a refusal', function (): void {
-    $refused = ($this->store)('Scorecard', 'public');
-    $failing = ($this->store)('Private notes', 'private');
-    $this->disks['public']->failDeletes = true;
-    AuditorStandIn::install()->beforeRecording(function () use ($failing): void {
-        if (DB::table('entries')->where('id', $failing->id)->whereNotNull('deleted_at')->exists()) {
-            throw new RuntimeException('the audit row could not be written');
-        }
-    });
-
-    $action = DeleteBulkAction::make();
-    MediaDeletionNotice::deleteEach($action, [$refused, $failing]);
-
-    expect(stillLive($refused))->toBeTrue()
-        ->and(stillLive($failing))->toBeTrue()
-        ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeFalse();
 });

@@ -29,7 +29,7 @@ use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
- * A media list's selection removed entry by entry, each COMMIT its own — ADR-042 decision 35, at a real level 0.
+ * An entry list's selection removed entry by entry, each COMMIT its own — ADR-042 decisions 35 and 36, at a real level 0.
  *
  * ⚠️ NO TRANSACTION AROUND A SELECTION. Each entry commits — and, restored, publishes — before the next begins, so an
  * entry refused or a COMMIT that does not land leaves every other as its own write left it, and one that lands and
@@ -174,6 +174,37 @@ it('counts an entry whose erasure COMMIT landed and reported failure as deleted 
         ->and($action->getStatus()->name)->toBe('Success');
 
     Exceptions::assertReportedCount(1);
+});
+
+/* Z7. An article list's selection the same: each article commits on its own, a COMMIT that does not land leaving only its own live. */
+it('trashes each article on its own at level 0, a COMMIT that does not land leaving only its own live', function (): void {
+    $article = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+    $ids = [];
+
+    foreach (['One', 'Two', 'Three'] as $title) {
+        $ids[] = (int) Entry::create(['entry_type_id' => $article->id, 'title' => $title, 'status' => 'draft'])->id;
+    }
+
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $n = 0;
+    AuditorStandIn::install()->beforeRecording(function () use (&$n, $pdo): void {
+        if (++$n === 2) {
+            $pdo->failNextCommit = 'before';
+        }
+    });
+
+    MediaBulkRemoval::selected(DeleteBulkAction::make(), Entry::query()->whereKey($ids)->orderBy('id'), MediaBulkRemoval::DELETE, listsMedia: false);
+
+    $where = static function (int $id): string {
+        $row = DB::table('entries')->where('id', $id)->first(['deleted_at']);
+
+        return $row === null ? 'gone' : ($row->deleted_at === null ? 'live' : 'trashed');
+    };
+
+    expect(array_map($where, $ids))->toBe(['trashed', 'live', 'trashed'])
+        ->and(bulkRmZeroNotices()[0]['title'])->toBe('One entry was not deleted')
+        ->and(bulkRmZeroNotices()[0]['body'])->toStartWith('&quot;Two&quot; may not have been deleted: something went wrong.')
+        ->and($pdo->inTransaction())->toBeFalse();
 });
 
 /* Z4. Each restored public file is published before the next restore begins. */

@@ -35,8 +35,6 @@ return [
     'delete' => [
         'refused' => '":title" was not deleted',
         'refused_line' => '":title" was not deleted: :reason',
-        'refused_bulk' => '{1} One entry was not deleted; its file could not be taken off the web|[2,*] :count entries were not deleted; their files could not be taken off the web',
-        'withdrawn_bulk' => '{1} The other entry was deleted, and its file taken off the web.|[2,*] The other :count entries were deleted, and their files taken off the web.',
     ],
     'upload' => [
         'action' => 'Upload',
@@ -144,13 +142,14 @@ return [
             'already_private_count' => '{1} One was already private, and was left as it was.|[2,*] :count were already private, and were left as they were.',
         ],
     ],
-    // Words any selection on a media list uses — decisions 34 and 35.
+    // Words any bounded selection uses — decisions 34, 35 and 36; `awaiting_line` only where it holds media.
     'selection' => [
         'quoted' => '":title"',
         'list_separator' => ', ',
         'awaiting_line' => '{1} Not yet published: :titles. Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes it.|[2,*] Not yet published: :titles. Until they are, their links do not open them, and they open only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes them.',
     ],
-    // A media list's selection deleted, restored or deleted forever — decision 35.
+    // An entry list's selection deleted, restored or deleted forever — decisions 35 and 36; `restore.awaiting` only where it
+    // holds media.
     'removal' => [
         'too_many_title' => 'Too many entries are selected',
         'none' => 'None of the selected entries is on this list any more. Nothing was changed.',

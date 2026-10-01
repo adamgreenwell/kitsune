@@ -20,7 +20,8 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Kitsune\Core\Models\Entry;
 
 /**
- * What every selection on a media list shares — its five bulk actions, ADR-042 decisions 34 and 35.
+ * What every bounded selection shares — a media list's five bulk actions and every entry list's three removals, ADR-042
+ * decisions 34, 35 and 36.
  *
  * @internal
  *
@@ -29,15 +30,16 @@ use Kitsune\Core\Models\Entry;
  * by its name before its type. Take `Builder $selectedRecordsQuery`, and fetch through `upTo()`.
  *
  * ⚠️ REFUSED WHOLE, NEVER CUT. A selection cut to its first fifty would fetch the same fifty on every run, find them
- * already as asked, and never reach the rest. A page's checkbox bounds what the select-all box selects, and nothing on
- * the server: a page ticked after another, or a request written by hand, can select the whole list.
+ * already as asked, and never reach the rest. On a media list a page's checkbox bounds what the select-all box selects;
+ * on every other list Filament's *Select all* selects every row the list holds. Neither bounds anything on the server: a
+ * page ticked after another, or a request written by hand, can select the whole list.
  *
  * ⚠️ THE CLOCK BEFORE THE FETCH (Codex, #166), AND THE FIRST THAT NEEDS WORK ALWAYS STARTED, so a slow fetch spends the
  * budget rather than extending it, and running it again always goes on.
  */
 final class BulkSelection
 {
-    /** The most one selection on a media list acts on: the largest page a list shows (Filament's options, 5 to 50). */
+    /** The most one selection acts on: the largest page any list shows (Filament's options, 5 to 50). */
     public const MOST_AT_ONCE = 50;
 
     /** The longest, in seconds, a selection goes on starting records — and its budget where PHP sets no limit. */

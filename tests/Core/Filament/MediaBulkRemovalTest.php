@@ -40,8 +40,9 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
- * A media list's *Delete selected*, *Restore selected* and *Delete selected forever*, at most fifty at a time within the
- * request's budget — Adam, ADR-042 decision 35.
+ * Every entry list's *Delete selected*, *Restore selected* and *Delete selected forever*, at most fifty at a time within
+ * the request's budget — Adam, ADR-042 decisions 35 (a media list's) and 36 (every other list's, through the article page
+ * under *a list that holds no media*).
  *
  * ⚠️ FROM THE ROWS, THE DISKS AND THE ONE NOTIFICATION. Each entry's place — live, trashed or gone — is read back
  * afterwards, the public disk asked, the audit log counted, and the session's notifications read as the page shows them,
@@ -228,34 +229,28 @@ describe('the actions', function (): void {
             ->and($articles['forceDelete']->getLabel())->toBe('Delete selected forever');
     });
 
-    /* A2. A media list's three outside any transaction, Filament's notices off, cleared on success alone; no other list's. */
-    it('runs a media list\'s three one by one, and leaves every other list\'s as they were', function (): void {
+    /* A2. Every list's three outside any transaction, Filament's notices off, cleared on success alone — a media list's and an article list's alike. */
+    it('runs every list\'s three one by one, a media list\'s and an article list\'s alike', function (): void {
         Action::configureUsing(static fn (Action $action) => $action->databaseTransaction()->successNotificationTitle('Host success')->failureNotificationTitle('Host failure'));
+        $article = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
 
-        foreach (['delete', 'restore', 'forceDelete'] as $name) {
-            $action = bulkRmActions()[$name];
-            assert($action instanceof BulkAction);
+        foreach ([$this->type, $article] as $type) {
+            app()->instance(EntryType::class, $type);
 
-            expect($action->hasDatabaseTransactions())->toBeFalse($name)
-                ->and((fn (): bool => $this->isSuccessNotificationDisabled)->call($action))->toBeTrue($name)
-                ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeTrue($name);
+            foreach (['delete', 'restore', 'forceDelete'] as $name) {
+                $action = bulkRmActions()[$name];
+                assert($action instanceof BulkAction);
+                $as = "{$type->handle} {$name}";
 
-            $action->success();
-            expect($action->shouldDeselectRecordsAfterCompletion())->toBeTrue($name);
-            $action->failure();
-            expect($action->shouldDeselectRecordsAfterCompletion())->toBeFalse($name);
-        }
+                expect($action->hasDatabaseTransactions())->toBeFalse($as)
+                    ->and((fn (): bool => $this->isSuccessNotificationDisabled)->call($action))->toBeTrue($as)
+                    ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeTrue($as);
 
-        app()->instance(EntryType::class, EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']));
-
-        foreach (['delete', 'restore', 'forceDelete'] as $name) {
-            $action = bulkRmActions()[$name];
-            assert($action instanceof BulkAction);
-            $action->failure();
-
-            expect($action->hasDatabaseTransactions())->toBeTrue($name)
-                ->and((fn (): bool => $this->isSuccessNotificationDisabled)->call($action))->toBeFalse($name)
-                ->and($action->shouldDeselectRecordsAfterCompletion())->toBeTrue($name);
+                $action->success();
+                expect($action->shouldDeselectRecordsAfterCompletion())->toBeTrue($as);
+                $action->failure();
+                expect($action->shouldDeselectRecordsAfterCompletion())->toBeFalse($as);
+            }
         }
     });
 
@@ -312,16 +307,20 @@ describe('the actions', function (): void {
 
         $page->selectedTableRecords = array_slice($ids, 0, 50);
 
+        $w = __('kitsune::trash.erase_warning_media');
+
         expect($actions['delete']->getModalDescription())->toBe(__('filament-actions::modal.confirmation'))
-            ->and(MediaBulkRemoval::note(MediaBulkRemoval::ERASE, 50))->toBe(__('kitsune::trash.erase_warning_media'))
-            ->and(MediaBulkRemoval::note(MediaBulkRemoval::ERASE, 51))->toBe(__('kitsune::trash.erase_warning_media').' At most 50 entries are deleted forever at a time, and 51 are selected, so as it is nothing will be deleted. Select fewer first.')
-            ->and(MediaBulkRemoval::note(MediaBulkRemoval::RESTORE, 51))->toStartWith('At most 50 entries are restored at a time, and 51 are selected')
-            ->and(MediaBulkRemoval::note(MediaBulkRemoval::RESTORE, 50))->toBeNull()
+            ->and(MediaBulkRemoval::note(MediaBulkRemoval::ERASE, 50, $w))->toBe($w)
+            ->and(MediaBulkRemoval::note(MediaBulkRemoval::ERASE, 51, $w))->toBe($w.' At most 50 entries are deleted forever at a time, and 51 are selected, so as it is nothing will be deleted. Select fewer first.')
+            // The warning is Delete selected forever's alone.
+            ->and(MediaBulkRemoval::note(MediaBulkRemoval::RESTORE, 51, $w))->toBe('At most 50 entries are restored at a time, and 51 are selected, so as it is nothing will be restored. Select fewer first.')
+            ->and(MediaBulkRemoval::note(MediaBulkRemoval::RESTORE, 50, $w))->toBeNull()
+            ->and(MediaBulkRemoval::note(MediaBulkRemoval::ERASE, 50))->toBeNull()
             ->and($loaded)->toBe(0);
     });
 
-    /* A5. A list that holds no media keeps its own three: decision 31's skips and refusal, through the page. */
-    it('keeps every other list\'s three as they were, through the page', function (): void {
+    /* A5. An article list's three as a media list's, through the page: decision 31's skips and refusal, in one notice each. */
+    it('removes an article list\'s three as a media list\'s, through the page, in one notice each', function (): void {
         foreach (['view', 'delete'] as $ability) {
             $this->role->grant(Permissions::forEntryType('article', $ability));
         }
@@ -349,21 +348,37 @@ describe('the actions', function (): void {
         expect(DB::table('entries')->where('id', $live->id)->value('updated_at'))->toBe($updatedAt)
             ->and($restoring)->toBe([(int) $trashed->id])
             ->and(DB::table('audit_log')->count())->toBe($audits + 1)
-            ->and(bulkRmWhere($trashed))->toBe('live');
+            ->and(bulkRmWhere($trashed))->toBe('live')
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['status'])->toBe('success')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored')
+            ->and(bulkRmNotices()[0]['body'])->toBe('One was not in the trash, and was left as it was.');
 
         $trashed->refresh()->delete();
         $deletedAt = DB::table('entries')->where('id', $trashed->id)->value('deleted_at');
         $this->travel(1)->minutes();
+        session()->forget('filament.notifications');
         $call('delete');
         expect(DB::table('entries')->where('id', $trashed->id)->value('deleted_at'))->toBe($deletedAt)
-            ->and(bulkRmWhere($live))->toBe('trashed');
+            ->and(bulkRmWhere($live))->toBe('trashed')
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted')
+            ->and(bulkRmNotices()[0]['body'])->toBe('One was already in the trash, and was left as it was.');
 
         // Delete selected forever names a live one and leaves it, in decision 31's words.
         Entry::withTrashed()->findOrFail($live->id)->restore();
         session()->forget('filament.notifications');
-        $call('forceDelete');
+        $page = bulkRmPage(['trashed' => ['value' => '1']]);
+        $page->selectedTableRecords = bulkRmKeys($live, $trashed);
+        $erase = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'forceDelete');
+        $erase->call();
         expect([bulkRmWhere($live), bulkRmWhere($trashed)])->toBe(['live', 'gone'])
-            ->and(collect(bulkRmNotices())->pluck('body')->implode(' '))->toContain('&quot;Live&quot; was not deleted forever: it is not in the trash.');
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['status'])->toBe('danger')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted forever')
+            ->and(bulkRmNotices()[0]['body'])->toBe('&quot;Live&quot; was not deleted forever: it is not in the trash. Move it to the trash first.<br>One entry was deleted forever.')
+            ->and($erase->getStatus()->name)->toBe('Failure')
+            ->and($erase->shouldDeselectRecordsAfterCompletion())->toBeFalse();
     });
 });
 
@@ -1180,6 +1195,246 @@ describe('through the page', function (): void {
             ->and(bulkRmNotices())->toHaveCount(1)
             ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were not deleted')
             ->and(bulkRmNotices()[0]['body'])->toBe('&quot;C&quot; was not deleted: you may not delete it.<br>&quot;B&quot; was not deleted: &lt;b&gt;not yours&lt;/b&gt;<br>One entry was deleted.');
+    });
+});
+
+/** Articles of the bound article type, titled in order, made by the acting editor — trashed where asked. */
+function bulkRmArticles(int $n, bool $trashed = false, string $prefix = 'Article'): array
+{
+    $type = app(EntryType::class);
+    $entries = [];
+
+    for ($i = 1; $i <= $n; $i++) {
+        $entry = Entry::create(['entry_type_id' => $type->id, 'title' => sprintf('%s %02d', $prefix, $i), 'status' => 'draft']);
+
+        if ($trashed) {
+            $entry->delete();
+        }
+
+        $entries[] = $entry;
+    }
+
+    return $entries;
+}
+
+/** A booted list page with these keys selected, its filters set where asked, and its toolbar action by name. */
+function bulkRmPageAction(string $name, array $keys, ?array $filters = null): array
+{
+    $page = bulkRmPage($filters);
+    $page->selectedTableRecords = $keys;
+    $action = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === $name);
+    assert($action instanceof BulkAction);
+
+    return [$page, $action];
+}
+
+/*
+ * A LIST THAT HOLDS NO MEDIA — Adam, ADR-042 decision 36: "Yes, bound the article lists to fifty too." Every case through
+ * the article page and Filament's own call, so what the list hands the handler is what a request hands it.
+ */
+describe('a list that holds no media (decision 36)', function (): void {
+    beforeEach(function (): void {
+        foreach (['view', 'delete'] as $ability) {
+            $this->role->grant(Permissions::forEntryType('article', $ability));
+        }
+
+        $this->article = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+        app()->instance(EntryType::class, $this->article);
+    });
+
+    /* N1. Fifty-one by keys changes nothing, in one danger notice, kept selected; fifty is not too many. */
+    it('changes nothing on an article list when more than fifty are selected, and fifty is not too many', function (string $verb, string $name, bool $trashed, string $after, string $word): void {
+        $articles = bulkRmArticles(51, $trashed);
+        $before = $trashed ? 'trashed' : 'live';
+        [, $action] = bulkRmPageAction($name, bulkRmKeys(...$articles), ['trashed' => ['value' => '1']]);
+
+        $action->call();
+
+        expect(array_unique(array_map('bulkRmWhere', $articles)))->toBe([$before])
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['status'])->toBe('danger')
+            ->and(bulkRmNotices()[0]['duration'])->toBe('persistent')
+            ->and(bulkRmNotices()[0]['title'])->toBe('Too many entries are selected')
+            ->and(bulkRmNotices()[0]['body'])->toBe(e(__("kitsune::media.removal.{$verb}.too_many", ['max' => 50])))
+            ->and($action->getStatus()->name)->toBe('Failure')
+            ->and($action->shouldDeselectRecordsAfterCompletion())->toBeFalse();
+
+        session()->forget('filament.notifications');
+        [, $action] = bulkRmPageAction($name, bulkRmKeys(...array_slice($articles, 0, 50)), ['trashed' => ['value' => '1']]);
+
+        $action->call();
+
+        expect(bulkRmNotices()[0]['title'])->toBe("50 entries were {$word}")
+            ->and($action->getStatus()->name)->toBe('Success');
+    })->with('verbs');
+
+    /*
+     * N2. Filament's select-all across pages, kept: the modal counts it in one query and loads nothing, and fifty-five are
+     * refused loading no more than fifty-one; with five deselected, the fifty are deleted and the five left.
+     */
+    it('counts and refuses a select-all of the whole article list, and deletes it with five deselected', function (): void {
+        $articles = bulkRmArticles(55);
+        $page = bulkRmPage();
+        $page->isTrackingDeselectedTableRecords = true;
+        $page->deselectedTableRecords = [];
+        $delete = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'delete');
+        $loaded = 0;
+        Entry::retrieved(static function () use (&$loaded): void {
+            $loaded++;
+        });
+        $counts = 0;
+        DB::listen(static function ($query) use (&$counts): void {
+            $counts += str_contains(strtolower($query->sql), 'count(') ? 1 : 0;
+        });
+
+        expect($page->getTable()->selectsCurrentPageOnly())->toBeFalse()
+            ->and($page->getTable()->getMaxSelectableRecords())->toBeNull()
+            ->and($delete->getModalDescription())->toBe('At most 50 entries are deleted at a time, and 55 are selected, so as it is nothing will be deleted. Select fewer first.')
+            ->and($loaded)->toBe(0)
+            ->and($counts)->toBe(1);
+
+        $delete->call();
+
+        expect(array_unique(array_map('bulkRmWhere', $articles)))->toBe(['live'])
+            ->and($loaded)->toBeLessThanOrEqual(51)
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and($delete->getStatus()->name)->toBe('Failure')
+            ->and($delete->shouldDeselectRecordsAfterCompletion())->toBeFalse();
+
+        session()->forget('filament.notifications');
+        $kept = array_slice($articles, 0, 5);
+        $page = bulkRmPage();
+        $page->isTrackingDeselectedTableRecords = true;
+        $page->deselectedTableRecords = bulkRmKeys(...$kept);
+        $delete = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'delete');
+
+        expect($delete->getModalDescription())->toBe(__('filament-actions::modal.confirmation'));
+
+        $delete->call();
+
+        expect(array_map('bulkRmWhere', $kept))->toBe(['live', 'live', 'live', 'live', 'live'])
+            ->and(collect(array_slice($articles, 5))->map(fn (Entry $entry): string => bulkRmWhere($entry))->unique()->all())->toBe(['trashed'])
+            ->and(bulkRmNotices()[0]['title'])->toBe('50 entries were deleted')
+            ->and($delete->getStatus()->name)->toBe('Success');
+    });
+
+    /* N3. An article list's Delete selected forever says the list's own warning, never "its file"; Restore says none. */
+    it('says the article list\'s own warning before deleting forever, and none before restoring', function (): void {
+        $articles = bulkRmArticles(51, trashed: true);
+        $warning = __('kitsune::trash.erase_warning');
+        [, $erase] = bulkRmPageAction('forceDelete', bulkRmKeys(...$articles), ['trashed' => ['value' => '0']]);
+
+        expect($erase->getModalDescription())->toBe($warning.' At most 50 entries are deleted forever at a time, and 51 are selected, so as it is nothing will be deleted. Select fewer first.')
+            ->and($erase->getModalDescription())->not->toContain('its file');
+
+        [, $erase] = bulkRmPageAction('forceDelete', bulkRmKeys(...array_slice($articles, 0, 50)), ['trashed' => ['value' => '0']]);
+        [, $restore] = bulkRmPageAction('restore', bulkRmKeys(...$articles), ['trashed' => ['value' => '0']]);
+
+        expect($erase->getModalDescription())->toBe($warning)
+            ->and($restore->getModalDescription())->toStartWith('At most 50 entries are restored')
+            ->and($restore->getModalDescription())->not->toContain('This cannot be undone');
+    });
+
+    /* N4. An article restored is never asked after a file it does not have, so a read that fails claims none. */
+    it('never asks a restored article after a file, so a read that fails claims none not yet published', function (): void {
+        [$entry] = bulkRmArticles(1, trashed: true);
+        $armed = false;
+        $asked = 0;
+        Entry::restored(static function () use (&$armed): void {
+            $armed = true;
+        });
+        DB::listen(static function ($query) use (&$armed, &$asked): void {
+            if ($armed && preg_match('/^select \* from [`"]?media_files[`"]? where [`"]?entry_id[`"]? = \? limit 1$/', $query->sql) === 1) {
+                $asked++;
+
+                throw new RuntimeException('unreadable');
+            }
+        });
+        [, $restore] = bulkRmPageAction('restore', bulkRmKeys($entry), ['trashed' => ['value' => '0']]);
+
+        $restore->call();
+
+        expect(bulkRmWhere($entry))->toBe('live')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored')
+            ->and(bulkRmNotices()[0]['body'] ?? null)->toBeNull()
+            ->and($asked)->toBe(0);
+    });
+
+    /* N5. And a media list's restore still is, through its own page: a publication that failed is said, with its command. */
+    it('still says a media list\'s restored file whose publication failed, through the page', function (): void {
+        app()->instance(EntryType::class, $this->type);
+        $file = bulkRmStored('Trashed', 'public', trashed: true);
+        $this->disks['public']->failWrites = true;
+        [, $restore] = bulkRmPageAction('restore', bulkRmKeys($file), ['trashed' => ['value' => '0']]);
+
+        $restore->call();
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published')
+            ->and(bulkRmNotices()[0]['body'])->toContain("--entry={$file->id} --force");
+    });
+
+    /* N6. The request's budget, from the handler: the first in the list's order trashed, the rest not tried and kept. */
+    it('passes the request\'s budget on an article list, in the list\'s order', function (): void {
+        $this->freezeTime();
+        $articles = bulkRmArticles(3);
+        AuditorStandIn::install()->beforeRecording(fn () => $this->travel(11)->seconds());
+        [, $delete] = bulkRmPageAction('delete', bulkRmKeys(...$articles));
+        $limit = ini_get('max_execution_time');
+
+        try {
+            ini_set('max_execution_time', '20');
+            $delete->call();
+        } finally {
+            ini_set('max_execution_time', (string) $limit);
+        }
+
+        // Under a frozen clock every one has the same updated_at, so the list's order is the newest id first.
+        expect(array_map('bulkRmWhere', $articles))->toBe(['live', 'live', 'trashed'])
+            ->and(bulkRmNotices()[0]['status'])->toBe('warning')
+            ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were not deleted')
+            ->and(bulkRmNotices()[0]['body'])->toStartWith('2 entries were not tried')
+            ->and($delete->getStatus()->name)->toBe('Failure')
+            ->and($delete->shouldDeselectRecordsAfterCompletion())->toBeFalse();
+    });
+
+    /* N7. One selected and trashed since: it has left the list, read where it is now, and counted as already so. */
+    it('counts an article trashed since it was selected as already so', function (): void {
+        [$a, $b] = bulkRmArticles(2);
+        [, $delete] = bulkRmPageAction('delete', bulkRmKeys($a, $b));
+        $b->delete();
+
+        $delete->call();
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was deleted')
+            ->and(bulkRmNotices()[0]['body'])->toBe('One was already in the trash, and was left as it was.');
+    });
+
+    /* N8. An article's erasure that fails for a reason not Kitsune's: reported once, named in words that claim nothing. */
+    it('names an article erasure that failed for a reason not Kitsune\'s, and reports it once', function (): void {
+        Exceptions::fake();
+        [$entry] = bulkRmArticles(1, trashed: true, prefix: 'Old draft');
+        DB::table('entries')->where('id', $entry->id)->update(['title' => 'Old draft']);
+        AuditorStandIn::install()->throwOnce(new RuntimeException('secret <b>sql</b>'));
+        [, $erase] = bulkRmPageAction('forceDelete', bulkRmKeys($entry), ['trashed' => ['value' => '0']]);
+
+        $erase->call();
+
+        expect(bulkRmWhere($entry))->toBe('trashed')
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted forever')
+            ->and(bulkRmNotices()[0]['body'])->toBe('&quot;Old draft&quot; may not have been deleted forever: something went wrong. The trash shows whether it is still there; tell whoever runs this site if it happens again.')
+            ->and($erase->getStatus()->name)->toBe('Failure');
+
+        Exceptions::assertReportedCount(1);
+    });
+
+    /* N9. The largest page any list shows is the bound, so a page's own checkbox never selects more than one run takes. */
+    it('shows no page larger than the bound, on either list', function (): void {
+        foreach ([$this->type, $this->article] as $type) {
+            app()->instance(EntryType::class, $type);
+
+            expect(max(bulkRmPage()->getTable()->getPaginationPageOptions()))->toBe(BulkSelection::MOST_AT_ONCE);
+        }
     });
 });
 

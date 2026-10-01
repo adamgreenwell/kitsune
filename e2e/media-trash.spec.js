@@ -149,10 +149,17 @@ test('deletes forever from the trash, saying first what it takes, and leaves wha
 
     await page.getByRole('button', { name: /bulk actions/i }).click();
     await page.getByRole('button', { name: 'Delete selected forever' }).click();
-    await (await confirm(page, 'Delete forever')).getByRole('button', { name: 'Delete forever', exact: true }).click();
+    // An article list's own warning, never a file's (decision 36).
+    const dialog = await confirm(page, 'Delete forever');
+    await expect(dialog).toContainText('This cannot be undone. The entry and its history are deleted for good, and any link to it from another entry is removed.');
+    await expect(dialog).not.toContainText('its file');
+    await dialog.getByRole('button', { name: 'Delete forever', exact: true }).click();
 
     await expect(page.getByText('One entry was not deleted forever')).toBeVisible();
     await expect(page.getByText(`"${PROBE} live" was not deleted forever: it is not in the trash. Move it to the trash first.`)).toBeVisible();
+    // One notification, Kitsune's, counting the one it did delete forever.
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+    await expect(page.getByText('One entry was deleted forever.')).toBeVisible();
     expect(whereIs(`${PROBE} live`)).toBe('live');
     expect(whereIs(`${PROBE} trashed again`)).toBe('gone');
 });

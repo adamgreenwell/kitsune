@@ -49,7 +49,6 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaBulkRemoval;
-use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -476,7 +475,8 @@ class EntryResource extends Resource
             /*
              * ⚠️ THE TRASH — ADR-042 decision 31. Filament's filter, and its actions: a trashed entry is restored, or deleted
              * forever, and is not opened — its pages resolve live entries alone. Delete forever erases what is in the
-             * trash and nothing else, and one it cannot erase is named (`EntryTrash`). Authorised by the policy, where
+             * trash and nothing else, and one it cannot erase is named (`EntryTrash` for one entry, `MediaBulkRemoval` for
+             * a selection). Authorised by the policy, where
              * `restore` and `forceDelete` resolve against `delete`, as `architecture.md` publishes.
              */
             ->filters([
@@ -500,8 +500,9 @@ class EntryResource extends Resource
             ])
             /*
              * Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5);
-             * on a media list, a selection made public or private (decision 34), and deleted, restored or deleted forever
-             * at most fifty at a time within the request's budget, in one notification of Kitsune's (decision 35).
+             * on a media list, a selection made public or private (decision 34); and on every list, a selection deleted,
+             * restored or deleted forever at most fifty at a time within the request's budget, in one notification of
+             * Kitsune's (decisions 35 and 36).
              */
             ->toolbarActions([BulkActionGroup::make([
                 ...MediaVisibilityActions::bulk(),
@@ -519,7 +520,14 @@ class EntryResource extends Resource
              * publish its type, whom *Make selected public* and *Make selected private* give checkboxes too (decision 34).
              * A media list's bulk actions act on the page in view. It bounds what the select-all box selects, and nothing
              * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound, for each of a media list's five bulk
-             * actions (decisions 34 and 35).
+             * actions and every list's three removals (decisions 34–36).
+             *
+             * ⚠️ AND EVERY ROW ON ANY OTHER LIST, AS FILAMENT HAS IT — decision 36, a default for Adam to overrule. A list
+             * that pages with a total reads its select-all count off its paginator, so it costs no query, and Filament
+             * selects every row the list's search and filters hold without asking the server. The three removals take up
+             * to fifty of them in one run; above fifty the modal says before it is submitted that nothing will be removed,
+             * and nothing is. The page in view would bound nothing on the server either, and Filament's page-only *Select
+             * all* replaces a selection ticked across pages with the page in view.
              */
             ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,
@@ -528,30 +536,27 @@ class EntryResource extends Resource
 
     /**
      * The list's *Delete selected*, *Restore selected* and *Delete selected forever* — Filament's own three, by name and
-     * class on every list. A media list's are bounded and budgeted (ADR-042 decision 35, `MediaBulkRemoval`); every
-     * other list's load their selection whole, as they did (*Open questions*).
+     * class, bounded and budgeted on every list (ADR-042 decisions 35 and 36, `MediaBulkRemoval`). A list that holds no
+     * media says nothing of files: its *Delete selected forever* says the warning its row's *Delete forever* says, and its
+     * restore asks no file whether it is published.
+     *
+     * ⚠️ WHETHER IT HOLDS MEDIA, DECIDED AS THE TABLE IS BUILT, for the reason `asTiles()` gives: the type is bound by then.
      *
      * @param  Closure(): string  $warning
      * @return list<BulkAction>
      */
     private static function removals(Closure $warning): array
     {
-        $delete = DeleteBulkAction::make();
-        $restore = RestoreBulkAction::make();
-        $erase = ForceDeleteBulkAction::make()
-            ->label(__('kitsune::trash.erase_selected'))
-            ->modalHeading(__('kitsune::trash.erase_selected'))
-            ->modalSubmitActionLabel(__('kitsune::trash.erase'));
-
-        if (self::listsMedia()) {
-            return MediaBulkRemoval::bound($delete, $restore, $erase);
-        }
-
-        return [
-            $delete->using(MediaDeletionNotice::deleteEach(...)),
-            $restore->using(EntryTrash::restoreEach(...)),
-            $erase->modalDescription($warning)->using(EntryTrash::forceDeleteEach(...)),
-        ];
+        return MediaBulkRemoval::bound(
+            DeleteBulkAction::make(),
+            RestoreBulkAction::make(),
+            ForceDeleteBulkAction::make()
+                ->label(__('kitsune::trash.erase_selected'))
+                ->modalHeading(__('kitsune::trash.erase_selected'))
+                ->modalSubmitActionLabel(__('kitsune::trash.erase')),
+            $warning,
+            self::listsMedia(),
+        );
     }
 
     /**

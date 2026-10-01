@@ -198,7 +198,7 @@ final class MediaVisibilityActions
     }
 
     /**
-     * Each record made public on its own, callable from tests, as `MediaDeletionNotice::deleteEach()` is.
+     * Each record made public on its own, callable from tests, as `MediaBulkRemoval::each()` is.
      *
      * @internal
      *
