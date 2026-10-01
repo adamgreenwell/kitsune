@@ -49,7 +49,9 @@ use Throwable;
  *
  * ⚠️ A LIST THAT HOLDS NO MEDIA IS TOLD NOTHING OF FILES (decision 36). Its *Delete selected forever* says the list's own
  * warning, which `EntryResource` hands in as its row's *Delete forever* says it, and its restore never asks whether a
- * file is published: it has none, and a read that failed would claim one not yet published, with a command to run.
+ * file is published: it has none, and a read that failed would claim one not yet published, with a command to run. The
+ * type's flag is trusted here as everywhere else on the list; a file an import left on a type the migration left
+ * unmarked is `kitsune:media-types`'s to report, as it does.
  */
 final class MediaBulkRemoval
 {

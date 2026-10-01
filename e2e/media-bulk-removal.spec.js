@@ -103,7 +103,11 @@ async function listed(page, words, count) {
     await expect(page.locator('.fi-ta-record')).toHaveCount(count);
 }
 
-/** The article list, searched down to these words and showing `count` rows, settled as `listed()` settles the cards. */
+/**
+ * The article list, searched down to these words and showing `count` rows. Where the list showed as many before the
+ * search, the count settles nothing; Filament disables every row's checkbox while the search is loading, so none is
+ * ticked before it lands.
+ */
 async function listedArticles(page, words, count) {
     await page.goto('/admin/golfdom/c/article');
     const searched = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes(words));
@@ -282,6 +286,9 @@ test('selects every article the list holds, refuses more than fifty, and deletes
     await expect(page.locator('.fi-no-notification')).toHaveCount(1);
     expect(trashedLike(words)).toBe(0);
     await expect(selection(page)).toContainText('55 records selected');
+    // Closed, so the next run's notification is the only one: the refusal stays until it is.
+    await refused.locator('.fi-no-notification-close-btn').click();
+    await expect(page.locator('.fi-no-notification')).toHaveCount(0);
 
     for (let i = 0; i < 5; i++) {
         await page.locator('.fi-ta-record-checkbox').nth(i).uncheck();
@@ -295,7 +302,8 @@ test('selects every article the list holds, refuses more than fifty, and deletes
     await fifty.getByRole('button', { name: 'Delete', exact: true }).click();
 
     await expect(notice(page, '50 entries were deleted')).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator('.fi-no-notification').filter({ hasText: 'entries were deleted' })).toHaveCount(1);
+    // Filament's own *Deleted* would be a second.
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
     await expect(selection(page)).toBeHidden();
     expect(trashedLike(words)).toBe(50);
     await expect(page.locator('.fi-ta-record-checkbox')).toHaveCount(5);
@@ -312,6 +320,7 @@ test('selects every article the list holds, refuses more than fifty, and deletes
 
     const restored = notice(page, '50 entries were restored');
     await expect(restored).toBeVisible({ timeout: 30_000 });
+    // A smoke check only: an article has no file to wait on, so this cannot fail here — `MediaBulkRemovalTest` N4 is the guard.
     await expect(restored).not.toContainText('not yet published');
     await expect(page.locator('.fi-no-notification')).toHaveCount(1);
     expect(trashedLike(words)).toBe(0);

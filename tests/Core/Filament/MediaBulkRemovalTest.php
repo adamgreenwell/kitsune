@@ -659,6 +659,16 @@ describe('restoring', function (): void {
         Exceptions::assertReportedCount(1);
     });
 
+    /* R3a. Through the handler, unsaid whether the list holds media: it is taken to, so a failed publication is never unsaid. */
+    it('asks a restored file whether it is published when the handler is not told the list holds none', function (): void {
+        $trashed = bulkRmStored('Trashed', 'public', trashed: true);
+        $this->disks['public']->failWrites = true;
+
+        MediaBulkRemoval::selected(bulkRmAction('restore'), Entry::withTrashed()->whereKey([$trashed->id]), MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published');
+    });
+
     /* R4. A restore withdraws nothing, so custody's refusal from one is a failure like any other: reported, named, its reason unshown. */
     it('names a restore that throws custody\'s refusal as a failure, not a refusal', function (): void {
         Exceptions::fake();
@@ -1426,6 +1436,36 @@ describe('a list that holds no media (decision 36)', function (): void {
             ->and($erase->getStatus()->name)->toBe('Failure');
 
         Exceptions::assertReportedCount(1);
+    });
+
+    /*
+     * N10. An article list's Select all counts every row it holds off its paginator's total: its render runs its count and
+     * its page, and the select-all count runs nothing more and loads no row.
+     */
+    it('counts an article list\'s select-all off its paginator, with no query of its own', function (): void {
+        bulkRmArticles(30);
+        bulkRmPage()->getTableRecords();
+        $page = bulkRmPage();
+        $queries = 0;
+        $loaded = 0;
+        DB::listen(static function () use (&$queries): void {
+            $queries++;
+        });
+        Entry::retrieved(static function () use (&$loaded): void {
+            $loaded++;
+        });
+
+        $records = $page->getTableRecords();
+
+        expect($queries)->toBe(2)
+            ->and($records->total())->toBe(30);
+
+        $queries = 0;
+        $loaded = 0;
+
+        expect($page->getAllSelectableTableRecordsCount())->toBe(30)
+            ->and($queries)->toBe(0)
+            ->and($loaded)->toBe(0);
     });
 
     /* N9. The largest page any list shows is the bound, so a page's own checkbox never selects more than one run takes. */
