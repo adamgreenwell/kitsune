@@ -6104,6 +6104,22 @@ measurement this entry still owes.
   built with the most XMP the budget lets through — 32 packets, each an element with 1,024 attributes — in under a
   second.
 
+### Measured — decision 32, 2026-10-01
+
+Taken where this slice was built — PHP 8.4, SQLite, local disks — and not on stage, so none of it is the measurement
+this entry still owes.
+
+- **Making a file public holds its lock more than twice as long as a trash.** A 64 MiB JPEG carrying GPS,
+  stored private and made public: 1.48 s from the call to its commit, the median of seven (1.43–1.59) — the copy read,
+  hashed and proved, stripped, and the stripped copy written beside it, read back and renamed, all under the lock —
+  and 2.8 s to the end of its publication, which follows the commit. A trash of the same file, stored public: 0.63 s
+  (0.62–0.69). On SQLite the lock is the database's write lock (*What this costs*).
+- **Memory.** 2 MiB above the call's start at its peak, under a 128M limit: every read and write streams, and the strip
+  reads through its window.
+- **The crash harness.** Six byte operations make a JPEG public whole and three make a file private; the process is
+  stopped before each and between the rename and the commit, and each of ten steps run after it — 30 cases, 898
+  assertions, in seven seconds.
+
 ### What this costs
 
 **Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
@@ -7033,6 +7049,42 @@ When it lands:
 > copy's check that an edit ends inside the file — every editable range does — and the plan's filter of edits that
 > change nothing. One read no test can drive is kept and named: `$size` read from a copy whose length cannot change, for
 > decision 32.
+
+> ⚠️ **Amended 2026-10-01 — decision 32 landed**, and each guard was removed in turn and its test watched fail, beside a
+> run of the same tests passing unmutated: 94 mutations, 90 in the PHP suite and four in the browser, of which 93 were
+> caught. By family:
+> - **The switch** (55: `MediaVisibilityTest`, `MediaVisibilityCrashTest`, `MediaVisibilityLevelZeroTest`) — what it
+>   refuses first: an edited key, another connection, an open transaction, no organisation, paths not unique, the
+>   configured disks. Making public: the bytes asked, a copy that is not there taken as a JPEG, a JPEG's preconditions
+>   for JPEG alone, settled or refused — unsettled, exposed or its partial, stray, missing, unreadable, a root that cannot
+>   be looked at — the copy proved against the keeper's hash, the strip and its words, the checksum and size from the
+>   stripped bytes, the audit, the publication registered and registered again, the bytes last, the put-back, the
+>   original kept, the temporaries removed and the log. Making private: the row first and naming the private disk, the
+>   withdrawal, the audit, and a file already so. The guard: a gone row, another organisation or site, a moved row, the
+>   permission and the stored type it is asked of, the trash, no file, and the system. `writeRow()`'s values and its one
+>   row, and the put-back's three re-checks. One survives, as defence in depth: making private's own `compensate()`,
+>   whose work the rollback callbacks and the rolled-back listener already do.
+> - **The bytes** (7: `MediaBytesTest`) — the temporary proved; `head()`, `toTemporary()` and `replaceVerified()` refusing
+>   a read-through disk; an object store's key never discarded where it is the file, and still discarded where it is a
+>   copy; and the process's id in the temporary's name.
+> - **The format** (5: `MediaLocationTest`, `MediaVisibilityTest`) — a JPEG's other types and extensions, a type's
+>   parameters, an extension's case, and a stored file's words.
+> - **The withdrawal and its words** (5: `MediaVisibilityTest`, `MediaLocationTest`) — a file found nowhere refused,
+>   every served disk swept, the configured disks refused, the act named — *make entry N private* — and a partial copy
+>   named.
+> - **The admin** (16: `MediaVisibilityActionsTest`, `MediaUploadTest`) — no transaction around either action; the tick
+>   required and asked again; hidden from a reader, disabled and with no field without `publish`, and neither in the
+>   trash; a refusal escaped; a file awaiting publication said so, on the notification and in the File section;
+>   Upload's statement as the helper, the shared modal, both pages' actions, and the one statement and Upload's own
+>   words.
+> - **The lift** (2: `MediaFileImmutabilityTest`) — a second writer below the model, plain and qualified.
+>
+> In the browser, `media-visibility.spec.js` (4) — the tick required, the strip, the actions on the View page, and the
+> switch disabled without `publish`, each removed in turn.
+>
+> One guard mutation found no test could reach was removed rather than kept: a second check that the entry is gone,
+> ahead of the read that already says so. So was a line that did nothing: a `chmod` to 0600 of a temporary
+> `tempnam()` had already made 0600.
 
 ---
 
