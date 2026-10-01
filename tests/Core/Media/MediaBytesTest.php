@@ -9,10 +9,12 @@
 declare(strict_types=1);
 
 use Illuminate\Filesystem\FilesystemAdapter;
+use Illuminate\Filesystem\LocalFilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
+use Kitsune\Core\Tests\Fixtures\TrickleStream;
 use League\Flysystem\Filesystem;
 
 /*
@@ -152,6 +154,10 @@ it('refuses to open, hash, copy or delete a copy through a read-through disk, wr
         ->and(fn () => MediaBytes::copyVerified('rt', 'bytes-source', $path, hash('sha256', 'bytes')))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(fn () => MediaBytes::copyVerified('bytes-source', 'rt', 'media/1/2026/09/photo.png', $this->hash))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(fn () => MediaBytes::delete('rt', $path))->toThrow(MediaCustodyFailure::class, 'it is a read-through disk, which custody neither reads nor removes a copy through')
+        // ...and decision 32's reads and rewrite: a file's first bytes, its copy into a temporary, its bytes replaced.
+        ->and(fn () => MediaBytes::head('rt', $path, 3))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
+        ->and(fn () => MediaBytes::toTemporary('rt', $path, hash('sha256', 'bytes')))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
+        ->and(fn () => MediaBytes::replaceVerified('rt', $path, __FILE__, hash_file('sha256', __FILE__)))->toThrow(MediaCustodyFailure::class, 'on the [rt] disk: it is a read-through disk')
         ->and(MediaBytes::present('rt', $path))->toBeTrue()
         ->and(array_filter(RefusingDisk::$log, static fn (array $event): bool => $event['bytes'] || $event['event'] === 'readStream'))->toBe([])
         ->and(is_file($primary->root().'/'.$path))->toBeFalse()
@@ -416,3 +422,151 @@ final class MediaBytesStatWrapper
         return self::$stats[$path] ?? false;
     }
 }
+
+/*
+ * ADR-042 decision 32: a file made public is read into a temporary and proved, and the copy without its location is
+ * written over it — beside it and renamed on a local disk, at the key on an object store, which is never discarded.
+ */
+describe('a file rewritten in place', function (): void {
+    /** The temporaries `toTemporary()` writes: none may outlive a failure. @return list<string> */
+    function bytesTemporaries(): array
+    {
+        return glob(sys_get_temp_dir().'/'.MediaBytes::TEMPORARY_PREFIX.getmypid().'-*') ?: [];
+    }
+
+    it('copies a disk\'s file into a temporary and proves it', function (): void {
+        $temporary = MediaBytes::toTemporary('bytes-source', 'media/1/2026/09/photo.png', $this->hash);
+
+        try {
+            expect(file_get_contents($temporary))->toBe('the bytes of a photo')
+                ->and(dirname($temporary))->toBe(rtrim(sys_get_temp_dir(), '/'))
+                ->and(basename($temporary))->toStartWith(MediaBytes::TEMPORARY_PREFIX.getmypid().'-');
+        } finally {
+            unlink($temporary);
+        }
+    });
+
+    it('refuses a copy it cannot prove, and leaves no temporary', function (string $case, string $reason): void {
+        $expected = $case === 'another hash' ? str_repeat('0', 64) : $this->hash;
+
+        if ($case === 'unreadable') {
+            $this->source->unreadable = ['media/1/2026/09/photo.png'];
+        }
+
+        try {
+            MediaBytes::toTemporary('bytes-source', 'media/1/2026/09/photo.png', $expected);
+            $thrown = null;
+        } catch (MediaCustodyFailure $thrown) {
+        }
+
+        expect($thrown?->reason)->toBe($reason)
+            ->and(bytesTemporaries())->toBe([]);
+    })->with([
+        'a copy with another hash' => ['another hash', 'verify'],
+        'an unreadable copy' => ['unreadable', 'unreadable'],
+    ]);
+
+    it('writes beside the path, reads it back and renames it over the file on a local disk', function (): void {
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-bytes-new-');
+        file_put_contents($source, 'the photo, without its location');
+        RefusingDisk::forgetLog();
+
+        try {
+            MediaBytes::replaceVerified('bytes-source', 'media/1/2026/09/photo.png', $source, hash('sha256', 'the photo, without its location'));
+        } finally {
+            unlink($source);
+        }
+
+        expect(operationsOn('bytes-source'))->toBe([
+            ['event' => 'writeStream', 'path' => 'media/1/2026/09/photo.png.kitsune-partial'],
+            ['event' => 'move', 'path' => 'media/1/2026/09/photo.png.kitsune-partial -> media/1/2026/09/photo.png'],
+        ])
+            ->and(Storage::disk('bytes-source')->get('media/1/2026/09/photo.png'))->toBe('the photo, without its location')
+            ->and(Storage::disk('bytes-source')->exists('media/1/2026/09/photo.png.kitsune-partial'))->toBeFalse();
+    });
+
+    it('leaves the file as it was on a local disk when the new bytes cannot be written whole', function (string $failure, string $reason): void {
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-bytes-new-');
+        file_put_contents($source, 'the photo, without its location');
+
+        match ($failure) {
+            'short' => $this->source->truncateWritesTo = 5,
+            'refused' => $this->source->failWrites = true,
+            'unrenamed' => $this->source->failMoves = true,
+        };
+
+        try {
+            MediaBytes::replaceVerified('bytes-source', 'media/1/2026/09/photo.png', $source, hash('sha256', 'the photo, without its location'));
+            $thrown = null;
+        } catch (MediaCustodyFailure $thrown) {
+        } finally {
+            unlink($source);
+        }
+
+        expect($thrown?->reason)->toBe($reason)
+            ->and(Storage::disk('bytes-source')->get('media/1/2026/09/photo.png'))->toBe('the bytes of a photo')
+            ->and(Storage::disk('bytes-source')->exists('media/1/2026/09/photo.png.kitsune-partial'))->toBeFalse();
+    })->with([
+        'a short write' => ['short', 'verify'],
+        'a refused write' => ['refused', 'copy'],
+        'a refused rename' => ['unrenamed', 'rename'],
+    ]);
+
+    /* On an object store the PUT is the file: one that does not read back is left at the key, never deleted. */
+    it('never deletes the key on an object store when the new bytes do not read back', function (): void {
+        Storage::set('bytes-source', new FilesystemAdapter(new Filesystem($this->source), $this->source, ['driver' => 's3']));
+        $this->source->truncateWritesTo = 5;
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-bytes-new-');
+        file_put_contents($source, 'the photo, without its location');
+        RefusingDisk::forgetLog();
+
+        try {
+            expect(fn () => MediaBytes::replaceVerified('bytes-source', 'media/1/2026/09/photo.png', $source, hash('sha256', 'the photo, without its location')))
+                ->toThrow(MediaCustodyFailure::class, 'does not match');
+        } finally {
+            unlink($source);
+        }
+
+        expect(operationsOn('bytes-source'))->toBe([['event' => 'writeStream', 'path' => 'media/1/2026/09/photo.png']])
+            ->and(file_exists($this->source->root().'/media/1/2026/09/photo.png'))->toBeTrue();
+    });
+
+    /* ...where a copy onto another disk, which is never the file, is still discarded when it does not read back. */
+    it('still discards a copy onto an object store that does not read back', function (): void {
+        $target = RefusingDisk::install('bytes-store', ($this->root)('store'));
+        Storage::set('bytes-store', new FilesystemAdapter(new Filesystem($target), $target, ['driver' => 's3']));
+        $target->truncateWritesTo = 5;
+        RefusingDisk::forgetLog();
+
+        expect(fn () => MediaBytes::copyVerified('bytes-source', 'bytes-store', 'media/1/2026/09/photo.png', $this->hash))
+            ->toThrow(MediaCustodyFailure::class, 'does not match');
+
+        expect(operationsOn('bytes-store'))->toBe([
+            ['event' => 'writeStream', 'path' => 'media/1/2026/09/photo.png'],
+            ['event' => 'delete', 'path' => 'media/1/2026/09/photo.png'],
+        ]);
+    });
+});
+
+/*
+ * A file's first bytes are read until there are enough, or the file ends: a stream that hands one read fewer bytes than
+ * it was asked for — an object store's, a host driver's — would otherwise cut a JPEG's marker short (Codex, #165).
+ */
+it('reads a file\'s first bytes whole from a stream that hands out fewer at a time', function (): void {
+    $root = ($this->root)('trickle');
+    $adapter = new class($root, 'bytes-trickle') extends RefusingDisk
+    {
+        public function readStream(string $path)
+        {
+            return TrickleStream::open($this->root().'/'.$path);
+        }
+    };
+    Storage::set('bytes-trickle', new LocalFilesystemAdapter(new Filesystem($adapter), $adapter, ['driver' => 'local', 'root' => $root]));
+    mkdir($root.'/media', 0777, true);
+    file_put_contents($root.'/media/photo.png', "\xFF\xD8\xFF\xE0 the rest of a JPEG");
+    file_put_contents($root.'/media/short.png', "\xFF");
+
+    expect(MediaBytes::head('bytes-trickle', 'media/photo.png', 3))->toBe("\xFF\xD8\xFF")
+        ->and(MediaBytes::head('bytes-trickle', 'media/short.png', 3))->toBe("\xFF")
+        ->and(MediaBytes::head('bytes-trickle', 'media/absent.png', 3))->toBeNull();
+});

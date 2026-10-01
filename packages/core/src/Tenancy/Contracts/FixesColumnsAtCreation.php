@@ -14,10 +14,14 @@ namespace Kitsune\Core\Tenancy\Contracts;
  * A model with columns that are written when a row is created and never again.
  *
  * ⚠️ NOT `RequiresModelSave`, WHOSE REFUSALS STAND DOWN INSIDE `withoutScopeBecause()`. That list asks which PATH may
- * write a column, and the escape hatch is a path the caller has vouched for. A column fixed at creation has no path
- * that may change it, so `ScopedBuilder` refuses it on every update — the instance's, a quiet save's, a bulk write,
- * an arithmetic write's extra columns, an upsert's update half — inside the hatch as well as out. The escape hatch
+ * write a column, and the escape hatch is a path the caller has vouched for. A column fixed at creation has no ~~path~~
+ * model path that may change it, so `ScopedBuilder` refuses it on every update — the instance's, a quiet save's, a bulk
+ * write, an arithmetic write's extra columns, an upsert's update half — inside the hatch as well as out. The escape hatch
  * decides which path may write a column, not what the column may hold (ADR-022's amendment, of `settings`).
+ *
+ * A named exception writes below the model, under its own lock, and its reason says so: `kitsune:media-types --force`
+ * for `entry_types.is_media`, and the visibility switch for `media_files.visibility`, `checksum` and `size_bytes`
+ * (`MediaVisibility`, ADR-042 decision 32).
  *
  * The first is `entry_types.is_media` (ADR-042 decision 1), which Codex found flippable inside the hatch on #150.
  */

@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33, 31 and 30 record what was built — 30 for a file stored public, its made-public half waiting on decision 32 — *Measured — decision 30* records what that slice measured, *Enforced by* reports each, and decision 30 leaves one question open, for Adam: whether a JPEG stored public before it is stripped · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amended 2026-09-30** — decision 6 records what was built and Adam's answer on its layout — a grid of cards (decision 17) — and *Measured — decision 6* and *Enforced by* report it; decision 16's *Open file* is on the host serving the admin, now that decision 6's helper exists; and Adam's answers to the eight questions still open (decisions 18–25) — a staged file the intake disk did not keep is refused at staging (18), and a local disk's root whose stat is refused fails the step that asks it (25), both built and reported in *Enforced by*; a file's title stays its name (19), a card shows no field columns (20) and a sanitised SVG stays a badge (21); custody still holds no read-through disk (22), and a host driver's read-through disk served only through a half stays uncounted as served, a limit accepted (23); and paths unique as the volumes fold them wait for the import and insert-path work (24); and Adam's answers to eight more (decisions 26–33) — staged files a refused submit leaves stay the sweep's (26), a public tile from another origin keeps its whole URL (27), a tile's `alt` stays empty (28) and a tile stays cropped to its square (29), all kept; and four decided and not yet built, each its own slice — location data stripped from a JPEG made public (30), a trash view with restore (31), a file's visibility changeable after upload (32), and each media type naming the files it accepts (33), which answer four of the log's open questions, removed from that list (Codex, #161); decisions 33, 31 and 30 record what was built — 30 for a file stored public, its made-public half waiting on decision 32 — *Measured — decision 30* records what that slice measured, *Enforced by* reports each, and decision 30 leaves one question open, for Adam: whether a JPEG stored public before it is stripped · **Amended 2026-10-01** — decision 32 records what was built — *Make public* and *Make private* on a media entry's pages, for whoever may publish its type, each audited; a file made private as a trash withdraws it; a JPEG made public only once its one copy is on the private disk, stripped there under custody's lock with its `checksum` and `size_bytes` rewritten in the statement that writes its `visibility`, and published after the commit; and a file read as a JPEG by its bytes as well as its row — and *Measured — decision 32* and *Enforced by* report it; decision 30's open question is moot (Adam, 2026-10-01): no installation has uploaded anything, so no JPEG was stored public before it, and no backfill is built; and two questions are left open, for Adam: whether custody should refuse to publish a JPEG whose kept copy does not match its checksum, and whether a list switches many files at once · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28; and `visibility`, with a JPEG made public `checksum` and `size_bytes`, change after creation through the visibility switch alone, amended 2026-10-01) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration; and a media type's `settings.accepts`, with a migration naming the global `image` type's, amended 2026-09-30) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -5565,13 +5565,102 @@ arrives as Livewire's own "failed to upload".
 >   - *A GPS directory an earlier editor unlinked and left behind stays*: nothing points at it, so no reader finds it,
 >     though a search of the bytes would.
 >   - *A signed file's Content Credentials read as altered* once anything in it is overwritten.
-> - **Open, for Adam** — whether a JPEG stored public before this is stripped. Built to the letter, it keeps its
+> - ~~**Open, for Adam** — whether a JPEG stored public before this is stripped. Built to the letter, it keeps its
 >   location, at its URL and when a restore publishes it again; a backfill rewrites `checksum` with the bytes, the lift
->   decision 32 makes, and could run as its step (*Open questions*).
-> - **Not yet:** a file made public under decision 32 — `MediaLocation::strippedCopy()` is the step it calls, on a copy
+>   decision 32 makes, and could run as its step (*Open questions*).~~ *Moot (Adam, 2026-10-01): no installation has
+>   uploaded anything, so no JPEG was stored public before decision 30, and no backfill is built.*
+> - **Not yet:** ~~a file made public under decision 32 — `MediaLocation::strippedCopy()` is the step it calls, on a copy
 >   of the stored bytes and before any byte reaches the public disk, rewriting `checksum` and `size_bytes` with
->   `visibility` in the same step; the formats above; and Firefox and Safari, which read orientation from an EXIF block
->   this never retypes or empties, unmeasured.
+>   `visibility` in the same step;~~ *built — decision 32, as built, below;* the formats above; and Firefox and Safari,
+>   which read orientation from an EXIF block this never retypes or empties, unmeasured.
+
+> ⚠️ **Amended 2026-10-01 — decision 32 as built.**
+>
+> - **One door, both ways: `MediaVisibility::makePublic()` and `makePrivate()`**, on a media entry's *View* and *Edit*
+>   pages as *Make public* and *Make private* (`MediaVisibilityActions`). Each runs under custody's lock
+>   (`MediaCustody::locked()` — on SQLite the write lock first, elsewhere the entry and then its file `FOR UPDATE`) and
+>   decides from the rows it locked: the entry live and in this organisation's and this site's scope, the instance not
+>   moved underneath it, and its stored type's `entry.{type}.publish` held — a null user is the system, as for
+>   publication. A trashed entry is refused both ways — *"Restore it first."* — and a file already so is left,
+>   unaudited. Each switch is audited, `media.made_public` or `media.made_private`, targeting the entry, in the switch's
+>   own transaction; the entry itself is not written — no `entry.updated`, no revision.
+> - **Made private, as a trash withdraws.** The row first — private, naming the private disk — then the trash's own
+>   withdrawal (`MediaWithdrawal::afterVisibilityWrite()`): a verified copy on the private disk, and every copy on a
+>   disk the web serves removed, all before the commit. One that cannot be is refused in the trash's words —
+>   *"Refusing to make entry 12 private: …"* — and what moved is put back once nothing is left to commit. Like a trash,
+>   it may run inside a host's transaction. `checksum` and `size_bytes` stay, so a JPEG made public earlier stays
+>   stripped (decision 30). A copy a browser, a proxy or a CDN kept is not recalled (decision 5), and the confirmation
+>   says so.
+> - **Made public, as a restore publishes — a JPEG stripped first, and only once settled.** A file is read as a JPEG
+>   where its row says so by any of a JPEG's names or types, in any case — `.jfif`, `image/pjpeg`, a type with
+>   parameters — and, whatever its row says, where its first bytes are a JPEG's or the disk its row names does not hold
+>   it. A JPEG is made public only while its row names the configured private disk, that disk holds its copy, and no
+>   other disk custody asks holds one at its path — on a disk the web serves, nor its partial copy; otherwise it is
+>   refused toward what settles it, `kitsune:media-reconcile --force` or `kitsune:media-prune --force`, so no original
+>   is left where a later fallback could find it. Under the lock:
+>   1. its copy is read into the system's temporary directory and proved against the hash the keeper chose it by;
+>   2. `MediaLocation::strippedCopy()` makes a copy of it without its location;
+>   3. one statement writes `visibility`, `checksum` and `size_bytes` from the bytes being made the file;
+>   4. the audit is recorded and publication registered;
+>   5. last, the stripped copy replaces the file on the private disk — written beside it, read back, renamed over it.
+>
+>   Then the commit, and only then publication, which finds the recorded checksum on the private disk and copies
+>   nothing else: no byte reaches a disk the web serves before the commit that makes a file public. Every other file
+>   writes `visibility` alone and is published as a restore publishes it. Making a file public refuses inside an open
+>   transaction: the rewrite is the one step no enclosing rollback restores.
+> - **What a failure leaves.**
+>   - Before the rename, nothing.
+>   - Made public, and the process lives: a switch that does not land writes the original back, so a private file keeps
+>     what it was uploaded with. On an object store, whose PUT is the file, an original that cannot be written back is
+>     kept in `storage/app/kitsune-recovery`, readable by the process's own user alone, and the log says where.
+>   - Made public, and the process stops between the rename and the commit: the file is private and already stripped,
+>     its row still recording the original's checksum. It is never on the web; it is served through the admin at the
+>     same length, since the strip keeps it; custody keeps it as the copy its row names, warning that it changed outside
+>     Kitsune; and the next *Make public* records it.
+>   - Made private, and the process stops after its public delete: decision 5's residue, a live file whose one copy is
+>     private, which reconcile republishes.
+>
+>   A test stops the process before every byte operation of both switches, and between the rename and the commit, and
+>   then runs each step that could follow — settle, a publication, a drain, reconcile, prune, the other switch, a trash
+>   and a restore, an erasure: no JPEG with its location, and no private file, is ever on a disk the web serves
+>   (`MediaVisibilityCrashTest`).
+> - **For that path alone.** The three columns stay in `MediaFile::columnsFixedAtCreation()`, refused at every model
+>   door, inside `withoutScopeBecause()` too. The switch writes them in one private method below the model — as
+>   `kitsune:media-types --force` writes `is_media` — which checks the values, as nothing below the model does, and
+>   lands on exactly the one row locked; a test reads core's source for any other write naming them.
+> - **In the admin.** Hidden from whoever may neither update nor publish the entry; disabled, naming
+>   `entry.{type}.publish`, for whoever may only update it. *Make public* asks decision 15's acknowledgement — the
+>   statement Upload shows, now written once, ending *"Unless this is ticked, the file stays private."* — and unticked
+>   changes nothing. A shared file's modal says the change is for every site in the organisation. A refusal is a
+>   notification naming the entry, escaped (decision 7). A file made public whose publication failed says so, and its
+>   File section reads *Public — not yet published, so opened only through this admin*.
+> - **Review found** — an adversarial review of the slice, each finding reproduced by an independent skeptic, eleven
+>   confirmed and all fixed: a JPEG whose row named it otherwise — `.jfif`, `image/pjpeg`, a type with parameters, a
+>   PNG's name — published with its location, which is why the bytes are asked; an original lost where a store's write
+>   and its put-back both failed; a file made private while its public copy read as absent for a moment — an object
+>   store's 404 — committed private over a copy still served, and is now refused, *"no copy of it was found on the
+>   private disk or on [public]"*, where a trash goes on as it did; an instance whose key was edited switching one row
+>   and auditing another, and an entry on a connection its audit row is not written on, both now refused before
+>   anything is read; a partial copy refused toward reconcile, which leaves it, now toward prune; and the guards no test
+>   reached — the JPEG-only preconditions, the shared-path refusal, `writeRow()`'s checks and the put-back's two
+>   re-checks — each now pinned.
+> - **Defaults taken, for Adam to overrule.**
+>   - *Make public* refuses inside an open transaction; *Make private* may run in one, as a trash may.
+>   - A trashed entry is refused both ways.
+>   - A JPEG is made public only once settled; every other format moves as a restore moves it.
+>   - Where no copy matches its checksum, the copy the row names is adopted, stripped and recorded — decision 5's named
+>     disk winning — which is also what heals the residue a stopped switch leaves.
+>   - The bytes go last before the commit, and the stripped-but-private residue a stopped process leaves is accepted.
+>   - Whether GPS was removed is not audited — ADR-020's log has no column for it; an info line in the log names the
+>     checksum before and after.
+>   - A shared file switches for every site, from any site of its organisation that lists its type.
+>   - The actions are on *View* and *Edit*, one file at a time; a switch to the visibility a file already has changes
+>     nothing and says so.
+>   - Settle is unchanged.
+> - **Open, for Adam** — whether custody should refuse to publish a JPEG whose kept copy does not match its checksum,
+>   and whether a list switches many files at once (*Open questions*).
+> - **Not yet:** a switch on the list or in bulk; a console command to switch a file; the formats in decision 30's
+>   table; and Firefox and Safari, as decision 30 records.
 
 ### The measurement this entry still owes
 
@@ -6015,6 +6104,22 @@ measurement this entry still owes.
   built with the most XMP the budget lets through — 32 packets, each an element with 1,024 attributes — in under a
   second.
 
+### Measured — decision 32, 2026-10-01
+
+Taken where this slice was built — PHP 8.4, SQLite, local disks — and not on stage, so none of it is the measurement
+this entry still owes.
+
+- **Making a file public holds its lock more than twice as long as a trash.** A 64 MiB JPEG carrying GPS,
+  stored private and made public: 1.48 s from the call to its commit, the median of seven (1.43–1.59) — the copy read,
+  hashed and proved, stripped, and the stripped copy written beside it, read back and renamed, all under the lock —
+  and 2.8 s to the end of its publication, which follows the commit. A trash of the same file, stored public: 0.63 s
+  (0.62–0.69). On SQLite the lock is the database's write lock (*What this costs*).
+- **Memory.** 2 MiB above the call's start at its peak, under a 128M limit: every read and write streams, and the strip
+  reads through its window.
+- **The crash harness.** Six byte operations make a JPEG public whole and three make a file private; the process is
+  stopped before each and between the rename and the commit, and each of ten steps run after it — 30 cases, 898
+  assertions, in seven seconds.
+
 ### What this costs
 
 **Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
@@ -6061,18 +6166,25 @@ rather than an assumption, and the cost to the media list's query plan is measur
 **A shared file travels, and can be changed from anywhere in the org.** See decision 2. *This site only* exists for
 the file that should not.
 
-~~**A public photo can carry its location.**~~ **A public JPEG loses its EXIF and XMP GPS; what else it holds, other
-formats and a JPEG stored public before decision 30 can still say where they were made — amended 2026-09-30 (Adam,
-decision 30, as built).** A camera JPEG's EXIF block often holds GPS coordinates, and a public file ~~is served
+~~**A public photo can carry its location.**~~ **A public JPEG loses its EXIF and XMP GPS; what else it holds ~~, other
+formats and a JPEG stored public before decision 30~~ and other formats can still say where they were made — amended
+2026-09-30 (Adam, decision 30, as built), and 2026-10-01 (decision 32, as built).** A camera JPEG's EXIF block often holds GPS coordinates, and a public file ~~is served
 exactly as uploaded. Nothing in this design strips it. The confirmation an editor sees on choosing *public* (decision
 3) names it, and removing it is an open question — *decided 2026-09-30: stripped from a JPEG as it is made public
 (Adam, decision 30), and not yet built; until it is, this cost stands.*~~ is served as stored — a JPEG stored public
 without them. What it costs: a JPEG whose location cannot be removed with certainty is refused as public; an extended
 XMP carrying location loses its depth map or its picture before an edit with it; a place name, a camera maker's own
 records, a motion photo's video and every other format are served as uploaded — an Android video's location among them
-— and the confirmation says so; a signed file's credentials read as altered; a JPEG stored public before decision 30
-keeps its location, and a restore publishes it again as it was; and until decision 32 is built, nothing makes a file
-public after upload.
+— and the confirmation says so; and a signed file's credentials read as altered. ~~A JPEG stored public before decision
+30 keeps its location, and a restore publishes it again as it was; and until decision 32 is built, nothing makes a file
+public after upload.~~ *Moot, and built, 2026-10-01: no JPEG was stored public before decision 30 (Adam), and a file
+made public after upload loses its location as one stored public does (decision 32, as built).*
+
+**Making a file public holds its row's lock while it is copied, stripped and written**, as a trash holds it while it
+copies — on SQLite the database's write lock, so other writes wait or fail as busy (*Measured — decision 32*). **A JPEG
+made public is refused until settled**: a host that moved its private disk runs reconcile and prune first. **A switch
+stopped part-way can leave a private file stripped**, its row recording the original until it is made public again.
+**And a file made private is not recalled** from a browser, a proxy or a CDN that kept it.
 
 **Private thumbnails are worse to use until they are measured.** A grid of placeholders that load on click is a
 real cost to an editor, and it is paid until the number exists.
@@ -6435,6 +6547,13 @@ When it lands:
   XMP packet it holds, asserted by reading the stored bytes and, in the browser, what `/storage/…` serves; its pixels
   byte for byte and its orientation as Chromium draws it; its row describing the stored bytes; a private one byte for
   byte as uploaded; and a file it cannot strip with certainty refused as public, in words that offer private.
+- **Visibility after upload** *(decision 32, 2026-10-01).* A file's visibility changes both ways through *Make public*
+  and *Make private* alone, for whoever may publish its type, audited each time. A JPEG made public is served without
+  the GPS data of its EXIF and XMP, whatever its row calls it, and its row describes the stripped bytes, asserted by
+  reading what `/storage/…` serves. No byte reaches a disk the web serves before the commit that makes a file public,
+  and a file made private is on no such disk when its commit lands. A process stopped at each step leaves no JPEG with
+  its location and no private file on a served disk. `visibility`, `checksum` and `size_bytes` stay refused at every
+  model door.
 - **Authorisation.** A user without `create` sees no Upload; one with `create` but not `publish` sees it disabled
   with the reason; a forged call from either stores nothing on any disk.
 - **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance and
@@ -6931,13 +7050,55 @@ When it lands:
 > change nothing. One read no test can drive is kept and named: `$size` read from a copy whose length cannot change, for
 > decision 32.
 
+> ⚠️ **Amended 2026-10-01 — decision 32 landed**, and each guard was removed in turn and its test watched fail, beside a
+> run of the same tests passing unmutated: 94 mutations, 90 in the PHP suite and four in the browser, of which 93 were
+> caught. By family:
+> - **The switch** (55: `MediaVisibilityTest`, `MediaVisibilityCrashTest`, `MediaVisibilityLevelZeroTest`) — what it
+>   refuses first: an edited key, another connection, an open transaction, no organisation, paths not unique, the
+>   configured disks. Making public: the bytes asked, a copy that is not there taken as a JPEG, a JPEG's preconditions
+>   for JPEG alone, settled or refused — unsettled, exposed or its partial, stray, missing, unreadable, a root that cannot
+>   be looked at — the copy proved against the keeper's hash, the strip and its words, the checksum and size from the
+>   stripped bytes, the audit, the publication registered and registered again, the bytes last, the put-back, the
+>   original kept, the temporaries removed and the log. Making private: the row first and naming the private disk, the
+>   withdrawal, the audit, and a file already so. The guard: a gone row, another organisation or site, a moved row, the
+>   permission and the stored type it is asked of, the trash, no file, and the system. `writeRow()`'s values and its one
+>   row, and the put-back's three re-checks. One survives, as defence in depth: making private's own `compensate()`,
+>   whose work the rollback callbacks and the rolled-back listener already do.
+> - **The bytes** (7: `MediaBytesTest`) — the temporary proved; `head()`, `toTemporary()` and `replaceVerified()` refusing
+>   a read-through disk; an object store's key never discarded where it is the file, and still discarded where it is a
+>   copy; and the process's id in the temporary's name.
+> - **The format** (5: `MediaLocationTest`, `MediaVisibilityTest`) — a JPEG's other types and extensions, a type's
+>   parameters, an extension's case, and a stored file's words.
+> - **The withdrawal and its words** (5: `MediaVisibilityTest`, `MediaLocationTest`) — a file found nowhere refused,
+>   every served disk swept, the configured disks refused, the act named — *make entry N private* — and a partial copy
+>   named.
+> - **The admin** (16: `MediaVisibilityActionsTest`, `MediaUploadTest`) — no transaction around either action; the tick
+>   required and asked again; hidden from a reader, disabled and with no field without `publish`, and neither in the
+>   trash; a refusal escaped; a file awaiting publication said so, on the notification and in the File section;
+>   Upload's statement as the helper, the shared modal, both pages' actions, and the one statement and Upload's own
+>   words.
+> - **The lift** (2: `MediaFileImmutabilityTest`) — a second writer below the model, plain and qualified.
+>
+> In the browser, `media-visibility.spec.js` (4) — the tick required, the strip, the actions on the View page, and the
+> switch disabled without `publish`, each removed in turn.
+>
+> One guard mutation found no test could reach was removed rather than kept: a second check that the entry is gone,
+> ahead of the read that already says so. So was a line that did nothing: a `chmod` to 0600 of a temporary
+> `tempnam()` had already made 0600.
+
 ---
 
 ## Open questions
 
-- **Is a JPEG stored public before decision 30 stripped?** It keeps its location at its URL, and a restore publishes
-  it again as it was. A backfill rewrites `checksum` with the bytes — decision 32's lift — and could run as its step.
-  Raised by ADR-042 decision 30, as built.
+- **Should custody refuse to publish a JPEG whose kept copy does not match its checksum?** After decision 32, every
+  committed public JPEG records stripped bytes, and the switch leaves no other copy where custody looks; an unstripped
+  copy can reach the web only through a change made outside Kitsune — a backup restored over the private copy — which
+  settle then publishes as the named or first copy, as decision 5 has it for every file. A guard would close that route;
+  its cost is that a JPEG changed harmlessly outside Kitsune — an image optimiser — is no longer republished by a
+  restore or by reconcile, only by *Make private* and then *Make public*. Raised by ADR-042 decision 32, as built.
+- **Should a media list switch many files at once?** *Make selected public* and *Make selected private* on the card
+  grid, one acknowledgement covering the selection, each refusal named as *Delete selected* names them. Raised by
+  ADR-042 decision 32, as built.
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
   admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
   to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it

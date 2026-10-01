@@ -273,8 +273,13 @@ class EntryResource extends Resource
                             ? __('kitsune::media.file.dimensions_value', ['width' => $file->width, 'height' => $file->height])
                             : null)
                         ->hidden($file->width === null || $file->height === null),
+                    // A public file whose publication has not happened yet — it failed after the commit — says so (decision 32).
                     TextEntry::make('media_file_visibility')->label(__('kitsune::media.file.visibility'))
-                        ->state(__($file->isPublic() ? 'kitsune::media.file.public' : 'kitsune::media.file.private')),
+                        ->state(__(match (true) {
+                            ! $file->isPublic() => 'kitsune::media.file.private',
+                            MediaDelivery::servesDirectly($file) => 'kitsune::media.file.public',
+                            default => 'kitsune::media.file.public_awaiting',
+                        })),
                     TextEntry::make('media_file_sharing')->label(__('kitsune::media.file.sharing'))
                         ->state(__($record->site_id === null ? 'kitsune::media.file.shared' : 'kitsune::media.file.site_only')),
                     SiteTime::entry('media_file_stored')->label(__('kitsune::media.file.stored'))->state($file->created_at),

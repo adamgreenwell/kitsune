@@ -463,7 +463,7 @@ function aLocatedJpeg(string $bytes): string
 
 function strippedTemporaries(): int
 {
-    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []);
+    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.getmypid().'-*') ?: []);
 }
 
 it('stores a public JPEG without the GPS data it carried, every other byte as uploaded', function (): void {

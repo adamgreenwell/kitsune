@@ -9,6 +9,13 @@
 declare(strict_types=1);
 
 /*
+ * ⚠️ ONE STATEMENT FOR BOTH CONFIRMATIONS — ADR-042 decisions 15, 30 and 32. Uploading a file public and making a stored
+ * file public ask the same acknowledgement, so its words are written once and each confirmation ends in its own
+ * sentence. ⚠️ IT CLAIMS WHAT `MediaLocation::STRIPPED` STRIPS AND NO MORE, and a test holds the formats it names to it.
+ */
+$publicStatement = 'A public file is served to anyone who has its link. A JPEG loses the GPS coordinates in its EXIF and XMP data as it is made public, and its picture and orientation stay as uploaded. What else a photo holds — a place name, a camera maker\'s own records, a motion photo\'s video — and every other type of file are served as uploaded, and can still say where they were made.';
+
+/*
  * The media admin's words — ADR-042.
  *
  * The first strings core ships under its own `kitsune` namespace, so that the media work does not widen the gap
@@ -43,7 +50,7 @@ return [
         'public' => 'Public',
         'public_help' => 'Opened by anyone who has its link.',
         'public_confirm' => 'Make these files public',
-        'public_warning' => 'A public file is served to anyone who has its link. A JPEG loses the GPS coordinates in its EXIF and XMP data as it is made public, and its picture and orientation stay as uploaded. What else a photo holds — a place name, a camera maker\'s own records, a motion photo\'s video — and every other type of file are served as uploaded, and can still say where they were made. Unless this is ticked, the files are stored private.',
+        'public_warning' => $publicStatement.' Unless this is ticked, the files are stored private.',
         'site_only' => 'This site only',
         'site_only_help' => 'Unticked, the files are shared with every site in the organisation.',
         'needs_publish' => 'Uploading needs permission to publish :type (:permission): a file is published as it is stored.',
@@ -68,12 +75,35 @@ return [
         'visibility' => 'Visibility',
         'private' => 'Private',
         'public' => 'Public',
+        'public_awaiting' => 'Public — not yet published, so opened only through this admin',
         'sharing' => 'Shared with',
         'shared' => 'Every site in the organisation',
         'site_only' => 'This site only',
         'stored' => 'Stored',
         'open' => 'Open file',
         'missing' => 'No file is recorded for this entry.',
+    ],
+    'visibility' => [
+        'make_public' => 'Make public',
+        'make_private' => 'Make private',
+        'make_public_heading' => 'Make ":title" public',
+        'make_private_heading' => 'Make ":title" private',
+        'public_confirm' => 'Make this file public',
+        'public_warning' => $publicStatement.' Unless this is ticked, the file stays private.',
+        'not_confirmed' => 'Tick the box to make this file public. Unticked, it stays private.',
+        'shared_public' => 'This file is shared with every site in the organisation, so it becomes public for all of them.',
+        'shared_private' => 'This file is shared with every site in the organisation, so it becomes private for all of them.',
+        'private_warning' => 'Its link stops opening it for anyone not signed in here who may view this type. A copy a browser, a proxy or a CDN has already kept is not recalled, and can be served until it expires. A JPEG made public earlier stays without the GPS coordinates it lost then.',
+        'needs_publish' => 'Making a file public or private needs permission to publish :type (:permission).',
+        'made_public' => '":title" is public',
+        'made_public_awaiting' => '":title" is public, and not yet published',
+        'made_public_awaiting_body' => 'Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile --entry=:id --force publishes it.',
+        'made_private' => '":title" is private',
+        'made_private_body' => 'Its public link no longer opens it. A copy a browser, a proxy or a CDN has already kept can be served until it expires.',
+        'already_public' => '":title" was already public. Nothing was changed.',
+        'already_private' => '":title" was already private. Nothing was changed.',
+        'not_made_public' => '":title" was not made public',
+        'not_made_private' => '":title" was not made private',
     ],
     'tile' => [
         'show' => 'Show preview',

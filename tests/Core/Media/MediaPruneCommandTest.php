@@ -2881,7 +2881,7 @@ describe('reading in batches', function (): void {
         $row = $dir.'/'.str_repeat('f', PHP_MAXPATHLEN - 10 - strlen($this->root.'/'.$dir));
         rename($this->root.'/'.$kept->path, $this->root.'/'.$row);
         DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
-        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png'.MediaBytes::PARTIAL;
+        $stray = dirname($kept->path).'/stray.png'.MediaBytes::PARTIAL;
         file_put_contents($this->root.'/'.$stray, 'part');
 
         $exit = Artisan::call('kitsune:media-prune');
@@ -2905,7 +2905,7 @@ describe('reading in batches', function (): void {
 
         $kept = storedForPrune($this->imageType);
         DB::table('media_files')->where('id', $kept->getKey())->update(['path' => 'media/'.str_repeat('a', 300).'.png']);
-        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png';
+        $stray = dirname($kept->path).'/stray.png';
         file_put_contents($this->root.'/'.$stray, 'x');
 
         expect(fn () => Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []))
@@ -2995,7 +2995,7 @@ describe('reading in batches', function (): void {
         $long = 'media/'.str_repeat('a', 245).'.png';
         rename($this->root.'/'.$kept->path, $this->root.'/'.$long);
         DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $long]);
-        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png'.MediaBytes::PARTIAL;
+        $stray = dirname($kept->path).'/stray.png'.MediaBytes::PARTIAL;
         file_put_contents($this->root.'/'.$stray, 'part');
 
         $exit = Artisan::call('kitsune:media-prune');

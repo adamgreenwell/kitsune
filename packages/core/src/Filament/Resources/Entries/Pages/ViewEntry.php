@@ -14,6 +14,7 @@ use Filament\Actions\EditAction;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
+use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 
 class ViewEntry extends ViewRecord
@@ -23,9 +24,13 @@ class ViewEntry extends ViewRecord
 
     protected static string $resource = EntryResource::class;
 
-    /** @return array<int, mixed> */
+    /**
+     * A media entry's file is made public or private here, as on Edit (ADR-042 decision 32).
+     *
+     * @return array<int, mixed>
+     */
     protected function getHeaderActions(): array
     {
-        return [EditAction::make()];
+        return [...MediaVisibilityActions::all(), EditAction::make()];
     }
 }

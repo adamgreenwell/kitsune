@@ -14,6 +14,7 @@ use Kitsune\Core\Media\LocationUnremovable;
 use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaLocation;
 use Kitsune\Core\Media\MediaRefused;
+use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg as J;
 
 /*
@@ -22,14 +23,15 @@ use Kitsune\Core\Tests\Fixtures\LocatedJpeg as J;
  */
 
 afterEach(function (): void {
-    foreach ([...glob(sys_get_temp_dir().'/kitsune-loc-*') ?: [], ...glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []] as $leftover) {
+    // This process's own: a parallel run's other processes have theirs in flight.
+    foreach ([...glob(sys_get_temp_dir().'/kitsune-loc-'.getmypid().'-*') ?: [], ...glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.getmypid().'-*') ?: []] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function locationTemporaries(): int
 {
-    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.'*') ?: []);
+    return count(glob(sys_get_temp_dir().'/'.JpegLocation::TEMPORARY_PREFIX.getmypid().'-*') ?: []);
 }
 
 it('strips JPEG alone', function (): void {
@@ -157,4 +159,57 @@ it('finds the marker that ends scan data past stuffing, restarts and fill, and a
 
     expect($file->nextMarker(0, JpegBytes::WINDOW + 1))->toBe(JpegBytes::WINDOW - 1);
     $file->close();
+});
+
+/*
+ * ADR-042 decision 32: a stored file made public is read as the format its row says — failing closed for a row written
+ * past the model — and refused in words for a file already stored.
+ */
+it('reads a stored row as JPEG by its extension in any case, or by its type whatever its name', function (string $path, ?string $mime, ?string $format): void {
+    expect(MediaLocation::formatOf($path, $mime))->toBe($format);
+})->with([
+    'a JPEG' => ['media/1/photo.jpg', 'image/jpeg', 'jpeg'],
+    'a capitalised extension' => ['media/1/PHOTO.JPG', 'image/jpeg', 'jpeg'],
+    'a capitalised extension with no type' => ['media/1/PHOTO.JPEG', null, 'jpeg'],
+    'a JPEG under a PNG\'s name' => ['media/1/photo.png', 'image/jpeg', 'jpeg'],
+    'a JPEG\'s type in capitals' => ['media/1/photo.bin', ' IMAGE/JPEG ', 'jpeg'],
+    'a PNG' => ['media/1/photo.png', 'image/png', 'png'],
+    'a capitalised PNG' => ['media/1/photo.PNG', 'image/png', 'png'],
+    'something else' => ['media/1/photo.xyz', 'application/octet-stream', null],
+    // A JPEG's other names (review of decision 32).
+    'a browser\'s .jfif' => ['media/1/photo.jfif', 'image/pjpeg', 'jpeg'],
+    'a .jpe' => ['media/1/photo.JPE', null, 'jpeg'],
+    'a .pjp' => ['media/1/photo.pjp', null, 'jpeg'],
+    'image/pjpeg' => ['media/1/photo', 'image/pjpeg', 'jpeg'],
+    'image/jpg' => ['media/1/photo', 'image/jpg', 'jpeg'],
+    'a type with parameters' => ['media/1/photo', 'image/jpeg; charset=binary', 'jpeg'],
+    'a PNG\'s type with parameters' => ['media/1/photo.png', 'image/png; charset=binary', 'png'],
+]);
+
+it('refuses a stored file in words that say it stays private', function (): void {
+    $refusal = MediaLocation::refusal('Holiday', LocationUnremovable::GPS_SHARED, stored: true);
+
+    expect($refusal->getMessage())->toBe('Refusing to make [Holiday] public: its GPS data shares bytes with other EXIF data, '
+        .'so the GPS data it may carry cannot be removed with certainty. It stays private, where it is served only to those '
+        .'who may view it; saved again without its location and uploaded, it can be public.')
+        ->and(MediaLocation::refusal('photo.jpg', LocationUnremovable::GPS_SHARED)->getMessage())
+        ->toStartWith('Refusing [photo.jpg] as public: ')->toContain('It can be stored private');
+
+    $file = J::file(J::unremovable());
+
+    try {
+        expect(fn () => MediaLocation::strippedCopy($file, 'jpeg', 'Holiday', stored: true))
+            ->toThrow(MediaRefused::class, 'Refusing to make [Holiday] public: ');
+    } finally {
+        unlink($file);
+    }
+});
+
+it('names the act a withdrawal refused: a trash, an erasure, or a file made private', function (): void {
+    $refusal = static fn (string $operation, string $reason): string => (new MediaWithdrawalRefused(7, $reason, 'public', $operation))->getMessage();
+
+    expect($refusal('make private', MediaWithdrawalRefused::DELETE_FAILED))->toStartWith('Refusing to make entry 7 private: its file could not be withdrawn')
+        ->and($refusal('make private', MediaWithdrawalRefused::UNSAFE_DISKS))->toStartWith('Refusing to make entry 7 private: the configured media disks')
+        ->and($refusal('trash', MediaWithdrawalRefused::DELETE_FAILED))->toStartWith('Refusing to trash entry 7: its file could not be withdrawn')
+        ->and($refusal('erase', MediaWithdrawalRefused::UNSAFE_DISKS))->toStartWith('Refusing to erase entry 7: the configured media disks');
 });
