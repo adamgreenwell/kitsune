@@ -5686,8 +5686,8 @@ arrives as Livewire's own "failed to upload".
 >   heading that counts it — *"Make the 3 selected files public"* — in the statement Upload shows, still written once,
 >   ending *"Unless this is ticked, the files stay private."* Unticked changes nothing, and the handler asks again.
 >   *Make selected private* asks first, in the page's words made plural. Each modal says how many of the selection are
->   shared with every site in the organisation and change for all of them — counted from the selection's query without
->   the list's sort, which PostgreSQL refuses beside `count(*)`, never fetched.
+>   shared with every site in the organisation and change for all of them — counted from the selection's query, never
+>   fetched.
 > - **Each file its own switch.** `MediaVisibility::makePublic()` or `makePrivate()` once a file, in the list's order,
 >   each under custody's lock and deciding from its locked rows, each committing — and, made public, publishing —
 >   before the next begins. Nothing holds two files' locks, and no transaction encloses them: making a file public
@@ -6207,6 +6207,22 @@ this entry still owes.
 - **The crash harness.** Six byte operations make a JPEG public whole and three make a file private; the process is
   stopped before each and between the rename and the commit, and each of ten steps run after it — 30 cases, 898
   assertions, in seven seconds.
+
+### Measured — decision 34, 2026-10-01
+
+Taken where this slice was built — PHP 8.4, SQLite, local disks — through the handler, as the system, under a
+`max_execution_time` of 30 s and so a budget of 15 s; not on stage, so none of it is the measurement this entry still
+owes.
+
+- **A page of photos fits, and a larger selection stops at the budget and says so.** 25 camera-sized JPEGs carrying
+  GPS, 12 MiB each, made public in 12.05 s — 0.48 s a file, 96% of it CPU time, which PHP's limit counts. 40 of them
+  reached 31 in 15.36 s, and the notice said 9 were not tried. Eight of 63 MiB reached six in 15.09 s, 2.5 s each:
+  the sixth began inside the budget and ended 0.09 s past it, half the limit still unspent.
+- **Memory.** At most 5.2 MiB above the call's start at its peak, whatever the files' size: every read and write
+  streams, one file at a time.
+- **What else it costs.** A file already public, as a second run finds those the first reached: 0.5 ms. The 25 made
+  private again: 0.11 s each. A page of fifty 1×1 PNGs made public: 0.27 s, 5.4 ms a file.
+- **The open modal.** Six queries for its heading and its description with fifty selected, 4.9 ms.
 
 ### What this costs
 
@@ -7192,6 +7208,38 @@ When it lands:
 > One guard mutation found no test could reach was removed rather than kept: a second check that the entry is gone,
 > ahead of the read that already says so. So was a line that did nothing: a `chmod` to 0600 of a temporary
 > `tempnam()` had already made 0600.
+
+> ⚠️ **Amended 2026-10-01 — decision 34 landed**, and each guard was removed in turn and its test watched fail, beside a
+> run of the same tests passing unmutated: 92 mutations, 88 in the PHP suite and four in the browser. Of the 88, 83
+> were caught at first. Of the five that survived, two pointed at code that did nothing, and it was removed: a
+> `reorder()` before counting, which Laravel's count already does, and a trash check on the snapshot, which the re-read
+> already makes. Three pointed at tests missing, and they were added: *Make selected private* through the page's own
+> call, the notice's title escaped whatever its translation says, and a file whose row cannot be read again. The
+> reworked code's ten were then all caught. By family, all in `MediaVisibilityBulkTest` but where named:
+> - **The actions** (17) — on a media list alone and on its toolbar; no transaction under a host's; Filament's notices
+>   off; who may, hidden, disabled and its tooltip; not offered under *Only the trash*, and offered with it; the
+>   selection cleared on success alone; the field only for whoever may publish, the tick required, the plural
+>   statement; making private confirmed first.
+> - **The handlers** (13) — the tick asked again, a forged one refused, and a failure; the budget passed both ways, and
+>   from PHP's limit; the bound both ways, in the query, at fifty, in the list's order; too many, a failure.
+> - **The modal's words** (7) — the shared count, the bound's note at fifty-one, one shared of one, all shared, the
+>   private warning, each heading.
+> - **The budget** (6) — half the limit, at most fifteen, fifteen with none, PHP's limit read, the check, the first
+>   always tried.
+> - **The refusals** (9) — which an editor reads, each way; the trash made private, as already so or named, a file
+>   with none; the reason kept, escaped.
+> - **Failures not Kitsune's** (9; two in `MediaVisibilityBulkLevelZeroTest`) — reported once, and at all; read again,
+>   never public in the trash, a landed COMMIT counted as made or not yet published, the snapshot, each direction, a
+>   row that cannot be read.
+> - **The switch read again** (4) — the file made public read fresh, not yet published, and already so each way.
+> - **Status and selection** (7) — success only when all is done, files not tried not done, files gone counted, the
+>   page's keys read and passed both ways, a select-all not counted as keys.
+> - **The notification** (15) — each title in its order and colour, each line, the command, the counts, the
+>   escaping and the quotes.
+> - **The statement** (1: `MediaUploadTest`) — the plural acknowledgement built from Upload's words.
+>
+> In the browser, `media-visibility.spec.js` (4) — the modal's heading counting the selection, and its description,
+> each way.
 
 ---
 
