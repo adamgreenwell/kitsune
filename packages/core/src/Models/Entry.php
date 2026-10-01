@@ -1990,14 +1990,34 @@ class Entry extends Model implements RequiresModelSave
          * meantime is live, and erasing it would delete what nobody chose to delete. Asked here, under the lock the
          * erasure itself holds, so no restore lands between the question and the write. An instance loaded live may
          * still be erased: that is a choice made about a live entry.
+         *
+         * ⚠️ AND A TRASH OR A RESTORE IS NOT WRITTEN OVER ONE SOMEBODY ELSE ALREADY MADE (Codex, #167). Trashed again, an
+         * entry's date would move; restored again, it would be saved for nothing; either way a change this write did not
+         * make would be audited as its own. Refused when the row now stands where this write would put it and the
+         * instance was loaded elsewhere — so a write that leaves `deleted_at` as loaded is never one.
          */
         $deletedAt = $this->getDeletedAtColumn();
+        $loadedTrashed = $this->getRawOriginal($deletedAt) !== null;
+        $storedTrashed = $stored->{$deletedAt} !== null;
 
-        if ($operation === 'force-delete' && $this->getRawOriginal($deletedAt) !== null && $stored->{$deletedAt} === null) {
+        if ($operation === 'force-delete' && $loadedTrashed && ! $storedTrashed) {
             throw new RuntimeException(sprintf(
                 'Refusing to force-delete entry %s: it was loaded from the trash and has been restored since, so '
                 .'erasing it would delete a live entry. Reload the entry.',
                 (string) $this->getKey(),
+            ));
+        }
+
+        $trashing = $this->getAttribute($deletedAt) !== null;
+
+        if ($operation === 'update' && $trashing === $storedTrashed && $loadedTrashed !== $storedTrashed) {
+            throw new RuntimeException(sprintf(
+                'Refusing to %s entry %s: it was loaded %s and has been %s since, so this write would do again what '
+                .'somebody else already did. Reload the entry.',
+                $trashing ? 'trash' : 'restore',
+                (string) $this->getKey(),
+                $trashing ? 'live' : 'from the trash',
+                $trashing ? 'trashed' : 'restored',
             ));
         }
     }

@@ -118,6 +118,45 @@ it('refuses to erase an instance loaded from the trash once it has been restored
     expect(DB::table('entries')->where('id', $this->entry->getKey())->exists())->toBeFalse();
 });
 
+it('refuses to trash or restore again what somebody else already trashed or restored, and lets an instance do both itself', function (): void {
+    /*
+     * ⚠️ CODEX, #167: trashed again, an entry's date would move; restored again, it would be saved for nothing; either
+     * way the audit would record a change this write did not make. Asked under the write's own lock.
+     */
+    /** @var Entry $stale */
+    $stale = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => '2020-01-01 00:00:00']);
+
+    expect(fn () => $stale->delete())->toThrow(RuntimeException::class, 'it was loaded live and has been trashed since');
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->value('deleted_at'))->toBe('2020-01-01 00:00:00');
+
+    /** @var Entry $trashed */
+    $trashed = Entry::withTrashed()->whereKey($this->entry->getKey())->firstOrFail();
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => null]);
+    $updated = DB::table('entries')->where('id', $this->entry->getKey())->value('updated_at');
+
+    expect(fn () => $trashed->restore())->toThrow(RuntimeException::class, 'it was loaded from the trash and has been restored since');
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->value('updated_at'))->toBe($updated);
+
+    // Loaded from the trash and restored since: trashing it is a change, and is written.
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => '2020-01-01 00:00:00']);
+    /** @var Entry $restoredSince */
+    $restoredSince = Entry::withTrashed()->whereKey($this->entry->getKey())->firstOrFail();
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => null]);
+    $restoredSince->delete();
+
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->whereNotNull('deleted_at')->exists())->toBeTrue();
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => null]);
+
+    // An instance's own trash and restore, with nobody else involved.
+    /** @var Entry $own */
+    $own = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
+    $own->delete();
+    $own->restore();
+
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->whereNull('deleted_at')->exists())->toBeTrue();
+});
+
 it('refuses a soft delete the same way, because it routes through the update path', function (): void {
     /** @var Entry $stale */
     $stale = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();

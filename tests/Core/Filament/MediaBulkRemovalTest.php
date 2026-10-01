@@ -1025,6 +1025,89 @@ describe('what left the list', function (): void {
         expect($erased)->toBeTrue()
             ->and(bulkRmNotices()[0]['title'])->toBe('None of the selected entries is on this list any more. Nothing was changed.');
     });
+
+    /* G9. Loaded as already so, and changed back since: decided from where it is now, not from where it was (Codex, #167). */
+    it('removes an entry loaded as already so that another editor has changed back since', function (): void {
+        $restoredSince = bulkRmStored('Restored since', 'private', trashed: true);
+        $records = bulkRmListed($restoredSince);
+        Entry::withTrashed()->findOrFail($restoredSince->id)->restore();
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), $records, MediaBulkRemoval::DELETE);
+
+        expect(bulkRmWhere($restoredSince))->toBe('trashed')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted');
+
+        session()->forget('filament.notifications');
+        $trashedSince = bulkRmStored('Trashed since', 'private');
+        $records = bulkRmListed($trashedSince);
+        Entry::query()->findOrFail($trashedSince->id)->delete();
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), $records, MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmWhere($trashedSince))->toBe('live')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored');
+
+        // Live when the list loaded it, and in the trash since: Delete forever takes it.
+        session()->forget('filament.notifications');
+        $records = bulkRmListed($trashedSince);
+        Entry::query()->findOrFail($trashedSince->id)->delete();
+
+        MediaBulkRemoval::each(bulkRmAction('forceDelete'), $records, MediaBulkRemoval::ERASE);
+
+        expect(bulkRmWhere($trashedSince))->toBe('gone')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted forever');
+    });
+
+    /* G10. Erased since by another editor: no longer on the list, said beside the rest, and nothing reported. */
+    it('says an entry erased since the list loaded it is no longer on the list', function (string $verb, string $name, bool $trashed, string $word): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private', $trashed);
+        $b = bulkRmStored('B', 'private', $trashed);
+        $records = bulkRmListed($a, $b);
+        Entry::withTrashed()->findOrFail($a->id)->forceDelete();
+
+        MediaBulkRemoval::each(bulkRmAction($name), $records, $verb);
+
+        expect(bulkRmNotices()[0]['status'])->toBe('warning')
+            ->and(bulkRmNotices()[0]['title'])->toBe("One entry was {$word}")
+            ->and(bulkRmNotices()[0]['body'])->toBe('One of the selected entries is no longer on this list, and was left as it was.');
+
+        session()->forget('filament.notifications');
+        $records = bulkRmListed($b);
+        Entry::withTrashed()->findOrFail($b->id)->forceDelete();
+
+        MediaBulkRemoval::each(bulkRmAction($name), $records, $verb);
+
+        expect(bulkRmNotices()[0]['title'])->toBe('None of the selected entries is on this list any more. Nothing was changed.');
+
+        Exceptions::assertNothingReported();
+    })->with([
+        'delete' => [MediaBulkRemoval::DELETE, 'delete', false, 'deleted'],
+        'restore' => [MediaBulkRemoval::RESTORE, 'restore', true, 'restored'],
+    ]);
+
+    /*
+     * G11. Changed by another editor between the read and the write: refused under the write's own lock, so its date
+     * stays the other editor's (Codex, #167); read again, it is as asked.
+     */
+    it('leaves the other editor\'s trash as it was when it lands between the read and the write', function (): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private');
+        $records = bulkRmListed($a);
+        $raced = false;
+        DB::listen(static function ($query) use (&$raced, $a): void {
+            if (! $raced && preg_match('/^select [`"]?deleted_at[`"]? from [`"]?entries/', $query->sql) === 1 && in_array($a->id, $query->bindings, false)) {
+                $raced = true;
+                DB::table('entries')->where('id', $a->id)->update(['deleted_at' => '2020-01-01 00:00:00']);
+            }
+        });
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), $records, MediaBulkRemoval::DELETE);
+
+        expect($raced)->toBeTrue()
+            ->and(DB::table('entries')->where('id', $a->id)->value('deleted_at'))->toBe('2020-01-01 00:00:00')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted');
+    });
 });
 
 describe('through the page', function (): void {

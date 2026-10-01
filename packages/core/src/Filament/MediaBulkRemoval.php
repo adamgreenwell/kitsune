@@ -118,24 +118,36 @@ final class MediaBulkRemoval
     {
         $budget = BulkSelection::within($until);
         $refused = $failed = $awaiting = $seen = [];
-        $done = $already = 0;
+        $done = $already = $vanished = 0;
         $reported = false;
 
         foreach ($records as $record) {
             /** @var Entry $record */
             $seen[] = (string) $record->getKey();
             $title = self::titleOf($record);
-            $trashed = $record->trashed();
+            /*
+             * ⚠️ WHERE IT IS NOW, read below the model, not where the list loaded it: another editor may have trashed,
+             * restored or erased it since (review of decision 35; Codex, #167). Where that cannot be read, as loaded —
+             * and the write's own guard asks again under its lock (`Entry::refuseIfTheRowMovedUnderneath()`).
+             */
+            $now = self::whereIs($record) ?? ($record->trashed() ? 'trashed' : 'live');
+
+            // Erased since, by someone else: no longer on the list, and left as it is.
+            if ($now === 'gone' && $verb !== self::ERASE) {
+                $vanished++;
+
+                continue;
+            }
 
             // ⚠️ NO WRITE NEEDED — decision 31's mixed selection: counted, never held back by the budget, never the first.
-            if (($verb === self::DELETE && $trashed) || ($verb === self::RESTORE && ! $trashed)) {
+            if (($verb === self::DELETE && $now === 'trashed') || ($verb === self::RESTORE && $now === 'live') || ($verb === self::ERASE && $now === 'gone')) {
                 $already++;
 
                 continue;
             }
 
             // ⚠️ DELETE FOREVER TAKES WHAT IS IN THE TRASH (decision 31): named, whatever the budget — naming writes nothing.
-            if ($verb === self::ERASE && ! $trashed) {
+            if ($verb === self::ERASE && $now === 'live') {
                 $refused[] = self::notTrashed($title);
 
                 continue;
@@ -158,18 +170,12 @@ final class MediaBulkRemoval
                 continue;
             }
 
-            /*
-             * ⚠️ READ AGAIN JUST BEFORE THE WRITE, below the model: another editor may have trashed, restored or erased it
-             * since the list loaded it, and writing it again would move its date, audit a change nobody made, or count
-             * another's work as this run's (review of decision 35). An erasure asks again under its own lock as well.
-             */
-            if (self::isNow($record, $verb)) {
-                $already++;
-
-                continue;
-            }
-
             try {
+                // Changed since the list loaded it: reloaded, so its own write starts from where it is.
+                if ($now !== ($record->trashed() ? 'trashed' : 'live')) {
+                    $record->refresh();
+                }
+
                 $ok = (bool) match ($verb) {
                     self::DELETE => $record->delete(),
                     self::RESTORE => $record->restore(),
@@ -228,7 +234,7 @@ final class MediaBulkRemoval
          * ⚠️ AND THE SELECTED KEYS THE LIST NO LONGER HOLDS, read where they are now, so a second run's view of the first
          * run's work is "already so", never "left as it was" (decision 34's review, its gone count).
          */
-        $gone = 0;
+        $gone = $vanished;
         $left = $keys === null ? [] : array_values(array_diff($keys, $seen));
 
         if ($left !== []) {
@@ -239,14 +245,15 @@ final class MediaBulkRemoval
                 default => count($left) - $now['present'],
             };
             $already += $asked;
-            $gone = count($left) - $asked;
+            $gone += count($left) - $asked;
         }
 
         $notTried = $budget->notTried();
         $notDone = count($refused) + count($failed) + $notTried;
         $notDone === 0 ? $action->success() : $action->failure();
 
-        self::summary($verb, count($seen), $notDone, $refused, $failed, $notTried, $awaiting, $done, $already, $gone)->send();
+        // Those erased since by someone else are not counted as on the list.
+        self::summary($verb, count($seen) - $vanished, $notDone, $refused, $failed, $notTried, $awaiting, $done, $already, $gone)->send();
     }
 
     private static function configure(DeleteBulkAction|RestoreBulkAction|ForceDeleteBulkAction $action, string $verb): BulkAction
@@ -269,31 +276,31 @@ final class MediaBulkRemoval
         return e(__('kitsune::trash.not_erased_line', ['title' => $title, 'reason' => __('kitsune::trash.not_trashed')]));
     }
 
-    /** Whether the entry's row is there and out of the trash, read below the model; not, where unread. */
-    private static function isLive(Entry $record): bool
+    /** Where the entry is now — live, trashed or gone — read below the model by the id the list loaded; null, where unread. */
+    private static function whereIs(Entry $record): ?string
     {
         try {
             $row = $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->first(['deleted_at']);
         } catch (Throwable) {
-            return false;
+            return null;
         }
 
-        return $row !== null && $row->deleted_at === null;
+        return $row === null ? 'gone' : ($row->deleted_at === null ? 'live' : 'trashed');
     }
 
-    /** Whether the entry is now as the action asked, read below the model by the id the list loaded; not, where unread. */
+    /** Whether the entry's row is there and out of the trash; not, where unread. */
+    private static function isLive(Entry $record): bool
+    {
+        return self::whereIs($record) === 'live';
+    }
+
+    /** Whether the entry is now as the action asked; not, where unread. */
     private static function isNow(Entry $record, string $verb): bool
     {
-        try {
-            $row = $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->first(['deleted_at']);
-        } catch (Throwable) {
-            return false;
-        }
-
-        return match ($verb) {
-            self::DELETE => $row !== null && $row->deleted_at !== null,
-            self::RESTORE => $row !== null && $row->deleted_at === null,
-            default => $row === null,
+        return self::whereIs($record) === match ($verb) {
+            self::DELETE => 'trashed',
+            self::RESTORE => 'live',
+            default => 'gone',
         };
     }
 
