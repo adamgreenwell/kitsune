@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\ForceDeleteBulkAction;
 use Filament\Actions\RestoreBulkAction;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
@@ -153,6 +154,28 @@ it('counts an entry whose COMMIT landed and reported failure as deleted', functi
     Exceptions::assertReportedCount(1);
 });
 
+/* Z3a. An erasure whose COMMIT landed and reported failure: read again, counted as deleted forever. */
+it('counts an entry whose erasure COMMIT landed and reported failure as deleted forever', function (): void {
+    Exceptions::fake();
+    $files = [bulkRmZeroStored('One', trashed: true), bulkRmZeroStored('Two', trashed: true)];
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $n = 0;
+    AuditorStandIn::install()->beforeRecording(function () use (&$n, $pdo): void {
+        if (++$n === 1) {
+            $pdo->failNextCommit = 'after';
+        }
+    });
+    $action = ForceDeleteBulkAction::make();
+
+    MediaBulkRemoval::each($action, $files, MediaBulkRemoval::ERASE);
+
+    expect(array_map(static fn (Entry $entry): string => bulkRmZeroState($entry)[0], $files))->toBe(['gone', 'gone'])
+        ->and(bulkRmZeroNotices()[0]['title'])->toBe('2 entries were deleted forever')
+        ->and($action->getStatus()->name)->toBe('Success');
+
+    Exceptions::assertReportedCount(1);
+});
+
 /* Z4. Each restored public file is published before the next restore begins. */
 it('publishes each restored file before the next restore begins', function (): void {
     $first = bulkRmZeroStored('First', trashed: true);
@@ -169,6 +192,24 @@ it('publishes each restored file before the next restore begins', function (): v
 
     expect($seen)->toBe(['live', true])
         ->and(bulkRmZeroState($second))->toBe(['live', true])
+        ->and(bulkRmZeroNotices()[0]['title'])->toBe('2 entries were restored');
+});
+
+/* Z4a. And through the handler the page calls: no transaction around the selection, each entry at its own level 1. */
+it('runs a selection through the handler with no transaction around it', function (): void {
+    $first = bulkRmZeroStored('First', trashed: true);
+    $second = bulkRmZeroStored('Second', trashed: true);
+    $seen = null;
+    $n = 0;
+    AuditorStandIn::install()->beforeRecording(function () use (&$n, &$seen, $first): void {
+        if (++$n === 2) {
+            $seen = [bulkRmZeroState($first), DB::transactionLevel()];
+        }
+    });
+
+    MediaBulkRemoval::selected(RestoreBulkAction::make(), Entry::withTrashed()->with('mediaFile')->whereKey([$first->id, $second->id])->orderBy('id'), MediaBulkRemoval::RESTORE);
+
+    expect($seen)->toBe([['live', true], 1])
         ->and(bulkRmZeroNotices()[0]['title'])->toBe('2 entries were restored');
 });
 

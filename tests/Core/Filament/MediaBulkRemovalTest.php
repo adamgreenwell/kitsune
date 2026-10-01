@@ -13,6 +13,7 @@ use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\ForceDeleteBulkAction;
 use Filament\Actions\RestoreBulkAction;
+use Illuminate\Auth\Access\Response;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +26,7 @@ use Kitsune\Core\Filament\MediaBulkRemoval;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -317,6 +319,44 @@ describe('the actions', function (): void {
             ->and(MediaBulkRemoval::note(MediaBulkRemoval::RESTORE, 50))->toBeNull()
             ->and($loaded)->toBe(0);
     });
+
+    /* A5. A list that holds no media keeps its own three: decision 31's skips and refusal, through the page. */
+    it('keeps every other list\'s three as they were, through the page', function (): void {
+        foreach (['view', 'delete'] as $ability) {
+            $this->role->grant(Permissions::forEntryType('article', $ability));
+        }
+        $article = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+        app()->instance(EntryType::class, $article);
+        $live = Entry::create(['entry_type_id' => $article->id, 'title' => 'Live', 'status' => 'draft']);
+        $trashed = Entry::create(['entry_type_id' => $article->id, 'title' => 'Trashed', 'status' => 'draft']);
+        $trashed->delete();
+        $updatedAt = DB::table('entries')->where('id', $live->id)->value('updated_at');
+        $this->travel(1)->minutes();
+        $call = static function (string $name) use ($live, $trashed): void {
+            $page = bulkRmPage(['trashed' => ['value' => '1']]);
+            $page->selectedTableRecords = bulkRmKeys($live, $trashed);
+            collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === $name)->call();
+        };
+
+        // Delete selected leaves the one already in the trash as it was; Restore selected, the live one.
+        $call('restore');
+        expect(DB::table('entries')->where('id', $live->id)->value('updated_at'))->toBe($updatedAt)
+            ->and(bulkRmWhere($trashed))->toBe('live');
+
+        $trashed->refresh()->delete();
+        $deletedAt = DB::table('entries')->where('id', $trashed->id)->value('deleted_at');
+        $this->travel(1)->minutes();
+        $call('delete');
+        expect(DB::table('entries')->where('id', $trashed->id)->value('deleted_at'))->toBe($deletedAt)
+            ->and(bulkRmWhere($live))->toBe('trashed');
+
+        // Delete selected forever names a live one and leaves it, in decision 31's words.
+        Entry::withTrashed()->findOrFail($live->id)->restore();
+        session()->forget('filament.notifications');
+        $call('forceDelete');
+        expect([bulkRmWhere($live), bulkRmWhere($trashed)])->toBe(['live', 'gone'])
+            ->and(collect(bulkRmNotices())->pluck('body')->implode(' '))->toContain('&quot;Live&quot; was not deleted forever: it is not in the trash.');
+    });
 });
 
 describe('the bound', function (): void {
@@ -494,6 +534,47 @@ describe('deleting', function (): void {
 
         Exceptions::assertNothingReported();
     });
+
+    /* D6. A failure whose entry cannot be read again: named with the failures, never counted as deleted. */
+    it('claims nothing of an entry it cannot read again after a failure', function (): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private');
+        $records = bulkRmListed($a);
+        Entry::deleting(static fn () => throw new RuntimeException('secret'));
+        DB::listen(static function ($query): void {
+            if (preg_match('/^select [`"]?deleted_at[`"]? from [`"]?entries/', $query->sql) === 1) {
+                throw new RuntimeException('unreadable');
+            }
+        });
+        $action = bulkRmAction('delete');
+
+        MediaBulkRemoval::each($action, $records, MediaBulkRemoval::DELETE);
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted')
+            ->and(bulkRmNotices()[0]['body'])->toStartWith('&quot;A&quot; may not have been deleted: something went wrong.')
+            ->and($action->getStatus()->name)->toBe('Failure');
+    });
+
+    /* D7. An entry with no title is named by its number. */
+    it('names an entry with no title by its number', function (): void {
+        $a = bulkRmStored('A', 'private');
+        DB::table('entries')->where('id', $a->id)->update(['title' => '']);
+        Entry::deleting(static fn (): bool => false);
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed($a), MediaBulkRemoval::DELETE);
+
+        expect(bulkRmNotices()[0]['body'])->toStartWith("&quot;#{$a->id}&quot; may not have been deleted");
+    });
+
+    /* D8. The title counts those deleted, never the selection: the ones already in the trash are counted apart. */
+    it('counts in its title only the entries it deleted', function (): void {
+        $files = [bulkRmStored('Old', 'private', trashed: true), bulkRmStored('A', 'private'), bulkRmStored('B', 'private')];
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed(...$files), MediaBulkRemoval::DELETE);
+
+        expect(bulkRmNotices()[0]['title'])->toBe('2 entries were deleted')
+            ->and(bulkRmNotices()[0]['body'])->toBe('One was already in the trash, and was left as it was.');
+    });
 });
 
 describe('restoring', function (): void {
@@ -554,6 +635,56 @@ describe('restoring', function (): void {
 
         Exceptions::assertReportedCount(1);
     });
+
+    /* R4. A restore withdraws nothing, so custody's refusal from one is a failure like any other: reported, named, its reason unshown. */
+    it('names a restore that throws custody\'s refusal as a failure, not a refusal', function (): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private', trashed: true);
+        Entry::restoring(static fn (Entry $entry) => throw new MediaWithdrawalRefused((int) $entry->id, MediaWithdrawalRefused::DELETE_FAILED, 'public', 'trash'));
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), bulkRmListed($a), MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmWhere($a))->toBe('trashed')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was not restored')
+            ->and(bulkRmNotices()[0]['body'])->toBe('&quot;A&quot; may not have been restored: something went wrong. The list shows where it is now; tell whoever runs this site if it happens again.');
+
+        Exceptions::assertReportedCount(1);
+    });
+
+    /* R5. Restored files not yet published beside one that needed no publication: the title says what is still owed. */
+    it('titles a restore by the files not yet published, and counts the rest restored', function (): void {
+        $files = [bulkRmStored('P1', 'public', trashed: true), bulkRmStored('P2', 'public', trashed: true), bulkRmStored('Q', 'private', trashed: true)];
+        $this->disks['public']->failWrites = true;
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), bulkRmListed(...$files), MediaBulkRemoval::RESTORE);
+
+        $lines = explode('<br>', (string) bulkRmNotices()[0]['body']);
+
+        expect(array_map('bulkRmWhere', $files))->toBe(['live', 'live', 'live'])
+            ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were restored, and their files are not yet published')
+            ->and($lines)->toHaveCount(2)
+            ->and($lines[0])->toContain("--entry={$files[0]->id} --entry={$files[1]->id} --force")
+            ->and($lines[1])->toBe('One entry was restored.');
+    });
+
+    /* R6. A restored file whose row cannot be read afterwards is never said to be on the web. */
+    it('never says a restored file is on the web when it cannot read it', function (): void {
+        $a = bulkRmStored('A', 'public', trashed: true);
+        $armed = false;
+        Entry::restored(static function () use (&$armed): void {
+            $armed = true;
+        });
+        DB::listen(static function ($query) use (&$armed): void {
+            if ($armed && preg_match('/^select \* from [`"]?media_files[`"]? where [`"]?entry_id[`"]? = \? limit 1$/', $query->sql) === 1) {
+                throw new RuntimeException('unreadable');
+            }
+        });
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), bulkRmListed($a), MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmWhere($a))->toBe('live')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published');
+    });
 });
 
 describe('deleting forever', function (): void {
@@ -597,6 +728,45 @@ describe('deleting forever', function (): void {
 
         expect(bulkRmWhere($entry))->toBe('trashed')
             ->and(bulkRmNotices()[0]['body'])->toStartWith('&quot;A&quot; may not have been deleted forever: something went wrong. The trash shows whether it is still there');
+
+        Exceptions::assertReportedCount(1);
+    });
+
+    /* E4. Restored since the list loaded it: refused under the erasure's own lock, named as live, nothing reported. */
+    it('names an entry restored since the list loaded it as live, and leaves it', function (): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private', trashed: true);
+        $b = bulkRmStored('B', 'private', trashed: true);
+        $records = bulkRmListed($a, $b);
+        Entry::withTrashed()->findOrFail($a->id)->restore();
+        $action = bulkRmAction('forceDelete');
+
+        MediaBulkRemoval::each($action, $records, MediaBulkRemoval::ERASE);
+
+        expect([bulkRmWhere($a), bulkRmWhere($b)])->toBe(['live', 'gone'])
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted forever')
+            ->and(bulkRmNotices()[0]['body'])->toBe('&quot;A&quot; was not deleted forever: it is not in the trash. Move it to the trash first.<br>One entry was deleted forever.')
+            ->and($action->getStatus()->name)->toBe('Failure');
+
+        Exceptions::assertNothingReported();
+    });
+
+    /* E5. An erasure that failed and cannot be read again: named with the failures, never said to be live. */
+    it('claims nothing of an erasure that failed and cannot be read again', function (): void {
+        Exceptions::fake();
+        $a = bulkRmStored('A', 'private', trashed: true);
+        $records = bulkRmListed($a);
+        AuditorStandIn::install()->throwOnce(new RuntimeException('secret'));
+        DB::listen(static function ($query): void {
+            if (preg_match('/^select [`"]?deleted_at[`"]? from [`"]?entries/', $query->sql) === 1) {
+                throw new RuntimeException('unreadable');
+            }
+        });
+
+        MediaBulkRemoval::each(bulkRmAction('forceDelete'), $records, MediaBulkRemoval::ERASE);
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted forever')
+            ->and(bulkRmNotices()[0]['body'])->toStartWith('&quot;A&quot; may not have been deleted forever: something went wrong.');
 
         Exceptions::assertReportedCount(1);
     });
@@ -749,7 +919,38 @@ describe('what left the list', function (): void {
 
         expect(bulkRmNotices()[0]['status'])->toBe('info')
             ->and(bulkRmNotices()[0]['title'])->toBe('None of the selected entries is on this list any more. Nothing was changed.')
+            ->and(bulkRmNotices()[0]['body'] ?? null)->toBeNull()
             ->and($action->getStatus()->name)->toBe('Success');
+    });
+
+    /* G5. Restoring, a selected entry still in the trash that left the list — searched out of it — is gone, not already so. */
+    it('says a selected entry still in the trash is gone from the list, when restoring', function (): void {
+        $a = bulkRmStored('A', 'private', trashed: true);
+        $b = bulkRmStored('B', 'private', trashed: true);
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), bulkRmListed($a), MediaBulkRemoval::RESTORE, keys: bulkRmKeys($a, $b), list: bulkRmList());
+
+        expect(bulkRmWhere($b))->toBe('trashed')
+            ->and(bulkRmNotices()[0]['status'])->toBe('warning')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored')
+            ->and(bulkRmNotices()[0]['body'])->toBe('One of the selected entries is no longer on this list, and was left as it was.');
+    });
+
+    /* G6. Every one already as asked, those that left the list included: said as already so, counted whole. */
+    it('says the whole selection was already so, counting those that left the list', function (): void {
+        $gone = bulkRmStored('Gone', 'private', trashed: true);
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), [], MediaBulkRemoval::DELETE, keys: bulkRmKeys($gone), list: bulkRmList());
+
+        expect(bulkRmNotices()[0]['status'])->toBe('info')
+            ->and(bulkRmNotices()[0]['title'])->toBe('The entry was already in the trash. Nothing was changed.');
+
+        session()->forget('filament.notifications');
+        $old = bulkRmStored('Old', 'private', trashed: true);
+        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed($old), MediaBulkRemoval::DELETE, keys: bulkRmKeys($old, $gone), list: bulkRmList());
+
+        expect(bulkRmNotices()[0]['title'])->toBe('All 2 entries were already in the trash. Nothing was changed.')
+            ->and(bulkRmNotices()[0]['body'] ?? null)->toBeNull();
     });
 
     /* G4. Where the keys are now cannot be read: every one said as gone, reported once, and nothing escapes. */
@@ -762,6 +963,59 @@ describe('what left the list', function (): void {
         expect(bulkRmNotices()[0]['body'])->toBe('One of the selected entries is no longer on this list, and was left as it was.');
 
         Exceptions::assertReportedCount(1);
+
+        // Once in all: a failure in the loop and the read after it are reported as one.
+        Exceptions::fake();
+        session()->forget('filament.notifications');
+        $f = bulkRmStored('F', 'private');
+        AuditorStandIn::install()->throwOnce(new RuntimeException('secret'));
+
+        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed($f), MediaBulkRemoval::DELETE, keys: [...bulkRmKeys($f), '999997'], list: Entry::query()->from('no_such_table'));
+
+        expect(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted');
+
+        Exceptions::assertReportedCount(1);
+    });
+
+    /* G8. Changed by another editor since the list loaded it: counted as already so, and never written again. */
+    it('counts an entry another editor changed since the list loaded it as already so, and writes nothing', function (string $verb, string $name, bool $trashed, string $after, string $word): void {
+        $a = bulkRmStored('A', 'private', $trashed);
+        $records = bulkRmListed($a);
+        // Another editor, before this run reaches it.
+        match ($verb) {
+            MediaBulkRemoval::DELETE => Entry::query()->findOrFail($a->id)->delete(),
+            MediaBulkRemoval::RESTORE => Entry::withTrashed()->findOrFail($a->id)->restore(),
+            default => Entry::withTrashed()->findOrFail($a->id)->forceDelete(),
+        };
+        $row = DB::table('entries')->where('id', $a->id)->first();
+        $audits = DB::table('audit_log')->count();
+        $this->travel(1)->minutes();
+        $action = bulkRmAction($name);
+
+        MediaBulkRemoval::each($action, $records, $verb);
+
+        expect(bulkRmWhere($a))->toBe($after)
+            ->and(DB::table('entries')->where('id', $a->id)->first())->toEqual($row)
+            ->and(DB::table('audit_log')->count())->toBe($audits)
+            ->and(bulkRmNotices()[0]['status'])->toBe('info')
+            ->and($action->getStatus()->name)->toBe('Success');
+    })->with('verbs');
+
+    /* G7. Where they are now is read in one statement, so a change between two counts cannot make one exceed the other. */
+    it('reads where the selected keys are now in one statement', function (): void {
+        $a = bulkRmStored('A', 'private', trashed: true);
+        $erased = false;
+        DB::listen(static function ($query) use (&$erased, $a): void {
+            if (! $erased && str_contains($query->sql, 'entries') && in_array($a->id, $query->bindings, false)) {
+                $erased = true;
+                DB::table('entries')->where('id', $a->id)->delete();
+            }
+        });
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), [], MediaBulkRemoval::RESTORE, keys: bulkRmKeys($a), list: bulkRmList());
+
+        expect($erased)->toBeTrue()
+            ->and(bulkRmNotices()[0]['title'])->toBe('None of the selected entries is on this list any more. Nothing was changed.');
     });
 });
 
@@ -799,6 +1053,34 @@ describe('through the page', function (): void {
         expect(bulkRmWhere($c))->toBe('gone')
             ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted forever');
     });
+
+    /* P2. A host's `authorizeIndividualRecords()` asked of each entry, as Filament asks it of the records it loads. */
+    it('asks a host\'s authorizeIndividualRecords() of each entry, naming those it refuses', function (): void {
+        $a = bulkRmStored('A', 'private');
+        $b = bulkRmStored('B', 'private');
+        $c = bulkRmStored('C', 'private');
+        DeleteBulkAction::configureUsing(static fn (DeleteBulkAction $action) => $action->authorizeIndividualRecords(
+            static fn (Entry $record): Response|bool => match ($record->title) {
+                'B' => Response::deny('<b>not yours</b>'),
+                'C' => false,
+                default => true,
+            },
+        ));
+
+        try {
+            $page = bulkRmPage();
+            $page->selectedTableRecords = bulkRmKeys($a, $b, $c);
+            collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'delete')->call();
+        } finally {
+            DeleteBulkAction::configureUsing(static fn () => null);
+        }
+
+        // In the list's order, newest first.
+        expect([bulkRmWhere($a), bulkRmWhere($b), bulkRmWhere($c)])->toBe(['trashed', 'live', 'live'])
+            ->and(bulkRmNotices())->toHaveCount(1)
+            ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were not deleted')
+            ->and(bulkRmNotices()[0]['body'])->toBe('&quot;C&quot; was not deleted: you may not delete it.<br>&quot;B&quot; was not deleted: &lt;b&gt;not yours&lt;/b&gt;<br>One entry was deleted.');
+    });
 });
 
 describe('the words', function (): void {
@@ -820,6 +1102,29 @@ describe('the words', function (): void {
         BulkSelection::refuse(bulkRmAction('delete'), __('kitsune::media.removal.too_many_title'), 'x');
 
         expect(bulkRmNotices()[0]['title'])->toBe('&lt;u&gt;Too many&lt;/u&gt;');
+    });
+
+    /* W3. Each of the body's counted lines escaped too, whatever its translation says (decision 7). */
+    it('escapes each counted line of the body', function (): void {
+        // Loaded first: lines added to a group not yet loaded would stand in for the whole of it.
+        __('kitsune::media.selection.quoted');
+        app('translator')->addLines([
+            'media.selection.awaiting_line' => '<a>:titles</a>',
+            'media.removal.restore.done_count' => '<b>:count</b> restored.',
+            'media.removal.restore.already_count' => '<i>:count</i> live.',
+            'media.removal.not_tried' => '<s>:count</s> not tried',
+        ], 'en', 'kitsune');
+        $files = [bulkRmStored('P', 'public', trashed: true), bulkRmStored('Q', 'private', trashed: true), bulkRmStored('L', 'private')];
+        $this->disks['public']->failWrites = true;
+
+        MediaBulkRemoval::each(bulkRmAction('restore'), bulkRmListed(...$files), MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmNotices()[0]['body'])->toBe('&lt;a&gt;&quot;P&quot;&lt;/a&gt;<br>&lt;b&gt;1&lt;/b&gt; restored.<br>&lt;i&gt;1&lt;/i&gt; live.');
+
+        session()->forget('filament.notifications');
+        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed(bulkRmStored('A', 'private'), bulkRmStored('B', 'private')), MediaBulkRemoval::DELETE, now()->subSecond());
+
+        expect(bulkRmNotices()[0]['body'])->toStartWith('&lt;s&gt;1&lt;/s&gt; not tried<br>');
     });
 
     /* W2. An entry already so, beside one gone, is not the colour of a selection done whole. */

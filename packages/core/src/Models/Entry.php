@@ -1953,7 +1953,7 @@ class Entry extends Model implements RequiresModelSave
             ->withoutGlobalScopes()
             ->whereKey($this->getKeyForSaveQuery())
             ->lockForUpdate()
-            ->first(['site_id', 'org_id', 'entry_type_id']);
+            ->first(['site_id', 'org_id', 'entry_type_id', $this->getDeletedAtColumn()]);
 
         if ($stored === null) {
             throw new RuntimeException(sprintf(
@@ -1981,6 +1981,23 @@ class Entry extends Model implements RequiresModelSave
                 $column,
                 $loaded === null ? 'null' : (string) $loaded,
                 $stored->{$column} === null ? 'null' : (string) $stored->{$column},
+            ));
+        }
+
+        /*
+         * ⚠️ AND AN INSTANCE LOADED FROM THE TRASH IS ERASED ONLY WHILE IT IS STILL THERE — review of ADR-042 decision 35.
+         * A list loads its trash and erases it entry by entry, for up to the request's budget; an entry restored in the
+         * meantime is live, and erasing it would delete what nobody chose to delete. Asked here, under the lock the
+         * erasure itself holds, so no restore lands between the question and the write. An instance loaded live may
+         * still be erased: that is a choice made about a live entry.
+         */
+        $deletedAt = $this->getDeletedAtColumn();
+
+        if ($operation === 'force-delete' && $this->getRawOriginal($deletedAt) !== null && $stored->{$deletedAt} === null) {
+            throw new RuntimeException(sprintf(
+                'Refusing to force-delete entry %s: it was loaded from the trash and has been restored since, so '
+                .'erasing it would delete a live entry. Reload the entry.',
+                (string) $this->getKey(),
             ));
         }
     }

@@ -136,12 +136,36 @@ final class MediaBulkRemoval
 
             // ⚠️ DELETE FOREVER TAKES WHAT IS IN THE TRASH (decision 31): named, whatever the budget — naming writes nothing.
             if ($verb === self::ERASE && ! $trashed) {
-                $refused[] = e(__('kitsune::trash.not_erased_line', ['title' => $title, 'reason' => __('kitsune::trash.not_trashed')]));
+                $refused[] = self::notTrashed($title);
+
+                continue;
+            }
+
+            /*
+             * ⚠️ AND A HOST'S `authorizeIndividualRecords()` ASKED, as Filament asks it of the records it loads — handed
+             * a query, Filament loads none, so it asks nothing (review of decision 35). Named, whatever the budget.
+             */
+            if ($action->shouldAuthorizeIndividualRecords() && ($answer = $action->getIndividualRecordAuthorizationResponse($record))->denied()) {
+                $refused[] = e(__("kitsune::media.removal.{$verb}.refused_line", [
+                    'title' => $title,
+                    'reason' => filled($answer->message()) ? $answer->message() : __("kitsune::media.removal.{$verb}.not_permitted"),
+                ]));
 
                 continue;
             }
 
             if (! $budget->starts()) {
+                continue;
+            }
+
+            /*
+             * ⚠️ READ AGAIN JUST BEFORE THE WRITE, below the model: another editor may have trashed, restored or erased it
+             * since the list loaded it, and writing it again would move its date, audit a change nobody made, or count
+             * another's work as this run's (review of decision 35). An erasure asks again under its own lock as well.
+             */
+            if (self::isNow($record, $verb)) {
+                $already++;
+
                 continue;
             }
 
@@ -158,6 +182,17 @@ final class MediaBulkRemoval
                         'title' => $title,
                         'reason' => $failure->getMessage(),
                     ]));
+
+                    continue;
+                }
+
+                /*
+                 * ⚠️ RESTORED SINCE THE LIST LOADED IT: the erasure refused it under its own lock, as it refuses to erase
+                 * any entry loaded from the trash that is no longer there (`Entry::refuseIfTheRowMovedUnderneath()`). It
+                 * is live, and said so in decision 31's words; nothing went wrong, so nothing is reported.
+                 */
+                if ($verb === self::ERASE && self::isLive($record)) {
+                    $refused[] = self::notTrashed($title);
 
                     continue;
                 }
@@ -228,6 +263,24 @@ final class MediaBulkRemoval
             ));
     }
 
+    /** A live entry in *Delete selected forever*, named as decision 31 names it, escaped. */
+    private static function notTrashed(string $title): string
+    {
+        return e(__('kitsune::trash.not_erased_line', ['title' => $title, 'reason' => __('kitsune::trash.not_trashed')]));
+    }
+
+    /** Whether the entry's row is there and out of the trash, read below the model; not, where unread. */
+    private static function isLive(Entry $record): bool
+    {
+        try {
+            $row = $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->first(['deleted_at']);
+        } catch (Throwable) {
+            return false;
+        }
+
+        return $row !== null && $row->deleted_at === null;
+    }
+
     /** Whether the entry is now as the action asked, read below the model by the id the list loaded; not, where unread. */
     private static function isNow(Entry $record, string $verb): bool
     {
@@ -268,10 +321,11 @@ final class MediaBulkRemoval
     private static function whereNow(Builder $list, array $keys, bool &$reported): ?array
     {
         try {
-            $all = (clone $list)->withTrashed()->whereKey($keys);
-            $deletedAt = $list->getModel()->getQualifiedDeletedAtColumn();
+            // ⚠️ IN ONE STATEMENT, so an entry trashed, restored or erased between two counts cannot make one exceed the
+            // other (review of decision 35). At most the selection's own keys, so their rows rather than a count.
+            $now = (clone $list)->withTrashed()->whereKey($keys)->toBase()->pluck($list->getModel()->getQualifiedDeletedAtColumn());
 
-            return ['trashed' => (clone $all)->whereNotNull($deletedAt)->count(), 'present' => (clone $all)->count()];
+            return ['trashed' => $now->filter(static fn (mixed $at): bool => $at !== null)->count(), 'present' => $now->count()];
         } catch (Throwable $failure) {
             if (! $reported) {
                 report($failure);

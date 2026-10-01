@@ -164,6 +164,8 @@ return [
             'not_done' => '{1} One entry was not deleted|[2,*] :count entries were not deleted',
             'already' => '{1} The entry was already in the trash. Nothing was changed.|[2,*] All :count entries were already in the trash. Nothing was changed.',
             'already_count' => '{1} One was already in the trash, and was left as it was.|[2,*] :count were already in the trash, and were left as they were.',
+            'refused_line' => '":title" was not deleted: :reason',
+            'not_permitted' => 'you may not delete it.',
             'failed_line' => '{1} :titles may not have been deleted: something went wrong. The list shows where it is now; tell whoever runs this site if it happens again.|[2,*] :titles may not have been deleted: something went wrong. The list shows where each is now; tell whoever runs this site if it happens again.',
         ],
         'restore' => [
@@ -175,6 +177,8 @@ return [
             'already' => '{1} The entry was not in the trash. Nothing was changed.|[2,*] None of the :count entries was in the trash. Nothing was changed.',
             'already_count' => '{1} One was not in the trash, and was left as it was.|[2,*] :count were not in the trash, and were left as they were.',
             'awaiting' => '{1} One entry was restored, and its file is not yet published|[2,*] :count entries were restored, and their files are not yet published',
+            'refused_line' => '":title" was not restored: :reason',
+            'not_permitted' => 'you may not restore it.',
             'failed_line' => '{1} :titles may not have been restored: something went wrong. The list shows where it is now; tell whoever runs this site if it happens again.|[2,*] :titles may not have been restored: something went wrong. The list shows where each is now; tell whoever runs this site if it happens again.',
         ],
         'erase' => [
@@ -185,6 +189,8 @@ return [
             'not_done' => '{1} One entry was not deleted forever|[2,*] :count entries were not deleted forever',
             'already' => '{1} The entry was already deleted forever. Nothing was changed.|[2,*] All :count entries were already deleted forever. Nothing was changed.',
             'already_count' => '{1} One was already deleted forever.|[2,*] :count were already deleted forever.',
+            'refused_line' => '":title" was not deleted forever: :reason',
+            'not_permitted' => 'you may not delete it forever.',
             'failed_line' => '{1} :titles may not have been deleted forever: something went wrong. The trash shows whether it is still there; tell whoever runs this site if it happens again.|[2,*] :titles may not have been deleted forever: something went wrong. The trash shows which are still there; tell whoever runs this site if it happens again.',
         ],
     ],

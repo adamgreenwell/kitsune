@@ -186,7 +186,10 @@ test('says before it is submitted that more than fifty will not be deleted, refu
         await expect(selection(page)).toContainText('51 records selected');
     } finally {
         await page.goto('/admin/golfdom/c/image');
+        // Kept once the server has it, which the select's own value does not say.
+        const stored = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes('tableRecordsPerPage'));
         await perPage(page).selectOption('10');
+        await stored;
         await expect(perPage(page)).toHaveValue('10');
     }
 });
@@ -214,7 +217,10 @@ test('restores a selection from the trash, puts each file back on the web, and d
     await bulkAction(page, 'Restore selected');
     await modal(page, 'Restore').getByRole('button', { name: 'Restore', exact: true }).click();
 
-    await expect(notice(page, '2 entries were restored')).toBeVisible({ timeout: 30_000 });
+    const said = notice(page, '2 entries were restored');
+    await expect(said).toBeVisible({ timeout: 30_000 });
+    // Restored and published: *"…, and their files are not yet published"* would begin with the same words.
+    await expect(said).not.toContainText('not yet published');
     // Filament's own *Restored* would be a second.
     await expect(page.locator('.fi-no-notification')).toHaveCount(1);
     for (const [i, title] of restored.entries()) {

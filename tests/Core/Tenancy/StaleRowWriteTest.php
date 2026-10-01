@@ -93,6 +93,31 @@ it('refuses a force-delete of a row that moved to another site', function (): vo
     expect(DB::table('entries')->where('id', $this->entry->getKey())->exists())->toBeTrue();
 });
 
+it('refuses to erase an instance loaded from the trash once it has been restored, and erases one loaded live', function (): void {
+    /*
+     * ⚠️ REVIEW OF ADR-042 DECISION 35: a list erases its trash entry by entry, for up to the request's budget, and an
+     * entry restored meanwhile is live. Asked under the erasure's own lock; an instance loaded live is a choice made
+     * about a live entry, and stays erasable.
+     */
+    $this->entry->delete();
+
+    /** @var Entry $stale */
+    $stale = Entry::withTrashed()->whereKey($this->entry->getKey())->firstOrFail();
+
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['deleted_at' => null]);
+
+    expect(fn () => $stale->forceDelete())
+        ->toThrow(RuntimeException::class, 'it was loaded from the trash and has been restored since');
+
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->whereNull('deleted_at')->exists())->toBeTrue();
+
+    /** @var Entry $live */
+    $live = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
+    $live->forceDelete();
+
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->exists())->toBeFalse();
+});
+
 it('refuses a soft delete the same way, because it routes through the update path', function (): void {
     /** @var Entry $stale */
     $stale = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
