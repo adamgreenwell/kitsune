@@ -278,9 +278,8 @@ final class MediaVisibilityActions
     }
 
     /**
-     * How many are selected, and how many of those are shared with every site — counted, never fetched.
-     *
-     * ⚠️ WITHOUT THE TABLE'S SORT: Laravel's `count()` keeps an `ORDER BY`, which PostgreSQL refuses beside `count(*)`.
+     * How many are selected, and how many of those are shared with every site — counted, never fetched. Laravel drops the
+     * list's sort from a count (`setAggregate()`), as PostgreSQL needs beside `count(*)`.
      *
      * @internal
      *
@@ -289,9 +288,7 @@ final class MediaVisibilityActions
      */
     public static function countsOf(Builder $selected): array
     {
-        $query = (clone $selected)->reorder();
-
-        return [$query->count(), (clone $query)->whereNull($query->qualifyColumn('site_id'))->count()];
+        return [(clone $selected)->count(), (clone $selected)->whereNull($selected->qualifyColumn('site_id'))->count()];
     }
 
     /**
@@ -500,11 +497,8 @@ final class MediaVisibilityActions
 
             $tried = true;
             $title = self::titleOf($record);
-            /*
-             * What it was before — the list loaded it moments ago — tells a failed switch from one already so. A file in
-             * the trash is off the web whatever it is set to, so it is never public already (review of decision 34).
-             */
-            $was = ! ($to === 'public' && $record->trashed()) && self::isAt($record->mediaFile, $to);
+            // What it was before — the list loaded it moments ago — tells a failed switch from one already so.
+            $was = self::isAt($record->mediaFile, $to);
 
             try {
                 $outcome = self::switchTo($record, $to);
@@ -565,10 +559,9 @@ final class MediaVisibilityActions
                  * ⚠️ READ AGAIN, for a COMMIT that reported failure may have landed — the switch registers publication
                  * again for that — and the file is counted as what it is.
                  */
-                $now = self::freshly($record);
+                $now = self::nowAt($record, $to);
 
-                // ⚠️ A FILE IN THE TRASH IS NOT PUBLIC, whatever its row says — as the switch's own guard has it.
-                if ($now === null || ! self::isAt($now, $to) || ($to === 'public' && self::trashedNow($record))) {
+                if ($now === null) {
                     $failed[] = $title;
 
                     continue;
@@ -630,21 +623,25 @@ final class MediaVisibilityActions
         return $file !== null && MediaDelivery::servesDirectly($file) ? self::MADE : self::AWAITING;
     }
 
-    /** Whether the entry is in the trash now, read below the model — and taken as so where that cannot be read. */
-    private static function trashedNow(Entry $record): bool
+    /**
+     * The file as it is now, where it is as asked — or null where it is not, or where that cannot be read, so nothing is
+     * claimed of it.
+     *
+     * ⚠️ A FILE IN THE TRASH IS NEVER PUBLIC, whatever its row says, as the switch's own guard has it (review of decision
+     * 34): its entry is read again, below the model, for one trashed since the list loaded.
+     */
+    private static function nowAt(Entry $record, string $to): ?MediaFile
     {
         try {
-            return $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->value('deleted_at') !== null;
-        } catch (Throwable) {
-            return true;
-        }
-    }
+            $file = MediaDelivery::fileFor($record);
 
-    /** The file's row as it is now, or null where even that cannot be read. */
-    private static function freshly(Entry $record): ?MediaFile
-    {
-        try {
-            return MediaDelivery::fileFor($record);
+            if (! self::isAt($file, $to)) {
+                return null;
+            }
+
+            $trashed = $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->value('deleted_at') !== null;
+
+            return $to === 'public' && $trashed ? null : $file;
         } catch (Throwable) {
             return null;
         }

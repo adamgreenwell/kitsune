@@ -305,7 +305,7 @@ describe('the actions, as the list builds them', function (): void {
             ->and(MediaVisibilityActions::selectionNote('public', 51, 2))->toBe('2 of them are shared with every site in the organisation, so they become public for all of those sites. At most 50 files are switched at a time, and 51 are selected, so as it is nothing will be changed. Select fewer first.');
     });
 
-    /* S7. Counted without the table's sort, which PostgreSQL refuses beside count(*). */
+    /* S7. Counted without the list's sort, which PostgreSQL refuses beside count(*): Laravel drops it, pinned here. */
     it('counts the selection and its shared files without the list\'s sort', function (): void {
         $a = bulkVisStored('A');
         $b = bulkVisStored('B', siteOnly: false);
@@ -682,6 +682,42 @@ describe('making a selection public', function (): void {
 
         expect(bulkVisNotices()[0]['title'])->toBe('All 2 files were already public. Nothing was changed.')
             ->and(bulkVisNotices()[0]['body'] ?? null)->toBeNull();
+
+        // And made private the same way, the page's keys counted too.
+        session()->forget('filament.notifications');
+        $page->isTrackingDeselectedTableRecords = false;
+        $private = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'makeSelectedPrivate');
+        $private->call();
+
+        expect([bulkVisRow($a), bulkVisRow($b), bulkVisRow($c)])->toBe(['private', 'private', 'private'])
+            ->and(bulkVisNotices()[0]['title'])->toBe('2 files were made private')
+            ->and(bulkVisNotices()[0]['body'])->toEndWith('One of the selected files is no longer on this list, and was left as it was.');
+    });
+
+    /* ⚠️ EVERY TITLE ESCAPED, its words included: a translation is not trusted with markup either (decision 7). */
+    it('escapes the notice\'s title, whatever its translation says', function (): void {
+        app('translator')->addLines(['media.visibility.bulk.made_public' => '<b>:count</b> made public'], 'en', 'kitsune');
+
+        MediaVisibilityActions::publicEach(bulkVisAction('makeSelectedPublic'), bulkVisListed(bulkVisStored('A')), BULK_VIS_TICKED);
+
+        expect(bulkVisNotices()[0]['title'])->toBe('&lt;b&gt;1&lt;/b&gt; made public');
+    });
+
+    /* A file whose row cannot be read again after a failure is named with the failures, never counted (review of decision 34). */
+    it('claims nothing of a file it cannot read again after a failure', function (): void {
+        Exceptions::fake();
+        $records = bulkVisListed(bulkVisStored('D', visibility: 'public'));
+        app(Context::class)->forget();
+        DB::listen(static function ($query): void {
+            if (preg_match('/^select [`"]?deleted_at[`"]? from [`"]?entries/', $query->sql) === 1) {
+                throw new RuntimeException('unreadable');
+            }
+        });
+
+        MediaVisibilityActions::publicEach(bulkVisAction('makeSelectedPublic'), $records, BULK_VIS_TICKED);
+
+        expect(bulkVisNotices()[0]['title'])->toBe('One file was not made public')
+            ->and(bulkVisNotices()[0]['body'])->toStartWith('&quot;D&quot; may not have been made public');
     });
 
     /*
@@ -865,6 +901,31 @@ it('says a trashed entry with no file has none, made private', function (): void
 
     expect(bulkVisNotices()[0]['title'])->toBe('One file was not made private')
         ->and(bulkVisNotices()[0]['body'])->toBe("&quot;Orphan&quot; was not made private: Refusing to make entry {$orphan->id} private: no file is recorded for it, so nothing was changed.");
+});
+
+/* In the trash, made private, and its row not readable again: named with the failures, reported once (review of decision 34). */
+it('claims nothing of a trashed file it cannot read again, made private', function (): void {
+    ($this->grant)('view', 'publish');
+    Exceptions::fake();
+    $old = bulkVisStored('Old', visibility: 'public');
+    $old->delete();
+    $records = bulkVisListed($old);
+    $armed = false;
+    DB::listen(static function ($query) use (&$armed): void {
+        // Armed by the switch's own guard reading the entry, so its file is read once before, as custody locks it.
+        if (preg_match('/^select [`"]?org_id[`"]?, [`"]?site_id/', $query->sql) === 1) {
+            $armed = true;
+        } elseif ($armed && preg_match('/from [`"]?media_files[`"]?/', $query->sql) === 1) {
+            throw new RuntimeException('unreadable');
+        }
+    });
+
+    MediaVisibilityActions::privateEach(bulkVisAction('makeSelectedPrivate'), $records);
+
+    expect(bulkVisNotices()[0]['title'])->toBe('One file was not made private')
+        ->and(bulkVisNotices()[0]['body'])->toStartWith('&quot;Old&quot; may not have been made private');
+
+    Exceptions::assertReportedCount(1);
 });
 
 describe('the parts', function (): void {
