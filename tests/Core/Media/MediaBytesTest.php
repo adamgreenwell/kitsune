@@ -9,10 +9,12 @@
 declare(strict_types=1);
 
 use Illuminate\Filesystem\FilesystemAdapter;
+use Illuminate\Filesystem\LocalFilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
+use Kitsune\Core\Tests\Fixtures\TrickleStream;
 use League\Flysystem\Filesystem;
 
 /*
@@ -544,4 +546,27 @@ describe('a file rewritten in place', function (): void {
             ['event' => 'delete', 'path' => 'media/1/2026/09/photo.png'],
         ]);
     });
+});
+
+/*
+ * A file's first bytes are read until there are enough, or the file ends: a stream that hands one read fewer bytes than
+ * it was asked for — an object store's, a host driver's — would otherwise cut a JPEG's marker short (Codex, #165).
+ */
+it('reads a file\'s first bytes whole from a stream that hands out fewer at a time', function (): void {
+    $root = ($this->root)('trickle');
+    $adapter = new class($root, 'bytes-trickle') extends RefusingDisk
+    {
+        public function readStream(string $path)
+        {
+            return TrickleStream::open($this->root().'/'.$path);
+        }
+    };
+    Storage::set('bytes-trickle', new LocalFilesystemAdapter(new Filesystem($adapter), $adapter, ['driver' => 'local', 'root' => $root]));
+    mkdir($root.'/media', 0777, true);
+    file_put_contents($root.'/media/photo.png', "\xFF\xD8\xFF\xE0 the rest of a JPEG");
+    file_put_contents($root.'/media/short.png', "\xFF");
+
+    expect(MediaBytes::head('bytes-trickle', 'media/photo.png', 3))->toBe("\xFF\xD8\xFF")
+        ->and(MediaBytes::head('bytes-trickle', 'media/short.png', 3))->toBe("\xFF")
+        ->and(MediaBytes::head('bytes-trickle', 'media/absent.png', 3))->toBeNull();
 });

@@ -537,8 +537,13 @@ final class MediaBytes
             throw new MediaCustodyFailure('unreadable', $disk, $path);
         }
 
+        /*
+         * ⚠️ READ UNTIL THERE ARE ENOUGH, OR THE FILE ENDS — Codex, #165. A stream other than a plain file's — an object
+         * store's, a host driver's — may hand one `fread()` fewer bytes than it was asked for without being at its end, and
+         * a JPEG's marker cut short reads as some other format, published with its location.
+         */
         try {
-            $bytes = fread($stream, max(1, $length));
+            $bytes = stream_get_contents($stream, max(1, $length));
         } finally {
             self::close($stream);
         }
