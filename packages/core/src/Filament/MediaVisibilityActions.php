@@ -13,14 +13,12 @@ namespace Kitsune\Core\Filament;
 use Carbon\CarbonInterface;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
-use Filament\Actions\Enums\ActionStatus;
 use Filament\Forms\Components\Checkbox;
 use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\TrashedFilter;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -49,19 +47,14 @@ use Throwable;
  *
  * ⚠️ AND A SELECTION, ON A MEDIA LIST — Adam, decision 34. *Make selected public* and *Make selected private* call the
  * same door once a file, in the list's order, each committing — and, made public, publishing — before the next begins:
- * nothing holds two files' locks, and no transaction encloses them, for the reason above. At most `MOST_AT_ONCE` files,
- * fetched in one bounded query, or none; none started once the request's budget has passed, the first always tried. One
- * notification, Kitsune's alone, says what became of each file, escaped (decision 7). Who may is asked of the list's
- * type, as Upload asks it: a bulk action has no record, and the list holds only that type's entries.
+ * nothing holds two files' locks, and no transaction encloses them, for the reason above. At most fifty files, fetched in
+ * one bounded query, or none; none started once the request's budget has passed, the first always tried — the rules
+ * every selection on a media list shares (`BulkSelection`). One notification, Kitsune's alone, says what became of each
+ * file, escaped (decision 7). Who may is asked of the list's type, as Upload asks it: a bulk action has no record, and
+ * the list holds only that type's entries.
  */
 final class MediaVisibilityActions
 {
-    /** The most files one selection switches: the largest page a media list shows (Filament's options, 5 to 50). */
-    public const MOST_AT_ONCE = 50;
-
-    /** The longest, in seconds, a selection goes on starting files — and its budget where PHP sets no limit. */
-    public const BUDGET_SECONDS = 15;
-
     // One file's outcome in a selection — never an array keyed by a fixed column, which `MediaFileImmutabilityTest` scans for.
     private const MADE = 'made';
 
@@ -156,7 +149,7 @@ final class MediaVisibilityActions
                     ->accepted()
                     ->validationMessages(['accepted' => __('kitsune::media.visibility.bulk.not_confirmed')]),
             ] : null)
-            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire, array $data) => self::publicSelected($action, $selectedRecordsQuery, $data, self::keysSelected($livewire)));
+            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire, array $data) => self::publicSelected($action, $selectedRecordsQuery, $data, self::keyCount($livewire)));
     }
 
     public static function makeSelectedPrivate(): BulkAction
@@ -168,11 +161,11 @@ final class MediaVisibilityActions
             ->modalHeading(static fn (Builder $selectedRecordsQuery): string => self::selectionHeading('private', self::countsOf($selectedRecordsQuery)[0]))
             ->modalDescription(static fn (Builder $selectedRecordsQuery): ?string => self::selectionNote('private', ...self::countsOf($selectedRecordsQuery)))
             ->modalSubmitActionLabel(__('kitsune::media.visibility.make_private'))
-            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire) => self::privateSelected($action, $selectedRecordsQuery, self::keysSelected($livewire)));
+            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire) => self::privateSelected($action, $selectedRecordsQuery, self::keyCount($livewire)));
     }
 
     /**
-     * The handler of *Make selected public*: nothing switched when more than `MOST_AT_ONCE` are selected.
+     * The handler of *Make selected public*: nothing switched when more than `BulkSelection::MOST_AT_ONCE` are selected.
      *
      * @internal
      *
@@ -183,13 +176,13 @@ final class MediaVisibilityActions
     public static function publicSelected(BulkAction $action, Builder $selected, array $data, ?int $keys = null): void
     {
         // ⚠️ THE CLOCK FIRST, so a slow fetch spends the budget rather than extending it (Codex, #166).
-        $until = self::deadline();
-        $records = self::upTo($selected);
+        $until = BulkSelection::deadline();
+        $records = BulkSelection::upTo($selected);
         $records === null ? self::refuseTooMany($action) : self::publicEach($action, $records, $data, $until, $keys);
     }
 
     /**
-     * The handler of *Make selected private*: nothing switched when more than `MOST_AT_ONCE` are selected.
+     * The handler of *Make selected private*: nothing switched when more than `BulkSelection::MOST_AT_ONCE` are selected.
      *
      * @internal
      *
@@ -199,8 +192,8 @@ final class MediaVisibilityActions
     public static function privateSelected(BulkAction $action, Builder $selected, ?int $keys = null): void
     {
         // ⚠️ THE CLOCK FIRST, so a slow fetch spends the budget rather than extending it (Codex, #166).
-        $until = self::deadline();
-        $records = self::upTo($selected);
+        $until = BulkSelection::deadline();
+        $records = BulkSelection::upTo($selected);
         $records === null ? self::refuseTooMany($action) : self::privateEach($action, $records, $until, $keys);
     }
 
@@ -274,8 +267,8 @@ final class MediaVisibilityActions
             };
         }
 
-        if ($selected > self::MOST_AT_ONCE) {
-            $sentences[] = __('kitsune::media.visibility.bulk.too_many_note', ['max' => self::MOST_AT_ONCE, 'count' => $selected]);
+        if ($selected > BulkSelection::MOST_AT_ONCE) {
+            $sentences[] = __('kitsune::media.visibility.bulk.too_many_note', ['max' => BulkSelection::MOST_AT_ONCE, 'count' => $selected]);
         }
 
         return $sentences === [] ? null : implode(' ', $sentences);
@@ -292,48 +285,7 @@ final class MediaVisibilityActions
      */
     public static function countsOf(Builder $selected): array
     {
-        return [(clone $selected)->count(), (clone $selected)->whereNull($selected->qualifyColumn('site_id'))->count()];
-    }
-
-    /**
-     * The selection, loaded in the list's order — or null when it holds more than `$most`, fetching one more than that.
-     *
-     * ⚠️ REFUSED WHOLE, NEVER CUT: a selection cut to its first fifty would fetch the same fifty on every run, find them
-     * already so, and never reach the rest. A page's checkbox bounds what the select-all box selects, and nothing on the
-     * server: a page ticked after another, or a request written by hand, can select the whole list.
-     *
-     * @internal
-     *
-     * @param  Builder<Entry>  $selected
-     * @return ?EloquentCollection<int, Entry>
-     */
-    public static function upTo(Builder $selected, int $most = self::MOST_AT_ONCE): ?EloquentCollection
-    {
-        $records = (clone $selected)->limit($most + 1)->get();
-
-        return $records->count() > $most ? null : $records;
-    }
-
-    /**
-     * How long a selection goes on starting files: half PHP's limit, at most `BUDGET_SECONDS`, and that where PHP sets
-     * none — an Octane worker or an FPM pool set to 0 still has a timeout somewhere.
-     *
-     * @internal
-     */
-    public static function budgetSeconds(int $limit): float
-    {
-        return $limit > 0 ? min((float) self::BUDGET_SECONDS, $limit / 2) : (float) self::BUDGET_SECONDS;
-    }
-
-    /**
-     * When the selection stops starting files: the budget from now, the handler's start. Half the limit leaves the
-     * request's own work before the handler, and the file in hand when the budget passes, the other half.
-     *
-     * @internal
-     */
-    public static function deadline(): CarbonInterface
-    {
-        return now()->addMilliseconds((int) round(self::budgetSeconds((int) ini_get('max_execution_time')) * 1000));
+        return [BulkSelection::countOf($selected), (clone $selected)->whereNull($selected->qualifyColumn('site_id'))->count()];
     }
 
     /**
@@ -349,18 +301,13 @@ final class MediaVisibilityActions
     }
 
     /**
-     * Nothing changed: more than `MOST_AT_ONCE` selected.
+     * Nothing changed: more than `BulkSelection::MOST_AT_ONCE` selected.
      *
      * @internal
      */
     public static function refuseTooMany(BulkAction $action): void
     {
-        $action->failure();
-
-        Notification::make()->danger()->persistent()
-            ->title(e(__('kitsune::media.visibility.bulk.too_many_title')))
-            ->body(e(__('kitsune::media.visibility.bulk.too_many', ['max' => self::MOST_AT_ONCE])))
-            ->send();
+        BulkSelection::refuse($action, __('kitsune::media.visibility.bulk.too_many_title'), __('kitsune::media.visibility.bulk.too_many', ['max' => BulkSelection::MOST_AT_ONCE]));
     }
 
     /**
@@ -445,18 +392,12 @@ final class MediaVisibilityActions
     /** What both selection actions share. */
     private static function selection(BulkAction $action): BulkAction
     {
-        return $action
-            // ⚠️ After `make()`, where a host panel's `configureUsing()` has already run: making public refuses inside one.
-            ->databaseTransaction(false)
-            // The handler's one notification is the only one: Filament's would count what it cannot see, unescaped.
-            ->successNotification(null)
-            ->failureNotification(null)
+        // No transaction, Filament's notices off, and the selection kept unless every file is as asked (`BulkSelection`).
+        return BulkSelection::oneByOne($action)
             ->authorize(static fn (): bool => self::mayOnType('update') || self::mayOnType('publish'))
             ->disabled(static fn (): bool => ! self::mayOnType('publish'))
             ->tooltip(static fn (): ?string => self::mayOnType('publish') ? null : self::needsPublish())
-            ->hidden(static fn (HasTable $livewire): bool => self::onlyTheTrash($livewire))
-            // Kept selected unless every file is as asked, so running it again goes on where it stopped.
-            ->deselectRecordsAfterCompletion(static fn (BulkAction $action): bool => $action->getStatus() === ActionStatus::Success);
+            ->hidden(static fn (HasTable $livewire): bool => self::onlyTheTrash($livewire));
     }
 
     /** The list's type, asked as Upload asks it (`MediaUpload::may()`): false with none bound. */
@@ -482,24 +423,19 @@ final class MediaVisibilityActions
     private static function each(BulkAction $action, iterable $records, string $to, ?CarbonInterface $until, ?int $keys): void
     {
         $refused = $failed = $awaiting = [];
-        $made = $already = $notTried = $count = 0;
-        $tried = $reported = false;
+        $made = $already = $count = 0;
+        $reported = false;
+        $budget = BulkSelection::within($until);
 
         foreach ($records as $record) {
             /** @var Entry $record */
             $count++;
 
-            /*
-             * ⚠️ THE FIRST FILE IS ALWAYS TRIED, so running it again always goes on; past the budget no file is started,
-             * and the one in hand finishes.
-             */
-            if ($notTried > 0 || ($tried && $until !== null && now()->greaterThanOrEqualTo($until))) {
-                $notTried++;
-
+            // ⚠️ THE FIRST FILE IS ALWAYS TRIED; past the budget no file is started, and the one in hand finishes.
+            if (! $budget->starts()) {
                 continue;
             }
 
-            $tried = true;
             $title = self::titleOf($record);
             // What it was before — the list loaded it moments ago — tells a failed switch from one already so.
             $was = self::isAt($record->mediaFile, $to);
@@ -583,6 +519,7 @@ final class MediaVisibilityActions
             }
         }
 
+        $notTried = $budget->notTried();
         $notDone = count($refused) + count($failed) + $notTried;
         $notDone === 0 ? $action->success() : $action->failure();
 
@@ -596,18 +533,12 @@ final class MediaVisibilityActions
         self::summary($to, $count, $notDone, $refused, $failed, $notTried, $awaiting, $made, $already, $gone)->send();
     }
 
-    /**
-     * How many keys the editor selected, or null where every record but those deselected is: that selection is the
-     * list's own query, which nothing can have left.
-     */
-    private static function keysSelected(HasTable $livewire): ?int
+    /** How many keys the editor selected, or null where the selection is the list's own query (`BulkSelection`). */
+    private static function keyCount(HasTable $livewire): ?int
     {
-        if (! property_exists($livewire, 'selectedTableRecords') || ! property_exists($livewire, 'isTrackingDeselectedTableRecords')
-            || $livewire->isTrackingDeselectedTableRecords !== false) {
-            return null;
-        }
+        $keys = BulkSelection::keysSelected($livewire);
 
-        return count(array_unique(array_map(strval(...), (array) $livewire->selectedTableRecords)));
+        return $keys === null ? null : count($keys);
     }
 
     /** One file switched, and what it is now: made so, made public and not yet published, or already so. */
@@ -697,7 +628,7 @@ final class MediaVisibilityActions
         $lines = $refused;
 
         if ($failed !== []) {
-            $lines[] = e(trans_choice($key('failed').'_line', count($failed), ['titles' => self::titles($failed)]));
+            $lines[] = e(trans_choice($key('failed').'_line', count($failed), ['titles' => BulkSelection::titles($failed)]));
         }
 
         if ($notTried > 0) {
@@ -705,8 +636,8 @@ final class MediaVisibilityActions
         }
 
         if ($awaiting !== []) {
-            $lines[] = e(trans_choice('kitsune::media.visibility.bulk.awaiting_line', count($awaiting), [
-                'titles' => self::titles(array_values($awaiting)),
+            $lines[] = e(trans_choice('kitsune::media.selection.awaiting_line', count($awaiting), [
+                'titles' => BulkSelection::titles(array_values($awaiting)),
                 'entries' => implode(' ', array_map(static fn (int $id): string => "--entry={$id}", array_keys($awaiting))),
             ]));
         }
@@ -731,19 +662,6 @@ final class MediaVisibilityActions
         $notification->title(e($title));
 
         return $lines === [] ? $notification : $notification->body(implode('<br>', $lines));
-    }
-
-    /**
-     * Titles, quoted and listed — escaped with the line they are in.
-     *
-     * @param  list<string>  $titles
-     */
-    private static function titles(array $titles): string
-    {
-        return implode(__('kitsune::media.visibility.bulk.list_separator'), array_map(
-            static fn (string $title): string => __('kitsune::media.visibility.bulk.quoted', ['title' => $title]),
-            $titles,
-        ));
     }
 
     /** Hidden from whoever may neither update nor publish it; Filament refuses to call an unauthorised action. */

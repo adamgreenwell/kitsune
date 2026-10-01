@@ -519,7 +519,7 @@ class EntryResource extends Resource
              * mode exists to avoid, for every user who may delete — and, on a media list, every user who may update or
              * publish its type, whom *Make selected public* and *Make selected private* give checkboxes too (decision 34).
              * A media list's bulk actions act on the page in view. It bounds what the select-all box selects, and nothing
-             * on the server: `MediaVisibilityActions::MOST_AT_ONCE` is the switch's own bound.
+             * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound.
              */
             ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,
