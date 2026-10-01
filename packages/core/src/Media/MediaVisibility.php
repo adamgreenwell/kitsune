@@ -110,7 +110,7 @@ final class MediaVisibility
                 $connection, $entry, $id, &$original, &$stripped, &$recorded, &$kept, &$checksum, &$size, &$private, &$path,
                 &$rowWritten, &$replacing,
             ): string {
-                $row = self::guard($connection, $entry, $id, $locked, $file, 'public');
+                $row = self::guard($connection, $entry, $id, $file, 'public');
 
                 /** @var stdClass $file */
                 if ($file->visibility === 'public') {
@@ -263,7 +263,7 @@ final class MediaVisibility
 
         try {
             return MediaCustody::locked($connection, $id, static function (?stdClass $locked, ?stdClass $file) use ($connection, $entry, $id, $withdrawal): string {
-                self::guard($connection, $entry, $id, $locked, $file, 'private');
+                self::guard($connection, $entry, $id, $file, 'private');
 
                 /** @var stdClass $file */
                 if ($file->visibility !== 'public') {
@@ -374,12 +374,9 @@ final class MediaVisibility
      * @throws MediaVisibilityRefused
      * @throws RuntimeException when the instance was moved or retyped since it was loaded
      */
-    private static function guard(Connection $connection, Entry $entry, int $id, ?stdClass $locked, ?stdClass $file, string $to): stdClass
+    private static function guard(Connection $connection, Entry $entry, int $id, ?stdClass $file, string $to): stdClass
     {
-        if ($locked === null) {
-            throw new MediaVisibilityRefused($id, MediaVisibilityRefused::GONE, $to);
-        }
-
+        // Read again, for what custody's lock does not read: it took the row, and a row gone since it was loaded is null here.
         $row = $connection->table('entries')->where('id', $id)->lockForUpdate()
             ->first(['org_id', 'site_id', 'type_handle', 'title', 'deleted_at']);
 
@@ -605,9 +602,8 @@ final class MediaVisibility
         $directory = storage_path('app/kitsune-recovery');
         $kept = sprintf('%s/entry-%d-%s', $directory, $id, bin2hex(random_bytes(6)));
 
+        // `tempnam()` made it 0600, and a rename keeps that.
         if ((is_dir($directory) || @mkdir($directory, 0700, true)) && @rename($original, $kept)) {
-            @chmod($kept, 0600);
-
             Log::warning(sprintf(
                 'Media visibility, entry %d: the original it was uploaded as is kept at [%s]. Copy it over the file its row '
                 .'names on the private disk, then run kitsune:media-reconcile --entry=%d (ADR-042 decision 32).',

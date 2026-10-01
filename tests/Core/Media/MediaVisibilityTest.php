@@ -685,7 +685,11 @@ describe('what is refused', function (): void {
 
         $refused = visRefusedBy(fn () => MediaVisibility::makePublic($entry));
 
+        // The original was never overwritten, so nothing is written back over it: the one write is the one that failed.
+        $privateWrites = array_filter(RefusingDisk::$log, static fn (array $op): bool => $op['disk'] === MediaDisks::PRIVATE && $op['event'] === 'writeStream');
+
         expect($refused->reason)->toBe(MediaVisibilityRefused::COPY_FAILED)
+            ->and($privateWrites)->toHaveCount(1)
             ->and($refused->getMessage())->toContain('so it stays private')
             ->and(visRow($entry))->toBe($before)
             ->and(visBytes($before['path']))->toBe(['public' => null, MediaDisks::PRIVATE => $original])
@@ -1012,6 +1016,33 @@ describe('what review found', function (): void {
         $entry->delete();
 
         expect(DB::table('entries')->where('id', $entry->id)->value('deleted_at'))->not->toBeNull();
+    });
+
+    /* A switch that fails after its withdrawal moved the file — its audit, here — puts it back once nothing is left to commit. */
+    it('puts a file back on the web when making it private fails after its withdrawal', function (): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png', 'public');
+        $before = visRow($entry);
+        AuditorStandIn::install()->throwOnce(new RuntimeException('the audit failed'));
+
+        expect(fn () => MediaVisibility::makePrivate($entry))->toThrow(RuntimeException::class, 'the audit failed');
+
+        expect(visRow($entry))->toBe($before)
+            ->and(visBytes($before['path']))->toBe(['public' => VISIBILITY_PNG, MediaDisks::PRIVATE => null]);
+    });
+
+    /* Making a file private refuses as a trash does where the configured disks cannot keep it off the web. */
+    it('refuses to make a file private where the configured disks cannot keep it off the web', function (): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png', 'public');
+        $before = visRow($entry);
+        config(['kitsune.media.disks.public' => MediaDisks::PRIVATE]);
+
+        $refused = visRefusedBy(fn () => MediaVisibility::makePrivate($entry));
+
+        expect($refused)->toBeInstanceOf(MediaWithdrawalRefused::class)
+            ->and($refused->reason)->toBe(MediaWithdrawalRefused::UNSAFE_DISKS)
+            ->and($refused->getMessage())->toStartWith("Refusing to make entry {$entry->id} private: the configured media disks cannot keep a withdrawn file private")
+            ->and(visRow($entry))->toBe($before)
+            ->and(visWrites())->toBe([]);
     });
 
     it('refuses an instance whose key was changed since it was loaded', function (string $to): void {
