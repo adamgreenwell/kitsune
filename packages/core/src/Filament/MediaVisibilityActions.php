@@ -156,7 +156,7 @@ final class MediaVisibilityActions
                     ->accepted()
                     ->validationMessages(['accepted' => __('kitsune::media.visibility.bulk.not_confirmed')]),
             ] : null)
-            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, array $data) => self::publicSelected($action, $selectedRecordsQuery, $data));
+            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire, array $data) => self::publicSelected($action, $selectedRecordsQuery, $data, self::keysSelected($livewire)));
     }
 
     public static function makeSelectedPrivate(): BulkAction
@@ -168,7 +168,7 @@ final class MediaVisibilityActions
             ->modalHeading(static fn (Builder $selectedRecordsQuery): string => self::selectionHeading('private', self::countsOf($selectedRecordsQuery)[0]))
             ->modalDescription(static fn (Builder $selectedRecordsQuery): ?string => self::selectionNote('private', ...self::countsOf($selectedRecordsQuery)))
             ->modalSubmitActionLabel(__('kitsune::media.visibility.make_private'))
-            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery) => self::privateSelected($action, $selectedRecordsQuery));
+            ->action(static fn (BulkAction $action, Builder $selectedRecordsQuery, HasTable $livewire) => self::privateSelected($action, $selectedRecordsQuery, self::keysSelected($livewire)));
     }
 
     /**
@@ -178,11 +178,12 @@ final class MediaVisibilityActions
      *
      * @param  Builder<Entry>  $selected
      * @param  array<string, mixed>  $data
+     * @param  ?int  $keys  how many the editor selected, where the selection is a list of keys
      */
-    public static function publicSelected(BulkAction $action, Builder $selected, array $data): void
+    public static function publicSelected(BulkAction $action, Builder $selected, array $data, ?int $keys = null): void
     {
         $records = self::upTo($selected);
-        $records === null ? self::refuseTooMany($action) : self::publicEach($action, $records, $data, self::deadline());
+        $records === null ? self::refuseTooMany($action) : self::publicEach($action, $records, $data, self::deadline(), $keys);
     }
 
     /**
@@ -191,11 +192,12 @@ final class MediaVisibilityActions
      * @internal
      *
      * @param  Builder<Entry>  $selected
+     * @param  ?int  $keys  how many the editor selected, where the selection is a list of keys
      */
-    public static function privateSelected(BulkAction $action, Builder $selected): void
+    public static function privateSelected(BulkAction $action, Builder $selected, ?int $keys = null): void
     {
         $records = self::upTo($selected);
-        $records === null ? self::refuseTooMany($action) : self::privateEach($action, $records, self::deadline());
+        $records === null ? self::refuseTooMany($action) : self::privateEach($action, $records, self::deadline(), $keys);
     }
 
     /**
@@ -206,8 +208,9 @@ final class MediaVisibilityActions
      * @param  iterable<Model>  $records
      * @param  array<string, mixed>  $data
      * @param  ?CarbonInterface  $until  none started after it; null for no budget
+     * @param  ?int  $keys  how many the editor selected; more than `$records` holds have left the list since
      */
-    public static function publicEach(BulkAction $action, iterable $records, array $data, ?CarbonInterface $until = null): void
+    public static function publicEach(BulkAction $action, iterable $records, array $data, ?CarbonInterface $until = null, ?int $keys = null): void
     {
         // Asked again, as `publicOne()` asks: a request can carry anything.
         if (($data['public_confirmed'] ?? false) !== true) {
@@ -221,7 +224,7 @@ final class MediaVisibilityActions
             return;
         }
 
-        self::each($action, $records, 'public', $until);
+        self::each($action, $records, 'public', $until, $keys);
     }
 
     /**
@@ -231,10 +234,11 @@ final class MediaVisibilityActions
      *
      * @param  iterable<Model>  $records
      * @param  ?CarbonInterface  $until  none started after it; null for no budget
+     * @param  ?int  $keys  how many the editor selected; more than `$records` holds have left the list since
      */
-    public static function privateEach(BulkAction $action, iterable $records, ?CarbonInterface $until = null): void
+    public static function privateEach(BulkAction $action, iterable $records, ?CarbonInterface $until = null, ?int $keys = null): void
     {
-        self::each($action, $records, 'private', $until);
+        self::each($action, $records, 'private', $until, $keys);
     }
 
     /**
@@ -474,7 +478,7 @@ final class MediaVisibilityActions
      *
      * @param  iterable<Model>  $records
      */
-    private static function each(BulkAction $action, iterable $records, string $to, ?CarbonInterface $until): void
+    private static function each(BulkAction $action, iterable $records, string $to, ?CarbonInterface $until, ?int $keys): void
     {
         $refused = $failed = $awaiting = [];
         $made = $already = $notTried = $count = 0;
@@ -496,8 +500,11 @@ final class MediaVisibilityActions
 
             $tried = true;
             $title = self::titleOf($record);
-            // What it was before — the list loaded it moments ago — tells a failed switch from one already so.
-            $was = self::isAt($record->mediaFile, $to);
+            /*
+             * What it was before — the list loaded it moments ago — tells a failed switch from one already so. A file in
+             * the trash is off the web whatever it is set to, so it is never public already (review of decision 34).
+             */
+            $was = ! ($to === 'public' && $record->trashed()) && self::isAt($record->mediaFile, $to);
 
             try {
                 $outcome = self::switchTo($record, $to);
@@ -509,7 +516,19 @@ final class MediaVisibilityActions
                      * it is there, and published again by a restore, which the switch's "Restore it first" would do.
                      */
                     if ($to === 'private' && $failure instanceof MediaVisibilityRefused && $failure->reason === MediaVisibilityRefused::TRASHED) {
-                        $now = self::freshly($record);
+                        try {
+                            $now = MediaDelivery::fileFor($record);
+                        } catch (Throwable $unread) {
+                            // Its row cannot be read: nothing is claimed of it (review of decision 34).
+                            if (! $reported) {
+                                report($unread);
+                                $reported = true;
+                            }
+
+                            $failed[] = $title;
+
+                            continue;
+                        }
 
                         if ($now !== null && ! $now->isPublic()) {
                             $already++;
@@ -517,7 +536,13 @@ final class MediaVisibilityActions
                             continue;
                         }
 
-                        $refused[] = e(__('kitsune::media.visibility.bulk.trashed_private_line', ['title' => $title]));
+                        // ⚠️ AND ONE WITH NO FILE SAYS SO, not that a restore publishes it (review of decision 34).
+                        $refused[] = $now === null
+                            ? e(__('kitsune::media.visibility.bulk.refused_private_line', [
+                                'title' => $title,
+                                'reason' => (new MediaVisibilityRefused((int) $record->getKey(), MediaVisibilityRefused::NO_FILE, 'private'))->getMessage(),
+                            ]))
+                            : e(__('kitsune::media.visibility.bulk.trashed_private_line', ['title' => $title]));
 
                         continue;
                     }
@@ -542,7 +567,8 @@ final class MediaVisibilityActions
                  */
                 $now = self::freshly($record);
 
-                if ($now === null || ! self::isAt($now, $to)) {
+                // ⚠️ A FILE IN THE TRASH IS NOT PUBLIC, whatever its row says — as the switch's own guard has it.
+                if ($now === null || ! self::isAt($now, $to) || ($to === 'public' && self::trashedNow($record))) {
                     $failed[] = $title;
 
                     continue;
@@ -563,7 +589,28 @@ final class MediaVisibilityActions
         $notDone = count($refused) + count($failed) + $notTried;
         $notDone === 0 ? $action->success() : $action->failure();
 
-        self::summary($to, $count, $notDone, $refused, $failed, $notTried, $awaiting, $made, $already)->send();
+        /*
+         * ⚠️ AND ANY SELECTED THAT HAVE LEFT THE LIST SINCE — trashed, or no longer matching its search — are said, never
+         * dropped (review of decision 34). Filament fetches the selection through the list's filters, so they are not
+         * here to switch; running it again would not reach them either, so they leave the selection as the rest do.
+         */
+        $gone = $keys === null ? 0 : max(0, $keys - $count);
+
+        self::summary($to, $count, $notDone, $refused, $failed, $notTried, $awaiting, $made, $already, $gone)->send();
+    }
+
+    /**
+     * How many keys the editor selected, or null where every record but those deselected is: that selection is the
+     * list's own query, which nothing can have left.
+     */
+    private static function keysSelected(HasTable $livewire): ?int
+    {
+        if (! property_exists($livewire, 'selectedTableRecords') || ! property_exists($livewire, 'isTrackingDeselectedTableRecords')
+            || $livewire->isTrackingDeselectedTableRecords !== false) {
+            return null;
+        }
+
+        return count(array_unique(array_map(strval(...), (array) $livewire->selectedTableRecords)));
     }
 
     /** One file switched, and what it is now: made so, made public and not yet published, or already so. */
@@ -581,6 +628,16 @@ final class MediaVisibilityActions
         $file = MediaDelivery::fileFor($record);
 
         return $file !== null && MediaDelivery::servesDirectly($file) ? self::MADE : self::AWAITING;
+    }
+
+    /** Whether the entry is in the trash now, read below the model — and taken as so where that cannot be read. */
+    private static function trashedNow(Entry $record): bool
+    {
+        try {
+            return $record->getConnection()->table($record->getTable())->where($record->getKeyName(), $record->getKey())->value('deleted_at') !== null;
+        } catch (Throwable) {
+            return true;
+        }
     }
 
     /** The file's row as it is now, or null where even that cannot be read. */
@@ -604,8 +661,9 @@ final class MediaVisibilityActions
      * @param  list<string>  $refused  escaped lines
      * @param  list<string>  $failed  titles
      * @param  array<int, string>  $awaiting  titles, by entry id
+     * @param  int  $gone  selected, and no longer on the list
      */
-    private static function summary(string $to, int $count, int $notDone, array $refused, array $failed, int $notTried, array $awaiting, int $made, int $already): Notification
+    private static function summary(string $to, int $count, int $notDone, array $refused, array $failed, int $notTried, array $awaiting, int $made, int $already, int $gone): Notification
     {
         $key = static fn (string $name): string => "kitsune::media.visibility.bulk.{$name}_{$to}";
         $notification = Notification::make();
@@ -627,10 +685,11 @@ final class MediaVisibilityActions
             default => trans_choice($key('already'), $already, ['count' => $already]),
         };
 
-        match ($says) {
-            'refused' => $notification->danger()->persistent(),
-            'not_tried', 'awaiting' => $notification->warning()->persistent(),
-            'made' => $notification->success(),
+        match (true) {
+            $says === 'refused' => $notification->danger()->persistent(),
+            // Not the colour of a selection done whole while some of it was not on the list to do.
+            in_array($says, ['not_tried', 'awaiting'], true), $gone > 0 && $says !== 'none' => $notification->warning()->persistent(),
+            $says === 'made' => $notification->success(),
             default => $notification->info(),
         };
 
@@ -662,6 +721,10 @@ final class MediaVisibilityActions
 
         if ($already > 0 && $says !== 'already') {
             $lines[] = e(trans_choice($key('already').'_count', $already, ['count' => $already]));
+        }
+
+        if ($gone > 0 && $says !== 'none') {
+            $lines[] = e(trans_choice('kitsune::media.visibility.bulk.gone_line', $gone, ['count' => $gone]));
         }
 
         $notification->title(e($title));

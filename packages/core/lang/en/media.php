@@ -123,6 +123,7 @@ return [
             'too_many_title' => 'Too many files are selected',
             'too_many' => 'More than :max files are selected, and at most :max are switched at a time, so nothing was changed. Select :max or fewer, and run it again.',
             'none' => 'None of the selected files is on this list any more. Nothing was changed.',
+            'gone_line' => '{1} One of the selected files is no longer on this list, and was left as it was.|[2,*] :count of the selected files are no longer on this list, and were left as they were.',
             'made_public' => '{1} One file was made public|[2,*] :count files were made public',
             'made_public_awaiting' => '{1} One file is public, and not yet published|[2,*] :count files are public, and not yet published',
             'already_public' => '{1} The file was already public. Nothing was changed.|[2,*] All :count files were already public. Nothing was changed.',

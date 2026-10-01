@@ -336,6 +336,11 @@ describe('the actions, as the list builds them', function (): void {
             ->and(MediaVisibilityActions::upTo($query, most: 3))->toHaveCount(3)
             ->and(MediaVisibilityActions::MOST_AT_ONCE)->toBe(50);
 
+        // In the list's order, which is the order a budget cuts off in (review of decision 34).
+        $ids = array_map(static fn (Entry $e): int => (int) $e->id, $files);
+
+        expect(MediaVisibilityActions::upTo(Entry::query()->whereKey($ids)->orderByDesc('id'))?->modelKeys())->toBe(array_reverse($ids));
+
         // No page the list offers holds more than the bound, and none offers every record at once.
         $table = EntryResource::table(Table::make(app(ListEntries::class)));
         $sizes = array_filter($table->getPaginationPageOptions(), 'is_int');
@@ -373,14 +378,35 @@ describe('the actions, as the list builds them', function (): void {
             ->and(bulkVisNotices())->toHaveCount(1)
             ->and(bulkVisNotices()[0]['title'])->toBe('Too many files are selected');
 
-        // Fifty is not too many.
+        // Fifty is not too many (review of decision 34: two would pass for any bound above one).
         session()->forget('filament.notifications');
         $to === 'public'
-            ? MediaVisibilityActions::publicSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 2)), BULK_VIS_TICKED)
-            : MediaVisibilityActions::privateSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 2)));
+            ? MediaVisibilityActions::publicSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 50)), BULK_VIS_TICKED)
+            : MediaVisibilityActions::privateSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 50)));
 
-        expect(DB::table('media_files')->whereIn('entry_id', $ids)->where('visibility', $to)->count())->toBe(2);
+        expect(DB::table('media_files')->whereIn('entry_id', $ids)->where('visibility', $to)->count())->toBe(50)
+            ->and(bulkVisNotices()[0]['title'])->toBe("50 files were made {$to}");
     })->with(['public', 'private']);
+
+    /* ⚠️ AND NEVER LOADED WHOLE FIRST: a select-all is the whole list, and the bound is in the query (review of decision 34). */
+    it('loads no more than one past the bound to refuse a larger selection', function (): void {
+        ($this->grant)('view', 'publish');
+        $ids = [];
+
+        for ($i = 1; $i <= MediaVisibilityActions::MOST_AT_ONCE + 5; $i++) {
+            $ids[] = (int) bulkVisStored("File {$i}")->id;
+        }
+
+        $loaded = 0;
+        Entry::retrieved(static function () use (&$loaded): void {
+            $loaded++;
+        });
+
+        MediaVisibilityActions::publicSelected(bulkVisAction('makeSelectedPublic'), Entry::query()->whereKey($ids), BULK_VIS_TICKED);
+
+        expect($loaded)->toBe(MediaVisibilityActions::MOST_AT_ONCE + 1)
+            ->and(bulkVisNotices()[0]['title'])->toBe('Too many files are selected');
+    });
 });
 
 describe('making a selection public', function (): void {
@@ -568,6 +594,116 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['body'])->toStartWith('One file was not tried: one request may take only so long. It is still selected;');
     });
 
+    /* A refusal beside files not tried: the refusal decides the colour (review of decision 34). */
+    it('is a danger notice when a file was refused and others were not tried', function (): void {
+        $old = bulkVisStored('Old');
+        $old->delete();
+        $action = bulkVisAction('makeSelectedPublic');
+
+        MediaVisibilityActions::publicEach($action, bulkVisListed($old, bulkVisStored('A'), bulkVisStored('B')), BULK_VIS_TICKED, now()->subSecond());
+
+        expect(bulkVisNotices())->toHaveCount(1)
+            ->and(bulkVisNotices()[0]['status'])->toBe('danger')
+            ->and(bulkVisNotices()[0]['title'])->toBe('3 files were not made public');
+    });
+
+    /* Files published beside one whose publication failed: the title says not yet published, the body counts the rest. */
+    it('counts the files published beside one not yet published', function (): void {
+        $a = bulkVisStored('A');
+        $b = bulkVisStored('B');
+        $n = 0;
+        AuditorStandIn::install()->beforeRecording(function () use (&$n): void {
+            $this->disks['public']->failWrites = ++$n === 2;
+        });
+        $action = bulkVisAction('makeSelectedPublic');
+
+        MediaVisibilityActions::publicEach($action, bulkVisListed($a, $b), BULK_VIS_TICKED);
+
+        expect(bulkVisNotices()[0]['status'])->toBe('warning')
+            ->and(bulkVisNotices()[0]['title'])->toBe('One file is public, and not yet published')
+            ->and(explode('<br>', (string) bulkVisNotices()[0]['body']))->toBe([
+                'Not yet published: &quot;B&quot;. Until it is, its link does not open it, and it opens only through this admin. The log says why; '
+                    ."kitsune:media-reconcile --entry={$b->id} --force publishes it.",
+                'One file was made public.',
+            ]);
+    });
+
+    /*
+     * ⚠️ SELECTED, AND GONE FROM THE LIST SINCE — review of decision 34. Filament fetches a selection through the list's
+     * filters, so a file trashed or renamed out of its search since it was ticked is not there to switch; it is said,
+     * never dropped from a notice that reads as the whole selection done.
+     */
+    it('says how many of the selection have left the list since it was made', function (): void {
+        $a = bulkVisStored('A');
+        $b = bulkVisStored('B');
+        $action = bulkVisAction('makeSelectedPublic');
+
+        MediaVisibilityActions::publicEach($action, bulkVisListed($a, $b), BULK_VIS_TICKED, keys: 3);
+
+        expect(bulkVisNotices())->toHaveCount(1)
+            ->and(bulkVisNotices()[0]['status'])->toBe('warning')
+            ->and(bulkVisNotices()[0]['duration'])->toBe('persistent')
+            ->and(bulkVisNotices()[0]['title'])->toBe('2 files were made public')
+            ->and(bulkVisNotices()[0]['body'])->toBe('One of the selected files is no longer on this list, and was left as it was.')
+            ->and($action->getStatus()->name)->toBe('Success');
+
+        session()->forget('filament.notifications');
+        MediaVisibilityActions::publicEach($action, bulkVisListed($a, $b), BULK_VIS_TICKED, keys: 4);
+
+        expect(bulkVisNotices()[0]['status'])->toBe('warning')
+            ->and(bulkVisNotices()[0]['title'])->toBe('All 2 files were already public. Nothing was changed.')
+            ->and(bulkVisNotices()[0]['body'])->toBe('2 of the selected files are no longer on this list, and were left as they were.');
+    });
+
+    /* ⚠️ THROUGH FILAMENT'S OWN SELECTION: the keys the page holds, the list's filters, and the tick, as the action is called. */
+    it('switches what the page selected, through the list\'s own query, and says what left it', function (): void {
+        $a = bulkVisStored('A');
+        $b = bulkVisStored('B');
+        $c = bulkVisStored('C');
+        $page = app(ListEntries::class);
+        $page->bootedInteractsWithTable();
+        $page->selectedTableRecords = [(string) $a->id, (string) $b->id, (string) $c->id];
+        $c->delete();
+        $action = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'makeSelectedPublic');
+        $action->data(BULK_VIS_TICKED);
+
+        $action->call();
+
+        expect([bulkVisRow($a), bulkVisRow($b), bulkVisRow($c)])->toBe(['public', 'public', 'private'])
+            ->and(bulkVisNotices())->toHaveCount(1)
+            ->and(bulkVisNotices()[0]['title'])->toBe('2 files were made public')
+            ->and(bulkVisNotices()[0]['body'])->toBe('One of the selected files is no longer on this list, and was left as it was.');
+
+        // Every record selected but those deselected: the selection is the list's own query, which nothing has left.
+        session()->forget('filament.notifications');
+        $page->isTrackingDeselectedTableRecords = true;
+        $page->deselectedTableRecords = [];
+        $action->call();
+
+        expect(bulkVisNotices()[0]['title'])->toBe('All 2 files were already public. Nothing was changed.')
+            ->and(bulkVisNotices()[0]['body'] ?? null)->toBeNull();
+    });
+
+    /*
+     * ⚠️ A FILE IN THE TRASH IS NEVER PUBLIC ALREADY — review of decision 34. A failure before the switch's own guard
+     * would otherwise count a trashed file set public as public, where the guard refuses it.
+     */
+    it('never counts a trashed file as already public when its switch fails', function (): void {
+        Exceptions::fake();
+        $old = bulkVisStored('Old', visibility: 'public');
+        $old->delete();
+        $records = bulkVisListed($old);
+        app(Context::class)->forget();
+        $action = bulkVisAction('makeSelectedPublic');
+
+        MediaVisibilityActions::publicEach($action, $records, BULK_VIS_TICKED);
+
+        expect(bulkVisNotices()[0]['status'])->toBe('danger')
+            ->and(bulkVisNotices()[0]['title'])->toBe('One file was not made public')
+            ->and(bulkVisNotices()[0]['body'])->toStartWith('&quot;Old&quot; may not have been made public')
+            ->and($action->getStatus()->name)->toBe('Failure');
+    });
+
     /* H20. Nothing resolved: the selection's files have left the list since it was made. */
     it('says so when none of the selection is on the list any more', function (): void {
         $action = bulkVisAction('makeSelectedPublic');
@@ -584,11 +720,18 @@ describe('making a selection public', function (): void {
     it('passes the request\'s budget from the handler', function (string $to): void {
         $this->freezeTime();
         $files = [bulkVisStored('A', visibility: $to === 'public' ? 'private' : 'public'), bulkVisStored('B', visibility: $to === 'public' ? 'private' : 'public')];
-        AuditorStandIn::install()->beforeRecording(fn () => $this->travel(16)->seconds());
+        // Eleven seconds a file, under a limit of twenty: only half of it, ten, stops the second (review of decision 34).
+        AuditorStandIn::install()->beforeRecording(fn () => $this->travel(11)->seconds());
         $query = Entry::query()->with('mediaFile')->whereKey(array_map(static fn (Entry $e): int => (int) $e->id, $files))->orderBy('id');
         $action = bulkVisAction($to === 'public' ? 'makeSelectedPublic' : 'makeSelectedPrivate');
+        $limit = ini_get('max_execution_time');
 
-        $to === 'public' ? MediaVisibilityActions::publicSelected($action, $query, BULK_VIS_TICKED) : MediaVisibilityActions::privateSelected($action, $query);
+        try {
+            ini_set('max_execution_time', '20');
+            $to === 'public' ? MediaVisibilityActions::publicSelected($action, $query, BULK_VIS_TICKED) : MediaVisibilityActions::privateSelected($action, $query);
+        } finally {
+            ini_set('max_execution_time', (string) $limit);
+        }
 
         expect(array_map('bulkVisRow', $files))->toBe([$to, $to === 'public' ? 'private' : 'public'])
             ->and(bulkVisNotices()[0]['body'])->toStartWith('One file was not tried');
@@ -688,6 +831,40 @@ describe('making a selection private', function (): void {
             ->and(bulkVisNotices()[0]['title'])->toBe('The file was already private. Nothing was changed.')
             ->and($action->getStatus()->name)->toBe('Success');
     });
+});
+
+/* The private twin: a file already private is not counted so where the switch refused it (review of decision 34). */
+it('is refused file by file for whoever may not publish, made private too', function (): void {
+    ($this->grant)('view', 'update');
+    $public = bulkVisStored('Pub', visibility: 'public');
+    $private = bulkVisStored('Priv');
+    $action = bulkVisAction('makeSelectedPrivate');
+
+    MediaVisibilityActions::privateEach($action, bulkVisListed($public, $private));
+
+    $lines = explode('<br>', (string) bulkVisNotices()[0]['body']);
+
+    expect([bulkVisRow($public), bulkVisRow($private)])->toBe(['public', 'private'])
+        ->and(bulkVisNotices()[0]['title'])->toBe('2 files were not made private')
+        ->and($lines)->toHaveCount(2)
+        ->and($lines[0])->toContain('that needs [entry.image.publish]')
+        ->and($lines[1])->toContain('that needs [entry.image.publish]')
+        ->and((string) bulkVisNotices()[0]['body'])->not->toContain('in the trash')
+        ->and($action->getStatus()->name)->toBe('Failure');
+});
+
+/* ⚠️ IN THE TRASH WITH NO FILE: said so, not that a restore publishes it (review of decision 34). */
+it('says a trashed entry with no file has none, made private', function (): void {
+    ($this->grant)('view', 'publish');
+    $orphan = bulkVisStored('Orphan');
+    DB::table('media_files')->where('entry_id', $orphan->id)->delete();
+    $orphan->delete();
+    $action = bulkVisAction('makeSelectedPrivate');
+
+    MediaVisibilityActions::privateEach($action, bulkVisListed($orphan));
+
+    expect(bulkVisNotices()[0]['title'])->toBe('One file was not made private')
+        ->and(bulkVisNotices()[0]['body'])->toBe("&quot;Orphan&quot; was not made private: Refusing to make entry {$orphan->id} private: no file is recorded for it, so nothing was changed.");
 });
 
 describe('the parts', function (): void {

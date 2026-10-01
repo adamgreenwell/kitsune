@@ -143,6 +143,30 @@ it('counts a file whose COMMIT landed and reported failure as what it is', funct
     Exceptions::assertReportedCount(1);
 });
 
+/*
+ * Z3, and its publication failing too: the file is public and not yet published, said so with its command — never
+ * counted as made public (review of decision 34).
+ */
+it('names a file whose COMMIT landed and whose publication failed as not yet published', function (): void {
+    Exceptions::fake();
+    $files = [bulkZeroStored('One'), bulkZeroStored('Two'), bulkZeroStored('Three')];
+    $this->disks['public']->failWrites = true;
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $n = 0;
+    AuditorStandIn::install()->beforeRecording(function () use (&$n, $pdo): void {
+        if (++$n === 2) {
+            $pdo->failNextCommit = 'after';
+        }
+    });
+
+    MediaVisibilityActions::publicEach(BulkAction::make('makeSelectedPublic'), $files, ['public_confirmed' => true]);
+
+    expect(array_map('bulkZeroState', $files))->toBe([['public', false], ['public', false], ['public', false]])
+        ->and(bulkZeroNotices()[0]['title'])->toBe('3 files are public, and not yet published')
+        ->and(bulkZeroNotices()[0]['body'])->toContain("--entry={$files[1]->id}")
+        ->and(bulkZeroNotices()[0]['body'])->not->toContain('made public');
+});
+
 /* Z4. Made private: a COMMIT that does not land leaves its file on the web and named; one that lands, off it and counted. */
 it('names a file made private whose COMMIT did not land, and counts one whose COMMIT did', function (string $commit): void {
     Exceptions::fake();

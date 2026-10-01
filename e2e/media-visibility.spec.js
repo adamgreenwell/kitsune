@@ -92,16 +92,19 @@ function storedPng(title, visibility) {
 }
 
 /**
- * The image list, searched down to these words — never the page's select-all: golfdom holds other specs' files.
+ * The image list, searched down to these words and showing `count` cards — never the page's select-all: golfdom holds
+ * other specs' files.
  *
  * ⚠️ AND SETTLED BEFORE ANYTHING IS SELECTED: a search clears the selection when its debounced update lands, so a card
- * ticked before it would be unticked under the test.
+ * ticked before it would be unticked under the test. Its response arriving is not its being applied, so the cards
+ * are waited on too: the list holds other files before the search, and these alone after it.
  */
-async function listed(page, words) {
+async function listed(page, words, count) {
     await page.goto('/admin/golfdom/c/image');
-    const searched = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes('tableSearch'));
+    const searched = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes(words));
     await page.locator('.fi-ta').getByPlaceholder('Search').fill(words);
     await searched;
+    await expect(page.locator('.fi-ta-record')).toHaveCount(count);
 }
 
 /** A card of the list, by its title. */
@@ -274,7 +277,7 @@ test('makes the selected files public with one acknowledgement, and names the on
     const shared = storedJpeg(`${PROBE} bulk shared`, 'photo(true)', false);
     const bad = storedJpeg(`${PROBE} bulk bad`, 'unremovable()');
 
-    await listed(page, `${PROBE} bulk`);
+    await listed(page, `${PROBE} bulk`, 3);
     for (const title of ['ok', 'shared', 'bad']) {
         await card(page, `${PROBE} bulk ${title}`).getByRole('checkbox').check();
     }
@@ -330,7 +333,7 @@ test('makes the selected files private, says what that does, and clears the sele
         expect((await page.request.get(`/storage/${file.path}`)).status()).toBe(200);
     }
 
-    await listed(page, `${PROBE} bulk`);
+    await listed(page, `${PROBE} bulk`, 2);
     for (const title of ['one', 'two']) {
         await card(page, `${PROBE} bulk ${title}`).getByRole('checkbox').check();
     }
@@ -366,12 +369,12 @@ test('hides the selection switches from a reader, and disables them without publ
 
     try {
         copyEditor('grant', ['view']);
-        await listed(page, `${PROBE} bulk grants`);
+        await listed(page, `${PROBE} bulk grants`, 1);
         await expect(card(page, `${PROBE} bulk grants`)).toHaveCount(1);
         await expect(card(page, `${PROBE} bulk grants`).getByRole('checkbox')).toHaveCount(0);
 
         copyEditor('grant', ['update']);
-        await listed(page, `${PROBE} bulk grants`);
+        await listed(page, `${PROBE} bulk grants`, 1);
         await card(page, `${PROBE} bulk grants`).getByRole('checkbox').check();
         const disabled = await bulkAction(page, 'Make selected public');
         await expect(disabled).toBeDisabled();
@@ -379,7 +382,7 @@ test('hides the selection switches from a reader, and disables them without publ
         await expect(page.getByText(/entry\.image\.publish/)).toBeVisible();
 
         copyEditor('grant', ['publish']);
-        await listed(page, `${PROBE} bulk grants`);
+        await listed(page, `${PROBE} bulk grants`, 1);
         await card(page, `${PROBE} bulk grants`).getByRole('checkbox').check();
         await expect(await bulkAction(page, 'Make selected public')).toBeEnabled();
     } finally {
@@ -393,7 +396,7 @@ test('does not offer the selection switches while the list shows only the trash'
     const id = storedPng(`${PROBE} bulk trashed`, 'private');
     tinker(IN_GOLFDOM + ` \\Kitsune\\Core\\Models\\Entry::query()->findOrFail(${id})->delete();`);
 
-    await listed(page, `${PROBE} bulk trashed`);
+    await listed(page, `${PROBE} bulk trashed`, 0);
     await showTrash(page, '0');
     await card(page, `${PROBE} bulk trashed`).getByRole('checkbox').check();
     await page.getByRole('button', { name: /bulk actions/i }).click();
