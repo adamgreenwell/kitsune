@@ -31,9 +31,9 @@ final class MediaLocation
     /**
      * The formats whose location is removed as they are made public, as `MediaFormats` keys.
      *
-     * ⚠️ THE CONFIRMATIONS' WORDS CLAIM THIS LIST AND NO MORE — the one statement `kitsune::media.upload.public_warning`
-     * and `kitsune::media.visibility.public_warning` are both built from: widening it changes them in the same change,
-     * and a test holds the formats they name to it.
+     * ⚠️ THE CONFIRMATIONS' WORDS CLAIM THIS LIST AND NO MORE — the one statement `kitsune::media.upload.public_warning`,
+     * `kitsune::media.visibility.public_warning` and `kitsune::media.visibility.bulk.public_warning` are all built from:
+     * widening it changes them in the same change, and a test holds the formats they name to it.
      */
     public const STRIPPED = ['jpeg'];
 

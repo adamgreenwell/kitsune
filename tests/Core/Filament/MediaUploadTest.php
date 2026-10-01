@@ -849,7 +849,10 @@ describe('where a photo was made', function (): void {
             ->not->toContain('nothing removes that');
     });
 
-    /* Both confirmations — uploading public, and making a stored file public (decision 32) — claim the same formats. */
+    /*
+     * Every confirmation — uploading public, making a stored file public (decision 32) and making a selection public
+     * (decision 34) — claims the same formats.
+     */
     it('names in each confirmation exactly the formats whose location is removed', function (string $key): void {
         $warning = __($key);
 
@@ -857,20 +860,21 @@ describe('where a photo was made', function (): void {
             expect(preg_match('/\b'.preg_quote($name, '/').'\b/', $warning))
                 ->toBe(in_array($format, MediaLocation::STRIPPED, true) ? 1 : 0, "The confirmation's words and {$name}");
         }
-    })->with(['kitsune::media.upload.public_warning', 'kitsune::media.visibility.public_warning']);
+    })->with(['kitsune::media.upload.public_warning', 'kitsune::media.visibility.public_warning', 'kitsune::media.visibility.bulk.public_warning']);
 
     /*
-     * ⚠️ ONE STATEMENT, WRITTEN ONCE (decision 32): Upload's words are what they were, byte for byte, and making a stored
-     * file public says the same before its own last sentence.
+     * ⚠️ ONE STATEMENT, WRITTEN ONCE (decisions 32 and 34): Upload's words are what they were, byte for byte, and making a
+     * stored file or a selection public says the same before its own last sentence.
      */
-    it('keeps Upload\'s words as they were, and shares them with making a file public', function (): void {
+    it('keeps Upload\'s words as they were, and shares them with making a file or a selection public', function (): void {
         $statement = 'A public file is served to anyone who has its link. A JPEG loses the GPS coordinates in its EXIF and XMP '
             .'data as it is made public, and its picture and orientation stay as uploaded. What else a photo holds — a place '
             .'name, a camera maker\'s own records, a motion photo\'s video — and every other type of file are served as '
             .'uploaded, and can still say where they were made.';
 
         expect(__('kitsune::media.upload.public_warning'))->toBe($statement.' Unless this is ticked, the files are stored private.')
-            ->and(__('kitsune::media.visibility.public_warning'))->toBe($statement.' Unless this is ticked, the file stays private.');
+            ->and(__('kitsune::media.visibility.public_warning'))->toBe($statement.' Unless this is ticked, the file stays private.')
+            ->and(__('kitsune::media.visibility.bulk.public_warning'))->toBe($statement.' Unless this is ticked, the files stay private.');
     });
 
     it('stores a public JPEG without its GPS data once public is confirmed', function (): void {
