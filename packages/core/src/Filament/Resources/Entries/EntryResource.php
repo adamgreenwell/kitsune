@@ -11,6 +11,8 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament\Resources\Entries;
 
 use BackedEnum;
+use Closure;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -46,6 +48,7 @@ use Illuminate\Support\Number;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\EntryTrash;
+use Kitsune\Core\Filament\MediaBulkRemoval;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\MediaVisibilityActions;
@@ -495,18 +498,14 @@ class EntryResource extends Resource
                     ->modalSubmitActionLabel(__('kitsune::trash.erase'))
                     ->using(EntryTrash::forceDeleteOne(...)),
             ])
-            // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5); and,
-            // on a media list, a selection made public or private, each file through decision 32's switch on its own (decision 34).
+            /*
+             * Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5);
+             * on a media list, a selection made public or private (decision 34), and deleted, restored or deleted forever
+             * at most fifty at a time within the request's budget, in one notification of Kitsune's (decision 35).
+             */
             ->toolbarActions([BulkActionGroup::make([
                 ...MediaVisibilityActions::bulk(),
-                DeleteBulkAction::make()->using(MediaDeletionNotice::deleteEach(...)),
-                RestoreBulkAction::make()->using(EntryTrash::restoreEach(...)),
-                ForceDeleteBulkAction::make()
-                    ->label(__('kitsune::trash.erase_selected'))
-                    ->modalHeading(__('kitsune::trash.erase_selected'))
-                    ->modalDescription($warning)
-                    ->modalSubmitActionLabel(__('kitsune::trash.erase'))
-                    ->using(EntryTrash::forceDeleteEach(...)),
+                ...self::removals($warning),
             ])])
             ->defaultSort(self::DEFAULT_SORT, 'desc')
             ->paginationMode(static fn (): PaginationMode => self::paginationModeFor(
@@ -519,11 +518,40 @@ class EntryResource extends Resource
              * mode exists to avoid, for every user who may delete — and, on a media list, every user who may update or
              * publish its type, whom *Make selected public* and *Make selected private* give checkboxes too (decision 34).
              * A media list's bulk actions act on the page in view. It bounds what the select-all box selects, and nothing
-             * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound.
+             * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound, for each of a media list's five bulk
+             * actions (decisions 34 and 35).
              */
             ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,
             ) === PaginationMode::Simple);
+    }
+
+    /**
+     * The list's *Delete selected*, *Restore selected* and *Delete selected forever* — Filament's own three, by name and
+     * class on every list. A media list's are bounded and budgeted (ADR-042 decision 35, `MediaBulkRemoval`); every
+     * other list's load their selection whole, as they did (*Open questions*).
+     *
+     * @param  Closure(): string  $warning
+     * @return list<BulkAction>
+     */
+    private static function removals(Closure $warning): array
+    {
+        $delete = DeleteBulkAction::make();
+        $restore = RestoreBulkAction::make();
+        $erase = ForceDeleteBulkAction::make()
+            ->label(__('kitsune::trash.erase_selected'))
+            ->modalHeading(__('kitsune::trash.erase_selected'))
+            ->modalSubmitActionLabel(__('kitsune::trash.erase'));
+
+        if (self::listsMedia()) {
+            return MediaBulkRemoval::bound($delete, $restore, $erase);
+        }
+
+        return [
+            $delete->using(MediaDeletionNotice::deleteEach(...)),
+            $restore->using(EntryTrash::restoreEach(...)),
+            $erase->modalDescription($warning)->using(EntryTrash::forceDeleteEach(...)),
+        ];
     }
 
     /**

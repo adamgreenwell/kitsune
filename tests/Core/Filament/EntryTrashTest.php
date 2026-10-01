@@ -316,7 +316,10 @@ describe('the list', function (): void {
         $type = $type === 'image' ? $this->image : $this->article;
         $table = trashTable($type);
         $single = collect($table->getRecordActions())->first(fn ($action) => $action instanceof ForceDeleteAction);
-        $bulk = collect($table->getToolbarActions()[0]->getActions())->first(fn ($action) => $action instanceof ForceDeleteBulkAction);
+        // From the page as Livewire boots it: a media list's description counts the selection (ADR-042 decision 35).
+        $page = app(ListEntries::class);
+        $page->bootedInteractsWithTable();
+        $bulk = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(fn ($action) => $action instanceof ForceDeleteBulkAction);
 
         expect($single->getModalDescription())->toBe($words)
             ->and($bulk->getModalDescription())->toBe($words)
