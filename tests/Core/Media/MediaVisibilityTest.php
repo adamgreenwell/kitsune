@@ -1067,12 +1067,15 @@ describe('what review found', function (): void {
             ->toThrow(RuntimeException::class, 'on the [elsewhere] connection: its audit row is written on');
     })->with(['public', 'private']);
 
-    /* Before any byte is written at a path, that path is one row's alone. */
+    /*
+     * Before any byte is written at a path, that path is one row's alone. Custody's own answer is set, not the index
+     * dropped: DDL inside the suite's transaction commits it on MySQL and MariaDB, and the level-0 suite drops it for real
+     * (MediaPathMigrationTest).
+     */
     it('refuses to make a JPEG public while paths are not unique', function (): void {
         $entry = visStored(LocatedJpeg::photo(true));
         $before = visRow($entry);
-        DB::statement('DROP INDEX media_files_path_unique');
-        app()->forgetInstance(MediaCustody::class);
+        (new ReflectionProperty(MediaCustody::class, 'unique'))->setValue(app(MediaCustody::class), [DB::connection()->getName() => false]);
 
         expect(fn () => MediaVisibility::makePublic($entry))->toThrow(RuntimeException::class, 'media_files.path is not unique');
 
