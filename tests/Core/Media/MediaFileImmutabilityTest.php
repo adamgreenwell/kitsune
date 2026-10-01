@@ -124,8 +124,10 @@ it('refuses the columns the visibility switch writes at every model door', funct
 })->with(['a qualified bulk update', 'an increment of the size', 'an increment\'s extra columns', 'an upsert\'s update half, in the escape hatch']);
 
 /*
- * ...and below the model, one method writes them: a second writer anywhere in core — a query-builder update naming one, a
- * raw statement setting one — fails here, so the lift stays "for that path alone".
+ * ...and below the model, one method writes them: a second writer anywhere in core fails here, so the lift stays "for that
+ * path alone" — a key naming one of them, qualified or not; a hand-written SET of one, quoted or not; and an increment or
+ * a decrement of one. A below-model upsert or a whole-row rewrite spans lines this reads one at a time, and is left to
+ * review (review of decision 32).
  */
 it('writes visibility, checksum and size_bytes after creation in one method alone', function (): void {
     $writers = [];
@@ -142,12 +144,15 @@ it('writes visibility, checksum and size_bytes after creation in one method alon
         foreach ($lines as $i => $line) {
             // A string that sets one of them is SQL written by hand.
             foreach ([...(preg_match_all('/\'[^\']*\'|"[^"]*"/', $line, $strings) > 0 ? $strings[0] : [])] as $string) {
-                if (preg_match('/\bset\b.*\b(visibility|checksum|size_bytes)\b\s*=/i', $string) === 1) {
+                if (preg_match('/\bset\b.*(?<![\w.])["`]?(visibility|checksum|size_bytes)["`]?\s*=/i', $string) === 1) {
                     $raw[] = basename((string) $file).':'.($i + 1);
                 }
             }
 
-            if (preg_match('/[\'"](visibility|checksum|size_bytes)[\'"]\s*(=>|\]\s*=(?!=))/', $line) !== 1) {
+            $named = preg_match('/[\'"](?:\w+\.)?(visibility|checksum|size_bytes)[\'"]\s*(=>|\]\s*=(?!=))/', $line) === 1;
+            $arithmetic = preg_match('/\b(?:increment|decrement)(?:Each)?\(\s*\[?\s*[\'"](?:\w+\.)?(visibility|checksum|size_bytes)[\'"]/', $line) === 1;
+
+            if (! $named && ! $arithmetic) {
                 continue;
             }
 

@@ -55,21 +55,29 @@ final class MediaLocation
         return in_array($format, self::STRIPPED, true);
     }
 
+    /** A JPEG's other names: the types and extensions a row written past the model may give one (decision 32). */
+    private const JPEG_TYPES = ['image/jpeg', 'image/pjpeg', 'image/jpg'];
+
+    private const JPEG_EXTENSIONS = ['jpg', 'jpeg', 'jpe', 'jfif', 'pjpeg', 'pjp'];
+
     /**
-     * The format a stored row's file is read as, for making it public — ADR-042 decision 32.
+     * The format a stored row says its file is, for making it public — ADR-042 decision 32.
      *
-     * ⚠️ FAILS CLOSED. `MediaLibrary::store()` writes a lowercase extension its bytes were checked against, but a row
-     * written past the model — an import's `PHOTO.JPG`, a JPEG under another name — is made public through here too, and
-     * a JPEG read as anything else would be published with its location. So the extension is read in any case, and a
-     * row whose stored type says JPEG is one, whatever its name.
+     * ⚠️ READ GENEROUSLY, AND NEVER ALONE. `MediaLibrary::store()` writes a lowercase extension its bytes were checked
+     * against, but a row written past the model — an import's `PHOTO.JPG`, a browser's `.jfif`, a `pjpeg` type, a type
+     * with parameters — is made public through here too. So a JPEG's every name is read as one, in any case; and because
+     * a row can still call a JPEG something else entirely, `MediaVisibility` asks the file's own bytes as well.
      */
     public static function formatOf(string $path, ?string $mime): ?string
     {
-        if (in_array(mb_strtolower(trim((string) $mime)), MediaIntake::ACCEPTED['jpg'], true)) {
+        $type = mb_strtolower(trim(explode(';', (string) $mime, 2)[0]));
+        $extension = mb_strtolower(trim(pathinfo(trim($path), PATHINFO_EXTENSION)));
+
+        if (in_array($type, self::JPEG_TYPES, true) || in_array($extension, self::JPEG_EXTENSIONS, true)) {
             return 'jpeg';
         }
 
-        return MediaFormats::of(mb_strtolower(pathinfo($path, PATHINFO_EXTENSION)));
+        return MediaFormats::of($extension);
     }
 
     /**

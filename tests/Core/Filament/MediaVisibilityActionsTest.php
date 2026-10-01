@@ -135,13 +135,19 @@ it('offers the switch the file does not have, and neither in the trash', functio
     $trashed = switchable('Trashed', visibility: 'public');
     $trashed->delete();
     $trashed = Entry::withTrashed()->findOrFail($trashed->id);
+    // A private one too: hidden for being in the trash, not for being private (review of decision 32).
+    $trashedPrivate = switchable('Trashed private');
+    $trashedPrivate->delete();
+    $trashedPrivate = Entry::withTrashed()->findOrFail($trashedPrivate->id);
 
     expect(switchAction(MediaVisibilityActions::makePublic(), $private)->isVisible())->toBeTrue()
         ->and(switchAction(MediaVisibilityActions::makePrivate(), $private)->isVisible())->toBeFalse()
         ->and(switchAction(MediaVisibilityActions::makePublic(), $public)->isVisible())->toBeFalse()
         ->and(switchAction(MediaVisibilityActions::makePrivate(), $public)->isVisible())->toBeTrue()
         ->and(switchAction(MediaVisibilityActions::makePublic(), $trashed)->isVisible())->toBeFalse()
-        ->and(switchAction(MediaVisibilityActions::makePrivate(), $trashed)->isVisible())->toBeFalse();
+        ->and(switchAction(MediaVisibilityActions::makePrivate(), $trashed)->isVisible())->toBeFalse()
+        ->and(switchAction(MediaVisibilityActions::makePublic(), $trashedPrivate)->isVisible())->toBeFalse()
+        ->and(switchAction(MediaVisibilityActions::makePrivate(), $trashedPrivate)->isVisible())->toBeFalse();
 });
 
 /* F3. Hidden from a reader; disabled, naming the permission, with no field, for an editor who may not publish. */

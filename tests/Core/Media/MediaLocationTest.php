@@ -175,6 +175,14 @@ it('reads a stored row as JPEG by its extension in any case, or by its type what
     'a PNG' => ['media/1/photo.png', 'image/png', 'png'],
     'a capitalised PNG' => ['media/1/photo.PNG', 'image/png', 'png'],
     'something else' => ['media/1/photo.xyz', 'application/octet-stream', null],
+    // A JPEG's other names (review of decision 32).
+    'a browser\'s .jfif' => ['media/1/photo.jfif', 'image/pjpeg', 'jpeg'],
+    'a .jpe' => ['media/1/photo.JPE', null, 'jpeg'],
+    'a .pjp' => ['media/1/photo.pjp', null, 'jpeg'],
+    'image/pjpeg' => ['media/1/photo', 'image/pjpeg', 'jpeg'],
+    'image/jpg' => ['media/1/photo', 'image/jpg', 'jpeg'],
+    'a type with parameters' => ['media/1/photo', 'image/jpeg; charset=binary', 'jpeg'],
+    'a PNG\'s type with parameters' => ['media/1/photo.png', 'image/png; charset=binary', 'png'],
 ]);
 
 it('refuses a stored file in words that say it stays private', function (): void {

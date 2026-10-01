@@ -42,6 +42,9 @@ final class MediaBytes
     /** The name a copy is written under, beside its path, before it is read back and renamed into place. */
     public const PARTIAL = '.kitsune-partial';
 
+    /** What `toTemporary()` names a copy in the system's temporary directory: this, the process's id, and a dash. */
+    public const TEMPORARY_PREFIX = 'kitsune-visibility-';
+
     public static function local(string $disk): bool
     {
         return self::disk($disk) instanceof LocalFilesystemAdapter;
@@ -511,6 +514,43 @@ final class MediaBytes
     }
 
     /**
+     * A file's first bytes, or null when the disk does not hold it — ADR-042 decision 32, which asks the bytes whether a
+     * file is a JPEG whatever its row calls it. A copy that is there and cannot be read is a failure, never null.
+     *
+     * @throws MediaCustodyFailure `unreadable`, `unknown` or `read-through`
+     */
+    public static function head(string $disk, string $path, int $length): ?string
+    {
+        if (! self::present($disk, $path)) {
+            return null;
+        }
+
+        self::refuseReadThrough($disk, $path);
+
+        try {
+            $stream = self::disk($disk)->readStream($path);
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path, $failure);
+        }
+
+        if (! is_resource($stream)) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        try {
+            $bytes = fread($stream, max(1, $length));
+        } finally {
+            self::close($stream);
+        }
+
+        if ($bytes === false) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        return $bytes;
+    }
+
+    /**
      * Copy a disk's file into the system's temporary directory and prove it whole: its SHA-256 must be the one expected —
      * ADR-042 decision 32, which strips a JPEG made public from such a copy. The caller owns the copy and removes it.
      *
@@ -523,7 +563,7 @@ final class MediaBytes
     {
         self::refuseReadThrough($disk, $path);
 
-        $temporary = tempnam(sys_get_temp_dir(), 'kitsune-visibility-');
+        $temporary = tempnam(sys_get_temp_dir(), self::TEMPORARY_PREFIX.getmypid().'-');
 
         if ($temporary === false) {
             throw new MediaCustodyFailure('copy', $disk, $path);

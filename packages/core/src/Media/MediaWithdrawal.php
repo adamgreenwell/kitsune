@@ -346,6 +346,15 @@ final class MediaWithdrawal
                 }
             }
         } elseif ($partials === [] && self::nowhere($path, $target, $named)) {
+            /*
+             * ⚠️ MADE PRIVATE, A FILE FOUND NOWHERE IS REFUSED — review of decision 32. A trash or an erasure goes on: its
+             * entry leaves the list, and reconcile finds what is left. A live file made private would commit a private
+             * row over a copy that read as absent a moment ago and is served a moment later — an object store's 404.
+             */
+            if ($this->operation === 'make private') {
+                throw $this->refused($id, MediaWithdrawalRefused::NOWHERE, new MediaCustodyFailure('unknown', $public, $path));
+            }
+
             Log::warning(sprintf(
                 'Media custody, entry %d: no copy of [%s] was found on [%s] or on the private disk [%s] — the file was '
                 .'removed outside Kitsune (ADR-042 decision 5).',

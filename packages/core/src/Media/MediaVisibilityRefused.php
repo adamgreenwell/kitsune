@@ -74,11 +74,14 @@ final class MediaVisibilityRefused extends RuntimeException
     /** The copy without the location failed its own check. */
     public const STRIP_FAILED = 'strip_failed';
 
+    /** `EXPOSED`'s detail when what a served disk holds is a partial copy — a write that did not finish. */
+    public const PARTIAL = 'partial';
+
     /**
      * @param  string  $to  "public" or "private"
      * @param  ?string  $disk  the disk the refusal is about, where there is one
      * @param  ?string  $detail  the type's handle for `NOT_PERMITTED`, the private disk for `UNSETTLED`, the
-     *                           configuration's own refusal for `UNSAFE_DISKS`
+     *                           configuration's own refusal for `UNSAFE_DISKS`, and `PARTIAL` for a partial copy `EXPOSED`
      */
     public function __construct(
         public readonly int $entryId,
@@ -117,7 +120,12 @@ final class MediaVisibilityRefused extends RuntimeException
                 (string) $detail,
                 $entryId,
             ),
-            self::EXPOSED => sprintf(
+            self::EXPOSED => $detail === self::PARTIAL ? sprintf(
+                'a partial copy of its file, left by a write that did not finish, is on [%s], a disk the web serves, where '
+                .'a private file\'s never is; making it public would leave it as it is, its location with it, so nothing '
+                .'was changed. kitsune:media-prune --force removes it; then make it public again.',
+                $disk,
+            ) : sprintf(
                 'a copy of its file is on [%s], a disk the web serves, where a private file never is; making it public '
                 .'would leave that copy as it is, its location with it, so nothing was changed. kitsune:media-reconcile '
                 .'--entry=%d --force takes it off; then make it public again.',

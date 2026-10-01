@@ -61,6 +61,13 @@ final class MediaWithdrawalRefused extends RuntimeException
      */
     public const UNKNOWN_ROOT = 'unknown_root';
 
+    /**
+     * No copy of a live public file was found anywhere a withdrawal looks, so whether one is still served cannot be told —
+     * an object store's momentary 404 reads so: refused when making it private, which would otherwise commit a private
+     * row over a copy still on the web (review of ADR-042 decision 32).
+     */
+    public const NOWHERE = 'nowhere';
+
     public function __construct(
         public readonly int $entryId,
         public readonly string $reason,
@@ -92,6 +99,7 @@ final class MediaWithdrawalRefused extends RuntimeException
                 self::READ_THROUGH => 'a copy is on a read-through disk, which custody neither reads nor removes a copy through:',
                 self::MISNAMED => 'its row\'s path is not written as the disks read it, on',
                 self::UNKNOWN_ROOT => 'whether a disk the web serves holds a copy cannot be told, because its root cannot be looked at:',
+                self::NOWHERE => 'no copy of it was found on the private disk or on',
                 default => 'the private disk and the disk holding the file are one place:',
             },
             $disk,
@@ -99,6 +107,7 @@ final class MediaWithdrawalRefused extends RuntimeException
                 self::READ_THROUGH => 'The log names the file: compare that copy with the others by hand (a partial copy, one custody did not finish writing, needs none), and take it off the read-through disk through the disk each half is — a retry fails the same way until then.',
                 self::MISNAMED => 'The log names the row: correct media_files.path to the path its file is under, as the disks read it, unless another row names that path — a file under the row\'s literal name moved by hand to such a path first — and a retry fails the same way until then.',
                 self::UNKNOWN_ROOT => 'See that the user running this may search every directory above that disk\'s root; a retry fails the same way until then.',
+                self::NOWHERE => sprintf('kitsune:media-reconcile --entry=%d lists where it is; retry once it is found, or restore it from a backup.', $entryId),
                 default => 'The log names the file; retry once the disk answers.',
             },
         ), 0, $previous);

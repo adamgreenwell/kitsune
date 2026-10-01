@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Media\JpegLocation;
+use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
@@ -24,6 +25,7 @@ use Kitsune\Core\Media\MediaVisibilityRefused;
 use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
@@ -153,7 +155,8 @@ function visWrites(): array
 /** The temporaries the switch writes the original into: none may outlive it. @return list<string> */
 function visTemporaries(): array
 {
-    return glob(sys_get_temp_dir().'/kitsune-visibility-*') ?: [];
+    // This process's own: a parallel run's other processes make theirs.
+    return glob(sys_get_temp_dir().'/'.MediaBytes::TEMPORARY_PREFIX.getmypid().'-*') ?: [];
 }
 
 /**
@@ -386,7 +389,54 @@ describe('making a JPEG public', function (): void {
         'a capitalised extension' => ['media/x/PHOTO.JPG', 'image/jpeg'],
         'a JPEG under a PNG\'s name' => ['media/x/photo.png', 'image/jpeg'],
         'a JPEG\'s extension, its type left out' => ['media/x/photo.Jpeg', ''],
+        // Review of decision 32: a JPEG's other names, and names that are not a JPEG's at all.
+        'a browser\'s .jfif, typed pjpeg' => ['media/x/photo.jfif', 'image/pjpeg'],
+        'a .jpe, typed image/jpg' => ['media/x/photo.jpe', 'image/jpg'],
+        'no extension, a type with parameters' => ['media/x/photo', 'image/jpeg; charset=binary'],
+        'a PNG\'s name and type over JPEG bytes' => ['media/x/photo.png', 'image/png'],
+        'an unknown name and type over JPEG bytes' => ['media/x/photo.bin', 'application/octet-stream'],
     ]);
+
+    /* ...through the model's own door too: `MediaFile` checks a path, never what a row calls its bytes. */
+    it('strips a JPEG whose row was created under another name through the model', function (): void {
+        $entry = visStored(LocatedJpeg::photo(true));
+        $row = visRow($entry);
+        $path = 'media/import/photo.png';
+        @mkdir(dirname(Storage::disk(MediaDisks::PRIVATE)->path($path)), 0777, true);
+        rename(Storage::disk(MediaDisks::PRIVATE)->path($row['path']), Storage::disk(MediaDisks::PRIVATE)->path($path));
+        DB::table('media_files')->where('entry_id', $entry->id)->delete();
+        MediaFile::create([...array_diff_key($row, ['id' => true]), 'path' => $path, 'mime' => 'image/png']);
+
+        MediaVisibility::makePublic($entry);
+
+        $served = (string) visBytes($path)['public'];
+
+        expect(LocatedJpeg::sentinels($served))->toBe([])
+            ->and(visRow($entry)['checksum'])->toBe(hash('sha256', $served));
+    });
+
+    /* V2b. Anything else moves as a restore moves it: none of a JPEG's preconditions, and its checksum as it was. */
+    it('publishes a PNG as a restore would, whatever other copy there is or whichever disk its row names', function (string $case): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png');
+        $before = visRow($entry);
+
+        if ($case === 'a copy on a second served disk') {
+            $cdn = ($this->disk)('old-cdn', ['url' => 'https://cdn.example.test']);
+            @mkdir(dirname($cdn->root().'/'.$before['path']), 0777, true);
+            file_put_contents($cdn->root().'/'.$before['path'], VISIBILITY_PNG);
+        } else {
+            ($this->disk)('moved-private', ['visibility' => 'private']);
+            config(['kitsune.media.disks.private' => 'moved-private']);
+        }
+
+        expect(MediaVisibility::makePublic($entry))->toBe(MediaVisibility::SWITCHED);
+
+        $row = visRow($entry);
+
+        expect($row['visibility'])->toBe('public')
+            ->and([$row['checksum'], (int) $row['size_bytes']])->toBe([$before['checksum'], (int) $before['size_bytes']])
+            ->and(visBytes($row['path'], ['public'])['public'])->toBe(VISIBILITY_PNG);
+    })->with(['a copy on a second served disk', 'its row naming a moved private disk']);
 });
 
 describe('making a file private', function (): void {
@@ -513,13 +563,13 @@ describe('what is refused', function (): void {
             Storage::disk('public')->put($path, LocatedJpeg::photo(true));
 
             return $entry;
-        }, 'public', MediaVisibilityRefused::EXPOSED, 'a disk the web serves'],
+        }, 'public', MediaVisibilityRefused::EXPOSED, 'kitsune:media-reconcile --entry='],
         'exposed: a partial copy on the public disk' => [function (): Entry {
             $entry = visStored(LocatedJpeg::photo(true));
             Storage::disk('public')->put(visRow($entry)['path'].'.kitsune-partial', 'part');
 
             return $entry;
-        }, 'public', MediaVisibilityRefused::EXPOSED, 'a disk the web serves'],
+        }, 'public', MediaVisibilityRefused::EXPOSED, 'a partial copy of its file, left by a write that did not finish, is on [public], a disk the web serves'],
         'stray: a copy on core\'s private disk after the private disk moved' => [function (): Entry {
             $entry = visStored(LocatedJpeg::photo(true));
             $row = visRow($entry);
@@ -663,10 +713,29 @@ describe('what is refused', function (): void {
         if ($putBack) {
             expect(file_get_contents($private->root().'/'.$before['path']))->toBe($original);
         } else {
-            // Left as the failed PUT left it, and said so with the checksum the row still records.
+            // Left as the failed PUT left it, said so with the checksum the row still records — and the original kept,
+            // where the log says, rather than removed with the temporaries (review of decision 32).
             expect(strlen((string) file_get_contents($private->root().'/'.$before['path'])))->toBe(10);
             Log::shouldHaveReceived('warning')->withArgs(static fn (string $message): bool => str_contains($message, 'could not be written back')
                 && str_contains($message, (string) $before['checksum']))->once();
+
+            $kept = null;
+            Log::shouldHaveReceived('warning')->withArgs(static function (string $message) use (&$kept): bool {
+                if (preg_match('/the original it was uploaded as is kept at \[([^\]]+)\]/', $message, $found) !== 1) {
+                    return false;
+                }
+
+                $kept = $found[1];
+
+                return true;
+            })->once();
+
+            try {
+                expect(file_get_contents((string) $kept))->toBe($original)
+                    ->and(fileperms((string) $kept) & 0777)->toBe(0600);
+            } finally {
+                @unlink((string) $kept);
+            }
         }
     })->with(['written back' => true, 'the write-back failing too' => false]);
 });
@@ -910,5 +979,134 @@ describe('the audit', function (): void {
 
         expect([$row['target_type'], $row['target_id'], $row['actor_id'], (int) $row['org_id'], (int) $row['site_id']])
             ->toBe([Entry::class, (string) $entry->id, (string) $user->getKey(), $this->org->id, $this->site->id]);
+    });
+});
+
+/*
+ * Review of decision 32: what the review found reachable, and the guards it found no test pinning.
+ */
+describe('what review found', function (): void {
+    /* A public copy that reads as absent — an object store's momentary 404 — is not taken for a file already off the web. */
+    it('refuses to make private a file found nowhere, rather than commit it private while it may still be served', function (): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png', 'public');
+        $before = visRow($entry);
+        $public = $this->disks['public'];
+        $public->hidden = [$before['path']];
+
+        $refused = visRefusedBy(fn () => MediaVisibility::makePrivate($entry));
+
+        expect($refused)->toBeInstanceOf(MediaWithdrawalRefused::class)
+            ->and($refused->reason)->toBe(MediaWithdrawalRefused::NOWHERE)
+            ->and($refused->getMessage())->toStartWith("Refusing to make entry {$entry->id} private: its file could not be withdrawn from the web — no copy of it was found on the private disk or on [public]")
+            ->and(visRow($entry))->toBe($before)
+            ->and(visAudits($entry))->toBe(['entry.created']);
+
+        // The control: a trash of the same file goes on, as it did.
+        $entry->delete();
+
+        expect(DB::table('entries')->where('id', $entry->id)->value('deleted_at'))->not->toBeNull();
+    });
+
+    it('refuses an instance whose key was changed since it was loaded', function (string $to): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png', $to === 'public' ? 'private' : 'public');
+        $other = visStored(VISIBILITY_PNG, 'other.png', $to === 'public' ? 'private' : 'public');
+        $before = [visRow($entry), visRow($other)];
+        $entry->id = $other->id;
+
+        expect(fn () => $to === 'public' ? MediaVisibility::makePublic($entry) : MediaVisibility::makePrivate($entry))
+            ->toThrow(RuntimeException::class, "this instance was loaded as entry {$entry->getKeyForAuthorization()} and its key has been changed since");
+
+        expect([visRow(Entry::query()->findOrFail($entry->getKeyForAuthorization())), visRow($other)])->toBe($before)
+            ->and(DB::table('audit_log')->whereIn('action', [MediaVisibility::MADE_PUBLIC, MediaVisibility::MADE_PRIVATE])->exists())->toBeFalse();
+    })->with(['public', 'private']);
+
+    it('refuses an entry on a connection its audit row is not written on', function (string $to): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png', $to === 'public' ? 'private' : 'public');
+        config(['database.connections.elsewhere' => config('database.connections.'.config('database.default'))]);
+        $entry->setConnection('elsewhere');
+
+        expect(fn () => $to === 'public' ? MediaVisibility::makePublic($entry) : MediaVisibility::makePrivate($entry))
+            ->toThrow(RuntimeException::class, 'on the [elsewhere] connection: its audit row is written on');
+    })->with(['public', 'private']);
+
+    /* Before any byte is written at a path, that path is one row's alone. */
+    it('refuses to make a JPEG public while paths are not unique', function (): void {
+        $entry = visStored(LocatedJpeg::photo(true));
+        $before = visRow($entry);
+        DB::statement('DROP INDEX media_files_path_unique');
+        app()->forgetInstance(MediaCustody::class);
+
+        expect(fn () => MediaVisibility::makePublic($entry))->toThrow(RuntimeException::class, 'media_files.path is not unique');
+
+        expect(visRow($entry))->toBe($before)
+            ->and(visWrites())->toBe([]);
+    });
+
+    /* The one write below the model checks what nothing below the model checks, and lands on the one row. */
+    it('writes a file row only with a file\'s values, and only once', function (array $arguments, string $words): void {
+        $entry = visStored(VISIBILITY_PNG, 'logo.png');
+        $before = visRow($entry);
+        $id = $words === 'written 0 times' ? $entry->id + 1000 : $entry->id;
+        $writeRow = new ReflectionMethod(MediaVisibility::class, 'writeRow');
+
+        expect(fn () => $writeRow->invoke(null, DB::connection(), $id, ...$arguments))->toThrow(LogicException::class, $words);
+        expect(visRow($entry))->toBe($before);
+    })->with([
+        'no visibility there is' => [['secret'], 'the values are not a file\'s'],
+        'a checksum that is not one' => [['public', null, str_repeat('z', 64), 10], 'the values are not a file\'s'],
+        'a checksum without a size' => [['public', null, str_repeat('a', 64), null], 'the values are not a file\'s'],
+        'a size below nothing' => [['public', null, str_repeat('a', 64), -1], 'the values are not a file\'s'],
+        'an empty disk' => [['private', ''], 'the values are not a file\'s'],
+        'no row to write' => [['public'], 'written 0 times'],
+    ]);
+
+    /*
+     * The put-back's re-checks, each on its own. A switch's COMMIT landed and reported failure; before its put-back took
+     * the lock, the file was made private — stripped, its row recording the stripped copy. Writing the original back
+     * then would put a JPEG's location back under a row that says it is gone (decision 30).
+     */
+    it('writes nothing back over a stripped copy its row now records', function (): void {
+        $upload = LocatedJpeg::photo(true);
+        $entry = visStored($upload);
+        $recorded = visRow($entry)['checksum'];
+        $this->disks['public']->failWrites = true;
+        MediaVisibility::makePublic($entry);
+        $this->disks['public']->failWrites = false;
+        MediaVisibility::makePrivate($entry);
+        $stripped = (string) visBytes(visRow($entry)['path'])[MediaDisks::PRIVATE];
+        $original = LocatedJpeg::file($upload);
+        RefusingDisk::forgetLog();
+
+        try {
+            $landed = (new ReflectionMethod(MediaVisibility::class, 'putBack'))->invoke(null, DB::connection(), $entry->id, $recorded, $original, hash('sha256', $upload));
+        } finally {
+            @unlink($original);
+        }
+
+        expect($landed)->toBeTrue()
+            ->and(visWrites())->toBe([])
+            ->and(visBytes(visRow($entry)['path'])[MediaDisks::PRIVATE])->toBe($stripped)
+            ->and(LocatedJpeg::sentinels($stripped))->toBe([]);
+    });
+
+    /* ...and a row that is public again, recording the original, is the switch's commit having landed: left alone too. */
+    it('writes nothing back under a row made public since', function (): void {
+        $upload = LocatedJpeg::photo(true);
+        $entry = visStored($upload);
+        $row = visRow($entry);
+        $path = Storage::disk(MediaDisks::PRIVATE)->path($row['path']);
+        file_put_contents($path, 'what the private disk holds now');
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['visibility' => 'public']);
+        $original = LocatedJpeg::file($upload);
+        RefusingDisk::forgetLog();
+
+        try {
+            (new ReflectionMethod(MediaVisibility::class, 'putBack'))->invoke(null, DB::connection(), $entry->id, $row['checksum'], $original, hash('sha256', $upload));
+        } finally {
+            @unlink($original);
+        }
+
+        expect(visWrites())->toBe([])
+            ->and(file_get_contents($path))->toBe('what the private disk holds now');
     });
 });

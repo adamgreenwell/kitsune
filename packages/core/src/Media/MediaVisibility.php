@@ -13,9 +13,11 @@ namespace Kitsune\Core\Media;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Tenancy\Context;
@@ -80,7 +82,7 @@ final class MediaVisibility
     public static function makePublic(Entry $entry): string
     {
         $connection = $entry->getConnection();
-        $id = (int) $entry->getKeyForAuthorization();
+        $id = self::keyOf($entry, $connection, 'public');
 
         /*
          * ⚠️ OUTSIDE ANY TRANSACTION, OR IT REFUSES. A JPEG's file is rewritten on the private disk before the commit, and
@@ -121,6 +123,17 @@ final class MediaVisibility
 
                 $path = (string) $file->path;
                 $format = MediaLocation::formatOf($path, is_string($file->mime) ? $file->mime : null);
+
+                /*
+                 * ⚠️ AND THE BYTES DECIDE TOO — review of decision 32. A row written past the model can call a JPEG
+                 * anything, and read as another format it would skip everything below and be published with its
+                 * location. So a file its row does not call a JPEG is asked for its first bytes, on the disk the row
+                 * names: a JPEG's marker makes it one, and a copy that is not there is taken as one — the checks below
+                 * then refuse it in words that say where it is — rather than published unread.
+                 */
+                if (! MediaLocation::strips($format) && self::mayBeJpeg($id, $file, $path)) {
+                    $format = 'jpeg';
+                }
 
                 if (MediaLocation::strips($format)) {
                     self::refuseUnsettled($config, $id, $file, $private);
@@ -191,8 +204,11 @@ final class MediaVisibility
                 return self::SWITCHED;
             });
         } catch (Throwable $failure) {
-            if ($replacing) {
-                self::putBack($connection, $id, $recorded, $original, $kept);
+            // ⚠️ AN ORIGINAL THAT COULD NOT BE WRITTEN BACK IS KEPT, never removed with the temporaries below: on an
+            // object store the failed write is the file now, and the temporary is the only copy of what was uploaded.
+            if ($replacing && ! self::putBack($connection, $id, $recorded, $original, $kept)) {
+                self::preserve($id, (string) $original);
+                $original = null;
             }
 
             /*
@@ -239,7 +255,7 @@ final class MediaVisibility
     public static function makePrivate(Entry $entry): string
     {
         $connection = $entry->getConnection();
-        $id = (int) $entry->getKeyForAuthorization();
+        $id = self::keyOf($entry, $connection, 'private');
 
         self::refuseWithoutOrg($id, 'private');
 
@@ -267,6 +283,71 @@ final class MediaVisibility
 
             throw $failure;
         }
+    }
+
+    /**
+     * The key of the row this switch locks, switches and audits — refusing an instance that would make those two rows, or
+     * two connections (review of decision 32).
+     *
+     * ⚠️ ONE ROW: an instance whose key was edited since it was loaded would switch the row it was loaded as and audit the
+     * one its key now names, as `Entry::restoreRevision()` refuses for the same reason. ⚠️ ONE CONNECTION: the audit row
+     * is written where the audit log's model writes it, and on any other connection it would commit apart from the switch
+     * — left behind by a switch that rolled back, or rolled back under one that did not.
+     *
+     * @throws RuntimeException
+     */
+    private static function keyOf(Entry $entry, Connection $connection, string $to): int
+    {
+        if ((string) $entry->getKey() !== (string) $entry->getKeyForAuthorization()) {
+            throw new RuntimeException(sprintf(
+                'Refusing to make entry %s %s: this instance was loaded as entry %s and its key has been changed since, so '
+                .'the row it would switch and the row it would audit are not the same row (ADR-020). Load the entry you '
+                .'mean to change.',
+                (string) $entry->getKey(),
+                $to,
+                (string) $entry->getKeyForAuthorization(),
+            ));
+        }
+
+        $audited = (new AuditLog)->getConnectionName() ?? DB::getDefaultConnection();
+
+        if ($connection->getName() !== $audited) {
+            throw new RuntimeException(sprintf(
+                'Refusing to make entry %s %s on the [%s] connection: its audit row is written on [%s], outside the '
+                .'switch\'s transaction, and an unauditable write is refused (ADR-020; ADR-042 decision 32).',
+                (string) $entry->getKeyForAuthorization(),
+                $to,
+                $connection->getName(),
+                $audited,
+            ));
+        }
+
+        return (int) $entry->getKeyForAuthorization();
+    }
+
+    /**
+     * Whether a file its row does not call a JPEG may be one: its bytes begin as one does, or the disk its row names does
+     * not hold it, so its bytes cannot be asked.
+     *
+     * @throws MediaVisibilityRefused
+     */
+    private static function mayBeJpeg(int $id, stdClass $file, string $path): bool
+    {
+        $named = (string) $file->disk;
+
+        try {
+            // Before any disk is asked: read, a path the disks read as another would be that one.
+            MediaBytes::refuseMisnamed($named, $path);
+            $head = MediaBytes::head($named, $path, 3);
+        } catch (MediaCustodyFailure $failure) {
+            throw self::refused($id, match ($failure->reason) {
+                'misnamed' => MediaVisibilityRefused::MISNAMED,
+                'read-through' => MediaVisibilityRefused::READ_THROUGH,
+                default => MediaVisibilityRefused::UNREADABLE,
+            }, 'public', $failure);
+        }
+
+        return $head === null || str_starts_with($head, "\xFF\xD8\xFF");
     }
 
     /** @throws RuntimeException with no organisation in context: the switch is audited, and that would fail after bytes moved */
@@ -407,13 +488,19 @@ final class MediaVisibility
             $isServed = in_array($disk, $served, true);
 
             try {
-                $held = MediaBytes::present($disk, $path) || ($isServed && MediaBytes::present($disk, MediaBytes::partial($path)));
+                $held = MediaBytes::present($disk, $path);
+                $partial = ! $held && $isServed && MediaBytes::present($disk, MediaBytes::partial($path));
             } catch (MediaCustodyFailure $failure) {
                 throw self::refused($id, MediaVisibilityRefused::UNREADABLE, 'public', $failure);
             }
 
             if ($held) {
                 throw new MediaVisibilityRefused($id, $isServed ? MediaVisibilityRefused::EXPOSED : MediaVisibilityRefused::STRAY, 'public', $disk);
+            }
+
+            // A write that did not finish, which prune removes and reconcile does not (review of decision 32).
+            if ($partial) {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::EXPOSED, 'public', $disk, MediaVisibilityRefused::PARTIAL);
             }
         }
     }
@@ -467,10 +554,10 @@ final class MediaVisibility
      * the file, and it is left alone. Never thrown: what it follows has already failed, and that failure is the one
      * reported.
      */
-    private static function putBack(Connection $connection, int $id, ?string $recorded, ?string $original, ?string $originalHash): void
+    private static function putBack(Connection $connection, int $id, ?string $recorded, ?string $original, ?string $originalHash): bool
     {
         if ($recorded === null || $original === null || $originalHash === null || ! is_file($original)) {
-            return;
+            return true;
         }
 
         try {
@@ -495,13 +582,49 @@ final class MediaVisibility
         } catch (Throwable $failure) {
             Log::warning(sprintf(
                 'Media visibility, entry %d: making it public did not land, and the copy it was made from could not be '
-                .'written back — %s. Its row still records [%s], so custody keeps the copy its row names and says it was '
-                .'changed outside Kitsune; making it public again records the copy it makes public (ADR-042 decision 32).',
+                .'written back — %s. Its row still records [%s]; the original is kept, as the next line says (ADR-042 '
+                .'decision 32).',
                 $id,
                 $failure->getMessage(),
                 (string) $recorded,
             ));
+
+            return false;
         }
+
+        return true;
+    }
+
+    /**
+     * Keep an original the put-back could not write back, out of the temporary directory — whose files are removed at
+     * process end — in a directory of the application's own that no disk names and nothing serves, readable by the
+     * process's own user alone: it still carries where it was made. An operator copies it back by hand.
+     */
+    private static function preserve(int $id, string $original): void
+    {
+        $directory = storage_path('app/kitsune-recovery');
+        $kept = sprintf('%s/entry-%d-%s', $directory, $id, bin2hex(random_bytes(6)));
+
+        if ((is_dir($directory) || @mkdir($directory, 0700, true)) && @rename($original, $kept)) {
+            @chmod($kept, 0600);
+
+            Log::warning(sprintf(
+                'Media visibility, entry %d: the original it was uploaded as is kept at [%s]. Copy it over the file its row '
+                .'names on the private disk, then run kitsune:media-reconcile --entry=%d (ADR-042 decision 32).',
+                $id,
+                $kept,
+                $id,
+            ));
+
+            return;
+        }
+
+        Log::error(sprintf(
+            'Media visibility, entry %d: the original it was uploaded as could not be kept, and is at [%s] until this '
+            .'process ends. Copy it over the file its row names on the private disk now (ADR-042 decision 32).',
+            $id,
+            $original,
+        ));
     }
 
     /** The refusal, with the disk and path the failure named written to the log, where the path belongs. */

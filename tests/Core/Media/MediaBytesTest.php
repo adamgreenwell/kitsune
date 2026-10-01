@@ -425,7 +425,7 @@ describe('a file rewritten in place', function (): void {
     /** The temporaries `toTemporary()` writes: none may outlive a failure. @return list<string> */
     function bytesTemporaries(): array
     {
-        return glob(sys_get_temp_dir().'/kitsune-visibility-*') ?: [];
+        return glob(sys_get_temp_dir().'/'.MediaBytes::TEMPORARY_PREFIX.getmypid().'-*') ?: [];
     }
 
     it('copies a disk\'s file into a temporary and proves it', function (): void {
@@ -434,7 +434,7 @@ describe('a file rewritten in place', function (): void {
         try {
             expect(file_get_contents($temporary))->toBe('the bytes of a photo')
                 ->and(dirname($temporary))->toBe(rtrim(sys_get_temp_dir(), '/'))
-                ->and(basename($temporary))->toStartWith('kitsune-visibility-');
+                ->and(basename($temporary))->toStartWith(MediaBytes::TEMPORARY_PREFIX.getmypid().'-');
         } finally {
             unlink($temporary);
         }
