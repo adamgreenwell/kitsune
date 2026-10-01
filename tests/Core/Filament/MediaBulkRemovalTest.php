@@ -971,14 +971,20 @@ describe('what left the list', function (): void {
         expect(bulkRmNotices()[0]['body'])->toBe('One of the selected entries is no longer on this list, and was left as it was.');
 
         Exceptions::assertReportedCount(1);
+    });
 
-        // Once in all: a failure in the loop and the read after it are reported as one.
+    /*
+     * G4a. Once in all: a failure in the loop and the read after it are reported as one. Its own test, since on PostgreSQL
+     * the read that fails aborts the transaction the suite wraps each test in, and nothing after it could run.
+     */
+    it('reports a failure in the loop and a read after it that cannot look up the keys as one', function (): void {
         Exceptions::fake();
-        session()->forget('filament.notifications');
         $f = bulkRmStored('F', 'private');
+        $records = bulkRmListed($f);
+        $action = bulkRmAction('delete');
         AuditorStandIn::install()->throwOnce(new RuntimeException('secret'));
 
-        MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed($f), MediaBulkRemoval::DELETE, keys: [...bulkRmKeys($f), '999997'], list: Entry::query()->from('no_such_table'));
+        MediaBulkRemoval::each($action, $records, MediaBulkRemoval::DELETE, keys: [...bulkRmKeys($f), '999997'], list: Entry::query()->from('no_such_table'));
 
         expect(bulkRmNotices()[0]['title'])->toBe('One entry was not deleted');
 
@@ -1013,14 +1019,17 @@ describe('what left the list', function (): void {
     it('reads where the selected keys are now in one statement', function (): void {
         $a = bulkRmStored('A', 'private', trashed: true);
         $erased = false;
+        $action = bulkRmAction('restore');
+        $list = bulkRmList();
+        // The read of where the keys are, by its SQL: an integer key is written into the statement, not bound.
         DB::listen(static function ($query) use (&$erased, $a): void {
-            if (! $erased && str_contains($query->sql, 'entries') && in_array($a->id, $query->bindings, false)) {
+            if (! $erased && str_contains($query->sql, 'deleted_at') && str_contains($query->sql, "in ({$a->id})")) {
                 $erased = true;
                 DB::table('entries')->where('id', $a->id)->delete();
             }
         });
 
-        MediaBulkRemoval::each(bulkRmAction('restore'), [], MediaBulkRemoval::RESTORE, keys: bulkRmKeys($a), list: bulkRmList());
+        MediaBulkRemoval::each($action, [], MediaBulkRemoval::RESTORE, keys: bulkRmKeys($a), list: $list);
 
         expect($erased)->toBeTrue()
             ->and(bulkRmNotices()[0]['title'])->toBe('None of the selected entries is on this list any more. Nothing was changed.');
