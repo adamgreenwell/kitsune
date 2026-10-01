@@ -48,6 +48,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\MediaTileColumn;
+use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
@@ -494,8 +495,10 @@ class EntryResource extends Resource
                     ->modalSubmitActionLabel(__('kitsune::trash.erase'))
                     ->using(EntryTrash::forceDeleteOne(...)),
             ])
-            // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5).
+            // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5); and,
+            // on a media list, a selection made public or private, each file through decision 32's switch on its own (decision 34).
             ->toolbarActions([BulkActionGroup::make([
+                ...MediaVisibilityActions::bulk(),
                 DeleteBulkAction::make()->using(MediaDeletionNotice::deleteEach(...)),
                 RestoreBulkAction::make()->using(EntryTrash::restoreEach(...)),
                 ForceDeleteBulkAction::make()
@@ -513,7 +516,10 @@ class EntryResource extends Resource
              * ⚠️ AND "SELECT ALL" MEANS THIS PAGE, or the count comes straight back — review found it. With bulk actions
              * on, Filament counts every selectable record on each render, and it can read that number off the paginator
              * only when the paginator has one: a simple paginator does not, so it ran the very `count(*)` the pagination
-             * mode exists to avoid, for every user who may delete. A media list's bulk actions act on the page in view.
+             * mode exists to avoid, for every user who may delete — and, on a media list, every user who may update or
+             * publish its type, whom *Make selected public* and *Make selected private* give checkboxes too (decision 34).
+             * A media list's bulk actions act on the page in view. It bounds what the select-all box selects, and nothing
+             * on the server: `MediaVisibilityActions::MOST_AT_ONCE` is the switch's own bound.
              */
             ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,

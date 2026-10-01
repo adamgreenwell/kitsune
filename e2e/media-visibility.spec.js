@@ -79,6 +79,52 @@ const modal = (page, submit) => page.locator('.fi-modal-window').filter({ has: p
 /** A notification, by its words. */
 const notice = (page, words) => page.locator('.fi-no-notification').filter({ hasText: words });
 
+/** A 1×1 PNG. */
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/** A PNG stored as an upload stores it, this site's own; its entry id. */
+function storedPng(title, visibility) {
+    return Number(tinker(IN_GOLFDOM
+        + " $type = \\Kitsune\\Core\\Models\\EntryType::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('handle', 'image')->whereNull('org_id')->firstOrFail());"
+        + " $source = tempnam(sys_get_temp_dir(), 'kitsune-visibility-e2e-'); file_put_contents($source, base64_decode('" + PNG_BASE64 + "'));"
+        + ` try { $entry = \\Kitsune\\Core\\Media\\MediaLibrary::store($source, 'probe.png', $type, '${visibility}', '${title}', true); } finally { @unlink($source); }`
+        + ' echo $entry->id;'));
+}
+
+/**
+ * The image list, searched down to these words — never the page's select-all: golfdom holds other specs' files.
+ *
+ * ⚠️ AND SETTLED BEFORE ANYTHING IS SELECTED: a search clears the selection when its debounced update lands, so a card
+ * ticked before it would be unticked under the test.
+ */
+async function listed(page, words) {
+    await page.goto('/admin/golfdom/c/image');
+    const searched = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes('tableSearch'));
+    await page.locator('.fi-ta').getByPlaceholder('Search').fill(words);
+    await searched;
+}
+
+/** A card of the list, by its title. */
+const card = (page, title) => page.locator('.fi-ta-record').filter({ hasText: title });
+
+/** The list's *Bulk actions* menu, opened, and the action in it. */
+async function bulkAction(page, label) {
+    await page.getByRole('button', { name: /bulk actions/i }).click();
+
+    return page.getByRole('button', { name: label, exact: true });
+}
+
+/** Show the list's trash, as Filament's filter shows it: '' not in the trash, '1' everything, '0' only the trash. */
+async function showTrash(page, value) {
+    // Exactly: a search shows its own *Remove filter* beside it.
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await page.locator('select[wire\\:model="tableDeferredFilters.trashed.value"]').selectOption(value);
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    // Filament keeps its filter panel open once applied, over the cards.
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Apply filters' })).toBeHidden();
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.beforeEach(() => removeFixtures());
@@ -215,4 +261,144 @@ test('keeps a JPEG private whose GPS data cannot be removed, and says why', asyn
 
     await expect(notice(page, `"${PROBE} unremovable" was not made public`)).toContainText('cannot be removed with certainty', { timeout: 15_000 });
     expect(row(id).visibility).toBe('private');
+});
+
+/*
+ * A SELECTION MADE PUBLIC — Adam, ADR-042 decision 34. One acknowledgement covers it; each file is switched on its own,
+ * so the two that can be are served without their GPS data and the one that cannot stays private, named in the one
+ * notification, and stays selected for another try.
+ */
+test('makes the selected files public with one acknowledgement, and names the one it could not', async ({ page }) => {
+    const photo = locatedJpeg('photo(true)');
+    const ok = storedJpeg(`${PROBE} bulk ok`);
+    const shared = storedJpeg(`${PROBE} bulk shared`, 'photo(true)', false);
+    const bad = storedJpeg(`${PROBE} bulk bad`, 'unremovable()');
+
+    await listed(page, `${PROBE} bulk`);
+    for (const title of ['ok', 'shared', 'bad']) {
+        await card(page, `${PROBE} bulk ${title}`).getByRole('checkbox').check();
+    }
+
+    await (await bulkAction(page, 'Make selected public')).click();
+    const dialog = modal(page, 'Make public');
+    await expect(dialog).toContainText('Make the 3 selected files public');
+    await expect(dialog).toContainText('One of them is shared with every site in the organisation, so it becomes public for all of those sites.');
+    await expect(dialog).toContainText('A JPEG loses the GPS coordinates in its EXIF and XMP data as it is made public');
+    await expect(dialog).toContainText('Unless this is ticked, the files stay private.');
+
+    // Unticked: the acknowledgement is asked, and nothing changes.
+    await dialog.getByRole('button', { name: 'Make public', exact: true }).click();
+    await expect(dialog).toContainText('Tick the box to make these files public. Unticked, they stay private.');
+    for (const id of [ok, shared, bad]) {
+        expect(row(id).visibility).toBe('private');
+    }
+
+    await dialog.getByLabel('Make these files public').check();
+    await dialog.getByRole('button', { name: 'Make public', exact: true }).click();
+
+    const said = notice(page, 'One file was not made public');
+    await expect(said).toBeVisible({ timeout: 30_000 });
+    await expect(said).toContainText(`"${PROBE} bulk bad" was not made public`);
+    await expect(said).toContainText('cannot be removed with certainty');
+    await expect(said).toContainText('2 files were made public.');
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+
+    for (const id of [ok, shared]) {
+        const published = row(id);
+        const served = await page.request.get(`/storage/${published.path}`);
+        expect(served.status()).toBe(200);
+        const bytes = await served.body();
+
+        expect(published.visibility).toBe('public');
+        expect(published.checksum).toBe(sha256(bytes));
+        expect(published.checksum).not.toBe(sha256(photo));
+        expect(bytes.includes('SENTINEL-')).toBe(false);
+        expect(bytes.includes('GGGGPPPP')).toBe(false);
+    }
+
+    expect(row(bad).visibility).toBe('private');
+    expect((await page.request.get(`/storage/${row(bad).path}`)).status()).not.toBe(200);
+    // Kept selected, so running it again goes on where it stopped.
+    await expect(card(page, `${PROBE} bulk bad`).getByRole('checkbox')).toBeChecked();
+});
+
+/* A selection made private: its links stop, the panel still opens each, and the selection is cleared. */
+test('makes the selected files private, says what that does, and clears the selection', async ({ page }) => {
+    const ids = [storedPng(`${PROBE} bulk one`, 'public'), storedPng(`${PROBE} bulk two`, 'public')];
+    const before = ids.map((id) => row(id));
+    for (const file of before) {
+        expect((await page.request.get(`/storage/${file.path}`)).status()).toBe(200);
+    }
+
+    await listed(page, `${PROBE} bulk`);
+    for (const title of ['one', 'two']) {
+        await card(page, `${PROBE} bulk ${title}`).getByRole('checkbox').check();
+    }
+
+    await (await bulkAction(page, 'Make selected private')).click();
+    const dialog = modal(page, 'Make private');
+    await expect(dialog).toContainText('Make the 2 selected files private');
+    await expect(dialog).toContainText('Their links stop opening them');
+    await dialog.getByRole('button', { name: 'Make private', exact: true }).click();
+
+    const said = notice(page, '2 files were made private');
+    await expect(said).toBeVisible({ timeout: 30_000 });
+    await expect(said).toContainText('Their public links no longer open them.');
+
+    for (const [i, id] of ids.entries()) {
+        expect(row(id).visibility).toBe('private');
+        expect((await page.request.get(`/storage/${before[i].path}`)).status()).not.toBe(200);
+        const opened = await page.request.get(`/admin/golfdom/media/${id}`);
+        expect(opened.status()).toBe(200);
+        expect(sha256(await opened.body())).toBe(before[i].checksum);
+    }
+
+    for (const title of ['one', 'two']) {
+        await expect(card(page, `${PROBE} bulk ${title}`).getByRole('checkbox')).not.toBeChecked();
+    }
+});
+
+/* Who sees them: no selection for a reader; disabled, naming the permission, for an editor who may only update. */
+test('hides the selection switches from a reader, and disables them without publish, naming the permission', async ({ browser }) => {
+    storedPng(`${PROBE} bulk grants`, 'private');
+    const context = await browser.newContext({ storageState: READER_STATE });
+    const page = await context.newPage();
+
+    try {
+        copyEditor('grant', ['view']);
+        await listed(page, `${PROBE} bulk grants`);
+        await expect(card(page, `${PROBE} bulk grants`)).toHaveCount(1);
+        await expect(card(page, `${PROBE} bulk grants`).getByRole('checkbox')).toHaveCount(0);
+
+        copyEditor('grant', ['update']);
+        await listed(page, `${PROBE} bulk grants`);
+        await card(page, `${PROBE} bulk grants`).getByRole('checkbox').check();
+        const disabled = await bulkAction(page, 'Make selected public');
+        await expect(disabled).toBeDisabled();
+        await disabled.hover({ force: true });
+        await expect(page.getByText(/entry\.image\.publish/)).toBeVisible();
+
+        copyEditor('grant', ['publish']);
+        await listed(page, `${PROBE} bulk grants`);
+        await card(page, `${PROBE} bulk grants`).getByRole('checkbox').check();
+        await expect(await bulkAction(page, 'Make selected public')).toBeEnabled();
+    } finally {
+        copyEditor('revoke', ['view', 'update', 'publish']);
+        await context.close();
+    }
+});
+
+/* Not offered while the list shows only the trash, as Delete selected is not. */
+test('does not offer the selection switches while the list shows only the trash', async ({ page }) => {
+    const id = storedPng(`${PROBE} bulk trashed`, 'private');
+    tinker(IN_GOLFDOM + ` \\Kitsune\\Core\\Models\\Entry::query()->findOrFail(${id})->delete();`);
+
+    await listed(page, `${PROBE} bulk trashed`);
+    await showTrash(page, '0');
+    await card(page, `${PROBE} bulk trashed`).getByRole('checkbox').check();
+    await page.getByRole('button', { name: /bulk actions/i }).click();
+
+    await expect(page.getByRole('button', { name: 'Restore selected', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Make selected public', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Make selected private', exact: true })).toHaveCount(0);
 });
