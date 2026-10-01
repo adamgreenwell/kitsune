@@ -81,6 +81,12 @@ test('names every entry a bulk delete could not take off the web', async ({ page
         await expect(page.getByText('2 entries were not deleted')).toBeVisible();
         await expect(page.getByText('"Pinned scorecard" was not deleted:')).toBeVisible();
         await expect(page.getByText('"Withdrawn scorecard" was not deleted:')).toBeVisible();
+        // One notification, Kitsune's — Filament's own *Failed to delete* would be a second (decision 35) — and both
+        // still selected, so running it again goes on where it stopped.
+        await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+        for (const title of ['Pinned scorecard', 'Withdrawn scorecard']) {
+            await expect(page.locator('.fi-ta-record').filter({ hasText: title }).getByRole('checkbox')).toBeChecked();
+        }
     });
 
     expect((await page.request.get(`/storage/${pinned.path}`)).status()).toBe(200);

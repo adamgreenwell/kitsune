@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\BulkSelection;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
@@ -332,20 +333,20 @@ describe('the actions, as the list builds them', function (): void {
         $files = [bulkVisStored('A'), bulkVisStored('B'), bulkVisStored('C')];
         $query = Entry::query()->whereKey(array_map(static fn (Entry $e): int => (int) $e->id, $files));
 
-        expect(MediaVisibilityActions::upTo($query, most: 2))->toBeNull()
-            ->and(MediaVisibilityActions::upTo($query, most: 3))->toHaveCount(3)
-            ->and(MediaVisibilityActions::MOST_AT_ONCE)->toBe(50);
+        expect(BulkSelection::upTo($query, most: 2))->toBeNull()
+            ->and(BulkSelection::upTo($query, most: 3))->toHaveCount(3)
+            ->and(BulkSelection::MOST_AT_ONCE)->toBe(50);
 
         // In the list's order, which is the order a budget cuts off in (review of decision 34).
         $ids = array_map(static fn (Entry $e): int => (int) $e->id, $files);
 
-        expect(MediaVisibilityActions::upTo(Entry::query()->whereKey($ids)->orderByDesc('id'))?->modelKeys())->toBe(array_reverse($ids));
+        expect(BulkSelection::upTo(Entry::query()->whereKey($ids)->orderByDesc('id'))?->modelKeys())->toBe(array_reverse($ids));
 
         // No page the list offers holds more than the bound, and none offers every record at once.
         $table = EntryResource::table(Table::make(app(ListEntries::class)));
         $sizes = array_filter($table->getPaginationPageOptions(), 'is_int');
 
-        expect(max($sizes))->toBeLessThanOrEqual(MediaVisibilityActions::MOST_AT_ONCE)
+        expect(max($sizes))->toBeLessThanOrEqual(BulkSelection::MOST_AT_ONCE)
             ->and($table->getPaginationPageOptions())->not->toContain('all');
 
         $action = bulkVisAction('makeSelectedPublic');
@@ -393,7 +394,7 @@ describe('the actions, as the list builds them', function (): void {
         ($this->grant)('view', 'publish');
         $ids = [];
 
-        for ($i = 1; $i <= MediaVisibilityActions::MOST_AT_ONCE + 5; $i++) {
+        for ($i = 1; $i <= BulkSelection::MOST_AT_ONCE + 5; $i++) {
             $ids[] = (int) bulkVisStored("File {$i}")->id;
         }
 
@@ -404,7 +405,7 @@ describe('the actions, as the list builds them', function (): void {
 
         MediaVisibilityActions::publicSelected(bulkVisAction('makeSelectedPublic'), Entry::query()->whereKey($ids), BULK_VIS_TICKED);
 
-        expect($loaded)->toBe(MediaVisibilityActions::MOST_AT_ONCE + 1)
+        expect($loaded)->toBe(BulkSelection::MOST_AT_ONCE + 1)
             ->and(bulkVisNotices()[0]['title'])->toBe('Too many files are selected');
     });
 });
@@ -954,7 +955,7 @@ it('claims nothing of a trashed file it cannot read again, made private', functi
 describe('the parts', function (): void {
     /* H12. Half PHP's limit, at most fifteen seconds, and fifteen where PHP sets none. */
     it('budgets half the limit, at most fifteen seconds, and fifteen with none', function (int $limit, float $budget): void {
-        expect(MediaVisibilityActions::budgetSeconds($limit))->toBe($budget);
+        expect(BulkSelection::budgetSeconds($limit))->toBe($budget);
     })->with([
         'no limit' => [0, 15.0],
         'a negative one' => [-1, 15.0],
@@ -971,10 +972,10 @@ describe('the parts', function (): void {
 
         try {
             ini_set('max_execution_time', '20');
-            expect(MediaVisibilityActions::deadline()->equalTo(now()->addSeconds(10)))->toBeTrue();
+            expect(BulkSelection::deadline()->equalTo(now()->addSeconds(10)))->toBeTrue();
 
             ini_set('max_execution_time', '0');
-            expect(MediaVisibilityActions::deadline()->equalTo(now()->addSeconds(15)))->toBeTrue();
+            expect(BulkSelection::deadline()->equalTo(now()->addSeconds(15)))->toBeTrue();
         } finally {
             ini_set('max_execution_time', (string) $limit);
         }
