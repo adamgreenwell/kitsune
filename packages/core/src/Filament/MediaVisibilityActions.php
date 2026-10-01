@@ -182,8 +182,10 @@ final class MediaVisibilityActions
      */
     public static function publicSelected(BulkAction $action, Builder $selected, array $data, ?int $keys = null): void
     {
+        // ⚠️ THE CLOCK FIRST, so a slow fetch spends the budget rather than extending it (Codex, #166).
+        $until = self::deadline();
         $records = self::upTo($selected);
-        $records === null ? self::refuseTooMany($action) : self::publicEach($action, $records, $data, self::deadline(), $keys);
+        $records === null ? self::refuseTooMany($action) : self::publicEach($action, $records, $data, $until, $keys);
     }
 
     /**
@@ -196,8 +198,10 @@ final class MediaVisibilityActions
      */
     public static function privateSelected(BulkAction $action, Builder $selected, ?int $keys = null): void
     {
+        // ⚠️ THE CLOCK FIRST, so a slow fetch spends the budget rather than extending it (Codex, #166).
+        $until = self::deadline();
         $records = self::upTo($selected);
-        $records === null ? self::refuseTooMany($action) : self::privateEach($action, $records, self::deadline(), $keys);
+        $records === null ? self::refuseTooMany($action) : self::privateEach($action, $records, $until, $keys);
     }
 
     /**

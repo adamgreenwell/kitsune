@@ -792,6 +792,29 @@ it('is refused file by file for whoever may not publish', function (): void {
         ->and(bulkVisAudits(MediaVisibility::MADE_PUBLIC))->toBe(0);
 });
 
+/* ⚠️ THE BUDGET STARTS BEFORE THE SELECTION IS FETCHED: a slow fetch spends it, never extends it (Codex, #166). */
+it('counts the time the selection takes to load against the budget', function (string $to): void {
+    ($this->grant)('view', 'publish');
+    $this->freezeTime();
+    $files = [bulkVisStored('A', visibility: $to === 'public' ? 'private' : 'public'), bulkVisStored('B', visibility: $to === 'public' ? 'private' : 'public')];
+    $query = Entry::query()->with('mediaFile')->whereKey(array_map(static fn (Entry $e): int => (int) $e->id, $files))->orderBy('id');
+    $travelled = false;
+    // The fetch takes sixteen seconds: past the budget of fifteen before any file is switched.
+    Entry::retrieved(function () use (&$travelled): void {
+        if (! $travelled) {
+            $travelled = true;
+            $this->travel(16)->seconds();
+        }
+    });
+    $action = bulkVisAction($to === 'public' ? 'makeSelectedPublic' : 'makeSelectedPrivate');
+
+    $to === 'public' ? MediaVisibilityActions::publicSelected($action, $query, BULK_VIS_TICKED) : MediaVisibilityActions::privateSelected($action, $query);
+
+    // The first is always tried; the second is not started.
+    expect(array_map('bulkVisRow', $files))->toBe([$to, $to === 'public' ? 'private' : 'public'])
+        ->and(bulkVisNotices()[0]['body'])->toStartWith('One file was not tried');
+})->with(['public', 'private']);
+
 describe('making a selection private', function (): void {
     beforeEach(fn () => ($this->grant)('view', 'publish'));
 

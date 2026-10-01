@@ -5701,7 +5701,8 @@ arrives as Livewire's own "failed to upload".
 >     after another, or a request written by hand, reaches more. Refused, not cut: a selection cut to its first 50
 >     would fetch the same 50 on every run, find them already so, and never reach the rest.
 >   - No file is started once the budget has passed: half of PHP's `max_execution_time`, at most 15 s, and 15 s where
->     PHP sets none — an Octane worker, an FPM pool set to 0 — counted from the handler's start. Half leaves the other
+>     PHP sets none — an Octane worker, an FPM pool set to 0 — counted from the handler's start, before the selection is
+>     fetched, so a slow fetch spends the budget rather than extending it (Codex, #166). Half leaves the other
 >     half for the request's own work before the handler and the file in hand when the budget passes. The first file
 >     is always tried, so every run goes on; the files not tried are counted and stay selected.
 > - **One notification, saying what became of every file.** Filament's own are off, and the title answers whether it
