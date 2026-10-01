@@ -497,8 +497,6 @@ final class MediaBytes
             throw new MediaCustodyFailure('coinciding', $to, $path);
         }
 
-        $destination = self::local($to) ? self::partial($path) : $path;
-
         try {
             $stream = self::disk($from)->readStream($path);
         } catch (Throwable $failure) {
@@ -509,10 +507,119 @@ final class MediaBytes
             throw new MediaCustodyFailure('unreadable', $from, $path);
         }
 
+        self::writeVerified($to, $path, $stream, $expected, keepKey: false);
+    }
+
+    /**
+     * Copy a disk's file into the system's temporary directory and prove it whole: its SHA-256 must be the one expected —
+     * ADR-042 decision 32, which strips a JPEG made public from such a copy. The caller owns the copy and removes it.
+     *
+     * ⚠️ AND IT IS REMOVED AT PROCESS END WHATEVER HAPPENS. It is the original, its location still in it: a fatal error
+     * between this and the caller's `finally` would otherwise leave it in a directory other processes can read.
+     *
+     * @throws MediaCustodyFailure `unreadable`, `verify`, `copy` or `read-through`
+     */
+    public static function toTemporary(string $disk, string $path, string $expected): string
+    {
+        self::refuseReadThrough($disk, $path);
+
+        $temporary = tempnam(sys_get_temp_dir(), 'kitsune-visibility-');
+
+        if ($temporary === false) {
+            throw new MediaCustodyFailure('copy', $disk, $path);
+        }
+
+        register_shutdown_function(static function () use ($temporary): void {
+            if (is_file($temporary)) {
+                @unlink($temporary);
+            }
+        });
+
+        try {
+            $stream = self::disk($disk)->readStream($path);
+        } catch (Throwable $failure) {
+            @unlink($temporary);
+
+            throw new MediaCustodyFailure('unreadable', $disk, $path, $failure);
+        }
+
+        if (! is_resource($stream)) {
+            @unlink($temporary);
+
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        $out = fopen($temporary, 'wb');
+        $copied = $out !== false && stream_copy_to_stream($stream, $out) !== false;
+        self::close($stream);
+
+        if ($out !== false) {
+            fclose($out);
+        }
+
+        if (! $copied) {
+            @unlink($temporary);
+
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        if (! self::same(hash_file('sha256', $temporary) ?: null, $expected)) {
+            @unlink($temporary);
+
+            throw new MediaCustodyFailure('verify', $disk, $path);
+        }
+
+        return $temporary;
+    }
+
+    /**
+     * Write a local file's bytes over a disk's path and prove them: its SHA-256 must be the one expected — ADR-042
+     * decision 32, which makes a JPEG stripped of its location the file on the private disk.
+     *
+     * Written beside the path, read back, and renamed over it on a local disk, so the path holds the file it held or the
+     * new one, whole; an object store's PUT replaces the key, and is read back.
+     *
+     * ⚠️ AN OBJECT STORE'S KEY IS THE FILE: a replacement that does not read back is left there, never discarded, for the
+     * caller to put back — discarding it would delete the only copy.
+     *
+     * @throws MediaCustodyFailure `copy`, `verify`, `rename`, `unreadable` or `read-through`
+     */
+    public static function replaceVerified(string $disk, string $path, string $source, string $expected): void
+    {
+        self::refuseReadThrough($disk, $path);
+
+        $stream = @fopen($source, 'rb');
+
+        if ($stream === false) {
+            throw new MediaCustodyFailure('copy', $disk, $path);
+        }
+
+        self::writeVerified($disk, $path, $stream, $expected, keepKey: true);
+    }
+
+    /**
+     * Write a stream to a disk's path, read it back, and only then move it into place — the tail `copyVerified()` and
+     * `replaceVerified()` share.
+     *
+     * @param  resource  $stream  closed here
+     * @param  bool  $keepKey  whether a copy written at the path itself — an object store's key — is left in place when
+     *                         it does not verify, because it is the file; a local partial copy is always discarded
+     *
+     * @throws MediaCustodyFailure
+     */
+    private static function writeVerified(string $to, string $path, mixed $stream, string $expected, bool $keepKey): void
+    {
+        $destination = self::local($to) ? self::partial($path) : $path;
+        $discard = static function () use ($to, $destination, $path, $keepKey): void {
+            if (! $keepKey || $destination !== $path) {
+                self::discard($to, $destination);
+            }
+        };
+
         try {
             $written = self::disk($to)->writeStream($destination, $stream);
         } catch (Throwable $failure) {
-            self::discard($to, $destination);
+            $discard();
 
             throw new MediaCustodyFailure('copy', $to, $path, $failure);
         } finally {
@@ -520,7 +627,7 @@ final class MediaBytes
         }
 
         if ($written === false) {
-            self::discard($to, $destination);
+            $discard();
 
             throw new MediaCustodyFailure('copy', $to, $path);
         }
@@ -528,13 +635,13 @@ final class MediaBytes
         try {
             $copied = self::hash($to, $destination);
         } catch (MediaCustodyFailure $failure) {
-            self::discard($to, $destination);
+            $discard();
 
             throw $failure;
         }
 
         if (! self::same($expected, $copied)) {
-            self::discard($to, $destination);
+            $discard();
 
             throw new MediaCustodyFailure('verify', $to, $path);
         }

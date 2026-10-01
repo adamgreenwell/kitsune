@@ -43,6 +43,14 @@ class RefusingDisk extends LocalFilesystemAdapter
     /** @var list<array{event: string, path: ?string, bytes: bool, disk: ?string}> */
     public static array $log = [];
 
+    /**
+     * Run before every operation that changes bytes, on any disk, before it is logged — a crash harness's death, which
+     * throws and keeps throwing (ADR-042 decision 32). Reset by the test that sets it.
+     *
+     * @var (Closure(string, string, ?string): void)|null given the disk, the operation and its path
+     */
+    public static ?Closure $beforeByte = null;
+
     public bool $failWrites = false;
 
     public bool $failDeletes = false;
@@ -331,6 +339,10 @@ class RefusingDisk extends LocalFilesystemAdapter
 
     private function operation(string $event, ?string $path, bool $bytes): void
     {
+        if ($bytes && self::$beforeByte !== null) {
+            (self::$beforeByte)($this->name, $event, $path);
+        }
+
         self::$log[] = ['event' => $event, 'path' => $path, 'bytes' => $bytes, 'disk' => $this->name];
 
         $this->operations++;

@@ -47,7 +47,9 @@ use Throwable;
  * ⚠️ BYTES MOVE AFTER THE OUTERMOST COMMIT, NEVER INSIDE A TRANSACTION THAT MIGHT STILL ROLL BACK. Publication
  * follows the commit that made a file public again; the compensation of a withdrawal the database then rolled back
  * follows that rollback. `settle()` refuses to run inside an open transaction, and `whenOutermost()` is how everything
- * else waits for one to end.
+ * else waits for one to end — but for one: making a JPEG public rewrites its file on the private disk, which no web
+ * serves, under the lock and as the last step before the commit, and refuses inside an open transaction, so its own
+ * rollback is the only one there is — and it writes the original back (`MediaVisibility`, ADR-042 decision 32).
  */
 final class MediaCustody
 {
@@ -661,8 +663,12 @@ final class MediaCustody
             ->contains(static fn (array $index): bool => (bool) $index['unique'] && $index['columns'] === ['path']);
     }
 
-    /** @throws RuntimeException when `media_files.path` is not unique on this connection */
-    private static function refuseSharedPaths(Connection $connection): void
+    /**
+     * @internal for custody's own steps, and the visibility switch, which writes a file's bytes at its path (decision 32)
+     *
+     * @throws RuntimeException when `media_files.path` is not unique on this connection
+     */
+    public static function refuseSharedPaths(Connection $connection): void
     {
         if (self::pathsAreUnique($connection)) {
             return;

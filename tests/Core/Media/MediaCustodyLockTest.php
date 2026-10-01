@@ -21,11 +21,13 @@ use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
@@ -186,6 +188,49 @@ describe('the lock order', function (): void {
         expect($row)->toBeGreaterThan(-1)
             ->and($bytes)->toBeGreaterThan($row);
     })->with(['trash', 'erasure']);
+
+    /*
+     * ADR-042 decision 32: both switches take custody's lock — the entry, then its file — and write their row before their
+     * first byte; making a JPEG public writes its audit too, and its first byte is the private disk's, never the web's.
+     */
+    it('locks the entry and then its file, and writes the row, before a switch\'s first byte', function (string $to): void {
+        if ($to === 'public') {
+            $source = LocatedJpeg::file(LocatedJpeg::photo(true));
+            $entry = MediaLibrary::store($source, 'photo.jpg', $this->image, 'private');
+            unlink($source);
+        } else {
+            [$entry] = ($this->stored)();
+        }
+
+        $timeline = lockTimeline(fn () => $to === 'public'
+            ? MediaVisibility::makePublic($entry)
+            : MediaVisibility::makePrivate($entry));
+
+        $bytes = lockFirst($timeline, '/^bytes /');
+        $row = lockFirst($timeline, '/^sql update .media_files. set .visibility./');
+
+        expect($bytes)->toBeGreaterThan(-1)
+            ->and($row)->toBeGreaterThan(-1)->toBeLessThan($bytes);
+
+        if ($to === 'public') {
+            expect(lockFirst($timeline, '/^sql insert into .audit_log./'))->toBeGreaterThan($row)->toBeLessThan($bytes)
+                ->and($timeline[$bytes])->toBe('bytes '.MediaDisks::PRIVATE);
+        }
+
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $write = lockFirst($timeline, '/^sql update "media_files" set "disk" = "disk"/');
+
+            expect($write)->toBeGreaterThan(-1)->toBeLessThan($row)
+                ->and(lockFirst($timeline, '/^sql select .*from "entries"/'))->toBeGreaterThan($write);
+        } else {
+            $entries = lockFirst($timeline, '/^sql select .*from .entries. .*for update/');
+            $files = lockFirst($timeline, '/^sql select .*from .media_files. .*for update/');
+
+            expect($entries)->toBeGreaterThan(-1)
+                ->and($files)->toBeGreaterThan($entries)
+                ->and($row)->toBeGreaterThan($files);
+        }
+    })->with(['public', 'private']);
 });
 
 /*

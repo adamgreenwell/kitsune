@@ -14,7 +14,8 @@ use RuntimeException;
 use Throwable;
 
 /**
- * A trash or an erasure refused because its file could not be withdrawn from the web — ADR-042 decision 5.
+ * A trash, an erasure or a file made private refused because its file could not be withdrawn from the web — ADR-042
+ * decisions 5 and 32.
  *
  * ⚠️ THE MESSAGE NAMES THE ENTRY AND THE DISK, NEVER THE PATH. It reaches whoever asked for the delete, in the panel
  * as much as in a log, and a stored file's path is not theirs to read; the path goes to the log alone.
@@ -70,10 +71,9 @@ final class MediaWithdrawalRefused extends RuntimeException
         // The configuration's own refusal names disks and keys, never a file: it is shown as it is.
         if ($reason === self::UNSAFE_DISKS) {
             parent::__construct(sprintf(
-                'Refusing to %s entry %d: the configured media disks cannot keep a withdrawn file private, so the entry '
+                'Refusing to %s: the configured media disks cannot keep a withdrawn file private, so the entry '
                 .'and its file stay as they were. %s',
-                $operation,
-                $entryId,
+                self::act($operation, $entryId),
                 $previous?->getMessage() ?? '',
             ), 0, $previous);
 
@@ -81,10 +81,9 @@ final class MediaWithdrawalRefused extends RuntimeException
         }
 
         parent::__construct(sprintf(
-            'Refusing to %s entry %d: its file could not be withdrawn from the web — %s [%s] — so the entry and its file '
+            'Refusing to %s: its file could not be withdrawn from the web — %s [%s] — so the entry and its file '
             .'stay as they were (ADR-042 decision 5). %s',
-            $operation,
-            $entryId,
+            self::act($operation, $entryId),
             match ($reason) {
                 self::COPY_FAILED => 'a verified copy could not be written to the private disk',
                 self::DELETE_FAILED => 'a copy could not be removed from',
@@ -103,5 +102,13 @@ final class MediaWithdrawalRefused extends RuntimeException
                 default => 'The log names the file; retry once the disk answers.',
             },
         ), 0, $previous);
+    }
+
+    /** What was refused, as the sentence says it: "trash entry 12", or "make entry 12 private" (decision 32). */
+    private static function act(string $operation, int $entryId): string
+    {
+        return $operation === 'make private'
+            ? sprintf('make entry %d private', $entryId)
+            : sprintf('%s entry %d', $operation, $entryId);
     }
 }

@@ -36,9 +36,12 @@ use Throwable;
  * are removed by the disposal path ADR-041 decides, and a row disappearing is precisely the event that path
  * cannot observe. That asymmetry is why disposal is not written as a `deleting` hook on this model.
  *
- * ⚠️ ONLY `disk` MOVES AFTER CREATION — ADR-042 decision 5. Custody moves a file between the public and private disks
- * and writes where it now is, through the query builder under its own lock; every other column is what `store()`
- * wrote, and `columnsFixedAtCreation()` says why each one stays so.
+ * ⚠️ ~~ONLY `disk` MOVES AFTER CREATION~~ ONLY `disk` MOVES AFTER CREATION — ADR-042 decision 5 — BUT FOR THE VISIBILITY
+ * SWITCH (decision 32). Custody moves a file between the public and private disks and writes where it now is, through
+ * the query builder under its own lock; *Make public* and *Make private* write `visibility`, and for a JPEG made public
+ * `checksum` and `size_bytes` with the bytes it strips, below the model under the same lock (`MediaVisibility`). Every
+ * other column is what `store()` wrote, every model door still refuses all of them, and `columnsFixedAtCreation()` says
+ * why each one stays so.
  *
  * ⚠️ A PATH IS WRITTEN AS THE DISKS READ IT, AND IS ONE ROW'S (Adam, decision 8, 2026-09-25). Custody acts on a file by
  * its path on every disk, so a path must name this file and no other row's. `media_files_path_unique` refuses a second
@@ -80,7 +83,10 @@ class MediaFile extends Model implements FixesColumnsAtCreation
 
     protected $guarded = [];
 
-    /** `created_at` only: nothing but custody writes the row again, and only to say which disk the file is on. */
+    /**
+     * `created_at` only: nothing but custody writes the row again — to say which disk the file is on — and the visibility
+     * switch, to say what it is (ADR-042 decision 32).
+     */
     public const UPDATED_AT = null;
 
     protected $casts = [
@@ -136,11 +142,14 @@ class MediaFile extends Model implements FixesColumnsAtCreation
             'path' => 'custody withdraws, publishes and disposes of a file by its path on every disk, so a changed path '
                 .'strands every copy at the old one (ADR-042 decision 5).',
             'checksum' => 'it is the hash of the bytes as stored, and custody keeps only a copy that matches it; a changed '
-                .'checksum would make a different file the one kept (ADR-042 decision 5).',
+                .'checksum would make a different file the one kept (ADR-042 decision 5). Only making a JPEG public '
+                .'rewrites it, with the bytes it strips, in the statement that writes its visibility (decision 32).',
             'mime' => 'delivery sends it as the Content-Type, and it was read from the bytes when they were stored.',
-            'size_bytes' => 'it is the size of the bytes as stored.',
-            'visibility' => 'it decides which disk the file belongs on, and nothing yet moves a file when it changes '
-                .'(ADR-041, ADR-042 decision 5).',
+            'size_bytes' => 'it is the size of the bytes as stored, sent as Content-Length; only making a JPEG public '
+                .'rewrites it, with those bytes (ADR-042 decision 32).',
+            'visibility' => 'it decides which disk the file belongs on, so only Make public and Make private change it, '
+                .'below the model and under custody\'s lock, moving the file as they do (ADR-041; ADR-042 decisions 5 and '
+                .'32).',
             'width' => 'it was read from the bytes when they were stored.',
             'height' => 'it was read from the bytes when they were stored.',
             'duration_ms' => 'it was read from the bytes when they were stored.',

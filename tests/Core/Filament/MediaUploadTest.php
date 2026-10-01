@@ -681,6 +681,20 @@ describe('a media type\'s pages', function (): void {
         expect(array_values($sections)[0]->isHidden())->toBeTrue();
     });
 
+    /*
+     * A public file whose publication has not happened — it failed after the commit that made it public — says so, and is
+     * linked through the panel as a private one is, rather than to a public URL where it is not (ADR-042 decision 32).
+     */
+    it('shows a public file still on the private disk as public and not yet published', function (): void {
+        $entry = storedMedia(UPLOAD_ACTION_PNG, 'photo.png', $this->type);
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['visibility' => 'public']);
+
+        $components = fileSection($entry);
+
+        expect($components['media_file_visibility']->getState())->toBe('Public — not yet published, so opened only through this admin')
+            ->and($components['media_file_link']->getUrl())->toBeNull();
+    });
+
     /* Decision 16's other half: whether a file is served to anyone with its link, and where that link goes. */
     /*
      * ⚠️ ON THE HOST SERVING THE ADMIN (decision 6): the disk's URL is APP_URL's, absolute, and the link is its path — a
@@ -721,6 +735,11 @@ describe('a media type\'s pages', function (): void {
 
             return $count;
         };
+
+        expect($reads($entry))->toBe(2);
+
+        // A public file awaiting publication says so, from the row already read (ADR-042 decision 32).
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['visibility' => 'public']);
 
         expect($reads($entry))->toBe(2);
 
@@ -830,13 +849,28 @@ describe('where a photo was made', function (): void {
             ->not->toContain('nothing removes that');
     });
 
-    it('names in the confirmation exactly the formats whose location is removed', function (): void {
-        $warning = __('kitsune::media.upload.public_warning');
+    /* Both confirmations — uploading public, and making a stored file public (decision 32) — claim the same formats. */
+    it('names in each confirmation exactly the formats whose location is removed', function (string $key): void {
+        $warning = __($key);
 
         foreach (MediaFormats::ALL as $format => ['name' => $name]) {
             expect(preg_match('/\b'.preg_quote($name, '/').'\b/', $warning))
                 ->toBe(in_array($format, MediaLocation::STRIPPED, true) ? 1 : 0, "The confirmation's words and {$name}");
         }
+    })->with(['kitsune::media.upload.public_warning', 'kitsune::media.visibility.public_warning']);
+
+    /*
+     * ⚠️ ONE STATEMENT, WRITTEN ONCE (decision 32): Upload's words are what they were, byte for byte, and making a stored
+     * file public says the same before its own last sentence.
+     */
+    it('keeps Upload\'s words as they were, and shares them with making a file public', function (): void {
+        $statement = 'A public file is served to anyone who has its link. A JPEG loses the GPS coordinates in its EXIF and XMP '
+            .'data as it is made public, and its picture and orientation stay as uploaded. What else a photo holds — a place '
+            .'name, a camera maker\'s own records, a motion photo\'s video — and every other type of file are served as '
+            .'uploaded, and can still say where they were made.';
+
+        expect(__('kitsune::media.upload.public_warning'))->toBe($statement.' Unless this is ticked, the files are stored private.')
+            ->and(__('kitsune::media.visibility.public_warning'))->toBe($statement.' Unless this is ticked, the file stays private.');
     });
 
     it('stores a public JPEG without its GPS data once public is confirmed', function (): void {

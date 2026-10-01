@@ -17,7 +17,8 @@ use RuntimeException;
 use stdClass;
 
 /**
- * Take a trashed or erased entry's file off the web inside the write that trashes or erases it — ADR-042 decision 5.
+ * Take a trashed or erased entry's file off the web inside the write that trashes or erases it — ADR-042 decision 5 —
+ * or that makes it private (decision 32).
  *
  * @internal
  *
@@ -52,7 +53,7 @@ final class MediaWithdrawal
     /** @var list<stdClass> the file rows a force-delete locked before erasing them */
     private array $locked = [];
 
-    /** @param  string  $operation  what the write does, as its refusal says it: "trash" or "erase" */
+    /** @param  string  $operation  what the write does, as its refusal says it: "trash", "erase" or "make private" */
     public function __construct(private readonly Connection $connection, private readonly string $operation = 'trash') {}
 
     /**
@@ -125,6 +126,23 @@ final class MediaWithdrawal
         foreach ($candidates as $file) {
             $this->withdraw($file, $served, $config);
         }
+    }
+
+    /**
+     * Withdraw a live file made private — ADR-042 decision 32 — as a trash withdraws one: a verified copy on the private
+     * disk, and every copy on a disk the web serves removed, before the commit.
+     *
+     * ⚠️ THE ROW FIRST, AND THE SNAPSHOT FROM BEFORE IT. The caller has already written the row private and naming the
+     * private disk, under custody's lock, as a trash writes its row before any byte moves; `$before` is that row as it was
+     * locked, still public, so the file reads as one the web could reach and every served disk is looked at.
+     *
+     * @throws MediaWithdrawalRefused
+     */
+    public function afterVisibilityWrite(stdClass $before): void
+    {
+        $config = self::config();
+        $this->refuseUnsafeDisks($config, (int) $before->entry_id);
+        $this->withdraw($before, MediaDisks::servedDisks($config), $config);
     }
 
     /**
@@ -398,9 +416,9 @@ final class MediaWithdrawal
     private function refused(int $entryId, string $reason, MediaCustodyFailure $failure): MediaWithdrawalRefused
     {
         Log::warning(sprintf(
-            'Media custody, entry %d: refusing to %s it — %s (ADR-042 decision 5).',
+            'Media custody, entry %d: refusing to %s — %s (ADR-042 decision 5).',
             $entryId,
-            $this->operation,
+            $this->operation === 'make private' ? 'make it private' : $this->operation.' it',
             $failure->getMessage(),
         ));
 
