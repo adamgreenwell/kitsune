@@ -15,8 +15,10 @@ use Kitsune\Core\Media\JpegLocation;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Media\MediaVisibilityRefused;
+use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -215,7 +217,7 @@ function crashFollowUp(Entry $entry, string $followUp): void
             })(),
             'erasure' => $fresh->forceDelete(),
         };
-    } catch (MediaVisibilityRefused|Kitsune\Core\Media\MediaWithdrawalRefused|Kitsune\Core\Media\MediaRefused) {
+    } catch (MediaVisibilityRefused|MediaWithdrawalRefused|MediaRefused) {
         // A refusal is an answer: it changed nothing, which the invariants check.
     }
 }
