@@ -52,23 +52,24 @@ use Throwable;
  * remove it (Adam, decision 12, 2026-09-26).
  *
  * ⚠️ `--force` DECIDES NOTHING FROM THE LISTING. For each listed row it runs exactly what a compensation runs —
- * `MediaCustody::settle()` then, unless it refused to publish a JPEG (decision 37), `cleanUp()` — each its own outermost transaction under the row's lock, taking every
- * decision from the row as read there. The listing only chooses which rows to lock: a row a trash or a restore changed
- * since is settled as it now is, and one listed as missing is asked again (a publication may have moved it). No copy is
- * deleted until the copy kept is verified on the disk the row's state says it belongs on — or, for a JPEG custody refuses
- * to publish, on the private disk (decision 37); one that cannot be read is
- * never touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
+ * `MediaCustody::settle()` then, unless it refused to publish a JPEG (decision 37), `cleanUp()` — each its own
+ * outermost transaction under the row's lock, taking every decision from the row as read there. The listing only
+ * chooses which rows to lock: a row a trash or a restore changed since is settled as it now is, and one listed as
+ * missing is asked again (a publication may have moved it). No copy is deleted until the copy kept is verified on the
+ * disk the row's state says it belongs on — or, for a JPEG custody refuses to publish, on the private disk (decision
+ * 37); one that cannot be read is never touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
  *
  * ⚠️ IT FAILS ON FINDINGS (Adam, decision 7, 2026-09-25), so a deploy or a cron can run it as a check: read-only, while
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
- * kept — a JPEG custody refused to publish among them (decision 37). A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
- * copy the listing opens, or a forced row's second look, and cannot read keeps both failing until it can be read (Adam,
- * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor the lone copy
- * of a file where its row belongs, which only a forced prune reads, and only when it removes a copy at the row's path on
- * a disk only other rows name (T133). A lone copy anywhere else on a disk custody asks — an `absent`, `awaiting
- * publication`, `elsewhere` or `exposed` row's — is a finding already, and fails every --force, whose keeper hashes it;
- * one on a disk custody does not ask leaves its row `missing`, which every --force fails without reading it; a forced
- * prune keeps either or does not list it (ADR-042 decision 5, decision 12's consequences and *What it leaves*).
+ * kept — a JPEG custody refused to publish among them (decision 37). A file with no bytes anywhere keeps it failing
+ * until its entry is erased or the file restored from a backup; a copy the listing opens, or a forced row's second
+ * look, and cannot read keeps both failing until it can be read (Adam, decision 12, 2026-09-26) — not one on a disk
+ * nesting with the target, which prune keeps for a hand, nor the lone copy of a file where its row belongs, which only
+ * a forced prune reads, and only when it removes a copy at the row's path on a disk only other rows name (T133). A lone
+ * copy anywhere else on a disk custody asks — an `absent`, `awaiting publication`, `elsewhere` or `exposed` row's — is
+ * a finding already, and fails every --force, whose keeper hashes it; one on a disk custody does not ask leaves its row
+ * `missing`, which every --force fails without reading it; a forced prune keeps either or does not list it (ADR-042
+ * decision 5, decision 12's consequences and *What it leaves*).
  *
  * ⚠️ ON SQLITE A FORCED RUN HOLDS THE DATABASE'S WRITE LOCK, row by row, while bytes move, and a save or an upload that
  * reads before it writes fails during each hold. The lever is Adam's (ADR-042, *Measured — decision 5, slice 5b*): the

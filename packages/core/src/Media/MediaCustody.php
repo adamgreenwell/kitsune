@@ -37,12 +37,13 @@ use Throwable;
  * between the decision and the move. On SQLite that lock is the database's write lock, taken with a write before any
  * byte moves (Adam, 2026-09-24); elsewhere the entry and its file are read `FOR UPDATE`, entry first.
  *
- * ⚠️ NO COPY IS DELETED UNTIL ANOTHER IS VERIFIED. A copy counts once it has been written and read back with a
- * matching hash — no fsync, as `store()` also has none — and ~~one disk's copy is deleted only while another's is known
- * to hold the same bytes~~ a copy is deleted only once the kept copy is verified by SHA-256 on the disk the row's state
- * says it belongs on — or, for a JPEG settle refuses to publish, on the private disk (decision 37) — one that differs goes with both hashes logged (Adam, decisions 2 and 2b, 2026-09-24); one alone
- * matching the checksum never, and one that cannot be read never (Adam, decision 6, 2026-09-25). Two names for one
- * place, or two that cannot be told apart, are refused before anything moves: a "copy" there could be the file.
+ * ⚠️ NO COPY IS DELETED UNTIL ANOTHER IS VERIFIED. A copy counts once it has been written and read back with a matching
+ * hash — no fsync, as `store()` also has none — and ~~one disk's copy is deleted only while another's is known to hold
+ * the same bytes~~ a copy is deleted only once the kept copy is verified by SHA-256 on the disk the row's state says it
+ * belongs on — or, for a JPEG settle refuses to publish, on the private disk (decision 37) — one that differs goes with
+ * both hashes logged (Adam, decisions 2 and 2b, 2026-09-24); one alone matching the checksum never, and one that cannot
+ * be read never (Adam, decision 6, 2026-09-25). Two names for one place, or two that cannot be told apart, are refused
+ * before anything moves: a "copy" there could be the file.
  *
  * ⚠️ BYTES MOVE AFTER THE OUTERMOST COMMIT, NEVER INSIDE A TRANSACTION THAT MIGHT STILL ROLL BACK. Publication
  * follows the commit that made a file public again; the compensation of a withdrawal the database then rolled back
