@@ -5,9 +5,10 @@ const path = require('node:path');
 /*
  * Signs in the two people the Blog blueprint's browser test needs — Phase 5, ADR-039.
  *
- * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds nothing but what `kitsune:blueprint apply blog` wrote, so the owner
- * measures what the command created and the writer measures the role it created — assigned to her in
- * `e2e/global-setup.js` through the audited path, because a blueprint assigns nobody.
+ * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but its seeded owner role and what
+ * `kitsune:blueprint apply blog` wrote, so the owner measures what the command created and the writer measures the
+ * role it created — assigned to her in `e2e/global-setup.js` through the audited path, because a blueprint assigns
+ * nobody.
  */
 async function signIn(page, email, file) {
     await page.goto('/admin/login');

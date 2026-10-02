@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
@@ -118,5 +119,37 @@ it('commits the manifest with the rows, so a kill after them is finished by the 
     expect($finished['entry_types'])->toBe(1)
         ->and($finished['roles'])->toBe(1)
         ->and($finished['receipt']['applied_at'])->not->toBeNull()
-        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
+        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull()
+        /* The finish built the index for real: the generated column is on the table. */
+        ->and(array_filter(Schema::getColumnListing('entries'), static fn (string $column): bool => str_starts_with($column, 'idx_dispatch_code')))->not->toBeEmpty();
+});
+
+/**
+ * ⚠️ AND INSIDE THEIR TRANSACTION, NOT JUST AFTER IT. A kill between a commit of the rows and a separate write of the
+ * manifest is the stranded org this exists to prevent — rows there, manifest null, and the next run refusing its own
+ * types. So at the moment the manifest is written, a second process must not yet see the rows: they commit together.
+ */
+it('writes the manifest before the rows are visible, in their transaction', function (): void {
+    $seen = null;
+
+    DB::listen(function (QueryExecuted $query) use (&$seen): void {
+        if ($seen === null && str_starts_with($query->sql, 'update "blueprints"') && str_contains($query->sql, '"manifest"')) {
+            $seen = receiptZeroSeen($this->custodyFile) + ['level' => DB::connection()->transactionLevel()];
+
+            throw new RuntimeException('killed as the manifest was written');
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, 'killed as the manifest was written');
+
+    expect($seen['entry_types'])->toBe(0)
+        ->and($seen['roles'])->toBe(0)
+        ->and($seen['level'])->toBe(1);
+
+    $after = receiptZeroSeen($this->custodyFile);
+
+    expect($after['entry_types'])->toBe(0)
+        ->and($after['roles'])->toBe(0)
+        ->and($after['receipt'])->toBe(['version' => '1.0.0', 'manifest' => null, 'applied_at' => null]);
 });

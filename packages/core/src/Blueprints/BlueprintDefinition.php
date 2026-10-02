@@ -49,8 +49,9 @@ interface BlueprintDefinition
     /**
      * What version this definition is, as the author declares it.
      *
-     * The receipt records which version an org got, so a later apply can tell an upgrade from a re-run of the
-     * same thing. Any string an author can compare; nothing here parses it as semver.
+     * The receipt records which version an org got, so a later apply can tell a re-run of the same thing from a
+     * different version — which, once applied, is refused until ADR-039's merge exists. Any string an author can
+     * compare; nothing here parses it as semver, so newer and older are refused alike.
      */
     public function version(): string;
 

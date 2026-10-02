@@ -21,8 +21,9 @@ namespace Kitsune\Core\Blueprints;
  * worth taking whole.
  *
  * ⚠️ THIS IS NOT WHAT MAKES RE-APPLY IDEMPOTENT. The receipt is: ~~a second apply reads what the first one
- * wrote and skips it~~ a second apply at the same version finds the receipt finished and does nothing, or
- * finishes one whose rows committed; a different version is refused until ADR-039's merge exists — so an author
+ * wrote and skips it~~ a second apply at the same version finds the receipt finished and does nothing; one whose
+ * rows committed and whose finish did not run is finished, at the version it records; one that wrote no rows is
+ * applied afresh; and a different version over a finished receipt is refused until ADR-039's merge exists — so an author
  * never has to choose `Skip` to get idempotence. This enum answers a different question — what to do about a row
  * **this blueprint did not create**, which is a collision with somebody else's work rather than with its own.
  */

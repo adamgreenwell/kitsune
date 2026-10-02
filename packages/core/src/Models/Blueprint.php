@@ -68,8 +68,8 @@ class Blueprint extends Model implements RequiresModelSave
         return [
             'handle' => 'it names which blueprint this org has, so a bulk write re-points an existing receipt '
                 .'— and the manifest recording what that blueprint wrote — at a different one.',
-            'version' => 'apply compares it against the blueprint\'s own version to tell an upgrade from a '
-                .'re-run, so a bulk write makes a stale apply look current and skips the work an upgrade owes.',
+            'version' => 'apply compares it against the blueprint\'s own version to tell a re-run from a different '
+                .'version, so a bulk write makes a stale apply look current, or a current one refused.',
             /*
              * ⚠️ NOT `applied_at`, and the omission is deliberate rather than an oversight.
              *

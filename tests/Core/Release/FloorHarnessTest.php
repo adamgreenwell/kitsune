@@ -53,6 +53,7 @@ function floorStubs(
     int $blogExit = 0,
     string $blogReport = 'Applied blog 1.0.0 into X. 0 indexed.',
     string $blogStatus = 'applied',
+    string $symlinkOne = '',
 ): void {
     $platformFailsFlag = $platformFails ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
@@ -92,7 +93,17 @@ function floorStubs(
         echo "blueprint apply took: 812 ms"
         exit $blogExit
         ;;
-      *kitsune:blueprint\ status*) echo '$blogStatusLine' ; exit 0 ;;
+      # The whole table, as Symfony writes it: the row is followed by a border, which a reader that stops at its
+      # first match — `grep -q` on a pipe — would leave written into a closed pipe.
+      *kitsune:blueprint\ status*)
+        echo '+-----+--------+---------+------+'
+        echo '| Org | Handle | Version | Applied |'
+        echo '+-----+--------+---------+------+'
+        echo '$blogStatusLine'
+        sleep 0.2
+        echo '+-----+--------+---------+------+'
+        exit 0
+        ;;
     esac
 
     case "\$*" in
@@ -131,6 +142,12 @@ function floorStubs(
       for pkg in "\$app"/../packages/*/; do
         name=\$(basename "\$pkg")
         [[ -z "$installOnly" || "\$name" == "$installOnly" ]] || continue
+        # A path repository left to symlink would point vendor at the package rather than copy it.
+        if [[ "\$name" == "$symlinkOne" ]]; then
+          mkdir -p "\$app/vendor/kitsune"
+          ln -s "\$(cd "\$pkg" && pwd)" "\$app/vendor/kitsune/\$name"
+          continue
+        fi
         mkdir -p "\$app/vendor/kitsune/\$name"
         echo "{\\"name\\":\\"kitsune/\$name\\"}" > "\$app/vendor/kitsune/\$name/composer.json"
       done
@@ -435,6 +452,14 @@ it('installs every package the skeleton requires through one path repository', f
     foreach ($required as $name) {
         expect($packages)->toContain(substr($name, strlen('kitsune/')));
     }
+});
+
+it('refuses an install that symlinked a required package rather than copying it', function (): void {
+    floorStubs($this->dir, symlinkOne: 'person');
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse('an install that symlinked kitsune/person was measured')
+        ->and($run->getErrorOutput())->toContain('kitsune/person was not installed as a copy of packages/person');
 });
 
 it('refuses an install that left a required package out', function (): void {

@@ -162,6 +162,50 @@ it('refuses a grant on anything it does not declare, before writing anything', f
     'a typo' => ['dispatchh', 'It declares: dispatch.'],
 ]);
 
+/**
+ * ⚠️ A GLOBAL TYPE'S HANDLE IS NOT A BLUEPRINT'S TO DECLARE. Grants are matched on the handle, so a type of the same
+ * handle here would take the global one's place, and the role's grants would reach the global type's entries in this
+ * org — rows the blueprint never brought. Refused under either policy, inside the transaction, with nothing left.
+ */
+it('refuses to declare a global type\'s handle, under either policy', function (OnCollision $policy): void {
+    $global = EntryType::create(['handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true]);
+    FixtureBlueprint::$override = [new EntryTypeDeclaration(handle: 'image', name: 'Image', pluralName: 'Images', fields: [
+        new FieldDeclaration(handle: 'image_note', type: 'textarea', label: 'Note', piiClass: 'none'),
+    ], onCollision: $policy)];
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['image' => ['view', 'update', 'delete']])];
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, 'Entry type [image] is a global type, which every organisation has');
+
+    expect(EntryType::query()->where('handle', 'image')->pluck('id')->all())->toBe([$global->getKey()])
+        ->and(FieldStorage::query()->where('handle', 'image_note')->count())->toBe(0)
+        ->and(Role::query()->withoutGlobalScopes()->where('handle', 'dispatcher')->count())->toBe(0)
+        ->and(RolePermission::query()->withoutGlobalScopes()->count())->toBe(0);
+})->with(['fail' => OnCollision::Fail, 'skip' => OnCollision::Skip]);
+
+/**
+ * ⚠️ NOR A GRANT ON A TYPE IT ADOPTED. Under Skip the operator's type is kept and the blueprint's fields added to it,
+ * but the type stays the operator's, and so does authority over its entries — a role granting on it would hand that
+ * to whoever an owner later assigns the role to, believing it the blueprint's.
+ */
+it('refuses a grant on a type the apply adopted rather than created', function (): void {
+    $theirs = EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    FixtureBlueprint::$onCollision = OnCollision::Skip;
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, 'Role [dispatcher] grants on [dispatch], which this apply adopted rather than created');
+
+    expect(Role::query()->withoutGlobalScopes()->where('handle', 'dispatcher')->count())->toBe(0)
+        ->and(RolePermission::query()->withoutGlobalScopes()->count())->toBe(0)
+        ->and(FieldStorage::query()->where('handle', 'dispatch_body')->count())->toBe(0)
+        ->and(EntryType::query()->where('handle', 'dispatch')->pluck('id')->all())->toBe([$theirs->getKey()]);
+
+    /* And the same declaration without the role is the adoption it always was. */
+    FixtureBlueprint::$roles = [];
+
+    expect(BlueprintApplier::apply(new FixtureBlueprint)['skipped'])->toContain('entry type dispatch');
+});
+
 it('refuses an action it cannot grant, before writing anything', function (array $actions): void {
     FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => $actions])];
 
@@ -178,44 +222,79 @@ it('refuses an action it cannot grant, before writing anything', function (array
     'not a list' => [['a' => 'view']],
 ]);
 
-it('refuses a role its author got wrong, before writing anything', function (RoleDeclaration|array $roles): void {
+/* Each row names its own rule's words, so a row that reached a different rule than its name says fails. */
+it('refuses a role its author got wrong, before writing anything', function (RoleDeclaration|array $roles, string $message): void {
     FixtureBlueprint::$roles = is_array($roles) ? $roles : [$roles];
 
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(InvalidArgumentException::class);
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(InvalidArgumentException::class, $message);
 
     blueprintNothingWritten();
 })->with([
-    'an empty handle' => [new RoleDeclaration('', 'Dispatcher', ['dispatch' => ['view']])],
-    'a capital' => [new RoleDeclaration('Editor', 'Editor', ['dispatch' => ['view']])],
-    'a space' => [new RoleDeclaration('blog editor', 'Editor', ['dispatch' => ['view']])],
-    'a hyphen' => [new RoleDeclaration('blog-editor', 'Editor', ['dispatch' => ['view']])],
-    'a leading hyphen' => [new RoleDeclaration('-x', 'X', ['dispatch' => ['view']])],
-    'too long' => [new RoleDeclaration(str_repeat('a', 256), 'Long', ['dispatch' => ['view']])],
-    'a blank name' => [new RoleDeclaration('dispatcher', '   ', ['dispatch' => ['view']])],
-    'no grants' => [new RoleDeclaration('dispatcher', 'Dispatcher', [])],
-    'a numeric key' => [new RoleDeclaration('dispatcher', 'Dispatcher', [0 => ['view']])],
+    'an empty handle' => [new RoleDeclaration('', 'Dispatcher', ['dispatch' => ['view']]), 'a role handle is lowercase snake_case'],
+    'a capital' => [new RoleDeclaration('Editor', 'Editor', ['dispatch' => ['view']]), 'a role handle is lowercase snake_case'],
+    'a space' => [new RoleDeclaration('blog editor', 'Editor', ['dispatch' => ['view']]), 'a role handle is lowercase snake_case'],
+    'a hyphen' => [new RoleDeclaration('blog-editor', 'Editor', ['dispatch' => ['view']]), 'a role handle is lowercase snake_case'],
+    'a leading hyphen' => [new RoleDeclaration('-x', 'X', ['dispatch' => ['view']]), 'a role handle is lowercase snake_case'],
+    'too long' => [new RoleDeclaration(str_repeat('a', 256), 'Long', ['dispatch' => ['view']]), 'at most 255 characters'],
+    'a blank name' => [new RoleDeclaration('dispatcher', '   ', ['dispatch' => ['view']]), 'with no name, or one longer than 255 characters'],
+    'a name too long' => [new RoleDeclaration('dispatcher', str_repeat('n', 256), ['dispatch' => ['view']]), 'with no name, or one longer than 255 characters'],
+    'no grants' => [new RoleDeclaration('dispatcher', 'Dispatcher', []), 'a role that grants nothing'],
+    'a numeric key' => [new RoleDeclaration('dispatcher', 'Dispatcher', [0 => ['view']]), 'grants are keyed by entry type handle'],
     'one handle twice' => [[
         new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']]),
         new RoleDeclaration('dispatcher', 'Again', ['dispatch' => ['update']]),
-    ]],
+    ], 'declares role [dispatcher] twice'],
 ]);
 
-it('refuses an entry type no grant could name, or one declared twice, before the receipt', function (string $how): void {
-    $field = new FieldDeclaration(handle: 'dispatch_body', type: 'textarea', label: 'Body', piiClass: 'none');
-    FixtureBlueprint::$roles = [];
-    FixtureBlueprint::$override = $how === 'hyphen'
-        ? [new EntryTypeDeclaration(handle: 'blog-post', name: 'Post', pluralName: 'Posts', fields: [$field])]
-        : [
-            new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [$field]),
-            new EntryTypeDeclaration(handle: 'dispatch', name: 'Again', pluralName: 'Agains', fields: []),
-        ];
+/**
+ * ⚠️ BEFORE THE RECEIPT IS READ, NOT ONLY BEFORE IT IS WRITTEN. A definition gone wrong without a version bump, applied
+ * again where it is already applied, is refused — not answered "already applied" — and the refusal asks the database
+ * nothing at all.
+ */
+it('refuses a malformed definition where it is already applied, asking the database nothing', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['*' => ['view']])];
+
+    $queries = 0;
+    DB::listen(function () use (&$queries): void {
+        $queries++;
+    });
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(InvalidArgumentException::class, $how === 'hyphen' ? 'cannot carry a grant' : 'twice');
+        ->toThrow(InvalidArgumentException::class, 'a blueprint never grants the wildcard');
+
+    expect($queries)->toBe(0);
+});
+
+/**
+ * ⚠️ `*` AMONG THEM. The grant grammar reads `*` as every type, so a type handled `*` would make every per-type grant
+ * on it in the admin the wildcard; the admin's own shape refuses it, and so does the pre-flight.
+ */
+it('refuses an entry type its author got wrong, before the receipt', function (string $how, string $message): void {
+    $field = new FieldDeclaration(handle: 'dispatch_body', type: $how === 'field type' ? 'no_such_type' : 'textarea', label: 'Body', piiClass: 'none');
+    FixtureBlueprint::$roles = [];
+    FixtureBlueprint::$override = match ($how) {
+        'twice' => [
+            new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [$field]),
+            new EntryTypeDeclaration(handle: 'dispatch', name: 'Again', pluralName: 'Agains', fields: []),
+        ],
+        'field type' => [new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [$field])],
+        default => [new EntryTypeDeclaration(handle: $how, name: 'Post', pluralName: 'Posts', fields: [$field])],
+    };
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(InvalidArgumentException::class, $message);
 
     expect(Blueprint::query()->withoutGlobalScopes()->count())->toBe(0)
-        ->and(EntryType::query()->withoutGlobalScopes()->whereIn('handle', ['blog-post', 'dispatch'])->count())->toBe(0);
-})->with(['hyphen', 'twice']);
+        ->and(EntryType::query()->withoutGlobalScopes()->whereNotNull('org_id')->count())->toBe(0);
+})->with([
+    'a hyphen' => ['blog-post', 'an entry type handle is lowercase snake_case'],
+    'the wildcard' => ['*', 'declares entry type [*]: an entry type handle is lowercase snake_case'],
+    'a capital' => ['Post', 'an entry type handle is lowercase snake_case'],
+    'too long' => [str_repeat('p', 256), 'at most 255 characters'],
+    'a handle the admin routes use' => ['create', 'a handle the admin\'s own routes use'],
+    'declared twice' => ['twice', 'declares entry type [dispatch] twice'],
+    'an unknown field type' => ['field type', 'of type [no_such_type], which no field type is registered as'],
+]);
 
 it('refuses a role the org already has under the default policy, and writes none of the apply', function (): void {
     $operator = blueprintOperatorRole('dispatcher', ['entry.article.view']);
@@ -314,7 +393,7 @@ it('refuses another version over the one recorded, and writes nothing', function
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(
         RuntimeException::class,
-        "Blueprint [fixture] is recorded in this organisation at 1.0.0 (applied); this definition is {$to}. Applying one version over another is ADR-039's additive merge, which is not built yet. Nothing was written, and the receipt still says 1.0.0.",
+        "Blueprint [fixture] is applied in this organisation at 1.0.0; this definition is {$to}. Applying a different version over it, newer or older, waits on ADR-039's merge, which is not built yet, and nothing clears a receipt yet either. Nothing was written, and the receipt still says 1.0.0.",
     );
 
     $receipt = Blueprint::receiptFor('fixture');

@@ -2,8 +2,9 @@
 const { test, expect } = require('@playwright/test');
 
 /*
- * The Blog blueprint, as `kitsune:blueprint apply blog` left it — Phase 5, ADR-039, and the browser test that ADR owes
- * outside `/c/{type}`.
+ * The Blog blueprint, as `kitsune:blueprint apply blog` left it — Phase 5, ADR-039: AGENTS.md §9 coverage, outside
+ * `/c/{type}`, of what the command wrote. Not the test of an apply flow in the admin that ADR-039 still owes, because
+ * there is no admin route to a blueprint yet.
  *
  * ⚠️ WHAT THE COMMAND WROTE, NOT WHAT A SEEDER THOUGHT IT WOULD. `inkwell` is seeded bare — two sites, an owner, a
  * writer holding no role — and `e2e/global-setup.js` applies Blog into it with the command, then gives the writer
@@ -132,6 +133,7 @@ test.describe.serial('the Blog blueprint, applied by its command', () => {
 
         // ⚠️ AND NOT THE WILDCARD: a blueprint grants only on what it declares.
         const wildcard = sectionFor(page, 'Every entry type, including ones added later');
+        await expect(wildcard.getByRole('checkbox')).toHaveCount(5);
         for (const box of await wildcard.getByRole('checkbox').all()) {
             await expect(box).not.toBeChecked();
         }

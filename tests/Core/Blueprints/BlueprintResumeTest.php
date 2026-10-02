@@ -8,6 +8,8 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
@@ -31,6 +33,9 @@ use Kitsune\Core\Tests\Fixtures\SchemaManagerStandIn;
  * "the rows are there and the finish did not run", and that is the one state the next run may complete rather
  * than redo. Before this, the manifest was written after the commit, and an apply stopped between the two left an
  * org whose every re-run refused the rows it had itself written.
+ *
+ * ⚠️ NO REAL DDL HERE. The schema manager is a stand-in that records each sync and runs none: a generated column is
+ * DDL, which on MySQL and MariaDB commits `RefreshDatabase`'s own wrapper. `tests/LevelZero` asks for the real one.
  */
 
 beforeEach(function (): void {
@@ -42,6 +47,7 @@ beforeEach(function (): void {
     ];
     FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view', 'update']])];
 
+    $this->schema = SchemaManagerStandIn::install()->recordOnly();
     $this->org = Org::create(['slug' => 'acme', 'name' => 'Acme']);
 
     app(Context::class)->setOrg($this->org);
@@ -52,11 +58,16 @@ afterEach(function (): void {
     app(Context::class)->forget();
 });
 
-it('finishes an apply that stopped after its rows committed, writing none of them twice', function (): void {
-    SchemaManagerStandIn::install()->throwOnce(new RuntimeException('the index sync stopped here'));
+/** Stop the next apply after its rows commit, as a kill or a failed index sync would. */
+function resumeInterrupted(): void
+{
+    test()->schema->throwOnce(new RuntimeException('the index sync stopped here'));
 
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(RuntimeException::class, 'the index sync stopped here');
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'the index sync stopped here');
+}
+
+it('finishes an apply that stopped after its rows committed, writing none of them twice', function (): void {
+    resumeInterrupted();
 
     $receipt = Blueprint::receiptFor('fixture');
 
@@ -64,11 +75,14 @@ it('finishes an apply that stopped after its rows committed, writing none of the
         ->and(Role::query()->where('handle', 'dispatcher')->count())->toBe(1)
         ->and($receipt->applied_at)->toBeNull()
         ->and($receipt->manifest)->not->toBeNull()
-        ->and($receipt->manifest['entry_types'][0]['id'])->toBe(EntryType::query()->where('handle', 'dispatch')->value('id'));
+        ->and($receipt->manifest['entry_types'][0]['id'])->toBe(EntryType::query()->where('handle', 'dispatch')->value('id'))
+        ->and($this->schema->syncedHandles)->toBe([]);
 
     $result = BlueprintApplier::apply(new FixtureBlueprint);
 
     expect($result['indexed'])->toBe(1)
+        /* The finish really asked for the index, rather than counting what it would have asked for. */
+        ->and($this->schema->syncedHandles)->toBe(['dispatch_code'])
         ->and($result['created'])->toBe([])
         ->and($result['roles_created'])->toBe([])
         ->and($result['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
@@ -106,41 +120,169 @@ it('leaves the manifest unwritten when a refusal rolls the rows back, and applie
 });
 
 /**
- * ⚠️ A MANIFEST IS CHECKED, NOT TRUSTED. It names rows by id, and an id this org does not have is either another
- * org's row or nobody's — finishing on it would record as applied a blueprint whose rows are not here.
+ * ⚠️ AND A RECEIPT THAT WROTE NO ROWS IS NO VERSION'S. Blog's version moves with core's, so the obstacle removed after
+ * an upgrade meets a newer definition than the one that stopped — and with no row of the old version committed, there
+ * is nothing to merge: the new one applies afresh, and the receipt takes its version.
  */
-it('refuses to finish a receipt whose manifest names rows this organisation does not have', function (string $which): void {
-    $other = Org::create(['slug' => 'rival', 'name' => 'Rival']);
-    app(Context::class)->setOrg($other);
-    $theirType = EntryType::create(['org_id' => $other->getKey(), 'handle' => 'dispatch', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
-    $theirRole = Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
-    app(Context::class)->setOrg($this->org);
+it('applies afresh at a new version over a receipt that wrote no rows', function (): void {
+    $theirs = Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
 
-    $manifest = [
-        'version' => '1.0.0',
-        'entry_types' => [['handle' => 'dispatch', 'id' => $which === 'type' ? $theirType->getKey() : 999_999, 'outcome' => 'created', 'fields' => []]],
-        'roles' => [['handle' => 'dispatcher', 'id' => $which === 'role' ? $theirRole->getKey() : 999_998, 'outcome' => 'created']],
-    ];
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'Role [dispatcher] already exists');
 
-    Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'manifest' => $manifest, 'applied_at' => null]);
+    $theirs->delete();
+    FixtureBlueprint::$version = '1.0.1';
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+    $receipt = Blueprint::receiptFor('fixture');
+
+    expect($result['version'])->toBe('1.0.1')
+        ->and($result['roles_created'])->toBe(['dispatcher'])
+        ->and($receipt->version)->toBe('1.0.1')
+        ->and($receipt->applied_at)->not->toBeNull()
+        ->and(Blueprint::query()->count())->toBe(1);
+});
+
+/**
+ * ⚠️ AND ONE WHOSE ROWS COMMITTED IS FINISHED AT THE VERSION IT RECORDS. Refusing it — the newer definition is not the
+ * version that wrote the rows — stranded the org, because an operator cannot get an older core's Blog back. So the
+ * finish completes the recorded version, says so, and the newer one is refused as any other version over an applied
+ * receipt is.
+ */
+it('finishes the recorded version under a newer definition, and then refuses the newer one', function (): void {
+    resumeInterrupted();
+    $manifest = Blueprint::receiptFor('fixture')->manifest;
+
+    FixtureBlueprint::$version = '1.1.0';
+    FixtureBlueprint::$roles[] = new RoleDeclaration('router', 'Router', ['dispatch' => ['view']]);
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+    $receipt = Blueprint::receiptFor('fixture');
+
+    expect($result['version'])->toBe('1.0.0')
+        ->and($result['skipped'])->toContain('version: finished at 1.0.0, which the receipt records; this definition is 1.1.0, and applying it over 1.0.0 waits on ADR-039\'s merge')
+        ->and($result['indexed'])->toBe(1)
+        ->and($receipt->version)->toBe('1.0.0')
+        ->and($receipt->applied_at)->not->toBeNull()
+        ->and($receipt->manifest)->toBe($manifest)
+        ->and(Role::query()->where('handle', 'router')->exists())->toBeFalse();
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(RuntimeException::class, 'records rows this organisation does not have');
+        ->toThrow(RuntimeException::class, 'is applied in this organisation at 1.0.0; this definition is 1.1.0');
+});
+
+/**
+ * ⚠️ A MANIFEST IS CHECKED, NOT TRUSTED. It names rows by id, and a row under that id that is another org's — or this
+ * org's under another handle — means the manifest is not this org's record of these rows. Each row isolates one rule:
+ * the other half of its manifest is a skipped declaration, which records no id to check.
+ */
+it('refuses to finish a receipt whose manifest names a row that is not this organisation\'s', function (string $which): void {
+    $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+    app(Context::class)->setOrg($rival);
+    $theirType = EntryType::create(['org_id' => $rival->getKey(), 'handle' => 'dispatch', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    $theirRole = Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
+    app(Context::class)->setOrg($this->org);
+    $ourOther = EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'notice', 'name' => 'Notice', 'plural_name' => 'Notices']);
+
+    [$typeId, $roleId, $named] = match ($which) {
+        'type' => [$theirType->getKey(), null, 'entry type id '.$theirType->getKey().' is not this organisation\'s dispatch'],
+        'role' => [null, $theirRole->getKey(), 'role id '.$theirRole->getKey().' is not this organisation\'s dispatcher'],
+        'handle' => [$ourOther->getKey(), null, 'entry type id '.$ourOther->getKey().' is not this organisation\'s dispatch'],
+    };
+
+    Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'applied_at' => null, 'manifest' => [
+        'version' => '1.0.0',
+        'entry_types' => [['handle' => 'dispatch', 'id' => $typeId, 'outcome' => $typeId === null ? 'skipped' : 'created', 'fields' => []]],
+        'roles' => [['handle' => 'dispatcher', 'id' => $roleId, 'outcome' => $roleId === null ? 'skipped' : 'created']],
+    ]]);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, "The receipt for [fixture] cannot be finished: {$named}.");
 
     expect(Blueprint::receiptFor('fixture')->applied_at)->toBeNull()
-        ->and(EntryType::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse()
-        ->and(Role::query()->exists())->toBeFalse();
-})->with(['another org\'s type' => 'type', 'another org\'s role' => 'role']);
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch')->exists())->toBeFalse()
+        ->and(Role::query()->exists())->toBeFalse()
+        ->and($this->schema->syncedHandles)->toBe([]);
+})->with(['another org\'s type' => 'type', 'another org\'s role' => 'role', 'this org\'s type of another handle' => 'handle']);
+
+/** Nor a manifest that records nothing of what the definition declares: that would finish an apply with no rows. */
+it('refuses to finish a receipt whose manifest records none of what is declared', function (): void {
+    Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'applied_at' => null, 'manifest' => ['version' => '1.0.0']]);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, 'cannot be finished: entry type dispatch is not recorded; role dispatcher is not recorded.');
+
+    expect(Blueprint::receiptFor('fixture')->applied_at)->toBeNull();
+});
+
+/**
+ * ⚠️ BUT A ROW THE OPERATOR REMOVED IS NOT A FORGERY. The rows are live in the admin while the finish is owed, and
+ * removing one after a finish costs nothing — so removing it before one must not leave an org that no command can
+ * finish or clear. It is reported, and the finish goes ahead without writing it again.
+ */
+it('finishes over a row the operator removed while the finish was owed, and says so', function (): void {
+    resumeInterrupted();
+
+    Role::query()->where('handle', 'dispatcher')->firstOrFail()->delete();
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+
+    expect($result['skipped'])->toBe([
+        'rows: written by an earlier run that stopped before it finished; finished now',
+        'role dispatcher: removed since the interrupted apply wrote it; not written again',
+    ])
+        ->and(Role::query()->where('handle', 'dispatcher')->exists())->toBeFalse()
+        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
+});
 
 /** A skipped role is recorded with no id, and the finish does not look for one. */
 it('finishes a receipt that skipped a role, without asking for its id', function (): void {
     FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']], OnCollision::Skip)];
     Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
 
-    SchemaManagerStandIn::install()->throwOnce(new RuntimeException('stopped'));
-
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'stopped');
+    resumeInterrupted();
 
     expect(BlueprintApplier::apply(new FixtureBlueprint)['indexed'])->toBe(1)
         ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
 });
+
+/** ⚠️ Field storage is `#[Unscoped]`: the finish indexes this org's, and not another org's of the same handle. */
+it('indexes only this organisation\'s storage when it finishes', function (): void {
+    $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+    app(Context::class)->setOrg($rival);
+    BlueprintApplier::apply(new FixtureBlueprint);
+    app(Context::class)->setOrg($this->org);
+
+    resumeInterrupted();
+    $before = count($this->schema->syncedHandles);
+
+    expect(BlueprintApplier::apply(new FixtureBlueprint)['indexed'])->toBe(1)
+        ->and(count($this->schema->syncedHandles) - $before)->toBe(1);
+});
+
+/**
+ * ⚠️ TWO APPLIES AT ONCE, AND THE ONE THAT LOSES SAYS SO. Integrity holds without help — every row has a unique index,
+ * and a stale intent record saves nothing — but the loser used to report a raw constraint error, or refuse "a type it
+ * did not create" that the same blueprint had created a moment before. Each interleaving is staged by running the
+ * other apply in full at the moment this one has read the receipt.
+ */
+it('names a concurrent apply, rather than a constraint or a type it did not create', function (bool $receiptFirst): void {
+    FixtureBlueprint::$override = [new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [
+        new FieldDeclaration(handle: 'dispatch_body', type: 'textarea', label: 'Body', piiClass: 'none'),
+    ])];
+
+    if ($receiptFirst) {
+        /* The other apply's intent record, committed before this one read it. */
+        Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'manifest' => null, 'applied_at' => null]);
+    }
+
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use (&$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'blueprints')) {
+            $staged = true;
+            BlueprintApplier::apply(new FixtureBlueprint);
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
+        ->toThrow(RuntimeException::class, 'another apply of it ran at the same moment');
+})->with(['before either receipt' => false, 'after the other\'s intent record' => true]);

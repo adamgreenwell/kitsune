@@ -119,8 +119,8 @@ rm -f "$app/composer.lock"
 # container would then load in preference to the one written below, silently measuring a different app.
 rm -f "$app/bootstrap/cache"/*.php
 
-# kitsune/core as real files, exactly as deploy/release.sh step 6 installs it and as a Packagist install will
-# put it. `symlink: false` matters twice over: it is how a released install resolves, and a symlinked vendor
+# Every kitsune/* package as real files, exactly as deploy/release.sh step 6 installs them and as a Packagist install
+# will put them. `symlink: false` matters twice over: it is how a released install resolves, and a symlinked vendor
 # entry would need its target mounted into the container as well.
 # ⚠️ THE DEPENDENCY GRAPH IS AN INPUT TOO. The skeleton commits no lock (deploy/release.sh step 5 says why), so
 # `composer install` resolves whatever Laravel, Filament and their dependencies currently satisfy the skeleton's
@@ -339,10 +339,11 @@ echo "  catch. What the floor still needs, and this does not give, is the same m
 echo "  CONCURRENCY: the workers figure above is arithmetic from one request, not an observation of that"
 echo "  many running at once."
 
-# ⚠️ PHASE 5's DONE-WHEN, measured where ADR-039 says: in this image, under the floor's limits, on a fresh copy. One
-# command from an installation to a blog, under 60 s at the floor. `migrate` is the installer's step, not counted.
+# ⚠️ THE APPLY'S TIME TOWARD PHASE 5's DONE-WHEN, measured where ADR-039 says: in this image, under the floor's limits,
+# on a fresh copy — one command, under 60 s at the floor. Its time only: nobody can sign in to what the fresh path
+# creates until there is a first user, so this is not the done-when met. `migrate` is the installer's step, not counted.
 #
-# ⚠️ TIMED INSIDE THE IMAGE, because a host-side `date +%N` is not portable (macOS's bash 3.2 has no such format).
+# ⚠️ TIMED INSIDE THE IMAGE, because a host-side `date +%N` is not portable: macOS's BSD date has no %N.
 # ⚠️ TWO PATHS, because they exclude each other: on an empty installation the apply creates the org and its site
 # (FirstOrg), and FirstOrg refuses whenever any org exists — so "content already in the table" is a second run, into
 # the corpus org, whose `article` collides with none of Blog's types.
@@ -366,7 +367,12 @@ apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first
   printf '%s\n' "$out" | grep -q '^Applied blog ' || refuse "the $1 Blog apply did not report applying blog"
 
   # A receipt left unfinished is an apply that did not happen, however quickly it stopped.
-  if docker run --rm -v "$run":/app -w /app "$image" php artisan kitsune:blueprint status 2>&1 | grep -q INTERRUPTED; then
+  # ⚠️ CAPTURED, THEN MATCHED. Piped into `grep -q`, which stops reading at the first match, the table's bottom border
+  # was written into a closed pipe — and under pipefail the SIGPIPE turned the pipeline false and skipped the refusal.
+  local status_out
+  status_out=$(docker run --rm -v "$run":/app -w /app "$image" php artisan kitsune:blueprint status 2>&1) \
+    || refuse "could not read blueprint status after the $1 Blog apply"
+  if grep -q INTERRUPTED <<<"$status_out"; then
     refuse "the $1 Blog apply left its receipt unfinished"
   fi
 

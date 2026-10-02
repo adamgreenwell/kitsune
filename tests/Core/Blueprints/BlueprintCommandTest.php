@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
@@ -43,11 +44,13 @@ it('lists what is registered', function (): void {
 });
 
 /** Blog is core's own, so it is listed with nothing but core installed. */
+/*
+ * Blog is core's own, so it is listed with nothing but core installed — matched as one row, because the output mock
+ * gives each written line to the first expectation it fits, and the fixture's row would answer a bare '1.0.0'.
+ */
 it('lists Blog', function (): void {
-    $this->artisan('kitsune:blueprint list')
-        ->expectsOutputToContain('blog')
-        ->expectsOutputToContain('1.0.0')
-        ->assertSuccessful();
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'list']))->toBe(0)
+        ->and(Artisan::output())->toMatch('/\|\s*blog\s*\|\s*1\.0\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\BlogBlueprint\s*\|/');
 });
 
 it('applies into a named org', function (): void {
@@ -155,14 +158,24 @@ it('reports an apply whose rows committed and whose finish did not run as that',
         ->assertSuccessful();
 });
 
-it('says how many roles it created and that nobody holds them', function (): void {
+/** Who can assign what was created is said as it is: an owner where the org has one, and that it has none where not. */
+it('says how many roles it created, that nobody holds them, and who can assign them', function (bool $owner, string $tail): void {
     FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+
+    if ($owner) {
+        app(Context::class)->setOrg($this->org);
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        app(Context::class)->forget();
+    }
 
     $this->artisan('kitsune:blueprint apply fixture --org=acme')
         ->expectsOutputToContain('created  role dispatcher: entry.dispatch.view')
-        ->expectsOutputToContain('1 role was created and nobody holds it: an owner assigns it under Roles (ADR-033).')
+        ->expectsOutputToContain($tail)
         ->assertSuccessful();
-});
+})->with([
+    'an org with an owner' => [true, '1 role was created and nobody holds it: an owner assigns it under Roles (ADR-033).'],
+    'an org with none' => [false, '1 role was created and nobody holds it, and this organisation has no owner yet to assign it (ADR-033).'],
+]);
 
 /*
  * ⚠️ THE BOOTSTRAP, WHICH IS WHAT MAKES ADR-030's CONDITION SATISFIABLE.
@@ -252,7 +265,7 @@ describe('on an installation with no organisation at all', function (): void {
      * a rollback that left it there handed the caller a context naming an org no row holds. Asked of `FirstOrg`
      * itself, because the command clears the context on its own way out and would hide it.
      */
-    it('gives the context back when the site cannot be created', function (): void {
+    it('clears the context when the site cannot be created', function (): void {
         Site::creating(function (): void {
             throw new RuntimeException('site write failed, for the sake of argument');
         });
@@ -265,6 +278,24 @@ describe('on an installation with no organisation at all', function (): void {
     });
 
     /**
+     * ⚠️ A DEFINITION KNOWABLE AS WRONG LEAVES NO ORG BEHIND. Its refusal needs no database, so it comes before the
+     * first org is written — or the installation would no longer be empty, and a corrected run under any other slug
+     * would be refused.
+     */
+    it('creates no org for a definition it would refuse', function (): void {
+        FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['article' => ['view']])];
+
+        $this->artisan('kitsune:blueprint apply fixture --org=newco')
+            ->expectsOutputToContain('which is not a type this blueprint declares')
+            ->doesntExpectOutputToContain('Created organisation')
+            ->assertFailed();
+
+        expect(Org::query()->withTrashed()->count())->toBe(0)
+            ->and(DB::table('sites')->count())->toBe(0)
+            ->and(DB::table('blueprints')->count())->toBe(0);
+    });
+
+    /**
      * ⚠️ PHASE 5's ONE COMMAND: an empty installation to a blog, with no step outside it. And no user — the first
      * owner is the next slice's, so until then the output says plainly that nobody can reach the org.
      */
@@ -274,7 +305,7 @@ describe('on an installation with no organisation at all', function (): void {
                 .'a member of it (ADR-026) — until onboarding exists, nobody can reach it in the admin.')
             ->expectsOutputToContain('created  role blog_writer: entry.post.create, entry.post.update, entry.post.view, entry.tag.view')
             ->expectsOutputToContain('Applied blog 1.0.0 into myblog. 0 indexed.')
-            ->expectsOutputToContain('2 roles were created and nobody holds them')
+            ->expectsOutputToContain('2 roles were created and nobody holds them, and this organisation has no owner yet to assign them (ADR-033).')
             ->assertSuccessful();
 
         $org = Org::query()->where('slug', 'myblog')->firstOrFail();

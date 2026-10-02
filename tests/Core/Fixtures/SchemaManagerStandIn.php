@@ -19,12 +19,21 @@ use Throwable;
  *
  * `SchemaManager` is final, so this stands beside it rather than extending it, as `AuditorStandIn` does: bound under
  * its name, it wraps the real one and passes every sync through, except the one it was told to fail.
+ *
+ * ⚠️ OR RECORDS THE SYNC AND RUNS NO DDL, for `tests/Core`. A generated column is DDL, which commits implicitly on
+ * MySQL and MariaDB — there, the `RefreshDatabase` wrapper itself, so the test's rows and the column outlive it and
+ * fail the next test. The level-0 suite, which has no wrapper, is where the real sync is asked for.
  */
 final class SchemaManagerStandIn
 {
     private ?Throwable $throwOnce = null;
 
     public int $synced = 0;
+
+    /** @var list<string> the storage handles synced, in order */
+    public array $syncedHandles = [];
+
+    private bool $passThrough = true;
 
     public function __construct(private readonly SchemaManager $real) {}
 
@@ -34,6 +43,14 @@ final class SchemaManagerStandIn
         app()->instance(SchemaManager::class, $standIn);
 
         return $standIn;
+    }
+
+    /** Record each sync and run none of it. */
+    public function recordOnly(): self
+    {
+        $this->passThrough = false;
+
+        return $this;
     }
 
     /** Throw this from the next sync, once. */
@@ -53,7 +70,11 @@ final class SchemaManagerStandIn
             throw $failure;
         }
 
-        $this->real->sync($storage);
+        if ($this->passThrough) {
+            $this->real->sync($storage);
+        }
+
         $this->synced++;
+        $this->syncedHandles[] = (string) $storage->handle;
     }
 }

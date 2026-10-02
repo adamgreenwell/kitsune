@@ -10,11 +10,13 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Blueprints;
 
+use Illuminate\Database\UniqueConstraintViolationException;
 use InvalidArgumentException;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -25,6 +27,7 @@ use Kitsune\Core\Schema\SchemaManager;
 use Kitsune\Core\Schema\StorageAdoption;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
+use Throwable;
 
 /**
  * Apply a blueprint into the org in context — ADR-039.
@@ -49,19 +52,25 @@ use RuntimeException;
  * outside, with `kitsune:schema-sync` as the documented repair for the pair coming apart.
  *
  * ⚠️ THE MANIFEST COMMITS WITH THE ROWS (ADR-039, roles and Blog as built). Written last inside the transaction,
- * so a receipt whose manifest is set and whose `applied_at` is null means exactly "the rows committed and the
- * finish did not run" — which a re-run at the same version completes rather than refusing its own types. A
- * receipt at another version is refused before anything is written: ADR-039's additive merge is not built, and
- * re-applying over it stranded the org (the intent record cleared the manifest, then the default policy refused
- * the types the first version had created).
+ * so the receipt is always in one of three states, and each says what the next run does:
+ * - `manifest` null, `applied_at` null — no row of any version committed: the next run applies afresh, at its own
+ *   version;
+ * - `manifest` set, `applied_at` null — the rows committed and the finish did not run: the next run finishes the
+ *   version the receipt records, whichever version it is itself, rather than refusing its own types;
+ * - `applied_at` set — done: the same version is a no-op, and a different one is refused before anything is
+ *   written, because ADR-039's additive merge is not built. Applying over it stranded the org: the intent record
+ *   cleared the manifest, then the default policy refused the types the first version had created.
  *
  * ⚠️ AN APPLY WRITES NO `role_user` ROW, AND NO GRANT ON A ROLE IT DID NOT CREATE. A role a blueprint declares is
  * created with no holders, and one already there is either refused or left exactly as it is.
  */
 final class BlueprintApplier
 {
-    /** A role handle: the admin's type-handle shape, so a handle never needs escaping where it is shown. */
-    private const ROLE_HANDLE = '/^[a-z][a-z0-9_]*$/';
+    /**
+     * An entry type or role handle: the admin's own type-handle shape (`EntryTypeResource`), so a handle never needs
+     * escaping where it is shown — and so `*`, which the grant grammar reads as every type, is never a type's handle.
+     */
+    private const HANDLE = '/^[a-z][a-z0-9_]*$/';
 
     /**
      * @return array{handle: string, version: string, created: list<string>, adopted: list<string>, skipped: list<string>, indexed: int, roles_created: list<string>}
@@ -86,28 +95,37 @@ final class BlueprintApplier
             );
         }
 
-        /* An author's bug, refused before the receipt: it leaves no receipt and no rows, and asks the database nothing. */
+        /*
+         * What the definition says of itself — its handles, field types, roles and grants — refused before the
+         * receipt, so a definition wrong in those ways leaves no receipt and no rows, and asks the database nothing.
+         */
         self::refuseMalformed($definition);
 
         $receipt = Blueprint::receiptFor($definition->handle());
 
-        /*
-         * ⚠️ ANOTHER VERSION IS REFUSED, AND THE RECEIPT IS LEFT AS IT IS. ADR-039's merge — add what the new
-         * version declares and the old one did not — is not built, and an apply over the old version cleared the
-         * manifest and then refused, under the default policy, the very types that version had created.
-         */
-        if ($receipt !== null && $receipt->version !== $definition->version()) {
-            throw new RuntimeException(self::versionRefusal($definition, $receipt));
-        }
-
         if ($receipt !== null && $receipt->applied_at !== null) {
+            /*
+             * ⚠️ ANOTHER VERSION IS REFUSED, AND THE RECEIPT IS LEFT AS IT IS. ADR-039's merge — add what the new
+             * version declares and the old one did not — is not built, and an apply over the old version cleared
+             * the manifest and then refused, under the default policy, the very types that version had created.
+             */
+            if ($receipt->version !== $definition->version()) {
+                throw new RuntimeException(self::versionRefusal($definition, $receipt));
+            }
+
             return self::nothingToDo($definition);
         }
 
-        /* The rows committed and the finish did not run: finish it, rather than refuse what this blueprint made. */
+        /*
+         * The rows committed and the finish did not run: finish the version they are, rather than refuse what this
+         * blueprint made — at any version, because Blog's moves with core's, and an org whose receipt only an older
+         * core could finish would be stranded by the upgrade.
+         */
         if ($receipt !== null && $receipt->manifest !== null) {
             return self::finishInterrupted($definition, $receipt, $orgId);
         }
+
+        /* With no manifest, no row of any version committed: this run applies afresh, and the receipt takes its version. */
 
         /*
          * The intent record, committed on its own. An interrupted apply leaves this row with `applied_at`
@@ -118,7 +136,13 @@ final class BlueprintApplier
         $receipt->version = $definition->version();
         $receipt->applied_at = null;
         $receipt->manifest = null;
-        $receipt->save();
+
+        /* A receipt that appeared since it was read is another apply's, begun at the same moment. */
+        try {
+            $receipt->save();
+        } catch (UniqueConstraintViolationException $e) {
+            throw new RuntimeException(self::concurrent($definition), 0, $e);
+        }
 
         $outcome = ['created' => [], 'adopted' => [], 'skipped' => []];
         $indexable = [];
@@ -128,24 +152,43 @@ final class BlueprintApplier
          * ⚠️ On the MODEL's connection rather than the `DB` facade's, which always resolves the default one.
          * `Site::save()` and `SettingsWriter` were both corrected from that, and `ModuleLifecycle` after them.
          */
-        $receipt->getConnection()->transaction(function () use ($definition, $orgId, $receipt, &$outcome, &$indexable, &$rows): void {
-            foreach ($definition->entryTypes() as $declaration) {
-                self::applyEntryType($declaration, $orgId, $outcome, $indexable, $rows);
-            }
+        try {
+            $receipt->getConnection()->transaction(function () use ($definition, $orgId, $receipt, &$outcome, &$indexable, &$rows): void {
+                foreach ($definition->entryTypes() as $declaration) {
+                    self::applyEntryType($declaration, $orgId, $outcome, $indexable, $rows);
+                }
 
-            /* After every type, so a role's grants name types that exist — this apply's own among them. */
-            foreach ($definition->roles() as $declaration) {
-                self::applyRole($declaration, $outcome, $rows);
-            }
+                /* After every type, so a role's grants name types that exist — this apply's own among them. */
+                foreach ($definition->roles() as $declaration) {
+                    self::applyRole($declaration, $outcome, $rows);
+                }
 
+                /*
+                 * ⚠️ LAST, AND INSIDE. The manifest commits with the rows or not at all, so "manifest set, applied_at
+                 * null" means exactly "rows committed, the finish did not run" — the state `finishInterrupted()`
+                 * completes, where before a re-run refused its own types.
+                 */
+                $receipt->manifest = self::manifestOf($definition, $outcome, $rows);
+                $receipt->save();
+            });
+        } catch (Throwable $e) {
             /*
-             * ⚠️ LAST, AND INSIDE. The manifest commits with the rows or not at all, so "manifest set, applied_at
-             * null" means exactly "rows committed, the finish did not run" — the state `finishInterrupted()`
-             * completes, where before a re-run refused its own types.
+             * ⚠️ A RECEIPT THAT NOW RECORDS ROWS IS NOT THIS RUN'S. This run's manifest rolled back with its rows, so
+             * a manifest there now is another apply's, which ran at the same moment — and this run's refusal of
+             * "its own" types, or its raw constraint error, would be telling the operator something false.
              */
-            $receipt->manifest = self::manifestOf($definition, $outcome, $rows);
-            $receipt->save();
-        });
+            try {
+                $fresh = Blueprint::query()->whereKey($receipt->getKey())->first();
+            } catch (Throwable) {
+                throw $e;
+            }
+
+            if ($fresh !== null && ($fresh->manifest !== null || $fresh->applied_at !== null)) {
+                throw new RuntimeException(self::concurrent($definition), 0, $e);
+            }
+
+            throw $e;
+        }
 
         /*
          * ⚠️ AFTER THE TRANSACTION, AND FAILING HERE IS NOT A FAILED APPLY. `is_indexed` is a row that says
@@ -173,30 +216,49 @@ final class BlueprintApplier
     }
 
     /**
-     * Refuse a definition its author got wrong, before anything is read or written — ADR-039, roles as built.
+     * Refuse what a definition says of itself that is wrong, before anything is read or written — ADR-039, roles as
+     * built.
      *
      * ⚠️ NO QUERY. Whether a type or a role is already in the org is the apply's question, answered under the
-     * collision policy; this answers only what the definition says of itself, so a malformed one leaves no receipt
-     * claiming an apply began.
+     * collision policy; this answers only what the definition says of itself — its type handles, its fields'
+     * types, its roles and their grants — so a definition wrong in those ways leaves no receipt claiming an apply
+     * began. What the models refuse at save (a field handle, a classification outside the vocabulary the
+     * declaration's own type already narrows for PHPStan, a field type's settings) still fails inside the rows
+     * transaction, leaving the receipt that says no rows were written — which the next run, at a corrected version
+     * or not, applies afresh.
+     *
+     * ⚠️ PUBLIC, FOR THE COMMAND, which asks it before `FirstOrg` writes the first org: a definition knowable as
+     * wrong with no query must not leave an org behind on an empty installation either.
      *
      * @throws InvalidArgumentException
      */
-    private static function refuseMalformed(BlueprintDefinition $definition): void
+    public static function refuseMalformed(BlueprintDefinition $definition): void
     {
         $handle = $definition->handle();
         $types = [];
 
         foreach ($definition->entryTypes() as $type) {
-            /* One encoding of the grammar: a type a grant can never name is refused as the grant would be. */
-            try {
-                Permissions::validated(Permissions::forEntryType($type->handle, 'view'));
-            } catch (InvalidArgumentException $e) {
+            /*
+             * ⚠️ THE ADMIN'S SHAPE, NOT THE GRANT GRAMMAR'S. The grammar admits `*` as a type segment, because it is
+             * the wildcard — so a type handled `*` passed, and every per-type grant on it in the admin was the
+             * wildcard. A handle in this shape is one a grant can name, and names that type alone.
+             */
+            if (preg_match(self::HANDLE, $type->handle) !== 1 || strlen($type->handle) > 255) {
                 throw new InvalidArgumentException(sprintf(
-                    'Blueprint [%s] declares entry type [%s], which cannot carry a grant: %s',
+                    'Blueprint [%s] declares entry type [%s]: an entry type handle is lowercase snake_case — a letter, '
+                    .'then letters, digits and underscores — at most 255 characters, the shape the admin gives one.',
                     $handle,
                     $type->handle,
-                    $e->getMessage(),
-                ), 0, $e);
+                ));
+            }
+
+            if (in_array($type->handle, EntryType::RESERVED_HANDLES, true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Blueprint [%s] declares entry type [%s], a handle the admin\'s own routes use: %s.',
+                    $handle,
+                    $type->handle,
+                    implode(', ', EntryType::RESERVED_HANDLES),
+                ));
             }
 
             if (isset($types[$type->handle])) {
@@ -204,13 +266,26 @@ final class BlueprintApplier
             }
 
             $types[$type->handle] = true;
+
+            foreach ($type->fields as $field) {
+                /* A type no registry knows was stored without complaint, and failed closed only where it was shown. */
+                if (! app(FieldTypeRegistry::class)->has($field->type)) {
+                    throw new InvalidArgumentException(sprintf(
+                        'Blueprint [%s] declares field [%s] on [%s] of type [%s], which no field type is registered as.',
+                        $handle,
+                        $field->handle,
+                        $type->handle,
+                        $field->type,
+                    ));
+                }
+            }
         }
 
         $declared = array_keys($types);
         $roles = [];
 
         foreach ($definition->roles() as $role) {
-            if (preg_match(self::ROLE_HANDLE, $role->handle) !== 1 || strlen($role->handle) > 255) {
+            if (preg_match(self::HANDLE, $role->handle) !== 1 || strlen($role->handle) > 255) {
                 throw new InvalidArgumentException(sprintf(
                     'Blueprint [%s] declares role [%s]: a role handle is lowercase snake_case — a letter, then '
                     .'letters, digits and underscores — at most 255 characters.',
@@ -359,23 +434,43 @@ final class BlueprintApplier
     private static function versionRefusal(BlueprintDefinition $definition, Blueprint $receipt): string
     {
         return sprintf(
-            'Blueprint [%s] is recorded in this organisation at %s (%s); this definition is %s. Applying one '
-            .'version over another is ADR-039\'s additive merge, which is not built yet. Nothing was written, and '
-            .'the receipt still says %s.',
+            'Blueprint [%s] is applied in this organisation at %s; this definition is %s. Applying a different '
+            .'version over it, newer or older, waits on ADR-039\'s merge, which is not built yet, and nothing clears '
+            .'a receipt yet either. Nothing was written, and the receipt still says %s.',
             $definition->handle(),
             (string) $receipt->version,
-            $receipt->applied_at !== null ? 'applied' : 'started and not finished',
             $definition->version(),
             (string) $receipt->version,
+        );
+    }
+
+    private static function concurrent(BlueprintDefinition $definition): string
+    {
+        return sprintf(
+            'The apply of [%s] stopped, and this organisation\'s receipt for it now records rows this run did not '
+            .'commit: another apply of it ran at the same moment, or this run\'s own commit landed as it failed. '
+            .'Re-run it — it finishes what the receipt records, or does nothing if that is done.',
+            $definition->handle(),
         );
     }
 
     /**
      * Finish an apply whose rows committed and whose finish did not run: index what it declared, and say so.
      *
-     * ⚠️ THE MANIFEST IS CHECKED AGAINST THE DATABASE FIRST, through scoped queries. It is the one column of the
-     * receipt a bulk write cannot be refused for, so a manifest naming rows this org does not have is refused
-     * rather than trusted into an `applied_at`.
+     * ⚠️ THE VERSION THE RECEIPT RECORDS, WHICHEVER VERSION THIS DEFINITION IS. The finish reads only the manifest —
+     * which fields to index, which rows to look for — so it needs nothing of the version that wrote them but the
+     * record, and Blog's version moves with core's: an org whose rows committed under an older core is finished by a
+     * newer one, at the old version, and the newer version is then refused as any other is.
+     *
+     * ⚠️ THE MANIFEST IS CHECKED AGAINST THE DATABASE FIRST. It is one of the receipt's two columns a bulk write is
+     * not refused for (`applied_at` is the other), so a manifest that is not this org's record of these rows is
+     * refused rather than trusted into an `applied_at`:
+     * - at the same version, it must record every type and role the definition declares, as created or skipped;
+     * - a row it records as created must not be another org's, nor another type's or role's under its id.
+     *
+     * A row it records as created that is gone altogether is one the operator removed while the finish was owed —
+     * which they may do after a finish at no cost — so it is reported and the finish goes ahead, rather than leaving
+     * an org that no command can finish or clear.
      *
      * @return array{handle: string, version: string, created: list<string>, adopted: list<string>, skipped: list<string>, indexed: int, roles_created: list<string>}
      *
@@ -383,37 +478,61 @@ final class BlueprintApplier
      */
     private static function finishInterrupted(BlueprintDefinition $definition, Blueprint $receipt, int $orgId): array
     {
-        /** @var array{entry_types?: list<array<string, mixed>>, roles?: list<array<string, mixed>>} $manifest */
         $manifest = (array) $receipt->manifest;
-        $missing = [];
+        $sameVersion = $receipt->version === $definition->version();
+        $refused = [];
+        $removed = [];
         $indexedHandles = [];
 
-        foreach ($manifest['entry_types'] ?? [] as $type) {
-            if (($type['outcome'] ?? null) === 'created'
-                && ! EntryType::query()->where('org_id', $orgId)->whereKey($type['id'] ?? 0)->exists()) {
-                $missing[] = sprintf('entry type id %s', (string) ($type['id'] ?? '?'));
+        foreach (['entry type' => 'entry_types', 'role' => 'roles'] as $kind => $key) {
+            $recorded = [];
+
+            foreach ((array) ($manifest[$key] ?? []) as $row) {
+                if (is_array($row) && is_string($row['handle'] ?? null)) {
+                    $recorded[$row['handle']] = $row;
+                }
             }
 
-            foreach ((array) ($type['fields'] ?? []) as $field) {
-                if (is_array($field) && ($field['is_indexed'] ?? false) === true && is_string($field['handle'] ?? null)) {
-                    $indexedHandles[] = $field['handle'];
+            $declared = $key === 'entry_types'
+                ? array_map(static fn (EntryTypeDeclaration $type): string => $type->handle, $definition->entryTypes())
+                : array_map(static fn (RoleDeclaration $role): string => $role->handle, $definition->roles());
+
+            /* Another version's declarations are not this definition's, so its own record is what is checked. */
+            foreach ($sameVersion ? $declared : array_keys($recorded) as $handle) {
+                $row = $recorded[$handle] ?? null;
+                $outcome = $row['outcome'] ?? null;
+
+                if (! in_array($outcome, ['created', 'skipped'], true)) {
+                    $refused[] = "{$kind} {$handle} is not recorded";
+
+                    continue;
+                }
+
+                if ($outcome === 'created') {
+                    $holds = self::recordedRowHolds($key, $row['id'] ?? null, $handle, $orgId);
+
+                    if ($holds === false) {
+                        $refused[] = sprintf('%s id %s is not this organisation\'s %s', $kind, (string) ($row['id'] ?? '?'), $handle);
+                    } elseif ($holds === null) {
+                        $removed[] = "{$kind} {$handle}: removed since the interrupted apply wrote it; not written again";
+                    }
+                }
+
+                foreach ($key === 'entry_types' ? (array) ($row['fields'] ?? []) : [] as $field) {
+                    if (is_array($field) && ($field['is_indexed'] ?? false) === true && is_string($field['handle'] ?? null)) {
+                        $indexedHandles[] = $field['handle'];
+                    }
                 }
             }
         }
 
-        foreach ($manifest['roles'] ?? [] as $role) {
-            /* ⚠️ Scoped, never past it: a role id from another org is a role this org does not have. */
-            if (($role['outcome'] ?? null) === 'created' && ! Role::query()->whereKey($role['id'] ?? 0)->exists()) {
-                $missing[] = sprintf('role id %s', (string) ($role['id'] ?? '?'));
-            }
-        }
-
-        if ($missing !== []) {
+        if ($refused !== []) {
             throw new RuntimeException(sprintf(
-                'The receipt for [%s] records rows this organisation does not have (%s). It was not finished, and '
-                .'nothing was written. `kitsune:blueprint status` shows it.',
+                'The receipt for [%s] cannot be finished: %s. Its manifest is not this organisation\'s record of this '
+                .'blueprint\'s rows, so nothing was written and the receipt is left as it is — and no command clears a '
+                .'receipt yet, because ADR-039\'s reverse is not built.',
                 $definition->handle(),
-                implode(', ', $missing),
+                implode('; ', $refused),
             ));
         }
 
@@ -429,15 +548,51 @@ final class BlueprintApplier
         $receipt->applied_at = now();
         $receipt->save();
 
+        $notes = ['rows: written by an earlier run that stopped before it finished; finished now', ...$removed];
+
+        if (! $sameVersion) {
+            $notes[] = sprintf(
+                'version: finished at %s, which the receipt records; this definition is %s, and applying it over %s '
+                .'waits on ADR-039\'s merge',
+                (string) $receipt->version,
+                $definition->version(),
+                (string) $receipt->version,
+            );
+        }
+
         return [
             'handle' => $definition->handle(),
-            'version' => $definition->version(),
+            'version' => (string) $receipt->version,
             'created' => [],
             'adopted' => [],
-            'skipped' => ['rows: written by an earlier run that stopped before it finished; finished now'],
+            'skipped' => $notes,
             'indexed' => $indexed,
             'roles_created' => [],
         ];
+    }
+
+    /**
+     * Whether the row a manifest records under an id is this org's, by that handle: true; another's: false; gone: null.
+     *
+     * ⚠️ PAST THE SCOPE FOR A ROLE, AND ONLY TO TELL "ANOTHER ORG'S" FROM "GONE". Through the scope the two read the
+     * same, and they mean opposite things: one is a manifest that is not this org's, the other a row its operator
+     * removed. Nothing read here is written or returned.
+     */
+    private static function recordedRowHolds(string $key, mixed $id, string $handle, int $orgId): ?bool
+    {
+        if (! is_int($id) && ! (is_string($id) && ctype_digit($id))) {
+            return false;
+        }
+
+        $row = $key === 'entry_types'
+            ? EntryType::query()->whereKey($id)->first(['id', 'org_id', 'handle'])
+            : Role::query()->withoutGlobalScopes()->whereKey($id)->first(['id', 'org_id', 'handle']);
+
+        if ($row === null) {
+            return null;
+        }
+
+        return (int) $row->getAttribute('org_id') === $orgId && $row->getAttribute('handle') === $handle;
     }
 
     /**
@@ -473,6 +628,23 @@ final class BlueprintApplier
             return;
         }
 
+        /*
+         * ⚠️ ONLY ON A TYPE THIS APPLY CREATED. One adopted under Skip is the operator's — its entries theirs, its
+         * authority theirs to give — so a grant on it is refused, and the whole apply with it, rather than handed to
+         * whoever an owner later assigns this role to, believing it the blueprint's.
+         */
+        foreach (array_keys($declaration->grants) as $type) {
+            if (($rows['entry_types'][$type]['outcome'] ?? null) !== 'created') {
+                throw new RuntimeException(sprintf(
+                    'Role [%s] grants on [%s], which this apply adopted rather than created (onCollision: skip): that '
+                    .'type is the operator\'s, and authority over it is theirs to give (ADR-039). Nothing was written. '
+                    .'Drop the grant, or create the type rather than adopting it.',
+                    $declaration->handle,
+                    (string) $type,
+                ));
+            }
+        }
+
         /* `EnforcesScope` stamps the org in context; `is_owner` takes its column default. Neither is passed. */
         $role = Role::create(['handle' => $declaration->handle, 'name' => $declaration->name]);
         $permissions = self::permissionsOf($declaration);
@@ -497,6 +669,23 @@ final class BlueprintApplier
         array &$indexable,
         array &$rows,
     ): void {
+        /*
+         * ⚠️ A GLOBAL TYPE IS NOBODY'S TO SHADOW, WHATEVER THE POLICY SAYS. Every org has it, a blueprint can neither
+         * own it (ADR-039) nor add fields to it, and grants are matched on the handle — so a type of the same handle
+         * here would take its place at `/c/{handle}`, and every grant this blueprint makes on it would reach the
+         * global type's entries in this org too: authority over rows the blueprint never brought.
+         */
+        if (EntryType::query()->whereNull('org_id')->where('handle', $declaration->handle)->exists()) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] is a global type, which every organisation has, and this blueprint declares one with '
+                .'that handle. A blueprint can neither own a global type nor adopt one, whatever its onCollision says: '
+                .'its own would stand in the global one\'s place here, and every grant on [%s] would reach the global '
+                .'type\'s entries in this organisation too. Nothing was written. Give the type another handle.',
+                $declaration->handle,
+                $declaration->handle,
+            ));
+        }
+
         /* `EntryType` is `#[Unscoped]`, so the org is named rather than inherited from context. */
         $type = EntryType::query()
             ->where('org_id', $orgId)

@@ -20,9 +20,10 @@ use Kitsune\Core\Blueprints\OnCollision;
  * ⚠️ NO `org_id`. A role is created in the org being applied into, as an entry type is.
  *
  * ⚠️ NO PERMISSION STRINGS. Grants are entry type handle => actions, and the applier writes `entry.{type}.{action}`
- * from them. Every handle must be one this same definition's `entryTypes()` declares, so a typo is refused rather
- * than stored as a grant nobody can hold, and neither the wildcard nor somebody else's type can be named:
- * authority over a type a blueprint did not bring is the operator's to give.
+ * from them. Every handle must be one this same definition's `entryTypes()` declares — and that apply creates: one
+ * adopted under `Skip` is the operator's — so a typo is refused rather than stored as a grant nobody can hold, and
+ * neither the wildcard nor somebody else's type can be named: authority over a type a blueprint did not bring is
+ * the operator's to give.
  *
  * ⚠️ NO HOLDERS. Assigning a role is a person's authority change, audited as one (ADR-033), never a blueprint's.
  */

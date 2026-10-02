@@ -589,7 +589,7 @@ class DatabaseSeeder extends Seeder
     }
 
     /**
-     * An org for the Blog blueprint's browser test, shaped as `kitsune:blueprint apply blog` finds a fresh one.
+     * An org for the Blog blueprint's browser test, shaped as the next slice's first-owner path will leave a fresh one.
      *
      * ⚠️ ITS OWN ORG, SO NO OTHER SPEC SEES IT. Blog applied into Golfdom would add Posts and Tags to a sidebar, a
      * dashboard and a role list that a dozen specs read. Two sites with no `base_url` and no group, as `FirstOrg` makes

@@ -25,10 +25,12 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * which is more than the one command Phase 5 is measured by.
  *
  * ⚠️ POSTS AND TAGS, AND NOTHING THE ADMIN CANNOT YET CARRY (Adam, 2026-10-02: the lean set). No date field —
- * `entries.published_at` is the platform's column for it (field-types.md §2); no featured image — a fresh install
- * has no media type and a blueprint cannot yet declare one; no byline type — it would hold personal data with no
- * subject to nominate, and users are not entries; no `page`, which is the Marketing Site's; no category, which
- * wants a tree the admin does not have; and no SEO fields, which nothing renders until v1.1.
+ * `entries.published_at` is the platform's column for one (field-types.md §2), though neither the admin nor
+ * publishing writes it yet, so a post has no publication date until core does: a gap in core, not one to paper over
+ * here with a second date; no featured image — a fresh install has no media type and a blueprint cannot yet declare
+ * one; no byline type — it would hold personal data with no subject to nominate, and users are not entries; no
+ * `page`, which is the Marketing Site's; no category, which wants a tree the admin does not have; and no SEO fields,
+ * which nothing renders until v1.1.
  *
  * ⚠️ PREFIXED STORAGE HANDLES. Storage is shared across an org, and a seeded org already has `body` and
  * `summary`; `person` and the fixture prefix theirs for the same reason.
@@ -38,9 +40,12 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * warning fatigue that column was made three-state to avoid. An operator can reclassify: `pii_class` is not a
  * shape attribute.
  *
- * ⚠️ A WRITER IS A CONTRIBUTOR, NOT AN AUTHOR. Kitsune's grants have no "own posts" dimension (ADR-033), so a
- * writer who publishes only their own work cannot be expressed; a writer may draft and edit every post, and
- * publishes none. The `blog_` prefix keeps both roles clear of an org's own `editor` and of other blueprints'.
+ * ⚠️ A WRITER DRAFTS AND EDITS, AND MOVES NOTHING INTO PUBLISHED. Kitsune's grants have no "own posts" dimension
+ * (ADR-033), so a writer who publishes only their own work cannot be expressed. What `update` does give is wider than
+ * a Contributor's: a writer edits every post, a published one included — the edit is live, and the post stays
+ * published — and may take any post back to draft or archive it; what a writer cannot do is move a post into
+ * Published, which is `publish`, the editor's. The `blog_` prefix keeps both roles clear of an org's own `editor`
+ * and of other blueprints'.
  */
 final class BlogBlueprint implements BlueprintDefinition
 {
