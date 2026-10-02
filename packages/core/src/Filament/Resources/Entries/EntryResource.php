@@ -59,6 +59,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Media\MediaDelivery;
+use Kitsune\Core\Media\MediaLocation;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
@@ -276,11 +277,13 @@ class EntryResource extends Resource
                             ? __('kitsune::media.file.dimensions_value', ['width' => $file->width, 'height' => $file->height])
                             : null)
                         ->hidden($file->width === null || $file->height === null),
-                    // A public file whose publication has not happened yet — it failed after the commit — says so (decision 32).
+                    // A public file whose publication has not happened yet — it failed after the commit — says so (decision 32);
+                    // one read as a JPEG by its row says what publishes it, should custody have refused it (decision 37).
                     TextEntry::make('media_file_visibility')->label(__('kitsune::media.file.visibility'))
                         ->state(__(match (true) {
                             ! $file->isPublic() => 'kitsune::media.file.private',
                             MediaDelivery::servesDirectly($file) => 'kitsune::media.file.public',
+                            MediaLocation::strips(MediaLocation::formatOf((string) $file->path, $file->mime)) => 'kitsune::media.file.public_awaiting_stripped',
                             default => 'kitsune::media.file.public_awaiting',
                         })),
                     TextEntry::make('media_file_sharing')->label(__('kitsune::media.file.sharing'))

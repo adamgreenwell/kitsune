@@ -65,7 +65,8 @@ final class MediaBulkRemoval
      * Every entry list's three, bounded and budgeted (decisions 35 and 36).
      *
      * @param  Closure(): string  $warning  what deleting forever takes with it — the list's own, as its row's *Delete forever* says it
-     * @param  bool  $listsMedia  whether the list's entries hold files, whose restore publishes them
+     * @param  bool  $listsMedia  whether the list's entries hold files, whose restore publishes them — or, for a JPEG no
+     *                            copy of which matches its checksum, keeps them off the web (decision 37)
      * @return list<BulkAction>
      */
     public static function bound(DeleteBulkAction $delete, RestoreBulkAction $restore, ForceDeleteBulkAction $erase, Closure $warning, bool $listsMedia): array
@@ -330,7 +331,10 @@ final class MediaBulkRemoval
         };
     }
 
-    /** A restored public file its disk does not serve: its publication failed after the commit — or cannot be read. */
+    /**
+     * A restored public file its disk does not serve: its publication failed after the commit, or custody refused it — a
+     * JPEG no copy of which matches its checksum (decision 37) — or it cannot be read.
+     */
     private static function awaitsPublication(Entry $record): bool
     {
         try {

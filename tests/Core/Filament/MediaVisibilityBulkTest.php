@@ -517,7 +517,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['duration'])->toBe('persistent')
             ->and(bulkVisNotices()[0]['title'])->toBe('2 files are public, and not yet published')
             ->and(bulkVisNotices()[0]['body'])->toBe('Not yet published: &quot;A&quot;, &quot;&lt;b&gt;B&lt;/b&gt;&quot;. Until they are, their links do not open them, and they open only through this admin. The log says why; '
-                ."kitsune:media-reconcile --entry={$a->id} --entry={$b->id} --force publishes them.")
+                ."kitsune:media-reconcile --entry={$a->id} --entry={$b->id} --force publishes them, or says what will.")
             ->and($action->getStatus()->name)->toBe('Success');
     });
 
@@ -624,7 +624,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['title'])->toBe('One file is public, and not yet published')
             ->and(explode('<br>', (string) bulkVisNotices()[0]['body']))->toBe([
                 'Not yet published: &quot;B&quot;. Until it is, its link does not open it, and it opens only through this admin. The log says why; '
-                    ."kitsune:media-reconcile --entry={$b->id} --force publishes it.",
+                    ."kitsune:media-reconcile --entry={$b->id} --force publishes it, or says what will.",
                 'One file was made public.',
             ]);
     });
@@ -838,7 +838,7 @@ describe('making a selection private', function (): void {
             ->and(bulkVisNotices()[0]['status'])->toBe('danger')
             ->and(bulkVisNotices()[0]['title'])->toBe('One file was not made private')
             ->and(explode('<br>', (string) bulkVisNotices()[0]['body']))->toBe([
-                '&quot;Old&quot; is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again.',
+                '&quot;Old&quot; is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again, or says what will.',
                 'One file was made private.',
                 'Its public link no longer opens it. A copy a browser, a proxy or a CDN has already kept can be served until it expires.',
                 '2 were already private, and were left as they were.',

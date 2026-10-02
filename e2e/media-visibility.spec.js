@@ -405,3 +405,53 @@ test('does not offer the selection switches while the list shows only the trash'
     await expect(page.getByRole('button', { name: 'Make selected public', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Make selected private', exact: true })).toHaveCount(0);
 });
+
+/*
+ * ⚠️ A JPEG CHANGED OUTSIDE KITSUNE IS NOT PUT BACK ON THE WEB BY A RESTORE — Adam, ADR-042 decision 37. Made public, its
+ * row records the stripped bytes; trashed, its copy is on the private disk, where a backup is put back over it; restored
+ * from its card, it stays off the web and its page says what publishes it. Made private, then public, it is published
+ * stripped, its row describing what the web serves.
+ */
+test('keeps a restored JPEG changed outside Kitsune off the web, and publishes it stripped once made private and then public', async ({ page }) => {
+    const photo = locatedJpeg('photo(true)');
+    const id = storedJpeg(`${PROBE} restored`);
+    tinker(IN_GOLFDOM + ` \\Kitsune\\Core\\Media\\MediaVisibility::makePublic(\\Kitsune\\Core\\Models\\Entry::query()->findOrFail(${id}));`);
+    const stripped = row(id);
+    expect((await page.request.get(`/storage/${stripped.path}`)).status()).toBe(200);
+
+    tinker(IN_GOLFDOM + ` \\Kitsune\\Core\\Models\\Entry::query()->findOrFail(${id})->delete();`);
+    tinker(`\\Illuminate\\Support\\Facades\\Storage::disk(\\Kitsune\\Core\\Media\\MediaDisks::configured(config(), 'private'))->put('${stripped.path}', base64_decode('${photo.toString('base64')}'));`);
+
+    await listed(page, `${PROBE} restored`, 0);
+    await showTrash(page, '0');
+    await card(page, `${PROBE} restored`).getByRole('button', { name: 'Restore' }).click();
+    await modal(page, 'Restore').getByRole('button', { name: 'Restore', exact: true }).click();
+    await expect(notice(page, 'Restored')).toBeVisible({ timeout: 15_000 });
+
+    // Restored, and published nowhere: its publication ran in the request that restored it, and was refused.
+    expect((await page.request.get(`/storage/${stripped.path}`)).status()).not.toBe(200);
+    expect(row(id).visibility).toBe('public');
+    expect(row(id).checksum).toBe(stripped.checksum);
+
+    await page.goto(`/admin/golfdom/c/image/${id}`);
+    await expect(page.getByText('If its file was changed outside Kitsune, making it private and then public publishes it, or says what stands in the way')).toBeVisible();
+
+    await headerAction(page, 'Make private').click();
+    await modal(page, 'Make private').getByRole('button', { name: 'Make private', exact: true }).click();
+    await expect(notice(page, `"${PROBE} restored" is private`)).toBeVisible({ timeout: 15_000 });
+
+    await headerAction(page, 'Make public').click();
+    const dialog = modal(page, 'Make public');
+    await dialog.getByLabel('Make this file public').check();
+    await dialog.getByRole('button', { name: 'Make public', exact: true }).click();
+    await expect(notice(page, `"${PROBE} restored" is public`)).toBeVisible({ timeout: 15_000 });
+
+    const published = row(id);
+    await expect.poll(async () => (await page.request.get(`/storage/${published.path}`)).status()).toBe(200);
+    const bytes = await (await page.request.get(`/storage/${published.path}`)).body();
+
+    expect(bytes.includes('SENTINEL-')).toBe(false);
+    expect(bytes.includes('GGGGPPPP')).toBe(false);
+    expect(sha256(bytes)).toBe(published.checksum);
+    expect(published.checksum).not.toBe(sha256(photo));
+});

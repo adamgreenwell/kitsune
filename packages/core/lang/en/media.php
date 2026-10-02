@@ -74,6 +74,9 @@ return [
         'private' => 'Private',
         'public' => 'Public',
         'public_awaiting' => 'Public — not yet published, so opened only through this admin',
+        // For a row read as a format whose location is removed (`MediaLocation::STRIPPED`): custody publishes none whose
+        // copy fails its checksum (decision 37).
+        'public_awaiting_stripped' => 'Public — not yet published, so opened only through this admin. If its file was changed outside Kitsune, making it private and then public publishes it, or says what stands in the way',
         'sharing' => 'Shared with',
         'shared' => 'Every site in the organisation',
         'site_only' => 'This site only',
@@ -95,7 +98,7 @@ return [
         'needs_publish' => 'Making a file public or private needs permission to publish :type (:permission).',
         'made_public' => '":title" is public',
         'made_public_awaiting' => '":title" is public, and not yet published',
-        'made_public_awaiting_body' => 'Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile --entry=:id --force publishes it.',
+        'made_public_awaiting_body' => 'Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile --entry=:id --force publishes it, or says what will.',
         'made_private' => '":title" is private',
         'made_private_body' => 'Its public link no longer opens it. A copy a browser, a proxy or a CDN has already kept can be served until it expires.',
         'already_public' => '":title" was already public. Nothing was changed.',
@@ -132,7 +135,7 @@ return [
             'not_made_private' => '{1} One file was not made private|[2,*] :count files were not made private',
             'refused_public_line' => '":title" was not made public: :reason',
             'refused_private_line' => '":title" was not made private: :reason',
-            'trashed_private_line' => '":title" is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again.',
+            'trashed_private_line' => '":title" is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again, or says what will.',
             'failed_public_line' => '{1} :titles may not have been made public: something went wrong. Its page shows what it is now; tell whoever runs this site if it happens again.|[2,*] :titles may not have been made public: something went wrong. Their pages show what each is now; tell whoever runs this site if it happens again.',
             'failed_private_line' => '{1} :titles may not have been made private: something went wrong. Its page shows what it is now; tell whoever runs this site if it happens again.|[2,*] :titles may not have been made private: something went wrong. Their pages show what each is now; tell whoever runs this site if it happens again.',
             'not_tried' => '{1} One file was not tried: one request may take only so long. It is still selected; run it again on the same selection to go on.|[2,*] :count files were not tried: one request may take only so long. They are still selected; run it again on the same selection to go on.',
@@ -146,7 +149,7 @@ return [
     'selection' => [
         'quoted' => '":title"',
         'list_separator' => ', ',
-        'awaiting_line' => '{1} Not yet published: :titles. Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes it.|[2,*] Not yet published: :titles. Until they are, their links do not open them, and they open only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes them.',
+        'awaiting_line' => '{1} Not yet published: :titles. Until it is, its link does not open it, and it opens only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes it, or says what will.|[2,*] Not yet published: :titles. Until they are, their links do not open them, and they open only through this admin. The log says why; kitsune:media-reconcile :entries --force publishes them, or says what will.',
     ],
     // An entry list's selection deleted, restored or deleted forever — decisions 35 and 36; `restore.awaiting` only where it
     // holds media.

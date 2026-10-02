@@ -88,8 +88,9 @@ final class MediaWithdrawalRefused extends RuntimeException
         }
 
         parent::__construct(sprintf(
-            'Refusing to %s: its file could not be withdrawn from the web — %s [%s] — so the entry and its file '
-            .'stay as they were (ADR-042 decision 5). %s',
+            'Refusing to %s: its file could not be withdrawn from the web — %s [%s] — so the entry stays as it was, '
+            .'and its file where it was, unless it is a JPEG no copy of which matches its recorded checksum, which is '
+            .'kept off the web instead (ADR-042 decisions 5 and 37). %s',
             self::act($operation, $entryId),
             match ($reason) {
                 self::COPY_FAILED => 'a verified copy could not be written to the private disk',

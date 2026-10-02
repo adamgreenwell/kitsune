@@ -32,7 +32,8 @@ use stdClass;
  *
  * ⚠️ AND WHAT IT MOVED IS PUT BACK IF THE WRITE DOES NOT COMMIT. A rollback — of the write, or of a transaction
  * enclosing it — queues every entry whose bytes moved, and custody settles each once nothing on the connection is
- * left to commit (`MediaCustody::drain()`). A restore goes the other way: publication follows the outermost commit,
+ * left to commit (`MediaCustody::drain()`) — but for a JPEG no copy of which matches its checksum, which custody settles
+ * on the private disk instead (decision 37). A restore goes the other way: publication follows the outermost commit,
  * because a file made public inside a transaction that then rolled back would be a trashed file on the web.
  *
  * ⚠️ BY PATH, ON EVERY DISK THE WEB SERVES — not by the disk the row names. A row can name one disk while a copy
@@ -195,7 +196,8 @@ final class MediaWithdrawal
     }
 
     /**
-     * After the write failed: put back what it moved, once nothing is left to commit, and register again the
+     * After the write failed: put back what it moved, or settle it off the web (decision 37), once nothing is left to
+     * commit, and register again the
      * publication its rollback discarded — the row decides whether there is anything to publish.
      */
     public function compensate(): void
@@ -410,7 +412,7 @@ final class MediaWithdrawal
         $this->moved[] = $entryId;
     }
 
-    /** Queue what moved for custody to put back — once, however many routes ask. */
+    /** Queue what moved for custody to put back, or settle off the web (decision 37) — once, however many routes ask. */
     private function queue(): void
     {
         if ($this->queued) {

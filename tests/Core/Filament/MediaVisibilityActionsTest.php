@@ -14,10 +14,12 @@ use Filament\Forms\Components\Field;
 use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
@@ -26,6 +28,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -256,6 +259,23 @@ describe('making a file public', function (): void {
             ->and(switchNotices()[0]['status'])->toBe('warning')
             ->and(switchNotices()[0]['title'])->toBe('&quot;Logo&quot; is public, and not yet published')
             ->and(switchNotices()[0]['body'])->toContain("kitsune:media-reconcile --entry={$entry->id} --force");
+    });
+
+    /* Committed, and custody refused to publish it — its copy changed before publication (decision 37): said as not yet published. */
+    it('says a JPEG made public is not yet published when custody refuses to publish it', function (): void {
+        $entry = switchable('Photo', LocatedJpeg::photo(true), name: 'photo.jpg');
+        $path = (string) DB::table('media_files')->where('entry_id', $entry->id)->value('path');
+        AuditorStandIn::install()->beforeRecording(static function () use ($path): void {
+            MediaCustody::whenOutermost(DB::connection(), static fn () => Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true)));
+        });
+
+        MediaVisibilityActions::publicOne($entry, ['public_confirmed' => true]);
+
+        expect(switchVisibility($entry))->toBe('public')
+            ->and(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(switchNotices()[0]['status'])->toBe('warning')
+            ->and(switchNotices()[0]['title'])->toBe('&quot;Photo&quot; is public, and not yet published')
+            ->and(switchNotices()[0]['body'])->toEndWith("kitsune:media-reconcile --entry={$entry->id} --force publishes it, or says what will.");
     });
 
     /* F7. A refusal is a notification naming the entry, escaped — the strip's own among them. */

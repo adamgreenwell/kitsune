@@ -27,6 +27,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
 use Kitsune\Core\Tests\Fixtures\FailingCommitPdo;
+use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
@@ -321,6 +322,74 @@ describe('a restore at level 0', function (): void {
         expect(levelZeroRow($this->entry))->toBe(['trashed' => false, 'disk' => 'public'])
             ->and(levelZeroHeld($this->path)['public'])->toBe($this->checksum);
     });
+});
+
+/*
+ * T204. A restore of a JPEG whose private copy a backup replaced: the commit lands, and custody refuses its publication
+ * after it — from the failure path too, when the COMMIT landed and reported failure (Adam, decision 37).
+ */
+describe('a JPEG changed outside Kitsune, restored at level 0', function (): void {
+    beforeEach(function (): void {
+        $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-level0-');
+        $this->entry = MediaLibrary::store($source, 'photo.jpg', $this->image, 'public');
+        unlink($source);
+        $this->path = (string) DB::table('media_files')->where('entry_id', $this->entry->id)->value('path');
+        $this->entry->delete();
+        Storage::disk(MediaDisks::PRIVATE)->put($this->path, LocatedJpeg::photo(true));
+        $this->trashed = Entry::withTrashed()->findOrFail($this->entry->id);
+        RefusingDisk::forgetLog();
+    });
+
+    it('commits the restore, and refuses its publication after the outermost commit', function (): void {
+        Log::spy();
+
+        DB::transaction(fn () => $this->trashed->restore());
+
+        expect(levelZeroRow($this->entry))->toBe(['trashed' => false, 'disk' => MediaDisks::PRIVATE])
+            ->and(levelZeroHeld($this->path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', LocatedJpeg::photo(true))]);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$this->entry->id}: refusing to publish"))->once();
+    });
+
+    it('refuses from the failure path when its COMMIT landed and reported failure', function (): void {
+        $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+        $pdo->failNextCommit = 'after';
+
+        expect(fn () => $this->trashed->restore())->toThrow(PDOException::class, 'database is locked');
+
+        expect(levelZeroRow($this->entry))->toBe(['trashed' => false, 'disk' => MediaDisks::PRIVATE])
+            ->and(levelZeroHeld($this->path)['public'])->toBeNull();
+    });
+});
+
+/*
+ * T204a. The refusal is said once its commit has landed: a put-back whose COMMIT fails before it lands logs the failure
+ * alone, the row still naming the public disk; the next one refuses, and says so (review of decision 37).
+ */
+it('says a refusal only once the commit that keeps the file off the web has landed', function (): void {
+    $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-level0-');
+    $entry = MediaLibrary::store($source, 'photo.jpg', $this->image, 'public');
+    unlink($source);
+    $path = (string) DB::table('media_files')->where('entry_id', $entry->id)->value('path');
+    // A trash rolled back after its withdrawal: the row names the public disk, the copy is on the private one.
+    Storage::disk('public')->delete($path);
+    Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true));
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $pdo->failNextCommit = 'before';
+    Log::spy();
+
+    MediaCustody::queue(DB::getDefaultConnection(), [$entry->id]);
+    MediaCustody::drain(DB::connection());
+
+    expect(levelZeroRow($entry))->toBe(['trashed' => false, 'disk' => 'public']);
+    Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $message): bool => str_contains($message, 'refusing to publish'))]);
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}: its file could not be put back"))->once();
+
+    MediaCustody::queue(DB::getDefaultConnection(), [$entry->id]);
+    MediaCustody::drain(DB::connection());
+
+    expect(levelZeroRow($entry))->toBe(['trashed' => false, 'disk' => MediaDisks::PRIVATE])
+        ->and(levelZeroHeld($path)['public'])->toBeNull();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}: refusing to publish"))->once();
 });
 
 /*

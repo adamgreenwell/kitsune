@@ -52,22 +52,24 @@ use Throwable;
  * remove it (Adam, decision 12, 2026-09-26).
  *
  * ⚠️ `--force` DECIDES NOTHING FROM THE LISTING. For each listed row it runs exactly what a compensation runs —
- * `MediaCustody::settle()` then `cleanUp()` — each its own outermost transaction under the row's lock, taking every
- * decision from the row as read there. The listing only chooses which rows to lock: a row a trash or a restore changed
- * since is settled as it now is, and one listed as missing is asked again (a publication may have moved it). No copy is
- * deleted until the copy kept is verified on the disk the row's state says it belongs on; one that cannot be read is
- * never touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
+ * `MediaCustody::settle()` then, unless it refused to publish a JPEG (decision 37), `cleanUp()` — each its own
+ * outermost transaction under the row's lock, taking every decision from the row as read there. The listing only
+ * chooses which rows to lock: a row a trash or a restore changed since is settled as it now is, and one listed as
+ * missing is asked again (a publication may have moved it). No copy is deleted until the copy kept is verified on the
+ * disk the row's state says it belongs on — or, for a JPEG custody refuses to publish, on the private disk (decision
+ * 37); one that cannot be read is never touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
  *
  * ⚠️ IT FAILS ON FINDINGS (Adam, decision 7, 2026-09-25), so a deploy or a cron can run it as a check: read-only, while
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
- * kept. A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
- * copy the listing opens, or a forced row's second look, and cannot read keeps both failing until it can be read (Adam,
- * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor the lone copy
- * of a file where its row belongs, which only a forced prune reads, and only when it removes a copy at the row's path on
- * a disk only other rows name (T133). A lone copy anywhere else on a disk custody asks — an `absent`, `awaiting
- * publication`, `elsewhere` or `exposed` row's — is a finding already, and fails every --force, whose keeper hashes it;
- * one on a disk custody does not ask leaves its row `missing`, which every --force fails without reading it; a forced
- * prune keeps either or does not list it (ADR-042 decision 5, decision 12's consequences and *What it leaves*).
+ * kept — a JPEG custody refused to publish among them (decision 37). A file with no bytes anywhere keeps it failing
+ * until its entry is erased or the file restored from a backup; a copy the listing opens, or a forced row's second
+ * look, and cannot read keeps both failing until it can be read (Adam, decision 12, 2026-09-26) — not one on a disk
+ * nesting with the target, which prune keeps for a hand, nor the lone copy of a file where its row belongs, which only
+ * a forced prune reads, and only when it removes a copy at the row's path on a disk only other rows name (T133). A lone
+ * copy anywhere else on a disk custody asks — an `absent`, `awaiting publication`, `elsewhere` or `exposed` row's — is
+ * a finding already, and fails every --force, whose keeper hashes it; one on a disk custody does not ask leaves its row
+ * `missing`, which every --force fails without reading it; a forced prune keeps either or does not list it (ADR-042
+ * decision 5, decision 12's consequences and *What it leaves*).
  *
  * ⚠️ ON SQLITE A FORCED RUN HOLDS THE DATABASE'S WRITE LOCK, row by row, while bytes move, and a save or an upload that
  * reads before it writes fails during each hold. The lever is Adam's (ADR-042, *Measured — decision 5, slice 5b*): the
@@ -76,10 +78,10 @@ use Throwable;
 final class MediaReconcileCommand extends Command
 {
     protected $signature = 'kitsune:media-reconcile
-        {--force : put each file where its row\'s state says and point the row at it, rather than listing}
+        {--force : put each file where its row\'s state says and point the row at it, or keep off the web a JPEG no copy of which matches its checksum, rather than listing}
         {--entry=* : only these entries}';
 
-    protected $description = 'Find media files that are not where their row\'s state says they belong, and put them there (ADR-042)';
+    protected $description = 'Find media files that are not where their row\'s state says they belong, and put them there, or keep off the web a JPEG no copy of which matches its checksum (ADR-042)';
 
     /**
      * The labels that are findings; `extra` is listed for `kitsune:media-prune`, and is not one — unless a copy cannot be
@@ -265,7 +267,10 @@ final class MediaReconcileCommand extends Command
                 '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed. Re-run with --force: '
                 .'each file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies '
                 .'custody\'s steps remove removed — one that differs named in the log with both hashes, and one that cannot '
-                .'be read named, and the run failed on it, its row kept or failed. Media has no revision history and no undo.',
+                .'be read named, and the run failed on it, its row kept or failed; and a JPEG it would publish, no copy of '
+                .'which matches its recorded checksum, kept off the web rather than published, and the run failed on it, as '
+                .'the log then says — one whose row names the public disk, which holds the copy kept, left where it is '
+                .'(ADR-042 decision 37). Media has no revision history and no undo.',
                 $astray,
                 $total,
                 $total === 1 ? '' : 's',
@@ -1068,6 +1073,15 @@ final class MediaReconcileCommand extends Command
                     'missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on a disk '
                     .'another row names; otherwise restore it from a backup, or erase the entry',
                     'missing',
+                ];
+            }
+
+            // A JPEG custody refused to publish (decision 37): its row names the private disk now, with nothing to clean up.
+            if ($settled === MediaCustody::REFUSED) {
+                return [
+                    'kept off the web: a JPEG no copy of which matches its recorded checksum is not published, as the log '
+                    .'below says (ADR-042 decision 37)',
+                    'kept',
                 ];
             }
 

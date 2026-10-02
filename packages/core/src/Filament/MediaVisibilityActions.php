@@ -354,7 +354,8 @@ final class MediaVisibilityActions
             return;
         }
 
-        // Committed, and its publication failed after the commit: logged, and said here rather than claimed done.
+        // Committed, and its publication failed after the commit, or custody refused it (decision 37): logged, and said here
+        // rather than claimed done.
         Notification::make()->warning()->persistent()
             ->title(e(__('kitsune::media.visibility.made_public_awaiting', ['title' => $title])))
             ->body(e(__('kitsune::media.visibility.made_public_awaiting_body', ['id' => $record->getKey()])))
@@ -447,7 +448,8 @@ final class MediaVisibilityActions
                     /*
                      * ⚠️ IN THE TRASH, MADE PRIVATE: *Everything* lists trashed entries beside live ones, and the switch
                      * refuses them both ways. One whose file is private is as asked; one set public is off the web while
-                     * it is there, and published again by a restore, which the switch's "Restore it first" would do.
+                     * it is there, and published again by a restore — where its copy matches its checksum (decision 37) —
+                     * which the switch's "Restore it first" would do.
                      */
                     if ($to === 'private' && $failure instanceof MediaVisibilityRefused && $failure->reason === MediaVisibilityRefused::TRASHED) {
                         try {
