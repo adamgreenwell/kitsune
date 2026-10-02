@@ -51,6 +51,8 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         // The user with one grant, whose session is what makes the permission specs mean anything.
         { name: 'setup-reader', testMatch: /auth-reader\.setup\.js/ },
+        // The Blog blueprint's owner and writer, in an org of their own.
+        { name: 'setup-blog', testMatch: /auth-blog\.setup\.js/ },
         {
             name: 'skeleton',
             testMatch: /(skeleton|public-site-locale)\.spec\.js/,
@@ -109,6 +111,18 @@ module.exports = defineConfig({
                 ...devices['Desktop Chrome'],
                 storageState: '.playwright/admin-reader-auth.json',
             },
+        },
+        /*
+         * The Blog blueprint, as `kitsune:blueprint apply blog` left it — Phase 5, ADR-039.
+         *
+         * ⚠️ THREE SESSIONS, EACH OPENED BY THE SPEC FROM A SAVED STATE: the blog owner and writer from `setup-blog`, and
+         * Golfdom's owner from `setup`, who is the attacker in the cross-org case. So the project sets no storageState.
+         */
+        {
+            name: 'blog',
+            testMatch: /blog-blueprint\.spec\.js/,
+            dependencies: ['setup', 'setup-blog'],
+            use: { ...devices['Desktop Chrome'] },
         },
         {
             name: 'admin-rtl',

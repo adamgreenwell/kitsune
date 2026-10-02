@@ -43,9 +43,19 @@ afterEach(function (): void {
  * apart the way Docker would — and a stub that answered everything identically would hide the very argv this
  * test exists to read.
  */
-function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $seededOnMeasure = 0, bool $platformFails = false): void
-{
+function floorStubs(
+    string $dir,
+    string $scope = 'ENTRIES',
+    int $exit = 0,
+    int $seededOnMeasure = 0,
+    bool $platformFails = false,
+    string $installOnly = '',
+    int $blogExit = 0,
+    string $blogReport = 'Applied blog 1.0.0 into X. 0 indexed.',
+    string $blogStatus = 'applied',
+): void {
     $platformFailsFlag = $platformFails ? 1 : 0;
+    $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
 
     File::put($dir.'/bin/docker', <<<STUB
     #!/usr/bin/env bash
@@ -73,6 +83,16 @@ function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $
     case "\$*" in
       *FLOOR_VCPU*) echo '{$dir}' >/dev/null; echo "1 1024" ; exit 0 ;;
       *memory_limit*) echo '8.4.25 memory_limit=128M opcache.enable_cli=0' ; exit 0 ;;
+    esac
+
+    # Phase 5's one command, timed in the image by a wrapper; and the status read after it.
+    case "\$*" in
+      *kitsune:blueprint\ apply*)
+        echo "$blogReport"
+        echo "blueprint apply took: 812 ms"
+        exit $blogExit
+        ;;
+      *kitsune:blueprint\ status*) echo '$blogStatusLine' ; exit 0 ;;
     esac
 
     case "\$*" in
@@ -106,8 +126,14 @@ function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $
       prev=\$arg
     done
     if [[ "\$1" == install ]]; then
-      mkdir -p "\$app/vendor/kitsune/core"
-      echo '{"name":"kitsune/core"}' > "\$app/vendor/kitsune/core/composer.json"
+      # As a path repository over `../packages/*` installs: one copy per package there — or only the one named.
+      echo "packages: \$(cd "\$app/../packages" && ls | tr '\\n' ' ')" >> "$dir/argv.log"
+      for pkg in "\$app"/../packages/*/; do
+        name=\$(basename "\$pkg")
+        [[ -z "$installOnly" || "\$name" == "$installOnly" ]] || continue
+        mkdir -p "\$app/vendor/kitsune/\$name"
+        echo "{\\"name\\":\\"kitsune/\$name\\"}" > "\$app/vendor/kitsune/\$name/composer.json"
+      done
       # As the real command: install from a lock that is there, and resolve (writing one) when it is not. Which it
       # did is recorded, so a test can tell a lock handed in before the install from one written after it.
       if [[ -f "\$app/composer.lock" ]]; then
@@ -198,7 +224,8 @@ it('seeds each column in a process of its own before measuring in another', func
 
     $benchmarkRuns = array_values(array_filter(
         explode("\n", (string) File::get($this->dir.'/argv.log')),
-        static fn (string $line): bool => str_contains($line, 'benchmark-floor'),
+        /* The Blog apply's corpus is seeded in a copy of its own, and is not one of the two columns. */
+        static fn (string $line): bool => str_contains($line, 'benchmark-floor') && ! str_contains($line, 'run-blog-'),
     ));
 
     // Seed, measure constrained; seed, measure unconstrained — each measurement preceded by its own seeding.
@@ -375,3 +402,100 @@ it('refuses an image that cannot run what was installed, naming what it lacks', 
         ->and($run->getErrorOutput())->toContain('cannot run the installed application')
         ->and($run->getErrorOutput())->toContain('intl, zip');
 });
+
+it('installs every package the skeleton requires through one path repository', function (): void {
+    /*
+     * ⚠️ BROKEN SINCE #134. The skeleton started requiring `kitsune/person`, and the harness still copied core alone
+     * and pointed Composer at `../packages/core` — so person came from somewhere other than this commit, or not at
+     * all. Now every package is copied and one glob repository serves them, as `deploy/release.sh` step 6 does.
+     */
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $argv = (string) File::get($this->dir.'/argv.log');
+    $repo = dirname($this->harness, 2);
+    $packages = array_values(array_filter((array) scandir($repo.'/packages'), static fn (string $name): bool => $name[0] !== '.' && is_dir($repo.'/packages/'.$name)));
+
+    preg_match('/^packages: (.*)$/m', $argv, $copied);
+
+    expect(array_values(array_filter(explode(' ', $copied[1] ?? ''))))->toBe($packages)
+        ->and($argv)->toContain('"url":"../packages/*"')
+        ->and($argv)->toContain('"symlink":false')
+        ->and($argv)->not->toContain('"url":"../packages/core"');
+
+    $required = array_filter(
+        array_keys((array) json_decode((string) File::get($repo.'/skeleton/composer.json'), true)['require']),
+        static fn (string $name): bool => str_starts_with($name, 'kitsune/'),
+    );
+
+    expect($required)->not->toBeEmpty();
+
+    foreach ($required as $name) {
+        expect($packages)->toContain(substr($name, strlen('kitsune/')));
+    }
+});
+
+it('refuses an install that left a required package out', function (): void {
+    floorStubs($this->dir, installOnly: 'core');
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse('an install missing kitsune/person was measured')
+        ->and($run->getErrorOutput())->toContain('kitsune/person was not installed as a copy of packages/person');
+});
+
+it('times the Blog apply under the floor limits, on an empty install and into the corpus org', function (): void {
+    /*
+     * ⚠️ PHASE 5's DONE-WHEN IS ONE COMMAND UNDER 60 s AT THE FLOOR, and ADR-039 says where it is measured: in this
+     * image, under these limits, on a fresh copy. So both applies run under exactly the limits the columns above do.
+     */
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $lines = explode("\n", (string) File::get($this->dir.'/argv.log'));
+    $applies = array_values(array_filter($lines, static fn (string $line): bool => str_contains($line, 'kitsune:blueprint apply blog')));
+
+    expect($applies)->toHaveCount(2);
+
+    foreach ($applies as $apply) {
+        expect($apply)->toContain('--cpus='.Kitsune::FLOOR_VCPU)
+            ->toContain('--memory='.Kitsune::FLOOR_MEMORY_MB.'m')
+            ->toContain('--memory-swap='.Kitsune::FLOOR_MEMORY_MB.'m')
+            ->toContain('--no-interaction');
+    }
+
+    expect($applies[0])->toContain('--org=blog')
+        ->and($applies[0])->toContain('run-blog-fresh')
+        ->and($applies[1])->toContain('--org=floor-benchmark')
+        ->and($applies[1])->toContain('run-blog-content');
+
+    /* The corpus is in the table before the second apply: a --keep seeding in that same copy, earlier in the log. */
+    $seeding = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'run-blog-content') && str_contains($line, '--keep')));
+    $content = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'kitsune:blueprint apply blog --org=floor-benchmark')));
+
+    expect($seeding)->not->toBeNull()
+        ->and($seeding)->toBeLessThan($content)
+        ->and($lines[$seeding])->toContain('--entries=25')
+        ->and($lines[$seeding])->not->toContain('--cpus=');
+
+    expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply blog at 1 vCPU / 1024 MB')
+        ->toMatch('/empty installation \(creates the org and its site\)\s+812 ms/')
+        ->toMatch('/into floor-benchmark, 25 entries in the table\s+812 ms/')
+        ->toContain('Budget: 60,000 ms');
+});
+
+it('refuses a Blog apply that did not happen, however quickly it stopped', function (array $stub, string $reason): void {
+    floorStubs($this->dir, ...$stub);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($reason)
+        ->and($run->getOutput())->not->toContain('Phase 5:');
+})->with([
+    'exited non-zero' => [['blogExit' => 1], 'the fresh Blog apply exited 1'],
+    'did not report applying blog' => [['blogReport' => 'Refusing to create an organisation'], 'the fresh Blog apply did not report applying blog'],
+    'left its receipt interrupted' => [['blogStatus' => 'interrupted'], 'the fresh Blog apply left its receipt unfinished'],
+]);
