@@ -1,14 +1,18 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
+const { BLOG_OWNER } = require('./accounts');
 
 /*
  * Signs in the two people the Blog blueprint's browser test needs — Phase 5, ADR-039.
  *
- * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but its seeded owner role and what
- * `kitsune:blueprint apply blog` wrote, so the owner measures what the command created and the writer measures the
- * role it created — assigned to her in `e2e/global-setup.js` through the audited path, because a blueprint assigns
+ * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but ~~its seeded owner role and~~ what
+ * `kitsune:blueprint apply blog --owner` wrote, so the owner measures what the command created and the writer measures
+ * the role it created — assigned to her in `e2e/global-setup.js` through the audited path, because a blueprint assigns
  * nobody.
+ *
+ * ⚠️ THE OWNER SIGNS IN WITH THE PASSWORD THE COMMAND WAS GIVEN (ADR-026, as amended): her account is the one
+ * `--owner` created, so this sign-in is the proof it can be signed in to. The writer is the seeder's, as before.
  */
 
 /**
@@ -19,11 +23,11 @@ const path = require('node:path');
  * the wait below timed out reading as a broken sign-in. The throttle is the product's and stays; this waits out the
  * window its notification names, then signs in again.
  */
-async function signIn(page, email, file) {
+async function signIn(page, email, password, file) {
     await page.goto('/admin/login');
 
     await page.locator('input[type="email"]').fill(email);
-    await page.locator('input[type="password"]').fill('password');
+    await page.locator('input[type="password"]').fill(password);
 
     for (let attempt = 0; attempt < 2; attempt++) {
         await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
@@ -57,9 +61,9 @@ async function signIn(page, email, file) {
 setup.describe.configure({ timeout: 120_000 });
 
 setup('authenticate as the blog owner', async ({ page }) => {
-    await signIn(page, 'blog-owner@kitsune.test', 'blog-owner-auth.json');
+    await signIn(page, BLOG_OWNER.email, BLOG_OWNER.password, 'blog-owner-auth.json');
 });
 
 setup('authenticate as the blog writer', async ({ page }) => {
-    await signIn(page, 'blog-writer@kitsune.test', 'blog-writer-auth.json');
+    await signIn(page, 'blog-writer@kitsune.test', 'password', 'blog-writer-auth.json');
 });
