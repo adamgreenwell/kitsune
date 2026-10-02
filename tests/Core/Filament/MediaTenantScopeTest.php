@@ -230,7 +230,9 @@ it('pages a media type\'s list without a total, and any other type\'s with one',
 /**
  * And its "select all" means the page in view. Filament counts every selectable row on each render when bulk actions
  * exist, and reads the number off the paginator only when the paginator has one — a simple paginator does not, so the
- * list would run the very count its pagination mode exists to avoid. Asked of the table the list page builds.
+ * list would run the very count its pagination mode exists to avoid. Asked of the table the list page builds. Every
+ * other list keeps Filament's select-all of every row it holds, read off its paginator's total for no query, which its
+ * removals refuse above fifty, the modal saying so first (decision 36, a default for Adam to overrule).
  */
 it('selects only the page in view on a media list, and every row on any other', function (): void {
     $selectsPageOnly = function (EntryType $type): bool {

@@ -8,20 +8,16 @@
 
 declare(strict_types=1);
 
-use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ForceDeleteAction;
 use Filament\Actions\ForceDeleteBulkAction;
 use Filament\Actions\RestoreAction;
-use Filament\Actions\RestoreBulkAction;
 use Filament\Actions\ViewAction;
 use Filament\Tables\Filters\TrashedFilter;
 use Filament\Tables\Table;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Filament\EntryTrash;
-use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Media\MediaDisks;
@@ -42,7 +38,8 @@ use Kitsune\Core\Tests\Fixtures\TestUser;
  *
  * ⚠️ FROM THE ROWS AS THEY ARE AFTERWARDS. Every case reads whether the entry is live, trashed or gone, and what the
  * disks hold, so an action that reported success and did something else cannot pass. The page itself — the filter, the
- * actions a trashed card shows, a restored public file on the web again — is `media-trash.spec.js`'s.
+ * actions a trashed card shows, a restored public file on the web again — is `media-trash.spec.js`'s. A selection's
+ * restore and delete forever are `MediaBulkRemovalTest`'s since decision 36.
  */
 
 beforeEach(function (): void {
@@ -148,118 +145,6 @@ describe('deleting forever', function (): void {
         expect(fn () => EntryTrash::forceDeleteOne(inTrash($entry)))->toThrow(RuntimeException::class, 'the audit row could not be written');
         expect(whereIs($entry))->toBe('trashed');
     });
-
-    it('deletes each trashed entry forever on its own, and names every one it left, in one notice', function (): void {
-        $live = ($this->write)('Still live');
-        $refused = ($this->store)('<i>Scorecard</i>', 'public');
-        $erased = ($this->write)('Old draft');
-        $refused->delete();
-        $erased->delete();
-        config(['kitsune.media.disks.private' => 'public']);
-
-        $action = ForceDeleteBulkAction::make();
-        EntryTrash::forceDeleteEach($action, [$live, inTrash($refused), inTrash($erased)]);
-
-        $notice = trashNotices()[0] ?? [];
-
-        expect(whereIs($live))->toBe('live')
-            ->and(whereIs($refused))->toBe('trashed')
-            ->and(whereIs($erased))->toBe('gone')
-            ->and(trashNotices())->toHaveCount(1)
-            ->and($notice['title'])->toBe('2 entries were not deleted forever')
-            ->and($notice['body'])->toStartWith('&quot;Still live&quot; was not deleted forever: it is not in the trash. Move it to the trash first.<br>')
-            ->and($notice['body'])->toContain('&quot;&lt;i&gt;Scorecard&lt;/i&gt;&quot; was not deleted forever: Refusing to erase entry '.$refused->id)
-            ->and($notice['body'])->toEndWith('The other entry was deleted forever.')
-            // Instead of Filament's own count, which says less, and would say it twice.
-            ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeTrue();
-    });
-
-    it('says nothing, and leaves Filament\'s count alone, when every trashed entry is deleted forever', function (): void {
-        $entry = ($this->write)('Old draft');
-        $entry->delete();
-
-        $action = ForceDeleteBulkAction::make();
-        EntryTrash::forceDeleteEach($action, [inTrash($entry)]);
-
-        expect(whereIs($entry))->toBe('gone')
-            ->and(trashNotices())->toBe([])
-            ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeFalse();
-    });
-
-    /* Any other failure keeps Filament's own count, which is the only thing that reports it. */
-    it('keeps Filament\'s notification when a failure was not one it names', function (): void {
-        $live = ($this->write)('Still live');
-        $failing = ($this->write)('Old draft');
-        $failing->delete();
-        AuditorStandIn::install()->beforeRecording(fn () => throw new RuntimeException('the audit row could not be written'));
-
-        $action = ForceDeleteBulkAction::make();
-        EntryTrash::forceDeleteEach($action, [$live, inTrash($failing)]);
-
-        expect(whereIs($failing))->toBe('trashed')
-            ->and(trashNotices())->toHaveCount(1)
-            ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeFalse();
-    });
-});
-
-describe('restoring', function (): void {
-    it('restores each trashed entry, and leaves a live one as it was, unsaved', function (): void {
-        $trashed = ($this->write)('Old draft');
-        $trashed->delete();
-        $live = ($this->write)('Still live');
-        $stamp = DB::table('entries')->where('id', $live->id)->value('updated_at');
-        $audits = DB::table('audit_log')->count();
-
-        EntryTrash::restoreEach(RestoreBulkAction::make(), [inTrash($trashed), $live]);
-
-        expect(whereIs($trashed))->toBe('live')
-            ->and(whereIs($live))->toBe('live')
-            ->and(DB::table('entries')->where('id', $live->id)->value('updated_at'))->toBe($stamp)
-            // One audit row: the restore's. The live entry was not saved again.
-            ->and(DB::table('audit_log')->count())->toBe($audits + 1);
-    });
-
-    it('puts a restored public file back on the web', function (): void {
-        $entry = ($this->store)('Logo', 'public');
-        $path = (string) DB::table('media_files')->where('entry_id', $entry->id)->value('path');
-        $entry->delete();
-
-        expect(is_file($this->disks['public']->root().'/'.$path))->toBeFalse();
-
-        EntryTrash::restoreEach(RestoreBulkAction::make(), [inTrash($entry)]);
-
-        expect(whereIs($entry))->toBe('live')
-            ->and(is_file($this->disks['public']->root().'/'.$path))->toBeTrue();
-    });
-
-    it('counts a restore that fails, and reports the first', function (): void {
-        $entry = ($this->write)('Old draft');
-        $entry->delete();
-        AuditorStandIn::install()->beforeRecording(fn () => throw new RuntimeException('the audit row could not be written'));
-
-        Exceptions::fake();
-        $action = RestoreBulkAction::make();
-        EntryTrash::restoreEach($action, [inTrash($entry)]);
-
-        expect(whereIs($entry))->toBe('trashed')
-            ->and((fn (): int => $this->bulkProcessingFailureWithoutMessageCount)->call($action))->toBe(1);
-        Exceptions::assertReported(fn (RuntimeException $e): bool => $e->getMessage() === 'the audit row could not be written');
-    });
-});
-
-/* A trashed entry selected beside live ones — the filter lists both — is not trashed again, which would move its date. */
-it('deletes each live entry, and leaves one already in the trash as it was', function (): void {
-    $trashed = ($this->write)('Old draft');
-    $trashed->delete();
-    $deletedAt = DB::table('entries')->where('id', $trashed->id)->value('deleted_at');
-    $live = ($this->write)('Still live');
-    $audits = DB::table('audit_log')->count();
-
-    MediaDeletionNotice::deleteEach(DeleteBulkAction::make(), [inTrash($trashed), $live]);
-
-    expect(whereIs($live))->toBe('trashed')
-        ->and(DB::table('entries')->where('id', $trashed->id)->value('deleted_at'))->toBe($deletedAt)
-        ->and(DB::table('audit_log')->count())->toBe($audits + 1);
 });
 
 describe('the list', function (): void {
@@ -316,7 +201,7 @@ describe('the list', function (): void {
         $type = $type === 'image' ? $this->image : $this->article;
         $table = trashTable($type);
         $single = collect($table->getRecordActions())->first(fn ($action) => $action instanceof ForceDeleteAction);
-        // From the page as Livewire boots it: a media list's description counts the selection (ADR-042 decision 35).
+        // From the page as Livewire boots it: every list's description counts the selection (ADR-042 decisions 35 and 36).
         $page = app(ListEntries::class);
         $page->bootedInteractsWithTable();
         $bulk = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(fn ($action) => $action instanceof ForceDeleteBulkAction);

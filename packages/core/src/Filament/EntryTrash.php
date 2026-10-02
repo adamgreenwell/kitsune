@@ -10,21 +10,21 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament;
 
-use Filament\Actions\BulkAction;
 use Filament\Notifications\Notification;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Throwable;
 
 /**
- * The trash's restore and delete forever, for the entry lists — ADR-042 decision 31.
+ * One entry's delete forever, for the entry lists' row action — ADR-042 decision 31. A selection's restore and delete
+ * forever are `MediaBulkRemoval`'s, on every list (decisions 35 and 36).
  *
  * @internal
  *
- * ⚠️ DELETE FOREVER TAKES WHAT IS IN THE TRASH, AND NOTHING ELSE. Filament's filter can list live and trashed entries
- * together, and its bulk action would erase a live one outright, past the trash an editor could still take it back from.
- * So an entry that is not trashed is named and left, as a refusal is; a live entry is moved to the trash first, which is
- * the only way into it.
+ * ⚠️ DELETE FOREVER TAKES WHAT IS IN THE TRASH, AND NOTHING ELSE. Filament shows the row's *Delete forever* on a trashed
+ * entry alone, and its own would erase whatever it is handed outright, past the trash an editor could still take it back
+ * from. So an entry that is not trashed is named and left, as a refusal is; a live entry is moved to the trash first,
+ * which is the only way into it.
  *
  * ⚠️ AND A REFUSED ERASURE IS SAID, NEVER A 500 — as a refused trash is (`MediaDeletionNotice`). An erasure withdraws
  * every copy the web serves before it commits, and one that cannot is refused with its rows intact
@@ -56,96 +56,6 @@ final class EntryTrash
             self::notify(e(__('kitsune::trash.not_erased', ['title' => self::titleOf($record)])), e($refused->getMessage()));
 
             return false;
-        }
-    }
-
-    /**
-     * Each trashed record erased on its own, for `ForceDeleteBulkAction::using()` — one refused leaves the rest erased —
-     * and one notification naming every entry that stayed.
-     *
-     * @param  iterable<Model>  $records
-     */
-    public static function forceDeleteEach(BulkAction $action, iterable $records): void
-    {
-        $kept = [];
-        $erased = 0;
-        $other = 0;
-        $reported = false;
-
-        foreach ($records as $record) {
-            if (! self::isTrashed($record)) {
-                $action->reportBulkProcessingFailure();
-                $kept[] = e(__('kitsune::trash.not_erased_line', ['title' => self::titleOf($record), 'reason' => __('kitsune::trash.not_trashed')]));
-
-                continue;
-            }
-
-            try {
-                if ($record->forceDelete()) {
-                    $erased++;
-                } else {
-                    $other++;
-                    $action->reportBulkProcessingFailure();
-                }
-            } catch (MediaWithdrawalRefused $refused) {
-                $action->reportBulkProcessingFailure();
-                $kept[] = e(__('kitsune::trash.not_erased_line', ['title' => self::titleOf($record), 'reason' => $refused->getMessage()]));
-            } catch (Throwable $failure) {
-                $other++;
-                $action->reportBulkProcessingFailure();
-
-                // As Filament does: the first is reported, and the rest would have been halted by it anyway.
-                if (! $reported) {
-                    report($failure);
-                    $reported = true;
-                }
-            }
-        }
-
-        if ($kept === []) {
-            return;
-        }
-
-        $count = count($kept);
-
-        if ($erased > 0) {
-            $kept[] = e(trans_choice('kitsune::trash.erased_bulk', $erased, ['count' => $erased]));
-        }
-
-        // This notice instead of Filament's when every failure is named here; any other keeps Filament's count.
-        if ($other === 0) {
-            $action->failureNotification(null);
-        }
-
-        self::notify(e(trans_choice('kitsune::trash.not_erased_bulk', $count, ['count' => $count])), implode('<br>', $kept));
-    }
-
-    /**
-     * Each trashed record restored on its own, for `RestoreBulkAction::using()`. A live one in the selection — the filter
-     * lists both together — is where a restore would leave it, and is left: restoring it would save it again for
-     * nothing, an audit row and a revision's worth of nothing.
-     *
-     * @param  iterable<Model>  $records
-     */
-    public static function restoreEach(BulkAction $action, iterable $records): void
-    {
-        $reported = false;
-
-        foreach ($records as $record) {
-            if (! self::isTrashed($record) || ! method_exists($record, 'restore')) {
-                continue;
-            }
-
-            try {
-                $record->restore() || $action->reportBulkProcessingFailure();
-            } catch (Throwable $failure) {
-                $action->reportBulkProcessingFailure();
-
-                if (! $reported) {
-                    report($failure);
-                    $reported = true;
-                }
-            }
         }
     }
 

@@ -19,8 +19,8 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 
 /*
- * What every selection on a media list shares — ADR-042 decisions 34 and 35. Each part on its own; the five actions that
- * use them are `MediaVisibilityBulkTest`'s and `MediaBulkRemovalTest`'s.
+ * What every bounded selection shares — ADR-042 decisions 34, 35 and 36. Each part on its own; the actions that use them
+ * are `MediaVisibilityBulkTest`'s and `MediaBulkRemovalTest`'s.
  */
 
 beforeEach(function (): void {

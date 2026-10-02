@@ -4,8 +4,9 @@ const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 
 /*
- * A media list's selection deleted, restored or deleted forever — ADR-042 decision 35: at most fifty at a time, each
- * entry on its own within the request's budget, in one notification of Kitsune's.
+ * An entry list's selection deleted, restored or deleted forever — ADR-042 decisions 35 and 36: at most fifty at a time,
+ * each entry on its own within the request's budget, in one notification of Kitsune's — a media list's, and an article
+ * list's, whose *Select all* selects every row across pages.
  *
  * ⚠️ THE PAGE, BECAUSE THAT IS WHERE IT CAN FAIL. The PHP suite drives each handler, its refusals and every crash point;
  * only a browser says Filament resolves what the handlers ask of it in a real Livewire request, that its own notices stay
@@ -43,6 +44,13 @@ function storedPngs(titles, trashed = false) {
         + (trashed ? ' $entry->delete();' : '')
         + " $paths[] = \\Illuminate\\Support\\Facades\\DB::table('media_files')->where('entry_id', $entry->id)->value('path'); }"
         + ' echo json_encode($paths);'));
+}
+
+/** Drafts of golfdom's own article type, titled so, made in one call. */
+function articles(titles) {
+    tinker(IN_GOLFDOM
+        + " $type = \\Kitsune\\Core\\Models\\EntryType::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('handle', 'article')->where('org_id', $site->org_id)->firstOrFail());"
+        + ` foreach (${JSON.stringify(titles)} as $title) { \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $type->id, 'title' => $title, 'status' => 'draft']); }`);
 }
 
 /** Where an entry is — live, trashed or gone — by its title. */
@@ -93,6 +101,19 @@ async function listed(page, words, count) {
     await page.locator('.fi-ta').getByPlaceholder('Search').fill(words);
     await searched;
     await expect(page.locator('.fi-ta-record')).toHaveCount(count);
+}
+
+/**
+ * The article list, searched down to these words and showing `count` rows. Where the list showed as many before the
+ * search, the count settles nothing; Filament disables every row's checkbox while the search is loading, so none is
+ * ticked before it lands.
+ */
+async function listedArticles(page, words, count) {
+    await page.goto('/admin/golfdom/c/article');
+    const searched = page.waitForResponse((response) => response.url().includes('/livewire') && (response.request().postData() ?? '').includes(words));
+    await page.locator('.fi-ta').getByPlaceholder('Search').fill(words);
+    await searched;
+    await expect(page.locator('.fi-ta-record-checkbox')).toHaveCount(count);
 }
 
 /** The list's *Bulk actions* menu, opened, and the action in it clicked. */
@@ -238,4 +259,69 @@ test('restores a selection from the trash, puts each file back on the web, and d
     await expect(notice(page, 'One entry was deleted forever')).toBeVisible({ timeout: 30_000 });
     expect(whereIs(erased)).toBe('gone');
     expect(await status(page, paths[2])).not.toBe(200);
+});
+
+/*
+ * ⚠️ AN ARTICLE LIST'S *SELECT ALL* SELECTS EVERY ROW IT HOLDS, ACROSS PAGES — decision 36, and refused above fifty, the
+ * modal saying so before it is submitted; with five deselected, the fifty are deleted in one notification, and restored in
+ * another. Ten a page throughout, so the per-page choice every list shares is never changed.
+ */
+test('selects every article the list holds, refuses more than fifty, and deletes and restores fifty in one notification each', async ({ page }) => {
+    const words = `${PROBE} article`;
+    articles(Array.from({ length: 55 }, (_, i) => `${words} ${String(i + 1).padStart(2, '0')}`));
+
+    await listedArticles(page, words, 10);
+    await page.locator('.fi-ta-record-checkbox').first().check();
+    await page.getByRole('button', { name: 'Select all 55', exact: true }).click();
+    await expect(selection(page)).toContainText('55 records selected');
+
+    await bulkAction(page, 'Delete selected');
+    const tooMany = modal(page, 'Delete');
+    await expect(tooMany).toContainText('At most 50 entries are deleted at a time, and 55 are selected, so as it is nothing will be deleted. Select fewer first.');
+    await tooMany.getByRole('button', { name: 'Delete', exact: true }).click();
+
+    const refused = notice(page, 'Too many entries are selected');
+    await expect(refused).toBeVisible({ timeout: 30_000 });
+    await expect(refused).toContainText('More than 50 entries are selected, and at most 50 are deleted at a time, so nothing was deleted.');
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+    expect(trashedLike(words)).toBe(0);
+    await expect(selection(page)).toContainText('55 records selected');
+    // Closed, so the next run's notification is the only one: the refusal stays until it is.
+    await refused.locator('.fi-no-notification-close-btn').click();
+    await expect(page.locator('.fi-no-notification')).toHaveCount(0);
+
+    for (let i = 0; i < 5; i++) {
+        await page.locator('.fi-ta-record-checkbox').nth(i).uncheck();
+    }
+    await expect(selection(page)).toContainText('50 records selected');
+
+    await bulkAction(page, 'Delete selected');
+    const fifty = modal(page, 'Delete');
+    await expect(fifty).toBeVisible();
+    await expect(fifty).not.toContainText('At most 50');
+    await fifty.getByRole('button', { name: 'Delete', exact: true }).click();
+
+    await expect(notice(page, '50 entries were deleted')).toBeVisible({ timeout: 30_000 });
+    // Filament's own *Deleted* would be a second.
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+    await expect(selection(page)).toBeHidden();
+    expect(trashedLike(words)).toBe(50);
+    await expect(page.locator('.fi-ta-record-checkbox')).toHaveCount(5);
+
+    await listedArticles(page, words, 5);
+    await showTrash(page, '0');
+    await expect(page.locator('.fi-ta-record-checkbox')).toHaveCount(10);
+    await page.locator('.fi-ta-record-checkbox').first().check();
+    await page.getByRole('button', { name: 'Select all 50', exact: true }).click();
+    await expect(selection(page)).toContainText('50 records selected');
+
+    await bulkAction(page, 'Restore selected');
+    await modal(page, 'Restore').getByRole('button', { name: 'Restore', exact: true }).click();
+
+    const restored = notice(page, '50 entries were restored');
+    await expect(restored).toBeVisible({ timeout: 30_000 });
+    // A smoke check only: an article has no file to wait on, so this cannot fail here — `MediaBulkRemovalTest` N4 is the guard.
+    await expect(restored).not.toContainText('not yet published');
+    await expect(page.locator('.fi-no-notification')).toHaveCount(1);
+    expect(trashedLike(words)).toBe(0);
 });
