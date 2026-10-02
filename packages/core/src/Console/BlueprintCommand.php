@@ -11,11 +11,13 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
+use InvalidArgumentException;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
 
@@ -105,7 +107,9 @@ final class BlueprintCommand extends Command
                 (string) $receipt->org_id,
                 (string) $receipt->handle,
                 (string) $receipt->version,
-                $receipt->applied_at?->toDateTimeString() ?? 'INTERRUPTED — started, did not finish',
+                $receipt->applied_at?->toDateTimeString() ?? ($receipt->manifest === null
+                    ? 'INTERRUPTED — no rows written; re-run to apply'
+                    : 'INTERRUPTED — rows written, not finished; re-run to finish'),
             ];
         }
 
@@ -138,6 +142,19 @@ final class BlueprintCommand extends Command
             return self::FAILURE;
         }
 
+        /*
+         * ⚠️ BEFORE THE ORG, NOT ONLY BEFORE THE RECEIPT. What a definition says of itself needs no database to be
+         * found wrong, and on an empty installation the next step writes the first org — which a malformed
+         * definition would otherwise leave behind, and with it an installation that is no longer empty.
+         */
+        try {
+            BlueprintApplier::refuseMalformed($definition);
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        }
+
         $slug = $this->option('org');
 
         if (! is_string($slug) || $slug === '') {
@@ -163,7 +180,8 @@ final class BlueprintCommand extends Command
             }
 
             $this->info(sprintf(
-                'Created organisation %s and its first site. No user was created — onboarding does that (ADR-026).',
+                'Created organisation %s and its first site. No user was created, and nobody is a member of it '
+                .'(ADR-026) — until onboarding exists, nobody can reach it in the admin.',
                 $slug,
             ));
         }
@@ -174,6 +192,9 @@ final class BlueprintCommand extends Command
             $context->setOrg($org);
 
             $result = BlueprintApplier::apply($definition);
+
+            /* Asked while the org is in context: whether anybody here can assign what was just created. */
+            $hasOwner = Role::query()->where('is_owner', true)->exists();
         } catch (Throwable $e) {
             /*
              * The reason, not a bare failure. An apply that stops part-way leaves a receipt with no
@@ -200,6 +221,20 @@ final class BlueprintCommand extends Command
             $slug,
             $result['indexed'],
         ));
+
+        /* Created with no holders: who holds a role is a person's decision, audited as one (ADR-033). */
+        if ($result['roles_created'] !== []) {
+            $one = count($result['roles_created']) === 1;
+
+            $this->line(sprintf(
+                $hasOwner
+                    ? '%d %s created and nobody holds %s: an owner assigns %3$s under Roles (ADR-033).'
+                    : '%d %s created and nobody holds %s, and this organisation has no owner yet to assign %3$s (ADR-033).',
+                count($result['roles_created']),
+                $one ? 'role was' : 'roles were',
+                $one ? 'it' : 'them',
+            ));
+        }
 
         return self::SUCCESS;
     }

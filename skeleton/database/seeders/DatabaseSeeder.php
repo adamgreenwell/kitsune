@@ -583,7 +583,39 @@ class DatabaseSeeder extends Seeder
          */
         $this->seedMediaFile($image, 'Rival private asset', 'private');
 
+        $this->seedBlogOrg($context);
+
         $context->forget();
+    }
+
+    /**
+     * An org for the Blog blueprint's browser test, shaped as the next slice's first-owner path will leave a fresh one.
+     *
+     * ⚠️ ITS OWN ORG, SO NO OTHER SPEC SEES IT. Blog applied into Golfdom would add Posts and Tags to a sidebar, a
+     * dashboard and a role list that a dozen specs read. Two sites with no `base_url` and no group, as `FirstOrg` makes
+     * one; an owner, as the next slice's first-owner path will make one; and a writer who belongs to the org and holds
+     * no role at all until `e2e/global-setup.js` assigns Blog's through the audited path.
+     *
+     * ⚠️ BLOG IS NOT APPLIED HERE. The command applies it, on every e2e build, so what the browser meets is what the
+     * command wrote — not what a seeder thought it would.
+     */
+    private function seedBlogOrg(Context $context): void
+    {
+        $inkwell = Org::create(['name' => 'Inkwell', 'slug' => 'inkwell']);
+        $context->setOrg($inkwell);
+
+        $site = Site::create(['org_id' => $inkwell->id, 'handle' => 'inkwell', 'slug' => 'inkwell', 'name' => 'Inkwell', 'locale' => 'en']);
+        $french = Site::create(['org_id' => $inkwell->id, 'handle' => 'inkwell-fr', 'slug' => 'inkwell-fr', 'name' => 'Inkwell FR', 'locale' => 'fr']);
+
+        $owner = User::create(['name' => 'Blog Owner', 'email' => 'blog-owner@kitsune.test', 'password' => Hash::make('password')]);
+        $owner->sites()->attach([$site->id, $french->id]);
+        $owner->orgs()->attach($inkwell->id);
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->id);
+
+        // ⚠️ THE ENGLISH SITE ONLY, so `/admin/inkwell-fr` is a site in her own org that she cannot enter.
+        $writer = User::create(['name' => 'Blog Writer', 'email' => 'blog-writer@kitsune.test', 'password' => Hash::make('password')]);
+        $writer->sites()->attach([$site->id]);
+        $writer->orgs()->attach($inkwell->id);
     }
 
     /**

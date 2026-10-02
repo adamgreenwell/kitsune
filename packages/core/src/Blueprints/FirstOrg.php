@@ -15,6 +15,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
+use Throwable;
 
 /**
  * Create the first org and its first site, on an installation that has neither — ADR-039.
@@ -35,8 +36,8 @@ use RuntimeException;
  *
  * ⚠️ IT CREATES NO USER, AND THAT IS ADR-026 RATHER THAN AN OMISSION. "The installer never creates a default
  * administrator account; onboarding creates the first user interactively." An org and a site are tenancy rows;
- * an account is a credential. This makes the admin REACHABLE — Filament's tenant is the Site, so without one
- * there is no panel URL at all — and stops there.
+ * an account is a credential. This makes a panel URL EXIST — Filament's tenant is the Site, so without one there
+ * is none at all — and stops there: nobody can sign in to it until there is a first user.
  *
  * ⚠️ THE SITE CLAIMS NO HOST. `base_url` is left null, which is the admin-only site ADR-021 describes, so
  * none of the host-claim machinery runs: no canonical host, no overlap check, no mutex. A fresh install does
@@ -78,21 +79,33 @@ final class FirstOrg
          * being left behind would be worse than untidy: the next run would find one org, refuse to bootstrap,
          * and tell the operator to name an organisation that exists but has no site.
          */
-        return (new Org)->getConnection()->transaction(static function () use ($context, $slug, $name, $siteSlug, $locale): Org {
-            /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */
-            $org = Org::create(['slug' => $slug, 'name' => $name]);
+        /*
+         * ⚠️ AND THE CONTEXT IS CLEARED WHEN IT ROLLS BACK. The transaction sets the new org in context, and a
+         * rollback took the org away and left the context naming it — an org no row holds any longer. Cleared, not
+         * restored: this runs only on an installation with no org, so no org or site was in context before it that
+         * a caller could want back.
+         */
+        try {
+            return (new Org)->getConnection()->transaction(static function () use ($context, $slug, $name, $siteSlug, $locale): Org {
+                /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */
+                $org = Org::create(['slug' => $slug, 'name' => $name]);
 
-            /* And now there is. Context first, then the row: `EnforcesScope` refuses a scope key nobody vouched for. */
-            $context->setOrg($org);
+                /* And now there is. Context first, then the row: `EnforcesScope` refuses a scope key nobody vouched for. */
+                $context->setOrg($org);
 
-            Site::create([
-                'handle' => $siteSlug,
-                'slug' => $siteSlug,
-                'name' => $name,
-                'locale' => $locale,
-            ]);
+                Site::create([
+                    'handle' => $siteSlug,
+                    'slug' => $siteSlug,
+                    'name' => $name,
+                    'locale' => $locale,
+                ]);
 
-            return $org;
-        });
+                return $org;
+            });
+        } catch (Throwable $e) {
+            $context->forget();
+
+            throw $e;
+        }
     }
 }

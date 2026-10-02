@@ -13,6 +13,7 @@ namespace Kitsune\Core\Tests\Fixtures;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
+use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Blueprints\OnCollision;
 
 /**
@@ -34,6 +35,9 @@ final class FixtureBlueprint implements BlueprintDefinition
     /** @var list<EntryTypeDeclaration>|null */
     public static ?array $override = null;
 
+    /** @var list<RoleDeclaration> */
+    public static array $roles = [];
+
     public static function reset(): void
     {
         self::$version = '1.0.0';
@@ -41,6 +45,7 @@ final class FixtureBlueprint implements BlueprintDefinition
         self::$piiClass = 'none';
         self::$indexed = false;
         self::$override = null;
+        self::$roles = [];
     }
 
     public function handle(): string
@@ -76,5 +81,10 @@ final class FixtureBlueprint implements BlueprintDefinition
                 onCollision: self::$onCollision,
             ),
         ];
+    }
+
+    public function roles(): array
+    {
+        return self::$roles;
     }
 }

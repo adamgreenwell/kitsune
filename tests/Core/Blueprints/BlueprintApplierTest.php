@@ -12,12 +12,14 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
+use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Blueprints\OnCollision;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
 
@@ -66,11 +68,16 @@ it('creates the declared type and its field, and records a receipt', function ()
 
 /** ADR-039: a blueprint is applied INTO an org, and every row it writes belongs to that org. */
 it('writes nothing global, and nothing into another org', function (): void {
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+
     BlueprintApplier::apply(new FixtureBlueprint);
 
     expect(EntryType::query()->whereNull('org_id')->count())->toBe(0)
         ->and(FieldStorage::query()->whereNull('org_id')->count())->toBe(0)
-        ->and(EntryType::query()->where('org_id', $this->other->getKey())->count())->toBe(0);
+        ->and(EntryType::query()->where('org_id', $this->other->getKey())->count())->toBe(0)
+        ->and(Role::query()->withoutGlobalScopes()->where('org_id', '!=', $this->org->getKey())->count())->toBe(0)
+        ->and(Role::query()->withoutGlobalScopes()->whereNull('org_id')->count())->toBe(0)
+        ->and(Role::query()->withoutGlobalScopes()->where('org_id', $this->org->getKey())->count())->toBe(1);
 });
 
 /**
@@ -184,8 +191,10 @@ it('leaves no rows but a findable receipt when a declaration is refused part-way
         new EntryTypeDeclaration(handle: 'first', name: 'First', pluralName: 'Firsts', fields: [
             new FieldDeclaration(handle: 'first_body', type: 'textarea', label: 'Body', piiClass: 'none'),
         ]),
-        /* Reserved by the admin's own routing, and refused at save by `EntryType`. */
-        new EntryTypeDeclaration(handle: 'create', name: 'Nope', pluralName: 'Nopes'),
+        /* A field handle storage refuses at save: the database's side of the apply, which no pre-flight asks. */
+        new EntryTypeDeclaration(handle: 'second', name: 'Second', pluralName: 'Seconds', fields: [
+            new FieldDeclaration(handle: 'Second Body', type: 'textarea', label: 'Body', piiClass: 'none'),
+        ]),
     ];
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class);

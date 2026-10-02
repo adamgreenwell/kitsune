@@ -25,6 +25,29 @@ module.exports = async () => {
     run(['kitsune:module', 'install', 'kitsune/person', '--no-interaction']);
     run(['kitsune:module', 'enable', 'kitsune/person', '--no-interaction']);
 
+    /*
+     * ⚠️ THE BLOG BLUEPRINT, APPLIED BY ITS COMMAND — Phase 5, ADR-039. Not by the seeder: what `blog-blueprint.spec.js`
+     * meets is then what the command wrote, through core's own registration under package discovery, on every build.
+     * Run twice, because a second apply at the same version is a no-op and the output says so; and the writer's role is
+     * assigned through `Role::assignTo()`, the audited path, because a blueprint assigns nobody.
+     */
+    run(['kitsune:blueprint', 'apply', 'blog', '--org=inkwell', '--no-interaction']);
+
+    const again = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'blog', '--org=inkwell', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! again.includes('already applied at this version')) {
+        throw new Error(`global-setup: a second Blog apply into inkwell was not a no-op:\n${again}`);
+    }
+
+    execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "$o = Kitsune\\Core\\Models\\Org::where('slug', 'inkwell')->firstOrFail(); app(Kitsune\\Core\\Tenancy\\Context::class)->setOrg($o);"
+            + " Kitsune\\Core\\Models\\Role::where('handle', 'blog_writer')->firstOrFail()"
+            + "->assignTo(App\\Models\\User::where('email', 'blog-writer@kitsune.test')->value('id'));",
+    ], { cwd: skeleton, stdio: 'inherit' });
+
     run(['filament:assets']);
 
     /*

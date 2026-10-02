@@ -11,6 +11,9 @@
 # Without --image the interpreter is built from bin/benchmark-floor.Dockerfile, which is the one the floor is
 # recorded on: `php:8.4-cli` at a pinned digest, plus the ext-intl and ext-zip the dependency graph requires.
 #
+# After the two columns it times Phase 5's one command, `kitsune:blueprint apply blog`, under the same limits: once on
+# an empty installation, where it creates the org and its site, and once into the corpus org with --entries in the table.
+#
 # ⚠️ WHY THIS EXISTS. docs/roadmap.md recorded a constrained column — peak memory and workers "verified
 # inside a container limited to 1 vCPU and 1 GB, not merely on the dev machine" — and nothing in this
 # repository could produce it again. compose.yaml sets no cpu or memory limit, and no script pinned one, so
@@ -96,10 +99,17 @@ echo "==> building a disposable install in $work"
 # ⚠️ A COPY, NEVER THE WORKING TREE. Installing into `skeleton/` would leave a vendor directory and an edited
 # composer.json behind in the repository, and `skeleton/vendor` is what the bare-clone rule says never has to
 # exist for the suite to pass.
+# ⚠️ EVERY PACKAGE, NOT CORE ALONE. The skeleton requires `kitsune/person` too (#134), and with only core's path
+# repository Composer looked for person somewhere else — so the install failed, or installed a person that is not this
+# commit's. The same glob `deploy/release.sh` step 6 uses, for the same reason.
 mkdir -p "$work/packages"
 cp -R "$repo/skeleton" "$app"
-cp -R "$repo/packages/core" "$work/packages/core"
-rm -rf "$app/vendor" "$app/.env" "$app/database/database.sqlite" "$work/packages/core/vendor"
+for pkg in "$repo"/packages/*/; do
+  name=$(basename "$pkg")
+  cp -R "$pkg" "$work/packages/$name"
+  rm -rf "$work/packages/$name/vendor"
+done
+rm -rf "$app/vendor" "$app/.env" "$app/database/database.sqlite"
 # And any lock the checkout holds — `skeleton/composer.lock` is ignored, so running Composer in the skeleton leaves
 # one, and `cp -R` carried it in. A run without --lock then installed that graph while its header said it had
 # resolved one fresh, and --save-lock kept it as new (Codex, #126). The only lock an install may start from is
@@ -109,8 +119,8 @@ rm -f "$app/composer.lock"
 # container would then load in preference to the one written below, silently measuring a different app.
 rm -f "$app/bootstrap/cache"/*.php
 
-# kitsune/core as real files, exactly as deploy/release.sh step 6 installs it and as a Packagist install will
-# put it. `symlink: false` matters twice over: it is how a released install resolves, and a symlinked vendor
+# Every kitsune/* package as real files, exactly as deploy/release.sh step 6 installs them and as a Packagist install
+# will put them. `symlink: false` matters twice over: it is how a released install resolves, and a symlinked vendor
 # entry would need its target mounted into the container as well.
 # ⚠️ THE DEPENDENCY GRAPH IS AN INPUT TOO. The skeleton commits no lock (deploy/release.sh step 5 says why), so
 # `composer install` resolves whatever Laravel, Filament and their dependencies currently satisfy the skeleton's
@@ -132,8 +142,8 @@ image_php=$(docker run --rm "$image" php -r 'echo PHP_VERSION;') || refuse "coul
 composer config -d "$app" platform.php "$image_php" >/dev/null
 composer config -d "$app" platform-check true >/dev/null
 
-composer config -d "$app" repositories.kitsune-core \
-  '{"type":"path","url":"../packages/core","options":{"symlink":false}}' >/dev/null
+composer config -d "$app" repositories.kitsune-packages \
+  '{"type":"path","url":"../packages/*","options":{"symlink":false}}' >/dev/null
 if ! composer install -d "$app" --no-dev --no-interaction --prefer-dist --optimize-autoloader \
   --no-scripts >"$work/install.log" 2>&1; then
   tail -20 "$work/install.log" >&2
@@ -141,6 +151,15 @@ if ! composer install -d "$app" --no-dev --no-interaction --prefer-dist --optimi
 fi
 [[ -f "$app/vendor/kitsune/core/composer.json" && ! -L "$app/vendor/kitsune/core" ]] \
   || refuse "kitsune/core was not installed as a copy of packages/core"
+# And every other first-party package the skeleton requires, each a copy of this commit's — read from the skeleton's
+# own composer.json, so a package added there is checked here without anybody remembering to.
+required=$(php -r '$c = json_decode((string) file_get_contents($argv[1]), true);
+  foreach (array_keys($c["require"] ?? []) as $n) { if (str_starts_with($n, "kitsune/")) { echo substr($n, 8), "\n"; } }' \
+  "$app/composer.json")
+for name in $required; do
+  [[ -f "$app/vendor/kitsune/$name/composer.json" && ! -L "$app/vendor/kitsune/$name" ]] \
+    || refuse "kitsune/$name was not installed as a copy of packages/$name"
+done
 
 # The graph this run measures, named beside the numbers whether or not anything saved it. The lock's own hash is
 # the identity; the three versions are what dominate the memory figure, so a reader can see what moved.
@@ -319,3 +338,53 @@ echo "  the two runs differed in something other than their limits, which is the
 echo "  catch. What the floor still needs, and this does not give, is the same measurement under"
 echo "  CONCURRENCY: the workers figure above is arithmetic from one request, not an observation of that"
 echo "  many running at once."
+
+# ⚠️ THE APPLY'S TIME TOWARD PHASE 5's DONE-WHEN, measured where ADR-039 says: in this image, under the floor's limits,
+# on a fresh copy — one command, under 60 s at the floor. Its time only: nobody can sign in to what the fresh path
+# creates until there is a first user, so this is not the done-when met. `migrate` is the installer's step, not counted.
+#
+# ⚠️ TIMED INSIDE THE IMAGE, because a host-side `date +%N` is not portable: macOS's BSD date has no %N.
+# ⚠️ TWO PATHS, because they exclude each other: on an empty installation the apply creates the org and its site
+# (FirstOrg), and FirstOrg refuses whenever any org exists — so "content already in the table" is a second run, into
+# the corpus org, whose `article` collides with none of Blog's types.
+apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first
+  local run="$work/run-blog-$1" out status=0
+  rm -rf "$run"
+  cp -R "$app" "$run"
+
+  if [[ "$3" == true ]]; then
+    docker run --rm -v "$run":/app -w /app "$image" \
+      php artisan kitsune:benchmark-floor --entries="$entries" --keep >/dev/null 2>&1 \
+      || refuse "seeding the corpus for the $1 Blog apply failed"
+  fi
+
+  # One line, so the whole command is one line of anything that logs it.
+  local timed='$t = hrtime(true); passthru("php artisan kitsune:blueprint apply blog --org='"$2"' --no-interaction 2>&1", $s); printf("blueprint apply took: %d ms\n", intdiv(hrtime(true) - $t, 1000000)); exit($s);'
+  out=$(docker run --rm --cpus="$vcpu" --memory="${memory_mb}m" --memory-swap="${memory_mb}m" \
+    -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
+
+  ((status == 0)) || { printf '%s\n' "$out" >&2; refuse "the $1 Blog apply exited $status"; }
+  printf '%s\n' "$out" | grep -q '^Applied blog ' || refuse "the $1 Blog apply did not report applying blog"
+
+  # A receipt left unfinished is an apply that did not happen, however quickly it stopped.
+  # ⚠️ CAPTURED, THEN MATCHED. Piped into `grep -q`, which stops reading at the first match, the table's bottom border
+  # was written into a closed pipe — and under pipefail the SIGPIPE turned the pipeline false and skipped the refusal.
+  local status_out
+  status_out=$(docker run --rm -v "$run":/app -w /app "$image" php artisan kitsune:blueprint status 2>&1) \
+    || refuse "could not read blueprint status after the $1 Blog apply"
+  if grep -q INTERRUPTED <<<"$status_out"; then
+    refuse "the $1 Blog apply left its receipt unfinished"
+  fi
+
+  field_of 'blueprint apply took' "$out" 4
+}
+
+# Assigned before they are printed, as the peaks above are.
+blog_fresh=$(apply_blog fresh blog false)
+blog_content=$(apply_blog content floor-benchmark true)
+
+echo
+echo "──── Phase 5: kitsune:blueprint apply blog at ${vcpu} vCPU / ${memory_mb} MB ────"
+printf '  %-52s %8s ms\n' 'empty installation (creates the org and its site)' "$blog_fresh"
+printf '  %-52s %8s ms\n' "into floor-benchmark, ${entries} entries in the table" "$blog_content"
+echo "  Budget: 60,000 ms (roadmap Phase 5). Reported, not enforced."

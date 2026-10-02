@@ -22,6 +22,7 @@ use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
@@ -118,7 +119,11 @@ final class KitsuneServiceProvider extends ServiceProvider
          * be looking at the same object, and it has to exist before the kernel registers a module in
          * `booted()`, because `registerModule()` is where a module's blueprints are declared.
          */
-        $this->app->singleton(BlueprintRegistry::class, static fn (): BlueprintRegistry => new BlueprintRegistry);
+        $this->app->singleton(
+            BlueprintRegistry::class,
+            /* Core's own payload, registered with the binding: no database is touched to register a blueprint. */
+            static fn (): BlueprintRegistry => (new BlueprintRegistry)->register(new BlogBlueprint),
+        );
 
         /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.
