@@ -8,8 +8,10 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
@@ -18,7 +20,10 @@ use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Media\MediaLocation;
+use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Media\MediaVisibility;
+use Kitsune\Core\Media\MediaVisibilityRefused;
+use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -151,7 +156,7 @@ function refusalRow(int $entryId): array
 function refusalLine(string $message, int $entryId): bool
 {
     return str_starts_with($message, "Media custody, entry {$entryId}: refusing to publish [")
-        && str_contains($message, 'makes it private, then public, in the admin')
+        && str_contains($message, 'makes it private, then public, in the admin, which removes its location, records its copy and publishes it, or says what stands in the way')
         && str_contains($message, 'kitsune:media-reconcile --entry='.$entryId.' --force publishes it (ADR-042 decision 37).');
 }
 
@@ -189,7 +194,7 @@ describe('settle', function (): void {
             ->and(refusalRow($id)['disk'])->toBe(MediaDisks::PRIVATE);
     });
 
-    it('takes every served copy off as it refuses', function (array $copies, ?string $differs): void {
+    it('takes every served copy off as it refuses', function (array $copies, ?string $differs, string $from): void {
         [$id, $path] = refusalJpeg(MediaDisks::PRIVATE, array_map(fn (string $bytes): string => $bytes === 'located' ? $this->located : $bytes, $copies));
         Log::spy();
 
@@ -203,25 +208,31 @@ describe('settle', function (): void {
                 && str_contains($message, hash('sha256', $this->located)))->once();
         }
 
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => refusalLine($message, $id))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => refusalLine($message, $id)
+            && str_contains($message, 'so the copy kept, from ['.$from.'], was changed outside Kitsune'))->once();
     })->with([
-        'the same bytes on the public disk' => [[MediaDisks::PRIVATE => 'located', 'public' => 'located'], null],
-        'others on the public disk' => [[MediaDisks::PRIVATE => 'located', 'public' => 'another copy'], 'another copy'],
-        'only the public disk holds it' => [['public' => 'located'], null],
-        'only a former public disk holds it' => [['old-cdn' => 'located'], null],
+        'the same bytes on the public disk' => [[MediaDisks::PRIVATE => 'located', 'public' => 'located'], null, MediaDisks::PRIVATE],
+        'others on the public disk' => [[MediaDisks::PRIVATE => 'located', 'public' => 'another copy'], 'another copy', MediaDisks::PRIVATE],
+        'only the public disk holds it' => [['public' => 'located'], null, 'public'],
+        'only a former public disk holds it' => [['old-cdn' => 'located'], null, 'old-cdn'],
     ]);
 
-    it('leaves a JPEG whose row names the public disk, which holds the copy kept, as it is', function (): void {
-        [$id, $path] = refusalJpeg('public', ['public' => $this->located]);
+    it('leaves a JPEG whose row names the public disk, which holds the copy kept, as it is', function (string $name, string $mime): void {
+        [$id, $path] = refusalJpeg('public', ['public' => $this->located], name: $name, mime: $mime);
         Log::spy();
 
         expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::UNCHANGED)
             ->and(refusalCopies($path)['public'])->toBe(hash('sha256', $this->located))
             ->and(refusalWrites($path))->toBe([])
-            ->and(refusalRow($id)['disk'])->toBe('public');
+            ->and(refusalRow($id)['disk'])->toBe('public')
+            // Left before it is asked what it is: called a PNG, its first bytes are never read for it either.
+            ->and(refusalOpened('public', $path))->toBe(0);
 
         Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $message): bool => str_contains($message, 'refusing to publish'))]);
-    });
+    })->with([
+        'called a JPEG' => ['photo.jpg', 'image/jpeg'],
+        'called a PNG' => ['photo.png', 'image/png'],
+    ]);
 
     it('reads a JPEG by its row in any of its names, without opening its bytes for it', function (string $name, string $mime): void {
         [$id, $path] = refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => REFUSAL_PNG], name: $name, mime: $mime);
@@ -237,16 +248,20 @@ describe('settle', function (): void {
         'a .JPG' => ['photo.JPG', 'application/octet-stream'],
     ]);
 
-    it('reads a JPEG by the first bytes of the copy kept, wherever its row calls it a PNG', function (string $named): void {
-        [$id, $path] = refusalJpeg($named, [MediaDisks::PRIVATE => $this->located], name: 'photo.png', mime: 'image/png');
+    it('reads a JPEG by the first bytes of the copy kept, wherever its row calls it a PNG', function (string $named, array $copies): void {
+        [$id, $path] = refusalJpeg($named, array_map(fn (string $bytes): string => $bytes === 'located' ? $this->located : $bytes, $copies), name: 'photo.png', mime: 'image/png');
 
         expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::REFUSED)
-            ->and(refusalCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', $this->located), 'old-cdn' => null])
+            ->and(refusalCopies($path)['public'])->toBeNull()
+            ->and(refusalCopies($path)['old-cdn'])->toBeNull()
+            ->and(refusalCopies($path)[MediaDisks::PRIVATE])->toBe(hash('sha256', $this->located))
             ->and(refusalRow($id)['disk'])->toBe(MediaDisks::PRIVATE);
     })->with([
-        'kept from the disk its row names' => MediaDisks::PRIVATE,
+        'kept from the disk its row names' => [MediaDisks::PRIVATE, [MediaDisks::PRIVATE => 'located']],
         // The disk the row names holds nothing: the copy kept is the first in Adam's order, and its bytes are what is read.
-        'kept as the first in Adam\'s order' => 'old-cdn',
+        'kept as the first in Adam\'s order' => ['old-cdn', [MediaDisks::PRIVATE => 'located']],
+        // Kept from a former public disk, the private one holding a PNG: the copy kept is read, never the private disk's.
+        'kept from another disk than the private one' => ['old-cdn', ['old-cdn' => 'located', MediaDisks::PRIVATE => REFUSAL_PNG]],
     ]);
 
     it('publishes any other format whose copies differ, as decision 5 has it', function (string $named): void {
@@ -277,16 +292,22 @@ describe('settle', function (): void {
             && str_contains($message, 'recorded checksum ['.($how === 'empty' ? 'none' : $checksum).']'))->once();
     })->with(['empty', 'in capitals']);
 
-    it('publishes a JPEG a copy of which matches, opening no bytes to ask what it is', function (): void {
+    it('publishes a JPEG a copy of which matches', function (): void {
+        [$id, $path, $stripped] = refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => 'stripped']);
+
+        expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::SETTLED)
+            ->and(refusalCopies($path)['public'])->toBe(hash('sha256', $stripped))
+            ->and(refusalRow($id)['disk'])->toBe('public');
+    });
+
+    it('publishes a file a copy of which matches without reading its first bytes', function (): void {
         // Called a PNG, so only the order of the questions keeps its first bytes unread: a match is asked first.
-        $stripped = refusalJpeg(MediaDisks::PRIVATE, [])[2];
         [$id, $path] = refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => REFUSAL_PNG], name: 'photo.png', mime: 'image/png', checksum: hash('sha256', REFUSAL_PNG));
 
         expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::SETTLED)
             ->and(refusalCopies($path)['public'])->toBe(hash('sha256', REFUSAL_PNG))
             // Opened once, to be copied onto the public disk: never to read its first bytes.
-            ->and(refusalOpened(MediaDisks::PRIVATE, $path))->toBe(1)
-            ->and($stripped)->not->toBe(REFUSAL_PNG);
+            ->and(refusalOpened(MediaDisks::PRIVATE, $path))->toBe(1);
     });
 
     it('fails, calling it neither, when the copy kept is gone before its first bytes are read', function (): void {
@@ -341,9 +362,17 @@ describe('settle', function (): void {
     it('puts nothing back on the web after a rollback it refuses', function (): void {
         [$id, $path] = refusalJpeg('public', [MediaDisks::PRIVATE => $this->located]);
         Log::spy();
+        // Under the suite's own transaction, each custody step's is a savepoint: counted, the cleanup's would be a second.
+        $begun = 0;
+        Event::listen(TransactionBeginning::class, static function () use (&$begun): void {
+            $begun++;
+        });
 
         MediaCustody::queue(DB::getDefaultConnection(), [$id]);
         MediaCustody::drain(DB::connection());
+
+        // The settle's alone: the copy on the private disk is the file, and no cleanup is asked after it.
+        expect($begun)->toBe(1);
 
         expect(refusalCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', $this->located), 'old-cdn' => null])
             ->and(refusalRow($id)['disk'])->toBe(MediaDisks::PRIVATE);
@@ -458,7 +487,7 @@ describe('reconcile and prune', function (): void {
         refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => $this->located]);
 
         expect(Artisan::call('kitsune:media-reconcile'))->toBe(1)
-            ->and(Artisan::output())->toContain('and a JPEG no copy of which matches its recorded checksum is kept off the web rather than published, and the run fails on it, as the log then says (ADR-042 decision 37)');
+            ->and(Artisan::output())->toContain('and a JPEG it would publish, no copy of which matches its recorded checksum, kept off the web rather than published, and the run failed on it, as the log then says — one whose row names the public disk, which holds the copy kept, left where it is (ADR-042 decision 37)');
     });
 
     it('passes once the JPEG is made private and then public', function (): void {
@@ -477,7 +506,19 @@ describe('reconcile and prune', function (): void {
 
         Artisan::call('kitsune:media-prune');
 
-        expect(Artisan::output())->toContain('kitsune:media-reconcile --force publishes it, unless it is a JPEG no copy of which matches its recorded checksum: that one it keeps off the web, and making it private, then public, in the admin publishes it (ADR-042 decision 37):');
+        expect(Artisan::output())->toContain('so not published at its public URL, though a copy left on a served disk, listed above, may be. kitsune:media-reconcile --force publishes it, unless it is a JPEG no copy of which matches its recorded checksum: that one it keeps off the web, and making it private, then public, in the admin publishes it, or says what stands in the way (ADR-042 decision 37):');
+    });
+
+    it('says of a served copy prune keeps that reconcile takes a refused JPEG off the web rather than moving its row', function (): void {
+        [$id, $path] = refusalJpeg(MediaDisks::PRIVATE, ['public' => $this->located]);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('kept: kitsune:media-reconcile moves its row first, or, for a JPEG no copy of which matches its recorded checksum, takes the file off the web and points its row at the private disk (ADR-042 decision 37)')
+            ->and(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(1)
+            ->and(refusalCopies($path)['public'])->toBeNull()
+            ->and(refusalRow($id)['disk'])->toBe(MediaDisks::PRIVATE);
     });
 });
 
@@ -508,6 +549,82 @@ it('publishes a JPEG custody refused once it is made private and then public', f
     'the public disk holding it, its row naming it' => ['public', ['public' => 'located'], null],
     'an empty checksum' => [MediaDisks::PRIVATE, [MediaDisks::PRIVATE => 'located'], ''],
 ]);
+
+/*
+ * V18a. Where Make public cannot strip the copy kept — its location cannot be removed with certainty, or its bytes are
+ * not a JPEG's at all — the refusal said so: Make public refuses it in its own words, and the file stays private.
+ */
+it('says what stands in the way of a copy Make public cannot strip', function (string $bytes): void {
+    $kept = $bytes === 'unremovable' ? LocatedJpeg::unremovable() : REFUSAL_PNG;
+    [$id] = refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => $kept]);
+    Log::spy();
+
+    expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::REFUSED)
+        ->and(MediaVisibility::makePrivate(Entry::query()->findOrFail($id)))->toBe(MediaVisibility::SWITCHED)
+        ->and(fn () => MediaVisibility::makePublic(Entry::query()->findOrFail($id)))->toThrow(MediaRefused::class, 'It stays private');
+
+    expect(refusalRow($id)['visibility'])->toBe('private')
+        ->and(refusalCopies($id === 0 ? '' : (string) DB::table('media_files')->where('entry_id', $id)->value('path'))['public'])->toBeNull();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => refusalLine($message, $id)
+        && str_contains($message, 'or says what stands in the way — a copy whose location cannot be removed with certainty, or one that is not a JPEG\'s bytes'))->once();
+})->with(['unremovable', 'not a JPEG']);
+
+/*
+ * The host's own private disk: a refusal settles the file there, and core's private disk keeps the copy it was kept from,
+ * as a private disk's copy always stays — so the remedy is three steps, and the refusal says so.
+ */
+it('settles a refused JPEG on the host\'s own private disk, and says what its copy on core\'s asks', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-refusal-host-private-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+    test()->roots = [...test()->roots, $root];
+    config([
+        'filesystems.disks.host-private' => ['driver' => 'local', 'root' => $root],
+        'kitsune.media.disks.private' => 'host-private',
+    ]);
+    RefusingDisk::install('host-private', $root);
+    [$id, $path] = refusalJpeg(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => $this->located]);
+    Log::spy();
+
+    expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::REFUSED)
+        ->and(refusalRow($id)['disk'])->toBe('host-private')
+        ->and(hash('sha256', (string) Storage::disk('host-private')->get($path)))->toBe(hash('sha256', $this->located))
+        ->and(refusalCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', $this->located), 'old-cdn' => null]);
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => refusalLine($message, $id)
+        && str_contains($message, 'kept on [host-private], its row naming it')
+        && str_contains($message, 'Its copy on ['.MediaDisks::PRIVATE.'], core\'s own private disk, stays there, as a private disk\'s copy does: once it is made private, kitsune:media-prune --force removes it, and only then does making it public publish it.'))->once();
+
+    // The three steps it names.
+    expect(MediaVisibility::makePrivate(Entry::query()->findOrFail($id)))->toBe(MediaVisibility::SWITCHED)
+        ->and(fn () => MediaVisibility::makePublic(Entry::query()->findOrFail($id)))->toThrow(MediaVisibilityRefused::class);
+
+    Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+    expect(MediaVisibility::makePublic(Entry::query()->findOrFail($id)))->toBe(MediaVisibility::SWITCHED)
+        ->and(LocatedJpeg::sentinels((string) Storage::disk('public')->get($path)))->toBe([]);
+});
+
+/*
+ * A trash refused part-way — a served copy that could not be removed — says the file is where it was, unless it is a
+ * JPEG custody then keeps off the web: what its rollback's put-back does instead.
+ */
+it('says a refused trash keeps a JPEG whose copy fails its checksum off the web', function (): void {
+    [$id, $path] = refusalJpeg('public', ['public' => $this->located, 'old-cdn' => $this->located]);
+    // The trash's delete there fails; the put-back's, after its rollback, does not.
+    $cdn = $this->disks['old-cdn'];
+    $cdn->failDeletes = true;
+    $cdn->onOperation(2, static function () use ($cdn): void {
+        $cdn->failDeletes = false;
+    });
+
+    expect(fn () => Entry::query()->findOrFail($id)->delete())->toThrow(
+        MediaWithdrawalRefused::class,
+        'so the entry stays as it was, and its file where it was, unless it is a JPEG no copy of which matches its recorded checksum, which is kept off the web instead (ADR-042 decisions 5 and 37).',
+    );
+
+    expect(Entry::query()->whereKey($id)->exists())->toBeTrue()
+        ->and(refusalCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', $this->located), 'old-cdn' => null])
+        ->and(refusalRow($id)['disk'])->toBe(MediaDisks::PRIVATE);
+});
 
 /*
  * V19. Make public strips and records before its commit, and publishes after it: a private copy changed in between is

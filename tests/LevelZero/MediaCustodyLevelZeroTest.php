@@ -362,6 +362,37 @@ describe('a JPEG changed outside Kitsune, restored at level 0', function (): voi
 });
 
 /*
+ * T204a. The refusal is said once its commit has landed: a put-back whose COMMIT fails before it lands logs the failure
+ * alone, the row still naming the public disk; the next one refuses, and says so (review of decision 37).
+ */
+it('says a refusal only once the commit that keeps the file off the web has landed', function (): void {
+    $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-level0-');
+    $entry = MediaLibrary::store($source, 'photo.jpg', $this->image, 'public');
+    unlink($source);
+    $path = (string) DB::table('media_files')->where('entry_id', $entry->id)->value('path');
+    // A trash rolled back after its withdrawal: the row names the public disk, the copy is on the private one.
+    Storage::disk('public')->delete($path);
+    Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true));
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $pdo->failNextCommit = 'before';
+    Log::spy();
+
+    MediaCustody::queue(DB::getDefaultConnection(), [$entry->id]);
+    MediaCustody::drain(DB::connection());
+
+    expect(levelZeroRow($entry))->toBe(['trashed' => false, 'disk' => 'public']);
+    Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $message): bool => str_contains($message, 'refusing to publish'))]);
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}: its file could not be put back"))->once();
+
+    MediaCustody::queue(DB::getDefaultConnection(), [$entry->id]);
+    MediaCustody::drain(DB::connection());
+
+    expect(levelZeroRow($entry))->toBe(['trashed' => false, 'disk' => MediaDisks::PRIVATE])
+        ->and(levelZeroHeld($path)['public'])->toBeNull();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}: refusing to publish"))->once();
+});
+
+/*
  * T51. SQLite: every custody path holds the database's write lock before its first byte moves (Adam, 2026-09-24). At
  * that first byte operation a second connection asks for the write lock with no wait, and must be told the database is
  * busy. T74: `removeExtra()` and a forced reconcile join the dataset, and a read-only reconcile leaves the lock free

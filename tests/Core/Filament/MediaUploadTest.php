@@ -706,7 +706,7 @@ describe('a media type\'s pages', function (): void {
         DB::table('media_files')->where('entry_id', $entry->id)->update(['path' => substr($path, 0, -strlen('.jpg')).'.'.pathinfo($name, PATHINFO_EXTENSION)]);
 
         expect(fileSection($entry)['media_file_visibility']->getState())
-            ->toBe('Public — not yet published, so opened only through this admin. If its file was changed outside Kitsune, making it private and then public publishes it');
+            ->toBe('Public — not yet published, so opened only through this admin. If its file was changed outside Kitsune, making it private and then public publishes it, or says what stands in the way');
     })->with([
         'by its extension' => ['photo.JPG', 'application/octet-stream'],
         'by its type' => ['photo.bin', 'image/pjpeg'],
@@ -729,6 +729,14 @@ describe('a media type\'s pages', function (): void {
             ->and($components['media_file_sharing']->getState())->toBe('Every site in the organisation')
             ->and(Storage::disk('public')->url($path))->toBe('http://localhost/storage/'.$path)
             ->and($components['media_file_link']->getUrl())->toBe('/storage/'.$path);
+    });
+
+    /* A JPEG its disk serves is public, and no more: the words for one not yet published are its alone (decision 37). */
+    it('shows a JPEG the public disk serves as public', function (): void {
+        Storage::fake('public', ['url' => 'http://localhost/storage']);
+        $entry = storedMedia(LocatedJpeg::base(), 'photo.jpg', $this->type, 'public', siteOnly: false);
+
+        expect(fileSection($entry)['media_file_visibility']->getState())->toBe('Public');
     });
 
     /*

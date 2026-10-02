@@ -1598,7 +1598,7 @@ final class MediaPruneCommand extends Command
                                 $disk,
                                 $target,
                             ),
-                            $named !== $target => 'kept: kitsune:media-reconcile moves its row first',
+                            $named !== $target => 'kept: kitsune:media-reconcile moves its row first, or, for a JPEG no copy of which matches its recorded checksum, takes the file off the web and points its row at the private disk (ADR-042 decision 37)',
                             // Nobody knows whether it holds the file, so nothing is said of that (review of slice 5c).
                             in_array($named, $unlisted, true) => sprintf('kept: [%s] could not be listed — run kitsune:media-prune again once it can be', $named),
                             // Prune read neither copy, and this one may be the only one that matches: never advise removing it.
@@ -1652,9 +1652,10 @@ final class MediaPruneCommand extends Command
 
         $this->listRows(
             $connection,
-            'Awaiting publication — live and public, on a disk that is not the public one, so not reachable at its public URL. '
-            .'kitsune:media-reconcile --force publishes it, unless it is a JPEG no copy of which matches its recorded '
-            .'checksum: that one it keeps off the web, and making it private, then public, in the admin publishes it (ADR-042 '
+            'Awaiting publication — live and public, its row naming a disk that is not the public one, so not published at '
+            .'its public URL, though a copy left on a served disk, listed above, may be. kitsune:media-reconcile --force '
+            .'publishes it, unless it is a JPEG no copy of which matches its recorded checksum: that one it keeps off the '
+            .'web, and making it private, then public, in the admin publishes it, or says what stands in the way (ADR-042 '
             .'decision 37):',
             static fn (Builder $rows): Builder => MediaCustody::whereStored($rows->whereNull('entries.deleted_at'), 'media_files.visibility', ['public']),
             static fn (stdClass $row): bool => $row->deleted_at === null && $row->visibility === 'public' && (string) $row->disk !== $public,

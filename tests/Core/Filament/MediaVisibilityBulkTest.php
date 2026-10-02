@@ -838,7 +838,7 @@ describe('making a selection private', function (): void {
             ->and(bulkVisNotices()[0]['status'])->toBe('danger')
             ->and(bulkVisNotices()[0]['title'])->toBe('One file was not made private')
             ->and(explode('<br>', (string) bulkVisNotices()[0]['body']))->toBe([
-                '&quot;Old&quot; is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again.',
+                '&quot;Old&quot; is in the trash, so it was not made private. Its file is off the web while it is there, but it is set public, and a restore publishes it again, or says what will.',
                 'One file was made private.',
                 'Its public link no longer opens it. A copy a browser, a proxy or a CDN has already kept can be served until it expires.',
                 '2 were already private, and were left as they were.',

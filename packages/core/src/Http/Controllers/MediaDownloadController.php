@@ -128,7 +128,8 @@ final class MediaDownloadController
          * and `MediaDisposal` removes rows before bytes, so a row pointing at nothing is not a state either order
          * leaves. ADR-042 decision 5 names the one it can: a delete that was refused and whose compensation then
          * failed leaves the row naming the public disk and the only copy on the private one. `kitsune:media-prune`
-         * lists that copy as an extra copy it keeps and `kitsune:media-reconcile --force` puts it back, so the log
+         * lists that copy as an extra copy it keeps and `kitsune:media-reconcile --force` puts it back — or, for a JPEG no
+         * copy of which matches its checksum, keeps it off the web and says what publishes it (decision 37) — so the log
          * sends the operator there before concluding the file was removed outside Kitsune. (A restore whose publication did not finish is not this: its row names the private disk,
          * where its bytes are, and it is served.)
          */

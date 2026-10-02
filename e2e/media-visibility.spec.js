@@ -434,7 +434,7 @@ test('keeps a restored JPEG changed outside Kitsune off the web, and publishes i
     expect(row(id).checksum).toBe(stripped.checksum);
 
     await page.goto(`/admin/golfdom/c/image/${id}`);
-    await expect(page.getByText('If its file was changed outside Kitsune, making it private and then public publishes it')).toBeVisible();
+    await expect(page.getByText('If its file was changed outside Kitsune, making it private and then public publishes it, or says what stands in the way')).toBeVisible();
 
     await headerAction(page, 'Make private').click();
     await modal(page, 'Make private').getByRole('button', { name: 'Make private', exact: true }).click();
