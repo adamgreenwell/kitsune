@@ -234,7 +234,7 @@ final class BlueprintCommand extends Command
             if ($ownerEmail !== null) {
                 $this->line(sprintf(
                     'Organisation %1$s, its first site and its first owner %2$s were created before the apply and remain. '
-                    .'Run the same command again without `--owner` to finish applying [%3$s].',
+                    .'Run the same command again without `--owner` and `--owner-password-stdin` to finish applying [%3$s].',
                     $slug,
                     $ownerEmail,
                     $definition->handle(),
@@ -351,8 +351,8 @@ final class BlueprintCommand extends Command
             $this->error(sprintf(
                 'Refusing `--owner`: organisation [%1$s] already exists, and a first owner is created only by the run that '
                 .'creates the first organisation on an empty installation (ADR-026). If an earlier run created %1$s with '
-                .'`--owner`, its owner exists: run the same command without `--owner` to apply, or finish applying, '
-                .'[%2$s]. Nothing was written.',
+                .'`--owner`, its owner exists: run the same command without `--owner` and `--owner-password-stdin` to '
+                .'apply, or finish applying, [%2$s]. Nothing was written.',
                 $slug,
                 $definition->handle(),
             ));
@@ -364,9 +364,14 @@ final class BlueprintCommand extends Command
             /* Early, so nobody types a password for an installation that will refuse it; again inside the transaction. */
             FirstOrg::refuseUnlessEmpty($model);
 
-            $password = $fromStdin
-                ? FirstOwnerCredentials::fromStream($this->ownerPasswordStream(), $email)
-                : FirstOwnerCredentials::ask($this->output, $email);
+            if ($fromStdin) {
+                $password = FirstOwnerCredentials::fromStream($this->ownerPasswordStream(), $email);
+            } else {
+                /* The stream the question helper will read, as it chooses one: the input's own, or STDIN. */
+                FirstOwnerCredentials::refuseUnlessPromptable($this->ownerPasswordStream());
+
+                $password = FirstOwnerCredentials::ask($this->output, $email);
+            }
         } catch (RuntimeException $e) {
             $this->error($e->getMessage());
 
@@ -420,21 +425,26 @@ final class BlueprintCommand extends Command
         return $stream ?? STDIN;
     }
 
-    /** Where the owner signs in, from the panel itself — or that there is no panel to sign in to. */
+    /**
+     * Where the owner signs in, from the panel itself — or, truthfully, why this cannot say.
+     *
+     * ⚠️ A PANEL WITH NO SIGN-IN PAGE IS STILL A PANEL. A host may sign in through something else and leave `login()`
+     * off, and a route lookup can fail; neither is "no admin panel is configured", which review found printed for both.
+     */
     private function signInLine(string $email, string $slug): string
     {
-        $login = null;
+        if (! app()->bound(KitsunePanel::PANEL_BINDING)) {
+            return sprintf('%1$s owns %2$s. No Kitsune admin panel is configured, so there is no admin to sign in to yet.', $email, $slug);
+        }
 
-        if (app()->bound(KitsunePanel::PANEL_BINDING)) {
-            try {
-                $login = app(KitsunePanel::PANEL_BINDING)->getLoginUrl();
-            } catch (Throwable) {
-                $login = null;
-            }
+        try {
+            $login = app(KitsunePanel::PANEL_BINDING)->getLoginUrl();
+        } catch (Throwable) {
+            $login = null;
         }
 
         return is_string($login) && $login !== ''
             ? sprintf('Sign in at %1$s as %2$s.', $login, $email)
-            : sprintf('%1$s owns %2$s. No Kitsune admin panel is configured, so there is no admin to sign in to yet.', $email, $slug);
+            : sprintf('%1$s owns %2$s. Kitsune\'s admin panel names no sign-in page this command can show, so sign in the way this installation\'s panel does.', $email, $slug);
     }
 }

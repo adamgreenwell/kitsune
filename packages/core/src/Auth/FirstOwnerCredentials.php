@@ -26,7 +26,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * ⚠️ THE PASSWORD IS TYPED, OR PIPED, AND NOTHING ELSE. Never an argument or an environment variable, which other local
  * users read through `ps` and `/proc` and which shell history keeps; never generated, because a generated value has to
  * be printed to be used. So it comes from a hidden prompt, twice, or from the first line of standard input — and a
- * terminal that cannot hide what is typed is refused rather than allowed to show it.
+ * prompt that cannot hide what is typed, on a terminal or on a pipe, is refused rather than allowed to show it.
  *
  * ⚠️ EVERY RULE IS ABOUT SIGNING IN LATER. There is no password reset yet, and no second factor, so a password the
  * sign-in form cannot send — a trailing space nobody sees, a control character an arrow key typed, bytes bcrypt never
@@ -65,6 +65,33 @@ final class FirstOwnerCredentials
     public static function question(string $prompt): Question
     {
         return (new Question($prompt))->setHidden(true)->setHiddenFallback(false)->setTrimmable(false);
+    }
+
+    /**
+     * Refuse to prompt where what is typed would be shown: on the process's own standard input, when it is not a terminal.
+     *
+     * ⚠️ SYMFONY HIDES A TERMINAL, AND ONLY A TERMINAL. On a pipe — `ssh host 'php artisan …'` with no `-t`, `docker exec
+     * -i`, `kubectl exec -i` — `stty` cannot reach the input, so the hidden question is read like any other, while the
+     * person at the far end types into a terminal of their own that still echoes: both answers on screen, under a prompt
+     * that says "hidden". The hidden fallback being off does not catch it, because Symfony refuses only a terminal it
+     * cannot hide, and a pipe is not one. Automation that pipes a password in has `--owner-password-stdin` for it — found
+     * by review, reproduced through `cat |` in front of the real command.
+     *
+     * A stream other than the process's own — one a caller set on the input on purpose — is read as given.
+     *
+     * @param  resource  $stream  the stream the question will be read from
+     *
+     * @throws RuntimeException
+     */
+    public static function refuseUnlessPromptable($stream): void
+    {
+        if ((stream_get_meta_data($stream)['uri'] ?? null) === 'php://stdin' && ! @stream_isatty($stream)) {
+            throw new RuntimeException(
+                'Refusing to ask for the password: standard input is not a terminal, so what is typed at the prompt '
+                .'could not be hidden — under `ssh`, `docker exec` or `kubectl exec`, add `-t`. To pipe the password in, '
+                .'use `--owner-password-stdin`. Nothing was written.'
+            );
+        }
     }
 
     /**
@@ -151,8 +178,13 @@ final class FirstOwnerCredentials
                 .'one — which the sign-in form cannot send. Nothing was written.';
         }
 
-        if (preg_match('/^[\s\p{Z}]|[\s\p{Z}]$/u', $password) === 1) {
-            return 'The password begins or ends with whitespace. The sign-in form sends it exactly as typed, a space nobody '
+        /*
+         * `Cf` too: a byte-order mark a password file was saved with, a zero-width space pasted in with it. Only at the
+         * ends — inside, a zero-width joiner is part of an emoji somebody typed, and types again.
+         */
+        if (preg_match('/^[\s\p{Z}\p{Cf}]|[\s\p{Z}\p{Cf}]$/u', $password) === 1) {
+            return 'The password begins or ends with whitespace, or with a character nobody can see — a byte-order mark a '
+                .'file was saved with, a zero-width space. The sign-in form sends it exactly as typed, a character nobody '
                 .'can see is one nobody types again, and there is no password reset yet. Nothing was written.';
         }
 

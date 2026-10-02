@@ -12,6 +12,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RegistersOrgAwareProvider;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
@@ -31,6 +32,9 @@ beforeEach(function (): void {
     Org::query()->withoutGlobalScopes()->forceDelete();
 
     config(['auth.providers.users.model' => User::class]);
+
+    /* As the skeleton's own `AppServiceProvider` does, so signing in finds the owner as the skeleton would. */
+    RegistersOrgAwareProvider::on($this->app);
 });
 
 afterEach(fn () => app(Context::class)->forget());

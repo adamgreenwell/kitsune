@@ -11,11 +11,13 @@ declare(strict_types=1);
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
+use Illuminate\Auth\EloquentUserProvider;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RegistersOrgAwareProvider;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\AuditLog;
@@ -43,6 +45,9 @@ beforeEach(function (): void {
 
     config(['auth.providers.users.model' => FirstOwnerUser::class]);
     FirstOwnerUser::reset();
+
+    /* As the skeleton's `AppServiceProvider` does: without it, signing in finds no member before an org is in context. */
+    RegistersOrgAwareProvider::on($this->app);
 
     $this->hash = Hash::make(FIRST_OWNER_PASSWORD);
 });
@@ -114,7 +119,14 @@ it('records the ownership once, as the system, and nothing else', function (): v
         ->and((string) $rows[0]->target_id)->toBe((string) $user->getKey());
 });
 
-/** The check before the password was asked for was early; this one, inside the transaction, is the one that holds. */
+/**
+ * The check before the password was asked for was early; this one, inside the transaction, is the one that holds.
+ *
+ * ⚠️ AND IT IS ASSERTED TO RUN INSIDE, not merely to refuse. Review found the refusal alone passing with the check moved
+ * back in front of the transaction — where, on SQLite's deferred transactions, a second first run's count is an
+ * autocommit read and its write simply waits for the first to commit, so both commit. So both counts are recorded
+ * with the transaction depth they ran at.
+ */
 it('refuses inside the transaction an installation that is no longer empty', function (string $what): void {
     if ($what === 'an org') {
         Org::create(['slug' => 'already', 'name' => 'Already']);
@@ -123,6 +135,16 @@ it('refuses inside the transaction an installation that is no longer empty', fun
     }
 
     $before = firstOwnerCounts();
+    $outside = DB::transactionLevel();
+    $depths = ['orgs' => [], 'users' => []];
+
+    DB::listen(function ($query) use (&$depths): void {
+        foreach (array_keys($depths) as $table) {
+            if (preg_match('/^select count\(\*\) as ["`]?aggregate["`]? from ["`]?'.$table.'["`]?/i', $query->sql) === 1) {
+                $depths[$table][] = $query->connection->transactionLevel();
+            }
+        }
+    });
 
     expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
         ->toThrow(RuntimeException::class, $what === 'an org'
@@ -130,7 +152,11 @@ it('refuses inside the transaction an installation that is no longer empty', fun
             : 'this installation has 0 organisation(s), deleted ones included, and 1 account(s)');
 
     expect(firstOwnerCounts())->toBe($before)
-        ->and(app(Context::class)->orgId())->toBeNull();
+        ->and(app(Context::class)->orgId())->toBeNull()
+        ->and($depths['orgs'])->not->toBeEmpty()
+        ->and($depths['users'])->not->toBeEmpty()
+        ->and(max($depths['orgs']))->toBeGreaterThan($outside)
+        ->and(max($depths['users']))->toBeGreaterThan($outside);
 })->with(['an org', 'an account no scope can see']);
 
 it('writes nothing when a step fails part way', function (string $how): void {
@@ -255,6 +281,47 @@ it('writes nothing when the panel would not let the owner in', function (): void
 
     expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
         ->toThrow(RuntimeException::class, 'the admin panel would not let the new account in — '.FirstOwnerPanelUser::class.'::canAccessPanel() refused it');
+
+    firstOwnerNothingWritten();
+});
+
+/*
+ * ⚠️ AND FOUND THE WAY SIGNING IN FINDS THEM. Every check above reads the account by key, past the scopes, with the org
+ * in context; the sign-in form asks the panel's user provider for the address, with no org at all. Laravel's stock
+ * provider keeps the membership scope, which matches nobody before an org is in context — review found every other
+ * check passing, and "Sign in at …" printed, for an owner it could never find.
+ */
+it('writes nothing when signing in would not find the owner', function (bool $panel): void {
+    if ($panel) {
+        firstOwnerPanel();
+        config(['auth.providers.users.model' => FirstOwnerPanelUser::class]);
+    }
+
+    config(['auth.providers.users.driver' => 'eloquent']);
+    app('auth')->forgetGuards();
+
+    expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
+        ->toThrow(RuntimeException::class, 'signing in looks an account up by its address through ['
+            .EloquentUserProvider::class.'], and that does not find the new');
+
+    firstOwnerNothingWritten();
+})->with(['with no panel' => false, 'through the panel\'s guard' => true]);
+
+/**
+ * The misconfiguration `RegistersOrgAwareProvider` records finding in a real install: the panel's guard authenticates
+ * through a provider of its own name, and only `users` was made org-aware. Asked of the panel's provider, not `users`.
+ */
+it('asks the provider behind the panel\'s own guard', function (): void {
+    config([
+        'auth.providers.admins' => ['driver' => 'eloquent', 'model' => FirstOwnerPanelUser::class],
+        'auth.guards.admin' => ['driver' => 'session', 'provider' => 'admins'],
+        'auth.providers.users.model' => FirstOwnerPanelUser::class,
+    ]);
+    app()->instance(KitsunePanel::PANEL_BINDING, Panel::make()->id('admin')->authGuard('admin'));
+
+    expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
+        ->toThrow(RuntimeException::class, 'signing in looks an account up by its address through ['
+            .EloquentUserProvider::class.']');
 
     firstOwnerNothingWritten();
 });

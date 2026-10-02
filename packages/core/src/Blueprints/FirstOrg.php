@@ -12,8 +12,11 @@ namespace Kitsune\Core\Blueprints;
 
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
+use Filament\Panel;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\UserProvider;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
 use Kitsune\Core\Auth\Permissions;
@@ -360,5 +363,74 @@ final class FirstOrg
                 $userModel,
             ));
         }
+
+        self::refuseUnlessSignInFinds($user, $email, $passwordHash, $org, $userModel);
+    }
+
+    /**
+     * Prove the sign-in form would find the owner: through the provider it asks, by the address as typed, with no org in
+     * context — as a visitor to the sign-in page has none.
+     *
+     * ⚠️ THE CHECKS ABOVE READ THE ACCOUNT THEIR OWN WAY, AND SIGNING IN DOES NOT. They read it by key, past every scope,
+     * with the new org in context; the panel's guard asks its user provider for the address, through the model's
+     * scopes, before any org exists. Review found all of them passing — and "Sign in at …" printed — for an owner that
+     * provider could not find: a host whose panel guard kept Laravel's stock provider, where the membership scope
+     * matches nobody with no org; a scope of the host's own that hides a new account; an address the model rewrites
+     * on the way in. The org would then exist, so `--owner` is refused for good, and the failure reads as a wrong
+     * password. So the account is looked up the way signing in looks it up, and it must be this account, holding this hash.
+     *
+     * @param  class-string<Model&ProvisionsMembership&HasTenants>  $userModel
+     *
+     * @throws RuntimeException
+     */
+    private static function refuseUnlessSignInFinds(
+        ProvisionsMembership $user,
+        string $email,
+        #[\SensitiveParameter] string $passwordHash,
+        Org $org,
+        string $userModel,
+    ): void {
+        $provider = self::signInProvider();
+        $context = app(Context::class);
+
+        $context->forget();
+
+        try {
+            $found = $provider?->retrieveByCredentials(['email' => $email]);
+        } finally {
+            $context->setOrg($org);
+        }
+
+        if ($found instanceof Authenticatable
+            && (string) $found->getAuthIdentifier() === (string) $user->getAuthIdentifier()
+            && hash_equals($passwordHash, (string) $found->getAuthPassword())) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to create the owner: signing in looks an account up by its address through %s, and that does not '
+            .'find the new %s account — so the owner could not sign in. A user model scoped to its members is found '
+            .'before any organisation is in context only through Kitsune\'s org-aware provider '
+            .'(`RegistersOrgAwareProvider::on()`, naming the provider the panel\'s guard uses). Nothing was written.',
+            $provider === null ? 'no user provider at all' : '['.$provider::class.']',
+            $userModel,
+        ));
+    }
+
+    /**
+     * The user provider the sign-in form asks: the guard's behind Kitsune's panel, or, with no panel, the `users`
+     * provider — the one `Permissions::userModel()` reads the model from in that case.
+     */
+    private static function signInProvider(): ?UserProvider
+    {
+        $panel = app()->bound(KitsunePanel::PANEL_BINDING) ? app(KitsunePanel::PANEL_BINDING) : null;
+
+        if ($panel instanceof Panel) {
+            $guard = $panel->auth();
+
+            return method_exists($guard, 'getProvider') ? $guard->getProvider() : null;
+        }
+
+        return Auth::createUserProvider('users');
     }
 }

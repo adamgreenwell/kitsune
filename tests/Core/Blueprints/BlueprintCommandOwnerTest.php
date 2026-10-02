@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
 use Kitsune\Core\Auth\FirstOwnerCredentials;
+use Kitsune\Core\Auth\RegistersOrgAwareProvider;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Blueprints\OnCollision;
@@ -41,7 +42,8 @@ use Symfony\Component\Console\Output\BufferedOutput;
  * ⚠️ STANDARD INPUT IS ALWAYS A STREAM THE TEST OWNS. `applyThroughStream()` hands the command a `php://memory` stream
  * through the console kernel, which reaches both `--owner-password-stdin` and the real `QuestionHelper`. A run that
  * might read standard input is never made through `$this->artisan()`: a change that read it early would read, or wait
- * on, the test runner's own.
+ * on, the test runner's own. Nor is a prompt scripted with `expectsQuestion()`: the prompt refuses the process's own
+ * standard input unless it is a terminal, and `$this->artisan()` sets no stream, so the prompt would read the runner's.
  *
  * ⚠️ AND NOTHING SECRET COMES OUT. Every run through the stream is checked for the password and for a bcrypt prefix, and
  * every test for an exception reported and for an org left in context.
@@ -57,6 +59,9 @@ beforeEach(function (): void {
 
     config(['auth.providers.users.model' => FirstOwnerUser::class]);
     FirstOwnerUser::reset();
+
+    /* As the skeleton's `AppServiceProvider` does: without it, signing in finds no member before an org is in context. */
+    RegistersOrgAwareProvider::on($this->app);
 
     FixtureBlueprint::reset();
     app(BlueprintRegistry::class)->register(new FixtureBlueprint);
@@ -110,6 +115,12 @@ function ownerOverStdin(array $options = []): array
         '--no-interaction' => true,
         ...$options,
     ];
+}
+
+/** @return array<string, mixed> Blog into `myblog`, with an owner whose password is asked for */
+function ownerAtPrompt(array $options = []): array
+{
+    return ['handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL, ...$options];
 }
 
 /** @return array<string, int> the row count of every table `apply --owner` writes */
@@ -175,10 +186,7 @@ describe('creating the first owner', function (): void {
 
     /** ⚠️ THE REAL `QuestionHelper`, which `expectsQuestion()` replaces: hidden, untrimmed, and read from the input's stream. */
     it('asks twice at a hidden prompt, and shows neither answer', function (): void {
-        [$status, $out] = applyThroughStream(
-            ['handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL],
-            OWNER_COMMAND_PASSWORD."\n".OWNER_COMMAND_PASSWORD."\n",
-        );
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), OWNER_COMMAND_PASSWORD."\n".OWNER_COMMAND_PASSWORD."\n");
 
         expect($status)->toBe(0)
             ->and($out)->toContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL))
@@ -190,10 +198,7 @@ describe('creating the first owner', function (): void {
     it('stores the password without its line ending, and only that', function (string $ending, bool $piped): void {
         [$status] = $piped
             ? applyThroughStream(ownerOverStdin(), OWNER_COMMAND_PASSWORD.$ending)
-            : applyThroughStream(
-                ['handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL],
-                OWNER_COMMAND_PASSWORD.$ending.OWNER_COMMAND_PASSWORD.$ending,
-            );
+            : applyThroughStream(ownerAtPrompt(), OWNER_COMMAND_PASSWORD.$ending.OWNER_COMMAND_PASSWORD.$ending);
 
         $stored = ownerCommandUser()->password;
 
@@ -202,15 +207,23 @@ describe('creating the first owner', function (): void {
             ->and(Hash::check(OWNER_COMMAND_PASSWORD.$ending, $stored))->toBeFalse();
     })->with(['LF' => "\n", 'CRLF' => "\r\n"])->with(['piped' => true, 'typed' => false]);
 
-    it('takes the password as answered at the prompt', function (): void {
-        $this->artisan('kitsune:blueprint', ['action' => 'apply', 'handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL])
-            ->expectsQuestion(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL), OWNER_COMMAND_PASSWORD)
-            ->expectsQuestion(FirstOwnerCredentials::CONFIRM, OWNER_COMMAND_PASSWORD)
-            ->expectsOutputToContain('its first owner owner@example.test')
-            ->assertSuccessful();
+    /*
+     * ⚠️ ONE LINE ENDING, AND NOTHING ELSE. A trailing space, or a carriage return before the line end, is the password's
+     * own — and refused, as nobody types it again — on either path. Review found both call sites surviving `rtrim()`.
+     */
+    it('takes only the line ending off, on either path, and refuses what is left', function (string $line, string $refusal, bool $piped): void {
+        [$status, $out] = $piped
+            ? applyThroughStream(ownerOverStdin(), $line)
+            : applyThroughStream(ownerAtPrompt(), $line.$line);
 
-        expect(Hash::check(OWNER_COMMAND_PASSWORD, ownerCommandUser()->password))->toBeTrue();
-    });
+        expect($status)->toBe(1)
+            ->and($out)->toContain($refusal);
+
+        ownerCommandNothingWritten();
+    })->with([
+        'a trailing space' => [OWNER_COMMAND_PASSWORD." \n", 'The password begins or ends with whitespace'],
+        'a carriage return before the line end' => [OWNER_COMMAND_PASSWORD."\r\r\n", 'The password contains a control character'],
+    ])->with(['piped' => true, 'typed' => false]);
 
     /** Beside the refusal below: a blueprint that shares the handle quietly leaves core's owner role alone. */
     it('applies a blueprint that skips the owner role, and leaves the owner role as it is', function (): void {
@@ -236,6 +249,18 @@ describe('creating the first owner', function (): void {
             ->and($out)->toContain('Sign in at http://localhost/admin/login as owner@example.test.')
             ->and($out)->not->toContain('No Kitsune admin panel is configured');
     });
+
+    /** A panel that signs in some other way is still a panel: the line says it names no page, not that there is no admin. */
+    it('does not say there is no admin where the panel has no sign-in page', function (): void {
+        app()->instance(KitsunePanel::PANEL_BINDING, Panel::make()->id('admin'));
+        config(['auth.providers.users.model' => FirstOwnerPanelUser::class]);
+
+        [$status, $out] = applyThroughStream(ownerOverStdin(), OWNER_COMMAND_PASSWORD."\n");
+
+        expect($status)->toBe(0)
+            ->and($out)->toContain('owner@example.test owns myblog. Kitsune\'s admin panel names no sign-in page this command can show')
+            ->and($out)->not->toContain('No Kitsune admin panel is configured');
+    });
 });
 
 describe('refusing at the prompt', function (): void {
@@ -243,60 +268,64 @@ describe('refusing at the prompt', function (): void {
     it('refuses a password with spaces around it, as typed', function (): void {
         $padded = '  '.OWNER_COMMAND_PASSWORD."  \n";
 
-        [$status, $out] = applyThroughStream(['handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL], $padded.$padded);
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), $padded.$padded);
 
         expect($status)->toBe(1)
-            ->and($out)->toContain('The password begins or ends with whitespace.')
+            ->and($out)->toContain('The password begins or ends with whitespace')
             ->and($out)->not->toContain(FirstOwnerCredentials::CONFIRM);
 
         ownerCommandNothingWritten();
     });
 
-    /** Refused before the confirmation is asked: Mockery would throw at a question nobody scripted. */
+    /** Refused before the confirmation is asked: the second line would be read as one, and its prompt printed. */
     it('refuses a short password before asking for it again', function (): void {
-        $this->artisan('kitsune:blueprint', ['action' => 'apply', 'handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL])
-            ->expectsQuestion(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL), str_repeat('a', 14))
-            ->expectsOutputToContain('The password is shorter than 15 characters.')
-            ->assertFailed();
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), str_repeat('a', 14)."\n".str_repeat('a', 14)."\n");
+
+        expect($status)->toBe(1)
+            ->and($out)->toContain('The password is shorter than 15 characters.')
+            ->and($out)->not->toContain(FirstOwnerCredentials::CONFIRM);
 
         ownerCommandNothingWritten();
     });
 
     it('refuses two passwords that differ', function (): void {
-        $this->artisan('kitsune:blueprint', ['action' => 'apply', 'handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL])
-            ->expectsQuestion(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL), OWNER_COMMAND_PASSWORD)
-            ->expectsQuestion(FirstOwnerCredentials::CONFIRM, OWNER_COMMAND_PASSWORD.'!')
-            ->expectsOutputToContain('The two passwords did not match. Nothing was written.')
-            ->assertFailed();
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), OWNER_COMMAND_PASSWORD."\n".OWNER_COMMAND_PASSWORD."!\n");
+
+        expect($status)->toBe(1)
+            ->and($out)->toContain('The two passwords did not match. Nothing was written.');
 
         ownerCommandNothingWritten();
     });
 
-    it('refuses no answer at all', function (?string $answer): void {
-        $this->artisan('kitsune:blueprint', ['action' => 'apply', 'handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL])
-            ->expectsQuestion(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL), $answer)
-            ->expectsOutputToContain('No password was entered. Nothing was written.')
-            ->assertFailed();
-
-        ownerCommandNothingWritten();
-    })->with(['empty' => [''], 'none' => [null]]);
-
-    it('refuses input that ends before the second answer', function (): void {
-        [$status, $out] = applyThroughStream(
-            ['handle' => 'blog', '--org' => 'myblog', '--owner' => OWNER_COMMAND_EMAIL],
-            OWNER_COMMAND_PASSWORD."\n",
-        );
+    it('refuses no answer at all', function (string $stdin): void {
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), $stdin);
 
         expect($status)->toBe(1)
             ->and($out)->toContain('No password was entered. Nothing was written.');
 
         ownerCommandNothingWritten();
-    });
+    })->with(['an empty line' => ["\n"], 'nothing' => [''], 'nothing after the first answer' => [OWNER_COMMAND_PASSWORD."\n"]]);
+
+    /*
+     * ⚠️ THE PROMPT REFUSES A STANDARD INPUT THAT IS NOT A TERMINAL, where Symfony would read the "hidden" answer plainly
+     * while whoever types it watches it echo — `ssh host 'php artisan …'` with no `-t`. `$this->artisan()` sets no stream,
+     * so the prompt reads the runner's own standard input; where that is a terminal there is nothing to refuse.
+     */
+    it('refuses to ask on a standard input that is not a terminal', function (): void {
+        $this->artisan('kitsune:blueprint', ['action' => 'apply', ...ownerAtPrompt()])
+            ->expectsOutputToContain('Refusing to ask for the password: standard input is not a terminal, so what is typed '
+                .'at the prompt could not be hidden')
+            ->doesntExpectOutputToContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL))
+            ->assertFailed();
+
+        ownerCommandNothingWritten();
+    })->skip(@stream_isatty(STDIN), 'standard input is a terminal here');
 });
 
 /*
  * ⚠️ EVERY ONE OF THESE IS REFUSED BEFORE A PASSWORD IS ASKED FOR. They run with no question scripted, so a prompt
- * would make Mockery throw; and each leaves every table empty.
+ * would make Mockery throw — or, where the runner's standard input is no terminal, be refused in its own words, which
+ * none of these expects; and each leaves every table empty.
  */
 describe('refusing before the password', function (): void {
     it('refuses `--owner` with no address', function (string $command): void {
@@ -380,8 +409,8 @@ describe('refusing before the password', function (): void {
 
         $refusal = 'Refusing `--owner`: organisation [acme] already exists, and a first owner is created only by the run '
             .'that creates the first organisation on an empty installation (ADR-026). If an earlier run created acme with '
-            .'`--owner`, its owner exists: run the same command without `--owner` to apply, or finish applying, [blog]. '
-            .'Nothing was written.';
+            .'`--owner`, its owner exists: run the same command without `--owner` and `--owner-password-stdin` to apply, '
+            .'or finish applying, [blog]. Nothing was written.';
 
         if ($piped) {
             [$status, $out] = applyThroughStream(ownerOverStdin(['--org' => 'acme']), '');
@@ -446,7 +475,8 @@ describe('an apply that fails after the owner was created', function (): void {
 
         $error = strpos($out, 'the entry type write failed, for the sake of argument');
         $resume = strpos($out, 'Organisation acme, its first site and its first owner owner@example.test were created before '
-            .'the apply and remain. Run the same command again without `--owner` to finish applying [fixture].');
+            .'the apply and remain. Run the same command again without `--owner` and `--owner-password-stdin` to finish '
+            .'applying [fixture].');
 
         expect($status)->toBe(1)
             ->and($error)->toBeInt()
@@ -457,7 +487,13 @@ describe('an apply that fails after the owner was created', function (): void {
 
         $failing = false;
 
-        $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+        /* The instruction as printed: the same options, less those two. */
+        $options = ownerOverStdin(['handle' => 'fixture', '--org' => 'acme']);
+        unset($options['--owner'], $options['--owner-password-stdin']);
+
+        [$finished] = applyThroughStream($options, '');
+
+        expect($finished)->toBe(0);
 
         [$again, $refused] = applyThroughStream(ownerOverStdin(['handle' => 'fixture', '--org' => 'acme']), OWNER_COMMAND_PASSWORD."\n");
 

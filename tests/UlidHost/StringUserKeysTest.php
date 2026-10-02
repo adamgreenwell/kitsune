@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RegistersOrgAwareProvider;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Models\AuditLog;
@@ -184,6 +185,7 @@ it('creates the first owner on a ULID-keyed host, and names them by their ULID',
     Site::query()->withoutGlobalScopes()->forceDelete();
     Org::query()->withoutGlobalScopes()->forceDelete();
     config(['auth.providers.users.model' => FirstOwnerUlidUser::class]);
+    RegistersOrgAwareProvider::on($this->app);
 
     FirstOrg::createWithOwner('ulid-blog', null, null, 'en', 'owner@kitsune.test', Hash::make('correct-horse-battery-staple'));
 

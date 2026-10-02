@@ -21,7 +21,7 @@ use Symfony\Component\Process\Process;
 const OWNER_TOO_SHORT = 'The password is shorter than 15 characters.';
 const OWNER_CONTROL = 'The password contains a control character';
 const OWNER_NOT_UTF8 = 'The password is not valid UTF-8';
-const OWNER_WHITESPACE = 'The password begins or ends with whitespace.';
+const OWNER_WHITESPACE = 'The password begins or ends with whitespace';
 const OWNER_TOO_LONG = 'The password is longer than 72 bytes.';
 const OWNER_IS_EMAIL = 'The password is the owner\'s email address.';
 
@@ -39,13 +39,15 @@ it('refuses a password the owner could not sign in with, by its own rule', funct
     'a leading space' => [' leading-sixteen!', OWNER_WHITESPACE],
     'a trailing space' => ['trailing-sixteen ', OWNER_WHITESPACE],
     'a leading no-break space' => ["\u{00A0}nbsp-leading-x", OWNER_WHITESPACE],
+    'a byte-order mark a file was saved with' => ["\u{FEFF}correct-horse-battery", OWNER_WHITESPACE],
+    'a trailing zero-width space' => ["correct-horse-battery\u{200B}", OWNER_WHITESPACE],
     'seventy-three bytes' => [str_repeat('a', 73), OWNER_TOO_LONG],
     'thirty-seven characters of two bytes each, counted as bytes' => [str_repeat('é', 37), OWNER_TOO_LONG],
 ]);
 
-it('refuses the owner\'s own address as the password, in any case', function (): void {
-    expect(FirstOwnerCredentials::passwordRefusal('owner@example.test', 'Owner@Example.test'))->toStartWith(OWNER_IS_EMAIL);
-});
+it('refuses the owner\'s own address as the password, in any case', function (string $password): void {
+    expect(FirstOwnerCredentials::passwordRefusal($password, 'Owner@Example.test'))->toStartWith(OWNER_IS_EMAIL);
+})->with(['owner@example.test', 'OWNER@EXAMPLE.TEST', 'oWnEr@eXaMpLe.TeSt']);
 
 it('accepts a password at each boundary', function (string $password): void {
     expect(FirstOwnerCredentials::passwordRefusal($password, 'owner@example.test'))->toBeNull();
@@ -55,6 +57,7 @@ it('accepts a password at each boundary', function (string $password): void {
     'seventy-two bytes' => [str_repeat('a', 72)],
     'thirty-six characters of two bytes each' => [str_repeat('é', 36)],
     'a space inside' => ['surf the left break'],
+    'a zero-width joiner inside an emoji somebody typed' => ["surf-\u{1F469}\u{200D}\u{1F4BB}-left-break"],
 ]);
 
 /** ⚠️ The sign-in form's field is `type="email"`, so the browser's grammar decides as surely as the server's does. */
@@ -109,9 +112,42 @@ it('refuses a stream with no password on its first line', function (string $cont
         ->toThrow(RuntimeException::class, 'standard input had no password on its first line');
 })->with(['nothing' => [''], 'an empty line' => ["\n"]]);
 
+/** ⚠️ The read itself is bounded, not only its verdict: an unbounded `fgets()` on `/dev/zero` reads until memory runs out. */
 it('reads a bounded line, and refuses what it read', function (): void {
-    expect(fn () => FirstOwnerCredentials::fromStream(ownerStream(str_repeat('a', 5000)."\n"), 'owner@example.test'))
+    $stream = ownerStream(str_repeat('a', 5000)."\n");
+
+    expect(fn () => FirstOwnerCredentials::fromStream($stream, 'owner@example.test'))
         ->toThrow(RuntimeException::class, OWNER_TOO_LONG);
+
+    expect(ftell($stream))->toBe(FirstOwnerCredentials::READ_BOUND);
+});
+
+it('refuses a byte-order mark at the start of a piped password', function (): void {
+    expect(fn () => FirstOwnerCredentials::fromStream(ownerStream("\xEF\xBB\xBFcorrect-horse-battery\n"), 'owner@example.test'))
+        ->toThrow(RuntimeException::class, OWNER_WHITESPACE);
+});
+
+it('prompts on a terminal, or on a stream it was handed, and on nothing else', function (): void {
+    FirstOwnerCredentials::refuseUnlessPromptable(ownerStream("correct-horse-battery\n"));
+
+    expect(true)->toBeTrue();
+});
+
+/**
+ * ⚠️ THE PROCESS'S OWN STANDARD INPUT, AS A PIPE: what `ssh host 'php artisan …'` with no `-t` gives the command. Symfony
+ * would read a hidden answer from it plainly, so it is refused before anything is asked.
+ */
+it('refuses to prompt on its own standard input when that is a pipe', function (): void {
+    $autoload = dirname(__DIR__, 3).'/vendor/autoload.php';
+    $process = new Process([PHP_BINARY, '-r', "require '{$autoload}'; try { "
+        .'Kitsune\Core\Auth\FirstOwnerCredentials::refuseUnlessPromptable(STDIN); echo "ASKED"; } '
+        .'catch (Throwable $e) { echo $e->getMessage(); }']);
+    $process->setInput("correct-horse-battery\ncorrect-horse-battery\n");
+    $process->setTimeout(30);
+    $process->run();
+
+    expect($process->getOutput())->toContain('Refusing to ask for the password: standard input is not a terminal')
+        ->not->toContain('ASKED');
 });
 
 it('asks a question that is hidden, never shown instead, and kept as typed', function (): void {
@@ -147,6 +183,15 @@ it('refuses a password read from standard input when it is a terminal, before re
 
     expect($out)->toContain('Refusing `--owner-password-stdin`: standard input is a terminal')
         ->not->toContain('READ');
+})->skip(! Process::isPtySupported(), 'no pseudo-terminal on this host');
+
+it('prompts on its own standard input when that is a terminal', function (): void {
+    $out = ownerUnderPty(
+        'try { Kitsune\Core\Auth\FirstOwnerCredentials::refuseUnlessPromptable(STDIN); echo "ASKED"; } '
+        .'catch (Throwable $e) { echo $e->getMessage(); }'
+    );
+
+    expect($out)->toContain('ASKED');
 })->skip(! Process::isPtySupported(), 'no pseudo-terminal on this host');
 
 it('refuses to ask where the terminal cannot hide what is typed', function (): void {
