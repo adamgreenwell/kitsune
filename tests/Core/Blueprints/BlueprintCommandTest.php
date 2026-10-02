@@ -10,9 +10,13 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
@@ -35,6 +39,14 @@ afterEach(fn () => app(Context::class)->forget());
 it('lists what is registered', function (): void {
     $this->artisan('kitsune:blueprint list')
         ->expectsOutputToContain('fixture')
+        ->assertSuccessful();
+});
+
+/** Blog is core's own, so it is listed with nothing but core installed. */
+it('lists Blog', function (): void {
+    $this->artisan('kitsune:blueprint list')
+        ->expectsOutputToContain('blog')
+        ->expectsOutputToContain('1.0.0')
         ->assertSuccessful();
 });
 
@@ -126,7 +138,29 @@ it('reports an interrupted apply as interrupted', function (): void {
     app(Context::class)->forget();
 
     $this->artisan('kitsune:blueprint status')
-        ->expectsOutputToContain('INTERRUPTED')
+        ->expectsOutputToContain('INTERRUPTED — no rows written; re-run to apply')
+        ->assertSuccessful();
+});
+
+/** ⚠️ The other interrupted state, and the operator is told it is a different one: re-running finishes it. */
+it('reports an apply whose rows committed and whose finish did not run as that', function (): void {
+    app(Context::class)->setOrg($this->org);
+
+    Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'manifest' => ['version' => '1.0.0', 'entry_types' => [], 'roles' => []], 'applied_at' => null]);
+
+    app(Context::class)->forget();
+
+    $this->artisan('kitsune:blueprint status')
+        ->expectsOutputToContain('INTERRUPTED — rows written, not finished; re-run to finish')
+        ->assertSuccessful();
+});
+
+it('says how many roles it created and that nobody holds them', function (): void {
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')
+        ->expectsOutputToContain('created  role dispatcher: entry.dispatch.view')
+        ->expectsOutputToContain('1 role was created and nobody holds it: an owner assigns it under Roles (ADR-033).')
         ->assertSuccessful();
 });
 
@@ -209,6 +243,55 @@ describe('on an installation with no organisation at all', function (): void {
 
         expect(Org::query()->withTrashed()->count())->toBe(0)
             ->and(DB::table('sites')->count())->toBe(0)
-            ->and(DB::table('blueprints')->count())->toBe(0);
+            ->and(DB::table('blueprints')->count())->toBe(0)
+            ->and(app(Context::class)->orgId())->toBeNull();
+    });
+
+    /**
+     * ⚠️ AND THE CONTEXT DOES NOT NAME THE ORG THE ROLLBACK TOOK AWAY. The transaction sets the new org in context;
+     * a rollback that left it there handed the caller a context naming an org no row holds. Asked of `FirstOrg`
+     * itself, because the command clears the context on its own way out and would hide it.
+     */
+    it('gives the context back when the site cannot be created', function (): void {
+        Site::creating(function (): void {
+            throw new RuntimeException('site write failed, for the sake of argument');
+        });
+
+        expect(fn () => FirstOrg::create('acme', null, null, 'en'))
+            ->toThrow(RuntimeException::class, 'site write failed');
+
+        expect(app(Context::class)->orgId())->toBeNull()
+            ->and(app(Context::class)->siteId())->toBeNull();
+    });
+
+    /**
+     * ⚠️ PHASE 5's ONE COMMAND: an empty installation to a blog, with no step outside it. And no user — the first
+     * owner is the next slice's, so until then the output says plainly that nobody can reach the org.
+     */
+    it('applies Blog to an empty installation in one command, and creates no user', function (): void {
+        $this->artisan('kitsune:blueprint apply blog --org=myblog --no-interaction')
+            ->expectsOutputToContain('Created organisation myblog and its first site. No user was created, and nobody is '
+                .'a member of it (ADR-026) — until onboarding exists, nobody can reach it in the admin.')
+            ->expectsOutputToContain('created  role blog_writer: entry.post.create, entry.post.update, entry.post.view, entry.tag.view')
+            ->expectsOutputToContain('Applied blog 1.0.0 into myblog. 0 indexed.')
+            ->expectsOutputToContain('2 roles were created and nobody holds them')
+            ->assertSuccessful();
+
+        $org = Org::query()->where('slug', 'myblog')->firstOrFail();
+
+        expect(Org::query()->count())->toBe(1)
+            ->and(Site::query()->withoutGlobalScopes()->where('org_id', $org->getKey())->count())->toBe(1)
+            ->and(EntryType::query()->where('org_id', $org->getKey())->orderBy('handle')->pluck('handle')->all())->toBe(['post', 'tag'])
+            ->and(Role::query()->withoutGlobalScopes()->where('org_id', $org->getKey())->count())->toBe(2)
+            ->and(RolePermission::query()->withoutGlobalScopes()->count())->toBe(14)
+            ->and(DB::table('users')->count())->toBe(0)
+            ->and(DB::table('role_user')->count())->toBe(0)
+            ->and(app(Context::class)->orgId())->toBeNull();
+
+        $this->artisan('kitsune:blueprint apply blog --org=myblog --no-interaction')
+            ->expectsOutputToContain('already applied at this version')
+            ->assertSuccessful();
+
+        expect(RolePermission::query()->withoutGlobalScopes()->count())->toBe(14);
     });
 });

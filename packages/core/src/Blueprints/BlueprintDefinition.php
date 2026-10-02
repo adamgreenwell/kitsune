@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Blueprints;
 
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
+use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 
 /**
  * What an author writes — ADR-039's format, which is a PHP class rather than a document.
@@ -28,11 +29,12 @@ use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
  * tooling. A declarative format and the export direction are v1.1, where they arrive with the API rather than
  * ahead of the freeze.
  *
- * ⚠️ ONE OF THE FOUR KEYS IS HERE. ADR-039 cut the roadmap's six to four — entry types with their fields,
- * roles with their grants, entry type availability, and content — and this interface carries the first. The
- * other three arrive as further methods on this interface rather than as further interfaces, because
- * everything still standing at v1.2 is a permanent obligation (Standing Principle #2) and one seam is cheaper
- * to keep than four. A definition that declares no types is legitimate and applies as a no-op.
+ * ⚠️ ~~ONE OF THE FOUR KEYS IS HERE~~ TWO OF THE FOUR KEYS ARE HERE. ADR-039 cut the roadmap's six to four — entry
+ * types with their fields, roles with their grants, entry type availability, and content — and this interface
+ * carries the first two. The other two arrive as further methods on this interface rather than as further
+ * interfaces, because everything still standing at v1.2 is a permanent obligation (Standing Principle #2) and one
+ * seam is cheaper to keep than four. A definition that declares no types and no roles is legitimate and applies as
+ * a no-op.
  */
 interface BlueprintDefinition
 {
@@ -58,4 +60,13 @@ interface BlueprintDefinition
      * @return list<EntryTypeDeclaration>
      */
     public function entryTypes(): array;
+
+    /**
+     * The roles this blueprint installs, each with grants on this blueprint's OWN entry types.
+     *
+     * A role is created with no holders: assigning one is a person's authority change (ADR-033).
+     *
+     * @return list<RoleDeclaration>
+     */
+    public function roles(): array;
 }

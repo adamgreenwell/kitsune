@@ -105,7 +105,9 @@ final class BlueprintCommand extends Command
                 (string) $receipt->org_id,
                 (string) $receipt->handle,
                 (string) $receipt->version,
-                $receipt->applied_at?->toDateTimeString() ?? 'INTERRUPTED — started, did not finish',
+                $receipt->applied_at?->toDateTimeString() ?? ($receipt->manifest === null
+                    ? 'INTERRUPTED — no rows written; re-run to apply'
+                    : 'INTERRUPTED — rows written, not finished; re-run to finish'),
             ];
         }
 
@@ -163,7 +165,8 @@ final class BlueprintCommand extends Command
             }
 
             $this->info(sprintf(
-                'Created organisation %s and its first site. No user was created — onboarding does that (ADR-026).',
+                'Created organisation %s and its first site. No user was created, and nobody is a member of it '
+                .'(ADR-026) — until onboarding exists, nobody can reach it in the admin.',
                 $slug,
             ));
         }
@@ -200,6 +203,18 @@ final class BlueprintCommand extends Command
             $slug,
             $result['indexed'],
         ));
+
+        /* Created with no holders: who holds a role is a person's decision, audited as one (ADR-033). */
+        if ($result['roles_created'] !== []) {
+            $one = count($result['roles_created']) === 1;
+
+            $this->line(sprintf(
+                '%d %s created and nobody holds %s: an owner assigns %3$s under Roles (ADR-033).',
+                count($result['roles_created']),
+                $one ? 'role was' : 'roles were',
+                $one ? 'it' : 'them',
+            ));
+        }
 
         return self::SUCCESS;
     }

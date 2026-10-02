@@ -24,7 +24,8 @@ use RuntimeException;
  *
  * ⚠️ IT IS THE SEAM THAT MAKES "PAYLOAD MAY LIVE ANYWHERE" TRUE. ADR-039 settles that the mechanism is core
  * and unreplaceable while a blueprint's payload may ship inside core, inside a module, or be handed to the
- * apply command. A module fills this in `registerModule()`, which is where `AdminSurface` is filled and for
+ * apply command. Core's own payload — Blog — is registered by core's provider, with the binding. A module fills
+ * this in `registerModule()`, which is where `AdminSurface` is filled and for
  * the same reason: the kernel runs inside `$app->booted()`, so a registration made there is in time for a
  * console command and cannot run before the receipt that authorises the module has been read.
  */

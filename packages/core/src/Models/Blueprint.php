@@ -40,7 +40,9 @@ use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
  * @property int $org_id
  * @property string $handle the blueprint's own name, e.g. `blog`
  * @property string $version the version that was applied into this org
- * @property array<string, mixed>|null $manifest what was applied, as applied; null while an apply is in flight
+ * @property array<string, mixed>|null $manifest what was applied, as applied: null until the rows commit, with
+ *                                               which it is written — so set with `applied_at` null means the rows
+ *                                               committed and the finish did not run
  * @property CarbonInterface|null $applied_at null while an apply is in flight
  */
 #[OrgScoped]

@@ -15,6 +15,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
+use Throwable;
 
 /**
  * Create the first org and its first site, on an installation that has neither — ADR-039.
@@ -78,21 +79,36 @@ final class FirstOrg
          * being left behind would be worse than untidy: the next run would find one org, refuse to bootstrap,
          * and tell the operator to name an organisation that exists but has no site.
          */
-        return (new Org)->getConnection()->transaction(static function () use ($context, $slug, $name, $siteSlug, $locale): Org {
-            /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */
-            $org = Org::create(['slug' => $slug, 'name' => $name]);
+        /*
+         * ⚠️ AND THE CONTEXT IS GIVEN BACK WHEN IT ROLLS BACK. The transaction sets the new org in context, and a
+         * rollback took the org away and left the context naming it — an org no row holds any longer. Cleared
+         * before it is restored, as ADR-027 has it: `setOrg()` keeps a site of the same org.
+         */
+        $previousSite = $context->site();
+        $previousOrg = $context->org();
 
-            /* And now there is. Context first, then the row: `EnforcesScope` refuses a scope key nobody vouched for. */
-            $context->setOrg($org);
+        try {
+            return (new Org)->getConnection()->transaction(static function () use ($context, $slug, $name, $siteSlug, $locale): Org {
+                /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */
+                $org = Org::create(['slug' => $slug, 'name' => $name]);
 
-            Site::create([
-                'handle' => $siteSlug,
-                'slug' => $siteSlug,
-                'name' => $name,
-                'locale' => $locale,
-            ]);
+                /* And now there is. Context first, then the row: `EnforcesScope` refuses a scope key nobody vouched for. */
+                $context->setOrg($org);
 
-            return $org;
-        });
+                Site::create([
+                    'handle' => $siteSlug,
+                    'slug' => $siteSlug,
+                    'name' => $name,
+                    'locale' => $locale,
+                ]);
+
+                return $org;
+            });
+        } catch (Throwable $e) {
+            $context->forget();
+            $previousSite !== null ? $context->setSite($previousSite) : $context->setOrg($previousOrg);
+
+            throw $e;
+        }
     }
 }
