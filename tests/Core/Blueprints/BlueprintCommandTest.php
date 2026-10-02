@@ -296,13 +296,14 @@ describe('on an installation with no organisation at all', function (): void {
     });
 
     /**
-     * ⚠️ PHASE 5's ONE COMMAND: an empty installation to a blog, with no step outside it. And no user — the first
-     * owner is the next slice's, so until then the output says plainly that nobody can reach the org.
+     * ⚠️ PHASE 5's ONE COMMAND: an empty installation to a blog, with no step outside it. Without `--owner` no user is
+     * created, so the output says plainly that nobody can reach the org — and that `--owner` cannot be added later.
      */
     it('applies Blog to an empty installation in one command, and creates no user', function (): void {
         $this->artisan('kitsune:blueprint apply blog --org=myblog --no-interaction')
-            ->expectsOutputToContain('Created organisation myblog and its first site. No user was created, and nobody is '
-                .'a member of it (ADR-026) — until onboarding exists, nobody can reach it in the admin.')
+            ->expectsOutputToContain('Created organisation myblog and its first site, with no owner because `--owner` was '
+                .'not given: nobody can sign in to it, and `--owner` is now refused on this installation, because it '
+                .'creates a first owner only where there is no organisation and no account (ADR-026).')
             ->expectsOutputToContain('created  role blog_writer: entry.post.create, entry.post.update, entry.post.view, entry.tag.view')
             ->expectsOutputToContain('Applied blog 1.0.0 into myblog. 0 indexed.')
             ->expectsOutputToContain('2 roles were created and nobody holds them, and this organisation has no owner yet to assign them (ADR-033).')

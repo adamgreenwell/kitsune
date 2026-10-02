@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
 use Kitsune\Core\Auth\GuardedOrgMembership;
 use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\Org;
@@ -63,7 +64,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  */
 #[ObservedBy(RevokesRoleAssignments::class)]
 #[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')]
-class User extends Authenticatable implements FilamentUser, HasLocalePreference, HasTenants
+class User extends Authenticatable implements FilamentUser, HasLocalePreference, HasTenants, ProvisionsMembership
 {
     // ⚠️ Without this the attribute above is documentation, not enforcement.
     // `User` declared `#[Unscoped]` for greppability and applied no trait, so
@@ -148,6 +149,32 @@ class User extends Authenticatable implements FilamentUser, HasLocalePreference,
     public function roles(): BelongsToMany
     {
         return $this->belongsToMany(Role::class, 'role_user');
+    }
+
+    /**
+     * The first owner's account, created for `kitsune:blueprint apply --owner` — `ProvisionsMembership` (ADR-026, as
+     * amended by ADR-039).
+     *
+     * ⚠️ THE HASH GOES IN AS IT CAME. The `hashed` cast hashes only a value that is not already a hash this
+     * installation's hasher made, so it stores this one unchanged — and core reads the stored row back to check. The
+     * address is the name too, as core passes it: nothing can edit a name yet. `locale` stays null, which is a real
+     * answer (see `preferredLocale()`).
+     */
+    public static function provisionAccount(string $email, string $name, #[\SensitiveParameter] string $passwordHash): static
+    {
+        return static::query()->forceCreate(['email' => $email, 'name' => $name, 'password' => $passwordHash]);
+    }
+
+    /** Through the guarded relation, so the membership is the one `#[OrgScopedThroughPivot]` reads and the guard sees. */
+    public function admitToOrg(Org $org): void
+    {
+        $this->orgs()->attach($org->getKey());
+    }
+
+    /** `site_user`, which `canAccessTenant()` reads. */
+    public function admitToSite(Site $site): void
+    {
+        $this->sites()->attach($site->getKey());
     }
 
     public function canAccessPanel(Panel $panel): bool

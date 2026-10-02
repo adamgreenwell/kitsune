@@ -54,8 +54,10 @@ function floorStubs(
     string $blogReport = 'Applied blog 1.0.0 into X. 0 indexed.',
     string $blogStatus = 'applied',
     string $symlinkOne = '',
+    bool $blogOwner = true,
 ): void {
     $platformFailsFlag = $platformFails ? 1 : 0;
+    $blogOwnerFlag = $blogOwner ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
 
     File::put($dir.'/bin/docker', <<<STUB
@@ -88,7 +90,12 @@ function floorStubs(
 
     # Phase 5's one command, timed in the image by a wrapper; and the status read after it.
     case "\$*" in
+      # The first owner's password arrives on standard input, and only there: kept, to be looked for in argv.
       *kitsune:blueprint\ apply*)
+        if [[ "\$*" == *--owner-password-stdin* ]]; then
+          cat > "$dir/stdin.log"
+          [[ "$blogOwnerFlag" == 1 ]] && echo 'Created organisation blog, its first site blog and its first owner floor-owner@kitsune.test (ADR-026).'
+        fi
         echo "$blogReport"
         echo "blueprint apply took: 812 ms"
         exit $blogExit
@@ -472,7 +479,7 @@ it('refuses an install that left a required package out', function (): void {
         ->and($run->getErrorOutput())->toContain('kitsune/person was not installed as a copy of packages/person');
 });
 
-it('times the Blog apply under the floor limits, on an empty install and into the corpus org', function (): void {
+it('times the Blog apply under the floor limits, on an empty install with its first owner and into the corpus org', function (): void {
     /*
      * ⚠️ PHASE 5's DONE-WHEN IS ONE COMMAND UNDER 60 s AT THE FLOOR, and ADR-039 says where it is measured: in this
      * image, under these limits, on a fresh copy. So both applies run under exactly the limits the columns above do.
@@ -499,6 +506,24 @@ it('times the Blog apply under the floor limits, on an empty install and into th
         ->and($applies[1])->toContain('--org=floor-benchmark')
         ->and($applies[1])->toContain('run-blog-content');
 
+    /*
+     * ⚠️ THE FRESH LEG CREATES THE FIRST OWNER, AND ITS PASSWORD IS ON STANDARD INPUT ALONE. `-i`, or the container's
+     * input is closed; and argv — every line the stub logged — never holds it, since argv is what `ps` shows.
+     */
+    expect($applies[0])->toContain('run -i ')
+        ->toContain('--owner=floor-owner@kitsune.test')
+        ->toContain('--owner-password-stdin')
+        ->and($applies[1])->not->toContain(' -i ')
+        ->and($applies[1])->not->toContain('--owner');
+
+    $stdin = (string) File::get($this->dir.'/stdin.log');
+
+    expect($stdin)->toMatch('/\A[0-9a-f]{32}\n\z/');
+
+    foreach ($lines as $line) {
+        expect($line)->not->toContain(trim($stdin));
+    }
+
     /* The corpus is in the table before the second apply: a --keep seeding in that same copy, earlier in the log. */
     $seeding = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'run-blog-content') && str_contains($line, '--keep')));
     $content = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'kitsune:blueprint apply blog --org=floor-benchmark')));
@@ -509,7 +534,7 @@ it('times the Blog apply under the floor limits, on an empty install and into th
         ->and($lines[$seeding])->not->toContain('--cpus=');
 
     expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply blog at 1 vCPU / 1024 MB')
-        ->toMatch('/empty installation \(creates the org and its site\)\s+812 ms/')
+        ->toMatch('/empty installation \(creates the org, its site and its first owner\)\s+812 ms/')
         ->toMatch('/into floor-benchmark, 25 entries in the table\s+812 ms/')
         ->toContain('Budget: 60,000 ms');
 });
@@ -525,4 +550,5 @@ it('refuses a Blog apply that did not happen, however quickly it stopped', funct
     'exited non-zero' => [['blogExit' => 1], 'the fresh Blog apply exited 1'],
     'did not report applying blog' => [['blogReport' => 'Refusing to create an organisation'], 'the fresh Blog apply did not report applying blog'],
     'left its receipt interrupted' => [['blogStatus' => 'interrupted'], 'the fresh Blog apply left its receipt unfinished'],
+    'created no owner' => [['blogOwner' => false], 'the fresh Blog apply created no owner'],
 ]);
