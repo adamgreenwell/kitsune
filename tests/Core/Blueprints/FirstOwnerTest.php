@@ -12,7 +12,11 @@ use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
 use Illuminate\Auth\EloquentUserProvider;
+use Illuminate\Auth\GenericUser;
+use Illuminate\Contracts\Auth\Authenticatable as AuthenticatableContract;
+use Illuminate\Contracts\Auth\UserProvider;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
@@ -325,3 +329,35 @@ it('asks the provider behind the panel\'s own guard', function (): void {
 
     firstOwnerNothingWritten();
 });
+
+/*
+ * ⚠️ THIS ACCOUNT, HOLDING THIS HASH — not merely an account. A provider that is not Eloquent's (a directory, a host's
+ * own) answers the address from wherever it keeps accounts, and may answer with somebody else, or with a password other
+ * than the one typed. Each case below differs from the owner in one way only, so each comparison is the one refusing.
+ */
+it('refuses a sign-in that would find somebody else, or another password', function (string $differs): void {
+    $hash = $this->hash;
+
+    Auth::provider('first-owner-elsewhere', fn (): UserProvider => new class($differs, $hash) extends EloquentUserProvider
+    {
+        public function __construct(private string $differs, private string $ownerHash)
+        {
+            parent::__construct(app('hash'), FirstOwnerUser::class);
+        }
+
+        public function retrieveByCredentials(array $credentials): ?AuthenticatableContract
+        {
+            $owner = FirstOwnerUser::query()->withoutGlobalScopes()->where('email', $credentials['email'])->first();
+
+            return new GenericUser($this->differs === 'somebody else'
+                ? ['id' => 'somebody-else', 'password' => $this->ownerHash]
+                : ['id' => $owner?->getKey(), 'password' => Hash::make('another-password-entirely')]);
+        }
+    });
+    config(['auth.providers.users.driver' => 'first-owner-elsewhere']);
+
+    expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
+        ->toThrow(RuntimeException::class, 'and that does not find the new');
+
+    firstOwnerNothingWritten();
+})->with(['somebody else', 'another password']);

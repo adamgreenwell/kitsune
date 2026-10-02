@@ -91,6 +91,7 @@ it('marks every parameter that carries the password or its hash as sensitive', f
     'the bootstrap' => [FirstOrg::class, 'createWithOwner', 'ownerPasswordHash'],
     'its transaction' => [FirstOrg::class, 'bootstrap', 'ownerPasswordHash'],
     'its owner step' => [FirstOrg::class, 'seatOwner', 'passwordHash'],
+    'its sign-in check' => [FirstOrg::class, 'refuseUnlessSignInFinds', 'passwordHash'],
     'the rules' => [FirstOwnerCredentials::class, 'passwordRefusal', 'password'],
     'the line ending' => [FirstOwnerCredentials::class, 'withoutLineEnd', 'line'],
     'the answer' => [FirstOwnerCredentials::class, 'answered', 'answer'],
