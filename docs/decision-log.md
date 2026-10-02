@@ -1246,7 +1246,7 @@ Shipping a `kitsune/plugin-guidelines` package in Boost's format means an AI-ass
 
 ## ADR-026 — Self-hosting: one command, no database server, no phone-home
 
-**Status:** Decided · 2026-09-07 · ⚠️ **Amended by ADR-027** — the recommended default flips from Docker to the native path. Both remain supported; the original reasoning below is left as written · **Amended 2026-09-15** — the Launchpad PPA it named has no Ubuntu 26.04 suite; see the note under *Two supported paths*
+**Status:** Decided · 2026-09-07 · ⚠️ **Amended by ADR-027** — the recommended default flips from Docker to the native path. Both remain supported; the original reasoning below is left as written · **Amended 2026-09-15** — the Launchpad PPA it named has no Ubuntu 26.04 suite; see the note under *Two supported paths* · **Amended 2026-10-02 by ADR-039** — the operator may create the first owner at the command line, on an empty installation only; see *Security posture*
 
 A person with a fresh Ubuntu LTS box must be able to paste **one command** and arrive at the onboarding screen. No database server to provision, no credentials to invent, no PHP version to negotiate.
 
@@ -1272,6 +1272,8 @@ Supporting only one of the two costs a real constituency, so both ship.
 - **The documented primary instruction is the two-step**: download, inspect, run. The one-liner is offered alongside it, not instead of it
 - Releases are signed, and the installer verifies what it fetches
 - **The installer never creates a default administrator account.** Onboarding creates the first user interactively. Default credentials at install time are the most reliably exploited mistake in CMS history and there is no version of it that is acceptable
+
+  > ⚠️ **Amended 2026-10-02 — the first owner may be named on the command line, by the operator, with a password only the operator has typed.** What this entry forbids is a *default* administrator: an account the installer invents, ships or derives, that every install shares or an attacker can predict. `kitsune:blueprint apply <blueprint> --org=<slug> --owner=<email>` creates the installation's first account as owner of its first organisation, and only in the run that creates that organisation, on an installation with no organisation and no account. Anywhere else it is refused before anything is asked. The password is typed twice at a hidden prompt, or read from the first line of standard input with `--owner-password-stdin`. It is never an argument or an environment variable, which other local users read through `ps` and `/proc` and which shell history keeps. It is never generated, because a generated value must be printed to be used. It is never printed, and only its hash is stored. **"Interactively", said plainly:** the prompt is interactive; `--owner-password-stdin` is not, and does not pretend to be. It serves automation that already holds a secret and moves it over the one channel other users cannot read. It also closes a window rather than opening one: a web onboarding screen must defend the interval in which whoever reaches it first claims the installation, while an account committed with the organisation, by someone holding a shell, leaves no such interval. **The Phase 6 installer is unchanged: it creates no account.** Whether it ends at web onboarding or hands the operator's terminal to this prompt is Phase 6's decision. If it is web onboarding, that screen must defend the first-visitor window, which this amendment does not. What the command adds over tinker: the account, its memberships and its ownership are one transaction, and the ownership is audited. The surface as built is recorded under ADR-039.
 - **It reports nothing, ever** — not usage, not versions, not an "install succeeded" ping. GOVERNANCE commits to no telemetry without opt-in, and an installer is the easiest place to break that promise quietly
 
 ### Idempotent by construction
@@ -1286,6 +1288,11 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 | `curl \| bash` with no version pin or checksum | Normalises the worst supply-chain pattern in the ecosystem, in a product whose severity ceiling is a cross-org data leak. |
 | Installer creates a default admin account to reach onboarding faster | Trades the project's worst-case security incident for a few seconds of convenience. |
 | Point self-hosters at the hosted service instead | Contradicts the premise, and contradicts the GOVERNANCE commitment that the export path and the self-host path are never degraded. |
+| `--owner-password=<value>` *(2026-10-02)* | Visible to other users in `ps` and `/proc`, kept in shell history, and carried by Laravel's command events. |
+| `KITSUNE_OWNER_PASSWORD` *(2026-10-02)* | Readable in `/proc/<pid>/environ`, inherited by every child process, shown by `docker inspect`, and echoed by CI. |
+| A generated password, printed once *(2026-10-02)* | It lands in scrollback and CI logs, and it is a credential the operator did not choose. |
+| An emailed set-password link *(2026-10-02)* | Mail is `log` at the floor, and there is no reset flow for the link to land in. |
+| `--owner` on an installation that already has an org or an account *(2026-10-02)* | An administrator created beside an identity process someone else runs, or a takeover of an account that exists. |
 
 **Cost, stated.** An installer is a permanent support surface that grows with every distro release, and it will generate support load disproportionate to its size — the ~3x multiplier in ADR-011 applies to it directly. Budget for it as an ongoing obligation, not a Phase 6 task that closes.
 
