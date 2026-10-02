@@ -430,14 +430,21 @@ it('records each role and every field as declared in the manifest', function ():
     $type = EntryType::query()->where('handle', 'dispatch')->firstOrFail();
     $role = Role::query()->where('handle', 'dispatcher')->firstOrFail();
 
-    expect($manifest['roles'])->toBe([[
-        'handle' => 'dispatcher',
-        'id' => $role->getKey(),
-        'outcome' => 'created',
-        'name' => 'Dispatcher',
-        'on_collision' => 'fail',
-        'grants' => ['entry.dispatch.update', 'entry.dispatch.view'],
-    ]])
+    /*
+     * ⚠️ BY KEY, NOT IN ORDER. MySQL stores a JSON object with its keys re-sorted — by length, then bytewise — so the
+     * manifest reads back in a different order there than it was written, and an order-sensitive match fails on one
+     * engine of four. The key set is pinned exactly, so nothing extra or missing passes.
+     */
+    expect($manifest['roles'])->toHaveCount(1)
+        ->and(array_keys($manifest['roles'][0]))->toEqualCanonicalizing(['handle', 'id', 'outcome', 'name', 'on_collision', 'grants'])
+        ->and($manifest['roles'][0])->toMatchArray([
+            'handle' => 'dispatcher',
+            'id' => $role->getKey(),
+            'outcome' => 'created',
+            'name' => 'Dispatcher',
+            'on_collision' => 'fail',
+            'grants' => ['entry.dispatch.update', 'entry.dispatch.view'],
+        ])
         ->and($manifest['entry_types'][0])->toMatchArray([
             'handle' => 'dispatch',
             'id' => $type->getKey(),
