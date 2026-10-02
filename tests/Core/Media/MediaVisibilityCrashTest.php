@@ -265,3 +265,79 @@ it('leaves nothing on the web from a switch stopped between its rename and its c
     crashInvariants($entry, $path, "renamed, not committed, after {$followUp} and reconcile");
     crashSettled($entry, $path);
 })->with(CRASH_FOLLOW_UPS);
+
+/**
+ * A live public JPEG whose copies were changed outside Kitsune, its row naming the private disk (decision 37): `others`
+ * — the private disk holding the located photo, the public disk other located bytes; `served` — the public disk alone
+ * holding the located photo.
+ */
+function crashRefusable(string $state): Entry
+{
+    $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-crash-');
+    $entry = MediaLibrary::store($source, 'photo.jpg', test()->image, 'public', title: 'Photo');
+    unlink($source);
+    $path = crashPath($entry);
+    DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => MediaDisks::PRIVATE]);
+
+    if ($state === 'others') {
+        Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true));
+        Storage::disk('public')->put($path, LocatedJpeg::photo(false));
+    } else {
+        Storage::disk('public')->put($path, LocatedJpeg::photo(true));
+    }
+
+    RefusingDisk::forgetLog();
+
+    return $entry;
+}
+
+/*
+ * Decision 37's refusal stopped before each of its byte operations: whatever the death leaves, the next forced reconcile
+ * refuses it again, and nothing located is left on the web, nor lost. I3 is not asked: a refused file is unpublished by
+ * design, and the located copy it keeps on the private disk is the outside change's own result.
+ */
+it('finishes a refusal to publish stopped before any of its byte operations', function (string $state): void {
+    $entry = crashRefusable($state);
+    $count = 0;
+    RefusingDisk::$beforeByte = static function () use (&$count): void {
+        $count++;
+    };
+
+    try {
+        expect(MediaCustody::settle(DB::connection(), $entry->id, publication: true))->toBe(MediaCustody::REFUSED);
+    } finally {
+        RefusingDisk::$beforeByte = null;
+    }
+
+    expect($count)->toBeGreaterThan(0);
+
+    foreach (range(1, $count) as $at) {
+        $entry = crashRefusable($state);
+        $path = crashPath($entry);
+        $seen = 0;
+        RefusingDisk::$beforeByte = static function () use (&$seen, $at): void {
+            if (++$seen >= $at) {
+                throw new RuntimeException('the process died');
+            }
+        };
+
+        try {
+            MediaCustody::settle(DB::connection(), $entry->id, publication: true);
+        } catch (Throwable) {
+            // Dead.
+        } finally {
+            RefusingDisk::$beforeByte = null;
+            app()->forgetInstance(MediaCustody::class);
+        }
+
+        expect(Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $entry->id]]))
+            ->toBe(1, "{$state}, dead before byte operation {$at} of {$count}: the forced reconcile refuses it again");
+        crashInvariants($entry, $path, "{$state}, dead before byte operation {$at} of {$count}, after reconcile");
+
+        $private = Storage::disk(MediaDisks::PRIVATE)->path($path);
+
+        expect(is_file(Storage::disk('public')->path($path)))->toBeFalse("{$state}, {$at}: still on the web")
+            ->and(is_file($private) ? hash_file('sha256', $private) : null)->toBe(hash('sha256', LocatedJpeg::photo(true)), "{$state}, {$at}: the copy kept was lost")
+            ->and(DB::table('media_files')->where('entry_id', $entry->id)->value('disk'))->toBe(MediaDisks::PRIVATE);
+    }
+})->with(['others', 'served']);

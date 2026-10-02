@@ -695,6 +695,23 @@ describe('a media type\'s pages', function (): void {
             ->and($components['media_file_link']->getUrl())->toBeNull();
     });
 
+    /*
+     * One whose row reads as a JPEG says what publishes it, should custody have refused it for a copy that does not match
+     * its checksum (decision 37) — from the row alone, so a PNG never says it.
+     */
+    it('shows a JPEG awaiting publication with what publishes it', function (string $name, string $mime): void {
+        $entry = storedMedia(LocatedJpeg::base(), 'photo.jpg', $this->type);
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['visibility' => 'public', 'mime' => $mime]);
+        $path = (string) DB::table('media_files')->where('entry_id', $entry->id)->value('path');
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['path' => substr($path, 0, -strlen('.jpg')).'.'.pathinfo($name, PATHINFO_EXTENSION)]);
+
+        expect(fileSection($entry)['media_file_visibility']->getState())
+            ->toBe('Public — not yet published, so opened only through this admin. If its file was changed outside Kitsune, making it private and then public publishes it');
+    })->with([
+        'by its extension' => ['photo.JPG', 'application/octet-stream'],
+        'by its type' => ['photo.bin', 'image/pjpeg'],
+    ]);
+
     /* Decision 16's other half: whether a file is served to anyone with its link, and where that link goes. */
     /*
      * ⚠️ ON THE HOST SERVING THE ADMIN (decision 6): the disk's URL is APP_URL's, absolute, and the link is its path — a

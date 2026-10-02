@@ -637,7 +637,7 @@ describe('a forced run', function (): void {
 
         expect($changed)->toBeTrue()
             ->and(reconcileLine($output, $id))->toContain('→ kept')
-            ->and($output)->toContain('kitsune:media-reconcile --entry='.$id.' --force rewrites [public] from it')
+            ->and($output)->toContain('kitsune:media-reconcile --entry='.$id.' --force rewrites [public] from it, or says what will')
             ->and(reconcileHeld($path)[MediaDisks::PRIVATE])->toBe($this->checksum)
             ->and($exit)->toBe(1);
     });

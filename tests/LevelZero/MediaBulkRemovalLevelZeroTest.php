@@ -278,3 +278,21 @@ it('names a restore whose COMMIT landed and whose publication failed as not yet 
         ->and(bulkRmZeroNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published')
         ->and(bulkRmZeroNotices()[0]['body'])->toContain("--entry={$entry->id}");
 });
+
+/* Z8. A JPEG a backup put back over, restored at a real level 0: committed, refused publication, said as not yet published (decision 37). */
+it('names a restored JPEG custody refused to publish as not yet published, at level 0', function (): void {
+    $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-bulkrm0-');
+    $stored = MediaLibrary::store($source, 'photo.jpg', $this->image, 'public', title: 'Photo');
+    unlink($source);
+    $stored->delete();
+    $path = (string) DB::table('media_files')->where('entry_id', $stored->id)->value('path');
+    Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true));
+    $entry = Entry::withTrashed()->with('mediaFile')->findOrFail($stored->id);
+
+    MediaBulkRemoval::each(RestoreBulkAction::make(), [$entry], MediaBulkRemoval::RESTORE);
+
+    expect(bulkRmZeroState($entry))->toBe(['live', false])
+        ->and(DB::table('media_files')->where('entry_id', $entry->id)->value('disk'))->toBe(MediaDisks::PRIVATE)
+        ->and(bulkRmZeroNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published')
+        ->and(bulkRmZeroNotices()[0]['body'])->toContain("--entry={$entry->id} --force publishes it, or says what will.");
+});

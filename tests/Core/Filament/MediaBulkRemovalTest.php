@@ -641,6 +641,36 @@ describe('restoring', function (): void {
             ->and($action->shouldDeselectRecordsAfterCompletion())->toBeTrue();
     });
 
+    /* R2a. Restored, and custody refused to publish it — a JPEG a backup put back over (decision 37): said as not yet published. */
+    it('names a restored JPEG custody refused to publish as not yet published', function (): void {
+        $source = LocatedJpeg::file(LocatedJpeg::photo(true), 'kitsune-bulkrm-');
+        $user = auth()->user();
+        auth()->forgetUser();
+
+        try {
+            $trashed = MediaLibrary::store($source, 'photo.jpg', $this->type, 'public', title: 'Photo');
+            $trashed->delete();
+        } finally {
+            unlink($source);
+            test()->actingAs($user);
+        }
+
+        $path = (string) DB::table('media_files')->where('entry_id', $trashed->id)->value('path');
+        Storage::disk(MediaDisks::PRIVATE)->put($path, LocatedJpeg::photo(true));
+        $action = bulkRmAction('restore');
+
+        MediaBulkRemoval::each($action, bulkRmListed($trashed), MediaBulkRemoval::RESTORE);
+
+        expect(bulkRmWhere($trashed))->toBe('live')
+            ->and(bulkRmServed($trashed))->toBeFalse()
+            ->and(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(bulkRmNotices()[0]['status'])->toBe('warning')
+            ->and(bulkRmNotices()[0]['duration'])->toBe('persistent')
+            ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored, and its file is not yet published')
+            ->and(bulkRmNotices()[0]['body'])->toContain("kitsune:media-reconcile --entry={$trashed->id} --force publishes it, or says what will.")
+            ->and($action->getStatus()->name)->toBe('Success');
+    });
+
     /* R3. A restore that fails: reported once, named; the rest restored. */
     it('names a restore that failed, and restores the rest', function (): void {
         Exceptions::fake();

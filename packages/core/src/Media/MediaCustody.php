@@ -50,6 +50,11 @@ use Throwable;
  * else waits for one to end — but for one: making a JPEG public rewrites its file on the private disk, which no web
  * serves, under the lock and as the last step before the commit, and refuses inside an open transaction, so its own
  * rollback is the only one there is — and it writes the original back (`MediaVisibility`, ADR-042 decision 32).
+ *
+ * ⚠️ A JPEG NO COPY OF WHICH MATCHES ITS CHECKSUM IS NEVER PUBLISHED (Adam, ADR-042 decision 37). Every JPEG made public
+ * records the bytes it was stripped to, so one kept for want of a match was changed outside Kitsune and may carry its
+ * location again: settle keeps it off the web, settled on the private disk, and *Make private* then *Make public* strip,
+ * record and publish it.
  */
 final class MediaCustody
 {
@@ -79,6 +84,13 @@ final class MediaCustody
      * copy that alone matches the checksum would have gone.
      */
     public const UNSETTLED = 'unsettled';
+
+    /**
+     * A JPEG no copy of which matches its recorded checksum, kept off the web rather than published (Adam, ADR-042 decision
+     * 37): settled as a private file is — its kept copy verified on the private disk, every copy on a disk the web serves
+     * removed, its row naming the private disk — and still public, so it waits as a file awaiting publication does.
+     */
+    public const REFUSED = 'refused';
 
     /**
      * Entries whose files a rolled-back withdrawal moved, by connection name, waiting to be put back.
@@ -352,6 +364,14 @@ final class MediaCustody
      * served nor the target is set aside while the file is taken off the web, never touched; a row naming that disk keeps
      * naming it (Adam, decision 6, 2026-09-25).
      *
+     * ⚠️ A JPEG IT WOULD PUBLISH FROM A COPY THAT DOES NOT MATCH ITS CHECKSUM IT REFUSES (Adam, ADR-042 decision 37) —
+     * after the keeper chooses and before any byte or the row moves, so every route a file takes to the public disk is
+     * asked: a restore's publication, a retried one, Make public's, a drain's compensation and `kitsune:media-reconcile
+     * --force`. Refused, the file is settled as a private one is, and `REFUSED` returned; a row already naming the public
+     * disk, which holds the copy kept, is not published here, and is left.
+     *
+     * @return string one of `SETTLED`, `UNCHANGED`, `GONE`, `MISSING`, `SET_ASIDE` or `REFUSED`
+     *
      * @throws LogicException inside an open transaction
      * @throws MediaCustodyFailure when a copy cannot be written, verified or removed; nothing it verified is lost
      * @throws RuntimeException when the configured disks cannot keep the promise, or two disks cannot be told apart
@@ -406,6 +426,27 @@ final class MediaCustody
                 ));
 
                 return self::MISSING;
+            }
+
+            /*
+             * ⚠️ A JPEG NO COPY OF WHICH MATCHES ITS CHECKSUM IS NOT PUBLISHED (Adam, ADR-042 decision 37). Every JPEG made
+             * public records the bytes it was stripped to (decisions 30 and 32), so a copy kept for want of a match was
+             * changed outside Kitsune — a backup restored over the private copy — and may carry its location again. It is
+             * settled as a private file is instead: the kept copy verified on the private disk, every served copy removed,
+             * the row naming the private disk; its visibility stays public. Not in the keeper: a withdrawal, and Make
+             * public's adoption of the named copy — the remedy — choose as decision 5 has it. Not where the row already
+             * names the public disk and that disk holds the copy kept: nothing is published there, and what the web serves
+             * was put there outside Kitsune. A match is asked first, so it never costs a read of the file's first bytes.
+             */
+            $kept = $keeper->disk;
+            $refused = $target === $public && $keeper->mode !== MediaKeeper::MATCH
+                && ! ($named === $target && $keeper->targetHolds)
+                && self::isJpeg($file, $path, $keeper->disk);
+
+            if ($refused) {
+                MediaBytes::refuseMisnamed($private, $path);
+                $target = $private;
+                $keeper = $keeper->toward($private);
             }
 
             $changed = false;
@@ -512,6 +553,27 @@ final class MediaCustody
                 return self::SET_ASIDE;
             }
 
+            // Logged once the work is done, so every word of it is so; a failure on the way is its caller's to say.
+            if ($refused) {
+                Log::warning(sprintf(
+                    'Media custody, entry %d: refusing to publish [%s] — a JPEG, by its row or by the first bytes of the copy '
+                    .'kept, and no copy of it matches its recorded checksum [%s], so the copy kept, from [%s], was changed '
+                    .'outside Kitsune and may carry again the location a JPEG loses as it is made public. It is on no disk '
+                    .'the web serves: kept on [%s], its row naming it, and still public, so it is listed as awaiting '
+                    .'publication. Whoever may publish it makes it private, then public, in the admin, which removes its '
+                    .'location, records its copy and publishes it; or put back the copy its checksum records, and '
+                    .'kitsune:media-reconcile --entry=%d --force publishes it (ADR-042 decision 37).',
+                    (int) $file->entry_id,
+                    $path,
+                    $keeper->checksum ?? 'none',
+                    $kept,
+                    $private,
+                    (int) $file->entry_id,
+                ));
+
+                return self::REFUSED;
+            }
+
             return $changed ? self::SETTLED : self::UNCHANGED;
         });
     }
@@ -551,7 +613,7 @@ final class MediaCustody
                           .'kitsune:media-reconcile --entry=%d shows where the file is', $entryId)
                         : sprintf('so it is not published, and may not be reachable at its public URL. '
                           .'kitsune:media-prune and kitsune:media-reconcile list it under "awaiting publication", and '
-                          .'kitsune:media-reconcile --entry=%d --force publishes it', $entryId),
+                          .'kitsune:media-reconcile --entry=%d --force publishes it, or says what will', $entryId),
                 ));
 
                 continue;
@@ -739,7 +801,7 @@ final class MediaCustody
                     $keeper->disk === null => 'because no disk holds one now',
                     // Reconcile asks only the disks custody asks: a copy elsewhere is restored by hand (Adam, decision 5).
                     in_array($keeper->disk, self::asked($config, $target, $target), true) => sprintf(
-                        'which is on [%s]; kitsune:media-reconcile --entry=%d --force rewrites [%s] from it',
+                        'which is on [%s]; kitsune:media-reconcile --entry=%d --force rewrites [%s] from it, or says what will',
                         $keeper->disk,
                         (int) $file->entry_id,
                         $target,
@@ -889,7 +951,7 @@ final class MediaCustody
                 Log::warning(sprintf(
                     'Media custody, entry %d: its file could not be put back where its row says it belongs after the '
                     .'write that moved it rolled back — %s. kitsune:media-prune lists it, and kitsune:media-reconcile '
-                    .'--entry=%d --force puts it back (ADR-042 decision 5).',
+                    .'--entry=%d --force puts it back, or says what will (ADR-042 decision 5).',
                     $entryId,
                     $failure->getMessage(),
                     $entryId,
@@ -900,6 +962,32 @@ final class MediaCustody
 
             self::cleanUpReporting($connection, $entryId);
         }
+    }
+
+    /**
+     * Whether a file settle would publish is a JPEG, for decision 37: its row says so by any of a JPEG's names or types, as
+     * decision 32 reads one, or the copy kept begins as one does. Read from the copy kept — what would be published —
+     * never the disk the row names, which under FIRST holds nothing. A copy gone since it was hashed fails the step rather
+     * than be called either; a retry decides.
+     *
+     * ⚠️ THE ROW FOLLOWS `MediaLocation::STRIPPED`; THE BYTES ARE A JPEG'S ALONE. A format added there brings its own
+     * signature here.
+     *
+     * @throws MediaCustodyFailure `unknown` when the copy kept is gone since it was hashed; `unreadable` or `read-through`
+     */
+    private static function isJpeg(stdClass $file, string $path, string $disk): bool
+    {
+        if (MediaLocation::strips(MediaLocation::formatOf($path, is_string($file->mime ?? null) ? $file->mime : null))) {
+            return true;
+        }
+
+        $head = MediaBytes::head($disk, $path, 3);
+
+        if ($head === null) {
+            throw new MediaCustodyFailure('unknown', $disk, $path);
+        }
+
+        return MediaLocation::beginsAsJpeg($head);
     }
 
     /** Clean up, logging rather than throwing: what it follows has already happened, and the copy it keeps is safe. */

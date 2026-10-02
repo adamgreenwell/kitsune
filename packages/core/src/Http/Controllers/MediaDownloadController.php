@@ -136,7 +136,8 @@ final class MediaDownloadController
             Log::warning(sprintf(
                 'Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this '
                 .'entry was refused and its compensation failed, the only copy is on the private disk, where '
-                .'kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back '
+                .'kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, '
+                .'or says what will '
                 .'(ADR-042 decision 5). Otherwise the file was removed outside Kitsune.',
                 (string) $file->disk,
                 (string) $file->path,

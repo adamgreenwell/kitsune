@@ -723,7 +723,7 @@ describe('what custody leaves', function (): void {
         // Why, and what settles it — custody's own words, on the console (review of slice 5b).
         expect($sections['all'])->toContain('Kept ['.MediaDisks::PRIVATE.':'.$file->path.'], entry '.$file->entry_id.' — custody says why')
             ->and($sections['all'])->toContain('[public], the disk the row names, does not hold the copy kept, which is on ['.MediaDisks::PRIVATE.']')
-            ->and($sections['all'])->toContain('kitsune:media-reconcile --entry='.$file->entry_id.' --force rewrites [public] from it')
+            ->and($sections['all'])->toContain('kitsune:media-reconcile --entry='.$file->entry_id.' --force rewrites [public] from it, or says what will')
             ->and($sections['all'])->toContain('1 kept under the lock, each with its reason above.');
         Storage::disk(MediaDisks::PRIVATE)->assertExists($file->path);
 

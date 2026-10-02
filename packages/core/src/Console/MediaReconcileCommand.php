@@ -52,7 +52,7 @@ use Throwable;
  * remove it (Adam, decision 12, 2026-09-26).
  *
  * ⚠️ `--force` DECIDES NOTHING FROM THE LISTING. For each listed row it runs exactly what a compensation runs —
- * `MediaCustody::settle()` then `cleanUp()` — each its own outermost transaction under the row's lock, taking every
+ * `MediaCustody::settle()` then, unless it refused to publish a JPEG (decision 37), `cleanUp()` — each its own outermost transaction under the row's lock, taking every
  * decision from the row as read there. The listing only chooses which rows to lock: a row a trash or a restore changed
  * since is settled as it now is, and one listed as missing is asked again (a publication may have moved it). No copy is
  * deleted until the copy kept is verified on the disk the row's state says it belongs on; one that cannot be read is
@@ -60,7 +60,7 @@ use Throwable;
  *
  * ⚠️ IT FAILS ON FINDINGS (Adam, decision 7, 2026-09-25), so a deploy or a cron can run it as a check: read-only, while
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
- * kept. A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
+ * kept — a JPEG custody refused to publish among them (decision 37). A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
  * copy the listing opens, or a forced row's second look, and cannot read keeps both failing until it can be read (Adam,
  * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor the lone copy
  * of a file where its row belongs, which only a forced prune reads, and only when it removes a copy at the row's path on
@@ -265,7 +265,9 @@ final class MediaReconcileCommand extends Command
                 '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed. Re-run with --force: '
                 .'each file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies '
                 .'custody\'s steps remove removed — one that differs named in the log with both hashes, and one that cannot '
-                .'be read named, and the run failed on it, its row kept or failed. Media has no revision history and no undo.',
+                .'be read named, and the run failed on it, its row kept or failed; and a JPEG no copy of which matches its '
+                .'recorded checksum is kept off the web rather than published, and the run fails on it, as the log then says '
+                .'(ADR-042 decision 37). Media has no revision history and no undo.',
                 $astray,
                 $total,
                 $total === 1 ? '' : 's',
@@ -1068,6 +1070,15 @@ final class MediaReconcileCommand extends Command
                     'missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on a disk '
                     .'another row names; otherwise restore it from a backup, or erase the entry',
                     'missing',
+                ];
+            }
+
+            // A JPEG custody refused to publish (decision 37): its row names the private disk now, with nothing to clean up.
+            if ($settled === MediaCustody::REFUSED) {
+                return [
+                    'kept off the web: a JPEG no copy of which matches its recorded checksum is not published, as the log '
+                    .'below says (ADR-042 decision 37)',
+                    'kept',
                 ];
             }
 

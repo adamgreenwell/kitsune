@@ -347,7 +347,7 @@ final class MediaVisibility
             }, 'public', $failure);
         }
 
-        return $head === null || str_starts_with($head, "\xFF\xD8\xFF");
+        return $head === null || MediaLocation::beginsAsJpeg($head);
     }
 
     /** @throws RuntimeException with no organisation in context: the switch is audited, and that would fail after bytes moved */

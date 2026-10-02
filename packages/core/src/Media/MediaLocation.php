@@ -55,6 +55,12 @@ final class MediaLocation
         return in_array($format, self::STRIPPED, true);
     }
 
+    /** Whether a file's first bytes are a JPEG's, `FF D8 FF` — ADR-042 decisions 32 and 37. */
+    public static function beginsAsJpeg(string $head): bool
+    {
+        return str_starts_with($head, "\xFF\xD8\xFF");
+    }
+
     /** A JPEG's other names: the types and extensions a row written past the model may give one (decision 32). */
     private const JPEG_TYPES = ['image/jpeg', 'image/pjpeg', 'image/jpg'];
 

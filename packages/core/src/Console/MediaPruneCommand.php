@@ -1652,7 +1652,10 @@ final class MediaPruneCommand extends Command
 
         $this->listRows(
             $connection,
-            'Awaiting publication — live and public, on a disk that is not the public one, so not reachable at its public URL. kitsune:media-reconcile --force publishes it:',
+            'Awaiting publication — live and public, on a disk that is not the public one, so not reachable at its public URL. '
+            .'kitsune:media-reconcile --force publishes it, unless it is a JPEG no copy of which matches its recorded '
+            .'checksum: that one it keeps off the web, and making it private, then public, in the admin publishes it (ADR-042 '
+            .'decision 37):',
             static fn (Builder $rows): Builder => MediaCustody::whereStored($rows->whereNull('entries.deleted_at'), 'media_files.visibility', ['public']),
             static fn (stdClass $row): bool => $row->deleted_at === null && $row->visibility === 'public' && (string) $row->disk !== $public,
         );

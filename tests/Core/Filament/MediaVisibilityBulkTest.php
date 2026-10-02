@@ -517,7 +517,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['duration'])->toBe('persistent')
             ->and(bulkVisNotices()[0]['title'])->toBe('2 files are public, and not yet published')
             ->and(bulkVisNotices()[0]['body'])->toBe('Not yet published: &quot;A&quot;, &quot;&lt;b&gt;B&lt;/b&gt;&quot;. Until they are, their links do not open them, and they open only through this admin. The log says why; '
-                ."kitsune:media-reconcile --entry={$a->id} --entry={$b->id} --force publishes them.")
+                ."kitsune:media-reconcile --entry={$a->id} --entry={$b->id} --force publishes them, or says what will.")
             ->and($action->getStatus()->name)->toBe('Success');
     });
 
@@ -624,7 +624,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['title'])->toBe('One file is public, and not yet published')
             ->and(explode('<br>', (string) bulkVisNotices()[0]['body']))->toBe([
                 'Not yet published: &quot;B&quot;. Until it is, its link does not open it, and it opens only through this admin. The log says why; '
-                    ."kitsune:media-reconcile --entry={$b->id} --force publishes it.",
+                    ."kitsune:media-reconcile --entry={$b->id} --force publishes it, or says what will.",
                 'One file was made public.',
             ]);
     });

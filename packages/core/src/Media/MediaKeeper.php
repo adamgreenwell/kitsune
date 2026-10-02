@@ -20,7 +20,8 @@ namespace Kitsune\Core\Media;
  * one delivery has been serving. Only when that disk holds nothing does a fixed order choose — the configured public
  * disk, the configured private disk, core's private disk, the served disks, any other disk asked, the target last (Adam,
  * decision 5, 2026-09-25) — and every choice but a match is logged with each disk's hash, because it means a copy was
- * changed outside Kitsune.
+ * changed outside Kitsune — and a JPEG settle would publish keeps none of them public: it is settled on the private disk
+ * instead (Adam, decision 37).
  */
 final readonly class MediaKeeper
 {
@@ -59,6 +60,25 @@ final readonly class MediaKeeper
         public array $setAside = [],
         public ?string $checksum = null,
     ) {}
+
+    /**
+     * The same choice aimed at another target: whether that disk already holds the copy kept, read from the hashes the
+     * choice took — for a JPEG settle refuses to publish, settled on the private disk instead (Adam, decision 37).
+     *
+     * ⚠️ NOTHING IS SET ASIDE. A choice made toward the public disk sets nothing aside (decision 6), and a disk it read as
+     * absent is hashed again by the step before anything is written over it.
+     */
+    public function toward(string $target): self
+    {
+        return new self(
+            $this->disk,
+            $this->expected,
+            $this->mode,
+            MediaBytes::same($this->hashes[$target] ?? null, $this->expected),
+            $this->hashes,
+            checksum: $this->checksum,
+        );
+    }
 
     /**
      * Refuse to remove or overwrite a copy that matches the recorded checksum while the copy kept does not — one the
