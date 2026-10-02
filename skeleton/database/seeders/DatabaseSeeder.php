@@ -624,7 +624,7 @@ class DatabaseSeeder extends Seeder
 
             $site = Site::query()->where('slug', 'inkwell')->firstOrFail();
 
-            // A member of the org the command made, so the scoped query sees her — and nobody else of that address.
+            // A member of the org the command made, so the scoped query sees them — and nobody else of that address.
             $owner = User::query()->where('email', 'blog-owner@kitsune.test')->firstOrFail();
         }
 

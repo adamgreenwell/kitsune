@@ -90,14 +90,14 @@ test.describe.serial('the Blog blueprint, applied by its command', () => {
         await page.goto('/admin');
         await expect(page).toHaveURL(new RegExp(`/admin/${SITE}$`));
 
-        // Her name is her address: the command has nothing else to call her, and nothing can edit a name yet.
+        // The owner's name is their address: the command has nothing else to call them, and nothing can edit a name yet.
         await page.locator('.fi-user-menu-trigger').first().click();
         await expect(page.locator('.fi-dropdown-header').filter({ hasText: BLOG_OWNER.email }).first()).toBeVisible();
 
         await page.goto(`/admin/${SITE}/roles`);
         await expect(page.getByRole('link', { name: 'Owner', exact: true }).first()).toBeVisible();
 
-        // The seeder finished what the command began: her way into the French site — the control for the writer's 404.
+        // The seeder finished what the command began: the owner's way into the French site — the control for the writer's 404.
         const french = await page.goto('/admin/inkwell-fr');
         expect(french?.status()).toBe(200);
 

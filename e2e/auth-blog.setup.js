@@ -11,7 +11,7 @@ const { BLOG_OWNER } = require('./accounts');
  * the role it created — assigned to her in `e2e/global-setup.js` through the audited path, because a blueprint assigns
  * nobody.
  *
- * ⚠️ THE OWNER SIGNS IN WITH THE PASSWORD THE COMMAND WAS GIVEN (ADR-026, as amended): her account is the one
+ * ⚠️ THE OWNER SIGNS IN WITH THE PASSWORD THE COMMAND WAS GIVEN (ADR-026, as amended): their account is the one
  * `--owner` created, so this sign-in is the proof it can be signed in to. The writer is the seeder's, as before.
  */
 

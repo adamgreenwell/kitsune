@@ -344,7 +344,7 @@ echo "  many running at once."
 # on a fresh copy — one command, under 60 s at the floor. ~~Its time only: nobody can sign in to what the fresh path
 # creates until there is a first user, so this is not the done-when met.~~ The fresh leg is now the done-when's whole
 # one command: it creates the org, its site and the first owner who signs in to them (ADR-026, as amended), and so
-# includes one bcrypt hash at cost 12 — about 0.24 s on the host. `migrate` is the installer's step, not counted.
+# includes one bcrypt hash at cost 12 — 0.23 s of the 0.64 s the command took on the 4-CPU host it was built on. `migrate` is the installer's step, not counted.
 #
 # ⚠️ TIMED INSIDE THE IMAGE, because a host-side `date +%N` is not portable: macOS's BSD date has no %N.
 # ⚠️ TWO PATHS, because they exclude each other: on an empty installation the apply creates the org and its site
