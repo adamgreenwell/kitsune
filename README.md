@@ -86,7 +86,8 @@ php skeleton/artisan serve
 ```
 
 That creates the organisation `myblog`, its first site, and you as its owner, then applies the Blog blueprint.
-You are asked for a password twice, hidden — at least 15 characters — and it is never shown. In a script, pipe it
+You are asked for a password twice, hidden — at least 15 characters — and it is never shown; where it could not be
+hidden, as over `ssh` or `docker exec` without `-t`, the prompt is refused rather than shown. In a script, pipe it
 in instead with `--owner-password-stdin --no-interaction`, for example `< owner-password.txt` from a file only you
 can read; it is never accepted as an argument or an environment variable, which other users on the machine can
 read. `--owner` is refused on an installation that already has an organisation or an account — `migrate --seed`
