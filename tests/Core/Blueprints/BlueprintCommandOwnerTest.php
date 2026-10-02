@@ -352,15 +352,23 @@ describe('refusing before the password', function (): void {
         ownerCommandNothingWritten();
     });
 
-    it('refuses an address the sign-in form would not accept, and does not repeat it', function (string $email): void {
-        $this->artisan('kitsune:blueprint', ['action' => 'apply', 'handle' => 'blog', '--org' => 'myblog', '--owner' => $email])
-            ->expectsOutputToContain('Refusing `--owner`: that is not an email address the sign-in form accepts')
-            ->doesntExpectOutputToContain('hunter2')
-            ->doesntExpectOutputToContain('a b')
-            ->assertFailed();
+    /**
+     * ⚠️ READ FROM THE WHOLE OUTPUT, NOT THE OUTPUT MOCK. `doesntExpectOutputToContain()` is checked only against a line
+     * no earlier expectation took — and the refusal line, echoing the value, was taken by the one expecting the
+     * refusal. The mutation run found the echo passing.
+     */
+    it('refuses an address the sign-in form would not accept, and does not repeat it', function (string $email, string $part): void {
+        [$status, $out] = applyThroughStream(ownerAtPrompt(['--owner' => $email]), '');
+
+        expect($status)->toBe(1)
+            ->and($out)->toContain('Refusing `--owner`: that is not an email address the sign-in form accepts')
+            ->and($out)->not->toContain($part);
 
         ownerCommandNothingWritten();
-    })->with(['hunter2-not-an-address', '"a b"@x.test']);
+    })->with([
+        'not an address' => ['hunter2-not-an-address', 'hunter2'],
+        'a quoted local part' => ['"a b"@x.test', '"a b"'],
+    ]);
 
     /** `--owner` writes the owner role first, so a blueprint that will not share the handle would fail after it existed. */
     it('refuses a blueprint that would refuse the owner role', function (): void {
