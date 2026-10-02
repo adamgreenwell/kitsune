@@ -101,7 +101,9 @@ function floorStubs(
         echo '+-----+--------+---------+------+'
         echo '$blogStatusLine'
         sleep 0.2
-        echo '+-----+--------+---------+------+'
+        # A closed pipe kills the real docker CLI with SIGPIPE (141). This suite's runner ignores SIGPIPE, and a
+        # signal ignored at a shell's start cannot be restored, so the write's failure is turned into that death.
+        echo '+-----+--------+---------+------+' || exit 141
         exit 0
         ;;
     esac
