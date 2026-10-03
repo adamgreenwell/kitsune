@@ -12,7 +12,8 @@
 # recorded on: `php:8.4-cli` at a pinned digest, plus the ext-intl and ext-zip the dependency graph requires.
 #
 # After the two columns it times Phase 5's one command, `kitsune:blueprint apply blog`, under the same limits: once on
-# an empty installation, where it creates the org and its site, and once into the corpus org with --entries in the table.
+# an empty installation, where it creates the org, its site and its first owner, and once into the corpus org with
+# --entries in the table.
 #
 # ⚠️ WHY THIS EXISTS. docs/roadmap.md recorded a constrained column — peak memory and workers "verified
 # inside a container limited to 1 vCPU and 1 GB, not merely on the dev machine" — and nothing in this
@@ -340,14 +341,24 @@ echo "  CONCURRENCY: the workers figure above is arithmetic from one request, no
 echo "  many running at once."
 
 # ⚠️ THE APPLY'S TIME TOWARD PHASE 5's DONE-WHEN, measured where ADR-039 says: in this image, under the floor's limits,
-# on a fresh copy — one command, under 60 s at the floor. Its time only: nobody can sign in to what the fresh path
-# creates until there is a first user, so this is not the done-when met. `migrate` is the installer's step, not counted.
+# on a fresh copy — one command, under 60 s at the floor. ~~Its time only: nobody can sign in to what the fresh path
+# creates until there is a first user, so this is not the done-when met.~~ The fresh leg is now the done-when's whole
+# one command: it creates the org, its site and the first owner who signs in to them (ADR-026, as amended), and so
+# includes one bcrypt hash at cost 12 — 0.23 s of the 0.64 s the command took on the 4-CPU host it was built on. `migrate` is the installer's step, not counted.
 #
 # ⚠️ TIMED INSIDE THE IMAGE, because a host-side `date +%N` is not portable: macOS's BSD date has no %N.
 # ⚠️ TWO PATHS, because they exclude each other: on an empty installation the apply creates the org and its site
 # (FirstOrg), and FirstOrg refuses whenever any org exists — so "content already in the table" is a second run, into
-# the corpus org, whose `article` collides with none of Blog's types.
-apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first
+# the corpus org, whose `article` collides with none of Blog's types. The content leg cannot take `--owner` by
+# construction: the corpus org exists, and a first owner is created only where there is none.
+#
+# ⚠️ THE OWNER'S PASSWORD GOES OVER A PIPE, AND NOWHERE ELSE. Random, never printed, and never in `$timed`, which is
+# argv to `docker run` and to `php -r` — and argv is what `ps`, `/proc` and `docker inspect` show. `printf` is a builtin,
+# so it is in no process's argv either; `passthru` inherits the container's standard input, which `-i` keeps open.
+# `od` reads exactly sixteen bytes, so nothing is left writing into a closed pipe under pipefail.
+owner_password=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+
+apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first, $4 true to create the first owner
   local run="$work/run-blog-$1" out status=0
   rm -rf "$run"
   cp -R "$app" "$run"
@@ -358,13 +369,27 @@ apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first
       || refuse "seeding the corpus for the $1 Blog apply failed"
   fi
 
+  local owner_args=''
+  [[ "$4" == true ]] && owner_args=' --owner=floor-owner@kitsune.test --owner-password-stdin'
+
   # One line, so the whole command is one line of anything that logs it.
-  local timed='$t = hrtime(true); passthru("php artisan kitsune:blueprint apply blog --org='"$2"' --no-interaction 2>&1", $s); printf("blueprint apply took: %d ms\n", intdiv(hrtime(true) - $t, 1000000)); exit($s);'
-  out=$(docker run --rm --cpus="$vcpu" --memory="${memory_mb}m" --memory-swap="${memory_mb}m" \
-    -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
+  local timed='$t = hrtime(true); passthru("php artisan kitsune:blueprint apply blog --org='"$2$owner_args"' --no-interaction 2>&1", $s); printf("blueprint apply took: %d ms\n", intdiv(hrtime(true) - $t, 1000000)); exit($s);'
+
+  if [[ "$4" == true ]]; then
+    out=$(printf '%s\n' "$owner_password" | docker run -i --rm --cpus="$vcpu" --memory="${memory_mb}m" \
+      --memory-swap="${memory_mb}m" -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
+  else
+    out=$(docker run --rm --cpus="$vcpu" --memory="${memory_mb}m" --memory-swap="${memory_mb}m" \
+      -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
+  fi
 
   ((status == 0)) || { printf '%s\n' "$out" >&2; refuse "the $1 Blog apply exited $status"; }
   printf '%s\n' "$out" | grep -q '^Applied blog ' || refuse "the $1 Blog apply did not report applying blog"
+
+  # A here-string, not a pipe: the same closed-pipe hazard as the status read below.
+  if [[ "$4" == true ]] && ! grep -q 'its first owner floor-owner@kitsune.test' <<<"$out"; then
+    refuse "the $1 Blog apply created no owner"
+  fi
 
   # A receipt left unfinished is an apply that did not happen, however quickly it stopped.
   # ⚠️ CAPTURED, THEN MATCHED. Piped into `grep -q`, which stops reading at the first match, the table's bottom border
@@ -380,11 +405,11 @@ apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first
 }
 
 # Assigned before they are printed, as the peaks above are.
-blog_fresh=$(apply_blog fresh blog false)
-blog_content=$(apply_blog content floor-benchmark true)
+blog_fresh=$(apply_blog fresh blog false true)
+blog_content=$(apply_blog content floor-benchmark true false)
 
 echo
 echo "──── Phase 5: kitsune:blueprint apply blog at ${vcpu} vCPU / ${memory_mb} MB ────"
-printf '  %-52s %8s ms\n' 'empty installation (creates the org and its site)' "$blog_fresh"
-printf '  %-52s %8s ms\n' "into floor-benchmark, ${entries} entries in the table" "$blog_content"
+printf '  %-66s %8s ms\n' 'empty installation (creates the org, its site and its first owner)' "$blog_fresh"
+printf '  %-66s %8s ms\n' "into floor-benchmark, ${entries} entries in the table" "$blog_content"
 echo "  Budget: 60,000 ms (roadmap Phase 5). Reported, not enforced."

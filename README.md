@@ -75,6 +75,24 @@ Sign in as `alpha@kitsune.test` with the password `password`. The seeded organis
 second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
 the scoping kernel is only visible when there are two orgs to keep apart.
 
+### Starting from nothing
+
+The demo data is one way in; a blog of your own is the other — an empty installation, then one command:
+
+```bash
+php skeleton/artisan migrate
+php skeleton/artisan kitsune:blueprint apply blog --org=myblog --owner=you@example.com
+php skeleton/artisan serve
+```
+
+That creates the organisation `myblog`, its first site, and you as its owner, then applies the Blog blueprint.
+You are asked for a password twice, hidden — at least 15 characters — and it is never shown; where it could not be
+hidden, as over `ssh` or `docker exec` without `-t`, the prompt is refused rather than shown. In a script, pipe it
+in instead with `--owner-password-stdin --no-interaction`, for example `< owner-password.txt` from a file only you
+can read; it is never accepted as an argument or an environment variable, which other users on the machine can
+read. `--owner` is refused on an installation that already has an organisation or an account — `migrate --seed`
+above included — because it creates the *first* owner and nothing else.
+
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
 an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011

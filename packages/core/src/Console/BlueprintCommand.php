@@ -11,14 +11,21 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Hash;
 use InvalidArgumentException;
+use Kitsune\Core\Auth\FirstOwnerCredentials;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstOrg;
+use Kitsune\Core\Blueprints\OnCollision;
+use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
+use Symfony\Component\Console\Input\StreamableInputInterface;
 use Throwable;
 
 /**
@@ -35,14 +42,21 @@ use Throwable;
  * calls in a console. Naming the org in the apply command is inside the flow; writing it by hand first was not.
  *
  * The creation happens only when the installation has NO org at all — see `FirstOrg` for why that condition
- * is the one that makes it safe to do without asking. No user is created: ADR-026 says onboarding creates the
- * first one interactively, and an account is a credential rather than a tenancy row.
+ * is the one that makes it safe to do without asking. ~~No user is created: ADR-026 says onboarding creates the
+ * first one interactively, and an account is a credential rather than a tenancy row.~~
+ *
+ * ⚠️ `--owner` CREATES THE FIRST OWNER WITH IT, AND NOWHERE ELSE (ADR-026, as amended by ADR-039). Only in the run that
+ * creates the first org, on an installation with no org and no account; anywhere else it is refused before anything is
+ * asked for. The password is typed twice at a hidden prompt, or piped on the first line of standard input with
+ * `--owner-password-stdin` — never an argument or an environment variable, which other local users read through `ps`
+ * and `/proc` and which shell history keeps, and never generated, because a generated value has to be printed to be
+ * used. Without `--owner` no account is created, as before, and the org is one nobody can sign in to.
  */
 final class BlueprintCommand extends Command
 {
     private const ACTIONS = ['list', 'status', 'apply'];
 
-    protected $signature = 'kitsune:blueprint {action=list : list, status or apply} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into, created with a first site when the installation has none} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale}';
+    protected $signature = 'kitsune:blueprint {action=list : list, status or apply} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into, created with a first site when the installation has none} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale} {--owner= : on an installation with no organisation and no account only — the email address of its first owner, created with the organisation; the password is asked twice, hidden (ADR-026)} {--owner-password-stdin : read the first owner\'s password from the first line of standard input instead of asking}';
 
     protected $description = 'List, apply and report on Kitsune blueprints (ADR-039)';
 
@@ -163,27 +177,41 @@ final class BlueprintCommand extends Command
             return self::FAILURE;
         }
 
-        $org = Org::query()->where('slug', $slug)->first();
+        /* `--owner=` as given, bare or empty included — not `--owner-password-stdin`, which shares its first letters. */
+        $ownerEmail = null;
 
-        if ($org === null) {
-            try {
-                $org = FirstOrg::create(
-                    $slug,
-                    $this->optionAsString('org-name'),
-                    $this->optionAsString('site'),
-                    $this->optionAsString('locale') ?? 'en',
-                );
-            } catch (Throwable $e) {
-                $this->error($e->getMessage());
+        if ($this->input->hasParameterOption('--owner', true) || $this->option('owner-password-stdin') === true) {
+            $seated = $this->seatFirstOwner($definition, $slug);
 
+            if ($seated === null) {
                 return self::FAILURE;
             }
 
-            $this->info(sprintf(
-                'Created organisation %s and its first site. No user was created, and nobody is a member of it '
-                .'(ADR-026) — until onboarding exists, nobody can reach it in the admin.',
-                $slug,
-            ));
+            [$org, $ownerEmail] = $seated;
+        } else {
+            $org = Org::query()->where('slug', $slug)->first();
+
+            if ($org === null) {
+                try {
+                    $org = FirstOrg::create(
+                        $slug,
+                        $this->optionAsString('org-name'),
+                        $this->optionAsString('site'),
+                        $this->optionAsString('locale') ?? 'en',
+                    );
+                } catch (Throwable $e) {
+                    $this->error($e->getMessage());
+
+                    return self::FAILURE;
+                }
+
+                $this->info(sprintf(
+                    'Created organisation %s and its first site, with no owner because `--owner` was not given: nobody '
+                    .'can sign in to it, and `--owner` is now refused on this installation, because it creates a first '
+                    .'owner only where there is no organisation and no account (ADR-026).',
+                    $slug,
+                ));
+            }
         }
 
         $context = app(Context::class);
@@ -201,6 +229,17 @@ final class BlueprintCommand extends Command
              * `applied_at`, and the message is the only thing that tells an operator which step it was.
              */
             $this->error($e->getMessage());
+
+            /* The owner committed before the apply began, and stays: it is the apply that is owed, not the owner. */
+            if ($ownerEmail !== null) {
+                $this->line(sprintf(
+                    'Organisation %1$s, its first site and its first owner %2$s were created before the apply and remain. '
+                    .'Run the same command again without `--owner` and `--owner-password-stdin` to finish applying [%3$s].',
+                    $slug,
+                    $ownerEmail,
+                    $definition->handle(),
+                ));
+            }
 
             return self::FAILURE;
         } finally {
@@ -236,6 +275,176 @@ final class BlueprintCommand extends Command
             ));
         }
 
+        if ($ownerEmail !== null) {
+            $this->info($this->signInLine($ownerEmail, $slug));
+        }
+
         return self::SUCCESS;
+    }
+
+    /**
+     * The first org, its site and its first owner — or a refusal, printed, and null.
+     *
+     * ⚠️ EVERY REFUSAL BEFORE THE PASSWORD IS ASKED FOR. What can be known without it — the address, the blueprint, the
+     * user model, whether the installation is empty — is checked first, so nobody types a password into a run that was
+     * always going to be refused, and nothing is read from standard input that a refusal then leaves behind.
+     *
+     * @return array{0: Org, 1: string}|null
+     */
+    private function seatFirstOwner(BlueprintDefinition $definition, string $slug): ?array
+    {
+        $fromStdin = $this->option('owner-password-stdin') === true;
+
+        if (! $this->input->hasParameterOption('--owner', true)) {
+            $this->error('`--owner-password-stdin` reads the first owner\'s password, and no `--owner` was given. Add '
+                .'`--owner=<email>`, or drop `--owner-password-stdin`. Nothing was written.');
+
+            return null;
+        }
+
+        /* Raw, not `optionAsString()`: an empty `--owner=` is a mistake to name, not an option to drop. */
+        $email = $this->option('owner');
+
+        if (! is_string($email) || $email === '') {
+            $this->error('`--owner` needs the first owner\'s email address, e.g. `--owner=you@example.com`. Nothing was written.');
+
+            return null;
+        }
+
+        if (($refusal = FirstOwnerCredentials::emailRefusal($email)) !== null) {
+            $this->error($refusal);
+
+            return null;
+        }
+
+        foreach ($definition->roles() as $role) {
+            if ($role->handle === FirstOrg::OWNER_ROLE && $role->onCollision === OnCollision::Fail) {
+                $this->error(sprintf(
+                    'Refusing `--owner`: blueprint [%s] declares a role [%s] with onCollision: fail, and `--owner` creates '
+                    .'the organisation\'s owner role under that handle first — so the apply would be refused after the '
+                    .'owner existed. Nothing was written.',
+                    $definition->handle(),
+                    FirstOrg::OWNER_ROLE,
+                ));
+
+                return null;
+            }
+        }
+
+        if (! $this->input->isInteractive() && ! $fromStdin) {
+            $this->error('Refusing `--owner` under `--no-interaction`: the password is asked at a hidden prompt, and this '
+                .'run may not ask. Pipe it in with `--owner-password-stdin`, or leave `--no-interaction` off to type it, '
+                .'hidden, twice. It is never read from an argument or an environment variable. Nothing was written.');
+
+            return null;
+        }
+
+        try {
+            $model = FirstOrg::ownerModel();
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+
+            return null;
+        }
+
+        if (Org::query()->where('slug', $slug)->exists()) {
+            $this->error(sprintf(
+                'Refusing `--owner`: organisation [%1$s] already exists, and a first owner is created only by the run that '
+                .'creates the first organisation on an empty installation (ADR-026). If an earlier run created %1$s with '
+                .'`--owner`, its owner exists: run the same command without `--owner` and `--owner-password-stdin` to '
+                .'apply, or finish applying, [%2$s]. Nothing was written.',
+                $slug,
+                $definition->handle(),
+            ));
+
+            return null;
+        }
+
+        try {
+            /* Early, so nobody types a password for an installation that will refuse it; again inside the transaction. */
+            FirstOrg::refuseUnlessEmpty($model);
+
+            if ($fromStdin) {
+                $password = FirstOwnerCredentials::fromStream($this->ownerPasswordStream(), $email);
+            } else {
+                /* The stream the question helper will read, as it chooses one: the input's own, or STDIN. */
+                FirstOwnerCredentials::refuseUnlessPromptable($this->ownerPasswordStream());
+
+                $password = FirstOwnerCredentials::ask($this->output, $email);
+            }
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+
+            return null;
+        }
+
+        /*
+         * ⚠️ HASHED ONCE, HERE, AND OUTSIDE ANY TRANSACTION: no write lock is held while bcrypt works, nor while a
+         * person types. Only the hash goes further.
+         */
+        try {
+            $hash = Hash::make($password);
+        } catch (Throwable $e) {
+            $this->error($e->getMessage().' Nothing was written.');
+
+            return null;
+        } finally {
+            unset($password);
+        }
+
+        try {
+            $org = FirstOrg::createWithOwner(
+                $slug,
+                $this->optionAsString('org-name'),
+                $this->optionAsString('site'),
+                $this->optionAsString('locale') ?? 'en',
+                $email,
+                $hash,
+            );
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+
+            return null;
+        }
+
+        $this->info(sprintf(
+            'Created organisation %1$s, its first site %2$s and its first owner %3$s (ADR-026).',
+            $slug,
+            $this->optionAsString('site') ?? $slug,
+            $email,
+        ));
+
+        return [$org, $email];
+    }
+
+    /** @return resource */
+    private function ownerPasswordStream()
+    {
+        $stream = $this->input instanceof StreamableInputInterface ? $this->input->getStream() : null;
+
+        return $stream ?? STDIN;
+    }
+
+    /**
+     * Where the owner signs in, from the panel itself — or, truthfully, why this cannot say.
+     *
+     * ⚠️ A PANEL WITH NO SIGN-IN PAGE IS STILL A PANEL. A host may sign in through something else and leave `login()`
+     * off, and a route lookup can fail; neither is "no admin panel is configured", which review found printed for both.
+     */
+    private function signInLine(string $email, string $slug): string
+    {
+        if (! app()->bound(KitsunePanel::PANEL_BINDING)) {
+            return sprintf('%1$s owns %2$s. No Kitsune admin panel is configured, so there is no admin to sign in to yet.', $email, $slug);
+        }
+
+        try {
+            $login = app(KitsunePanel::PANEL_BINDING)->getLoginUrl();
+        } catch (Throwable) {
+            $login = null;
+        }
+
+        return is_string($login) && $login !== ''
+            ? sprintf('Sign in at %1$s as %2$s.', $login, $email)
+            : sprintf('%1$s owns %2$s. Kitsune\'s admin panel names no sign-in page this command can show, so sign in the way this installation\'s panel does.', $email, $slug);
     }
 }

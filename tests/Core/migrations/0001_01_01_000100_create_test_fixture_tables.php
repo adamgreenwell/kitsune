@@ -89,7 +89,14 @@ return new class extends Migration
          */
         Schema::create('users', function (Blueprint $table): void {
             $table->id();
+            /*
+             * Nullable here, NOT NULL in the skeleton: the first owner's tests create an account through the host's
+             * `ProvisionsMembership::provisionAccount()`, which fills both, while every other test inserts an email alone.
+             */
+            $table->string('name')->nullable();
             $table->string('email')->unique();
+            $table->string('password')->nullable();
+            $table->nullableTimestamps();
         });
 
         Schema::create('org_user', function (Blueprint $table): void {
@@ -97,6 +104,13 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->primary(['org_id', 'user_id']);
             $table->index(['user_id', 'org_id']);
+        });
+
+        /* Site access, shaped as the skeleton's: what the panel's `canAccessTenant()` reads for the first owner's tests. */
+        Schema::create('site_user', function (Blueprint $table): void {
+            $table->foreignId('site_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->primary(['site_id', 'user_id']);
         });
 
         Schema::create('role_user', function (Blueprint $table): void {
@@ -129,6 +143,7 @@ return new class extends Migration
     {
         Schema::dropIfExists('media_path_fixtures');
         Schema::dropIfExists('role_user');
+        Schema::dropIfExists('site_user');
         Schema::dropIfExists('org_user');
         Schema::dropIfExists('users');
         Schema::dropIfExists('fixture_module_seeds');

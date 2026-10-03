@@ -589,28 +589,47 @@ class DatabaseSeeder extends Seeder
     }
 
     /**
-     * An org for the Blog blueprint's browser test, shaped as the next slice's first-owner path will leave a fresh one.
+     * An org for the Blog blueprint's browser test — ~~shaped as the next slice's first-owner path will leave a fresh
+     * one~~ made by that path, where the browser suite runs it, and shaped like it everywhere else.
      *
      * ⚠️ ITS OWN ORG, SO NO OTHER SPEC SEES IT. Blog applied into Golfdom would add Posts and Tags to a sidebar, a
      * dashboard and a role list that a dozen specs read. Two sites with no `base_url` and no group, as `FirstOrg` makes
-     * one; an owner, as the next slice's first-owner path will make one; and a writer who belongs to the org and holds
-     * no role at all until `e2e/global-setup.js` assigns Blog's through the audited path.
+     * one; an owner; and a writer who belongs to the org and holds no role at all until `e2e/global-setup.js` assigns
+     * Blog's through the audited path.
+     *
+     * ⚠️ TWO WAYS IN. `e2e/global-setup.js` runs `kitsune:blueprint apply blog --org=inkwell --owner=…` on the empty
+     * installation before seeding (ADR-026, as amended), so there the org, its first site and its owner exist, and this
+     * adds what the command does not: the French site, the owner's way into it, and the writer. A plain
+     * `migrate --seed` (README) has no inkwell, and gets the same shape built here.
      *
      * ⚠️ BLOG IS NOT APPLIED HERE. The command applies it, on every e2e build, so what the browser meets is what the
      * command wrote — not what a seeder thought it would.
      */
     private function seedBlogOrg(Context $context): void
     {
-        $inkwell = Org::create(['name' => 'Inkwell', 'slug' => 'inkwell']);
-        $context->setOrg($inkwell);
+        $inkwell = Org::query()->where('slug', 'inkwell')->first();
 
-        $site = Site::create(['org_id' => $inkwell->id, 'handle' => 'inkwell', 'slug' => 'inkwell', 'name' => 'Inkwell', 'locale' => 'en']);
+        if ($inkwell === null) {
+            $inkwell = Org::create(['name' => 'Inkwell', 'slug' => 'inkwell']);
+            $context->setOrg($inkwell);
+
+            $site = Site::create(['org_id' => $inkwell->id, 'handle' => 'inkwell', 'slug' => 'inkwell', 'name' => 'Inkwell', 'locale' => 'en']);
+
+            $owner = User::create(['name' => 'Blog Owner', 'email' => 'blog-owner@kitsune.test', 'password' => Hash::make('password')]);
+            $owner->sites()->attach([$site->id]);
+            $owner->orgs()->attach($inkwell->id);
+            Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->id);
+        } else {
+            $context->setOrg($inkwell);
+
+            $site = Site::query()->where('slug', 'inkwell')->firstOrFail();
+
+            // A member of the org the command made, so the scoped query sees them — and nobody else of that address.
+            $owner = User::query()->where('email', 'blog-owner@kitsune.test')->firstOrFail();
+        }
+
         $french = Site::create(['org_id' => $inkwell->id, 'handle' => 'inkwell-fr', 'slug' => 'inkwell-fr', 'name' => 'Inkwell FR', 'locale' => 'fr']);
-
-        $owner = User::create(['name' => 'Blog Owner', 'email' => 'blog-owner@kitsune.test', 'password' => Hash::make('password')]);
-        $owner->sites()->attach([$site->id, $french->id]);
-        $owner->orgs()->attach($inkwell->id);
-        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->id);
+        $owner->sites()->attach([$french->id]);
 
         // ⚠️ THE ENGLISH SITE ONLY, so `/admin/inkwell-fr` is a site in her own org that she cannot enter.
         $writer = User::create(['name' => 'Blog Writer', 'email' => 'blog-writer@kitsune.test', 'password' => Hash::make('password')]);

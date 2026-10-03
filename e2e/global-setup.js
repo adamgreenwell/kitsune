@@ -2,6 +2,7 @@
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { BLOG_OWNER } = require('./accounts');
 
 /*
  * Rebuilds the skeleton's database before the browser suite runs.
@@ -15,7 +16,50 @@ module.exports = async () => {
     const skeleton = path.join(__dirname, '..', 'skeleton');
     const run = (args) => execFileSync('php', ['artisan', ...args], { cwd: skeleton, stdio: 'inherit' });
 
-    run(['migrate:fresh', '--seed', '--no-interaction']);
+    /*
+     * ⚠️ EMPTY FIRST, AND SEEDED SECOND. The Blog blueprint's org and its first owner are made by the command, on an
+     * installation with no organisation and no account — the only place `--owner` works — so the seeder runs after it.
+     */
+    run(['migrate:fresh', '--no-interaction']);
+
+    /*
+     * ⚠️ PHASE 5's ONE COMMAND, WHOLE — ADR-039, and ADR-026 as amended: an empty installation to a blog its owner signs
+     * in to. The password goes over standard input, never argv or the environment, as the command requires; and the
+     * output is refused if it shows it, or a hash of it.
+     */
+    const applied = execFileSync('php', [
+        'artisan', 'kitsune:blueprint', 'apply', 'blog', '--org=inkwell',
+        `--owner=${BLOG_OWNER.email}`, '--owner-password-stdin', '--no-interaction',
+    ], { cwd: skeleton, encoding: 'utf8', input: `${BLOG_OWNER.password}\n` });
+
+    if (! applied.includes(`its first owner ${BLOG_OWNER.email}`) || ! applied.includes('Applied blog 1.0.0 into inkwell.')) {
+        throw new Error(`global-setup: the Blog apply did not create inkwell with its owner and apply Blog:\n${applied}`);
+    }
+
+    if (applied.includes(BLOG_OWNER.password) || applied.includes('$2y$')) {
+        throw new Error('global-setup: the Blog apply printed the owner\'s password, or its hash');
+    }
+
+    /*
+     * ⚠️ AND `--owner` IS REFUSED ONCE AN ORG EXISTS, before standard input is read: given none, a read would refuse
+     * with "no password on its first line", so the org's own refusal is the proof that the check came first.
+     */
+    let second = null;
+
+    try {
+        execFileSync('php', [
+            'artisan', 'kitsune:blueprint', 'apply', 'blog', '--org=inkwell',
+            '--owner=second@kitsune.test', '--owner-password-stdin', '--no-interaction',
+        ], { cwd: skeleton, encoding: 'utf8', input: '', stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) {
+        second = error;
+    }
+
+    if (! second || second.status !== 1 || ! String(second.stdout).includes('Refusing `--owner`: organisation [inkwell] already exists')) {
+        throw new Error(`global-setup: a second \`--owner\` into inkwell was not refused as an existing org:\n${second?.stdout ?? 'it exited 0'}`);
+    }
+
+    run(['db:seed', '--no-interaction']);
 
     /*
      * The person module, installed and enabled explicitly — ADR-038. `migrate:fresh` drops the `modules`
@@ -28,11 +72,10 @@ module.exports = async () => {
     /*
      * ⚠️ THE BLOG BLUEPRINT, APPLIED BY ITS COMMAND — Phase 5, ADR-039. Not by the seeder: what `blog-blueprint.spec.js`
      * meets is then what the command wrote, through core's own registration under package discovery, on every build.
-     * Run twice, because a second apply at the same version is a no-op and the output says so; and the writer's role is
-     * assigned through `Role::assignTo()`, the audited path, because a blueprint assigns nobody.
+     * Applied above, with its owner; applied again here, because a second apply at the same version is a no-op and the
+     * output says so; and the writer's role is assigned through `Role::assignTo()`, the audited path, because a
+     * blueprint assigns nobody.
      */
-    run(['kitsune:blueprint', 'apply', 'blog', '--org=inkwell', '--no-interaction']);
-
     const again = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'blog', '--org=inkwell', '--no-interaction'], {
         cwd: skeleton, encoding: 'utf8',
     });
@@ -155,6 +198,19 @@ module.exports = async () => {
         throw new Error('global-setup: the seeder produced no public scorecards for media-deletion.spec.js');
     }
 
+    /*
+     * ⚠️ AND THE GLOBAL `image` TYPE BY ID, which `entity-type-builder.spec.js` types into a URL because the gate it
+     * tests leaves no link to read one from. It was `1` while the seeder ran first; Blog's types now come before it.
+     */
+    const imageTypeId = execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo DB::table('entry_types')->whereNull('org_id')->where('handle', 'image')->value('id');",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim();
+
+    if (! /^\d+$/.test(imageTypeId)) {
+        throw new Error('global-setup: the seeder produced no global image type for entity-type-builder.spec.js');
+    }
+
     const publicRoot = execFileSync('php', [
         'artisan', 'tinker', '--execute', "echo Storage::disk('public')->path('');",
     ], { cwd: skeleton, encoding: 'utf8' }).trim();
@@ -174,6 +230,7 @@ module.exports = async () => {
             withdrawn: { id: String(scorecards['Withdrawn scorecard'].id), path: scorecards['Withdrawn scorecard'].path },
             pinned: { id: String(scorecards['Pinned scorecard'].id), path: scorecards['Pinned scorecard'].path },
             publicRoot,
+            imageTypeId,
         }, null, 4) + '\n',
     );
 };

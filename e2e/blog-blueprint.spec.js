@@ -1,15 +1,18 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { BLOG_OWNER } = require('./accounts');
 
 /*
  * The Blog blueprint, as `kitsune:blueprint apply blog` left it — Phase 5, ADR-039: AGENTS.md §9 coverage, outside
  * `/c/{type}`, of what the command wrote. Not the test of an apply flow in the admin that ADR-039 still owes, because
  * there is no admin route to a blueprint yet.
  *
- * ⚠️ WHAT THE COMMAND WROTE, NOT WHAT A SEEDER THOUGHT IT WOULD. `inkwell` is seeded bare — two sites, an owner, a
- * writer holding no role — and `e2e/global-setup.js` applies Blog into it with the command, then gives the writer
- * Blog's writer role through the audited path. So the dashboard, the role list, the schema and the forms below are
- * the apply's, end to end, on every build.
+ * ⚠️ WHAT THE COMMAND WROTE, NOT WHAT A SEEDER THOUGHT IT WOULD. ~~`inkwell` is seeded bare — two sites, an owner, a
+ * writer holding no role — and `e2e/global-setup.js` applies Blog into it with the command~~ `e2e/global-setup.js` runs
+ * `kitsune:blueprint apply blog --org=inkwell --owner=…` on the empty installation, so `inkwell`, its first site and
+ * its owner are the command's (ADR-026, as amended); the seeder adds the French site and a writer holding no role, who
+ * is then given Blog's writer role through the audited path. So the owner signed in below, the dashboard, the role
+ * list, the schema and the forms are the apply's, end to end, on every build — Phase 5's working blog.
  *
  * ⚠️ AND WHAT THE WRITER MAY NOT DO IS HALF OF IT. A role is authority, so the writer's limits are asserted at the URL
  * (403), in the sidebar (no link) and in the status control (no Published) — and the other site and the other org at
@@ -79,6 +82,28 @@ async function create(page, type) {
 }
 
 test.describe.serial('the Blog blueprint, applied by its command', () => {
+    /* ⚠️ THE ACCOUNT `--owner` CREATED, SIGNED IN WITH THE PASSWORD PIPED TO IT — not one the seeder made beside it. */
+    test('signs in as the owner `kitsune:blueprint apply --owner` created', async ({ browser }) => {
+        const owner = await browser.newContext({ storageState: OWNER });
+        const page = await owner.newPage();
+
+        await page.goto('/admin');
+        await expect(page).toHaveURL(new RegExp(`/admin/${SITE}$`));
+
+        // The owner's name is their address: the command has nothing else to call them, and nothing can edit a name yet.
+        await page.locator('.fi-user-menu-trigger').first().click();
+        await expect(page.locator('.fi-dropdown-header').filter({ hasText: BLOG_OWNER.email }).first()).toBeVisible();
+
+        await page.goto(`/admin/${SITE}/roles`);
+        await expect(page.getByRole('link', { name: 'Owner', exact: true }).first()).toBeVisible();
+
+        // The seeder finished what the command began: the owner's way into the French site — the control for the writer's 404.
+        const french = await page.goto('/admin/inkwell-fr');
+        expect(french?.status()).toBe(200);
+
+        await owner.close();
+    });
+
     test('gives the owner a dashboard that links Posts and Tags', async ({ browser }) => {
         const owner = await browser.newContext({ storageState: OWNER });
         const page = await owner.newPage();

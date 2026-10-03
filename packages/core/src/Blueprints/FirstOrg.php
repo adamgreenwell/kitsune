@@ -10,15 +10,29 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Blueprints;
 
+use Filament\Models\Contracts\FilamentUser;
+use Filament\Models\Contracts\HasTenants;
+use Filament\Panel;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\UserProvider;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
+use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
+use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
+use PDOException;
 use RuntimeException;
 use Throwable;
 
 /**
- * Create the first org and its first site, on an installation that has neither — ADR-039.
+ * Create the first org and its first site, on an installation that has neither — ADR-039 — and, when asked, its first
+ * owner (ADR-026, as amended).
  *
  * @internal
  *
@@ -34,10 +48,12 @@ use Throwable;
  * unknown `--org` slug stays an error: creating one there would be inventing a customer because somebody
  * mistyped, and the receipt would record a blueprint applied into it.
  *
- * ⚠️ IT CREATES NO USER, AND THAT IS ADR-026 RATHER THAN AN OMISSION. "The installer never creates a default
- * administrator account; onboarding creates the first user interactively." An org and a site are tenancy rows;
- * an account is a credential. This makes a panel URL EXIST — Filament's tenant is the Site, so without one there
- * is none at all — and stops there: nobody can sign in to it until there is a first user.
+ * ⚠️ IT CREATES A USER ONLY WHEN ASKED, AND ONLY HERE (ADR-026, as amended by ADR-039's first owner). ~~It creates no
+ * user, and that is ADR-026 rather than an omission.~~ What ADR-026 forbids is a *default* administrator — an account
+ * the installer invents or ships. `createWithOwner()` creates the installation's first account from an address and a
+ * password the operator gave in that run, only where there is no org and no account at all, as the owner of the org it
+ * creates — in the same transaction, so there is never an org whose owner half-exists. `create()` still creates none,
+ * and the org it makes is one nobody can sign in to.
  *
  * ⚠️ THE SITE CLAIMS NO HOST. `base_url` is left null, which is the admin-only site ADR-021 describes, so
  * none of the host-claim machinery runs: no canonical host, no overlap check, no mutex. A fresh install does
@@ -45,32 +61,158 @@ use Throwable;
  */
 final class FirstOrg
 {
+    /** The first owner's role: created here, never by a blueprint, which cannot carry the owner flag at all. */
+    public const OWNER_ROLE = 'owner';
+
+    public const OWNER_ROLE_NAME = 'Owner';
+
     /**
+     * The first org and its site, with no account.
+     *
      * @throws RuntimeException when the installation already has an org
      */
     public static function create(string $slug, ?string $name, ?string $siteSlug, string $locale): Org
     {
-        /*
-         * Past the scopes on purpose: this asks whether the INSTALLATION is empty, from a console with no org
-         * in context, where a scoped read answers about nothing whatever is in the table. `Org` is the root of
-         * the hierarchy and unscoped, but the withTrashed is load-bearing — `Org` soft-deletes, and a trashed
-         * org is still a row whose slug is taken and whose content is recoverable.
-         */
-        $existing = Org::query()->withTrashed()->count();
+        return self::bootstrap($slug, $name, $siteSlug, $locale, null, null, null);
+    }
 
-        if ($existing > 0) {
+    /**
+     * The first org, its site, and its first owner — who can sign in, and owns it — or nothing at all.
+     *
+     * @throws RuntimeException
+     */
+    public static function createWithOwner(
+        string $slug,
+        ?string $name,
+        ?string $siteSlug,
+        string $locale,
+        string $ownerEmail,
+        #[\SensitiveParameter] string $ownerPasswordHash,
+    ): Org {
+        return self::bootstrap($slug, $name, $siteSlug, $locale, self::ownerModel(), $ownerEmail, $ownerPasswordHash);
+    }
+
+    /**
+     * The host's user model, if core can create the first owner in it and let them in — or a refusal saying why not.
+     *
+     * ⚠️ ASKED BEFORE ANYTHING IS ASKED FOR OR WRITTEN. Each of these would otherwise surface after the password was typed,
+     * as a post-condition failing inside the transaction — or not at all, as an owner Kitsune does not see as one.
+     *
+     * @return class-string<Model&ProvisionsMembership&HasTenants>
+     *
+     * @throws RuntimeException
+     */
+    public static function ownerModel(): string
+    {
+        $model = Permissions::userModel();
+
+        if ($model === null) {
             throw new RuntimeException(
-                "Refusing to create an organisation: this installation already has {$existing}. A blueprint "
-                .'creates the first org and site only on an installation that has neither, because that is the '
-                .'one state with nothing to damage. Name an organisation that exists, or create the one you '
-                .'meant deliberately.'
+                'Refusing `--owner`: no user model resolves — neither Kitsune\'s panel nor `auth.providers.users.model` '
+                .'names one — so there is no account to create. Nothing was written.'
             );
         }
 
+        $required = [ProvisionsMembership::class, HasTenants::class];
+
+        if (app()->bound(KitsunePanel::PANEL_BINDING)) {
+            $required[] = FilamentUser::class;
+        }
+
+        $missing = array_values(array_filter($required, static fn (string $contract): bool => ! is_subclass_of($model, $contract)));
+
+        if ($missing !== [] || ! is_subclass_of($model, Model::class)) {
+            throw new RuntimeException(sprintf(
+                'Refusing `--owner`: the user model [%s] does not implement %s, so Kitsune cannot create an account in '
+                .'it and let that account into the admin without guessing at its columns and pivots. Nothing was written.',
+                $model,
+                implode(' and ', $missing === [] ? [Model::class] : $missing),
+            ));
+        }
+
+        if (! array_key_exists(OrgMembershipScope::class, (new $model)->getGlobalScopes())) {
+            throw new RuntimeException(sprintf(
+                'Refusing `--owner`: the user model [%s] registers no membership scope (`#[OrgScopedThroughPivot]` with '
+                .'`use EnforcesScope`), so Kitsune could never see the owner as a member of the organisation, and would '
+                .'never treat them as its owner. Nothing was written.',
+                $model,
+            ));
+        }
+
+        if (! Permissions::assignmentsAreAbout($model)) {
+            throw new RuntimeException(sprintf(
+                'Refusing `--owner`: role assignments (`role_user.user_id`) do not refer to [%s] on the default '
+                .'connection, so an owner role given to it would name somebody else or nobody (ADR-033). Nothing was written.',
+                $model,
+            ));
+        }
+
+        /** @var class-string<Model&ProvisionsMembership&HasTenants> $model */
+        return $model;
+    }
+
+    /**
+     * Refuse unless the installation is empty: no org, and — when a first owner is to be created — no account.
+     *
+     * ⚠️ PAST EVERY SCOPE, ON PURPOSE. This asks about the INSTALLATION, from a console with no org in context, where a
+     * scoped read answers about nothing whatever is in the table: the users' membership scope is `1 = 0` with no org,
+     * so a scoped count of accounts is always zero, and would wave a first owner in beside every account there is.
+     * `withTrashed` / `withoutGlobalScopes` count the deleted too: a trashed org is still a row whose slug is taken and
+     * whose content is recoverable, and a deleted account is somebody's.
+     *
+     * @param  class-string<Model>|null  $userModel  null for the path that creates no account: orgs only
+     *
+     * @throws RuntimeException
+     */
+    public static function refuseUnlessEmpty(?string $userModel): void
+    {
+        $orgs = Org::query()->withTrashed()->count();
+
+        if ($userModel === null) {
+            if ($orgs > 0) {
+                throw new RuntimeException(
+                    "Refusing to create an organisation: this installation already has {$orgs}. A blueprint "
+                    .'creates the first org and site only on an installation that has neither, because that is the '
+                    .'one state with nothing to damage. Name an organisation that exists, or create the one you '
+                    .'meant deliberately.'
+                );
+            }
+
+            return;
+        }
+
+        $accounts = $userModel::query()->withoutGlobalScopes()->count();
+
+        if ($orgs > 0 || $accounts > 0) {
+            throw new RuntimeException(sprintf(
+                'Refusing `--owner`: this installation has %d organisation(s), deleted ones included, and %d account(s). '
+                .'A first owner is created only where there are neither, so it can never take over an account or become '
+                .'an administrator beside the accounts something else created (ADR-026). Nothing was written.',
+                $orgs,
+                $accounts,
+            ));
+        }
+    }
+
+    /**
+     * @param  class-string<Model&ProvisionsMembership&HasTenants>|null  $userModel  null: create no account
+     *
+     * @throws RuntimeException
+     */
+    private static function bootstrap(
+        string $slug,
+        ?string $name,
+        ?string $siteSlug,
+        string $locale,
+        ?string $userModel,
+        ?string $ownerEmail,
+        #[\SensitiveParameter] ?string $ownerPasswordHash,
+    ): Org {
         $name ??= Str::headline($slug);
         $siteSlug ??= $slug;
 
         $context = app(Context::class);
+        $step = 'checking the installation is empty';
 
         /*
          * One transaction, because a site slug is globally unique and can fail after the org is written —
@@ -78,6 +220,11 @@ final class FirstOrg
          * another org already held failed the insert after the org was made, and left the org". Here the org
          * being left behind would be worse than untidy: the next run would find one org, refuse to bootstrap,
          * and tell the operator to name an organisation that exists but has no site.
+         *
+         * ⚠️ AND THE OWNER IN THE SAME ONE. An org whose owner failed half way would be an org `--owner` is refused on
+         * for good — so the account, its memberships, the owner role and its assignment commit with the org, or none of
+         * them do. Every nested transaction below (the guarded membership, `Role::save`, `assignTo`, the auditor) is a
+         * savepoint on this connection: `ownerModel()` has already proved the user model and `role_user` share it.
          */
         /*
          * ⚠️ AND THE CONTEXT IS CLEARED WHEN IT ROLLS BACK. The transaction sets the new org in context, and a
@@ -86,26 +233,204 @@ final class FirstOrg
          * a caller could want back.
          */
         try {
-            return (new Org)->getConnection()->transaction(static function () use ($context, $slug, $name, $siteSlug, $locale): Org {
+            return (new Org)->getConnection()->transaction(static function () use (
+                $context, $slug, $name, $siteSlug, $locale, $userModel, $ownerEmail, $ownerPasswordHash, &$step,
+            ): Org {
+                /* Again inside, where it holds: the check before the password was asked for was an early answer, not this one. */
+                self::refuseUnlessEmpty($userModel);
+
+                $step = 'creating the organisation';
                 /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */
                 $org = Org::create(['slug' => $slug, 'name' => $name]);
 
                 /* And now there is. Context first, then the row: `EnforcesScope` refuses a scope key nobody vouched for. */
                 $context->setOrg($org);
 
-                Site::create([
+                $step = 'creating its first site';
+                $site = Site::create([
                     'handle' => $siteSlug,
                     'slug' => $siteSlug,
                     'name' => $name,
                     'locale' => $locale,
                 ]);
 
+                if ($userModel !== null && $ownerEmail !== null && $ownerPasswordHash !== null) {
+                    self::seatOwner($userModel, $ownerEmail, $ownerPasswordHash, $org, $site, $step);
+                }
+
                 return $org;
             });
+        } catch (PDOException $e) {
+            $context->forget();
+
+            /* The path that creates no account carries no secret, so it keeps the database's own words. */
+            if ($userModel === null) {
+                throw $e;
+            }
+
+            /*
+             * ⚠️ THE DATABASE'S OWN MESSAGE IS NOT REPEATED, AND NOT CHAINED. A query exception's message carries its
+             * bindings — the owner's password hash among them — and PostgreSQL's adds the whole failing row; a chained
+             * original would be reported, and logged, with them.
+             */
+            throw new RuntimeException(sprintf(
+                'Creating the first organisation and its owner failed while %s (SQLSTATE %s). The database\'s own message '
+                .'is not shown, because it can contain the owner\'s password hash. Nothing was written.',
+                $step,
+                (string) ($e->errorInfo[0] ?? $e->getCode()),
+            ));
         } catch (Throwable $e) {
             $context->forget();
 
             throw $e;
         }
+    }
+
+    /**
+     * The account, its memberships, the owner role and its assignment — then proof the owner can sign in and owns the org.
+     *
+     * ⚠️ MEMBERSHIP BEFORE THE ROLE. Assigned first, the role would make the membership that follows an owner joining,
+     * audited as `org.owner_added` beside `role.owner_assigned`; in this order the one row is `role.owner_assigned`, with
+     * no actor — the system, from the console (ADR-020).
+     *
+     * @param  class-string<Model&ProvisionsMembership&HasTenants>  $userModel
+     *
+     * @throws RuntimeException
+     */
+    private static function seatOwner(
+        string $userModel,
+        string $email,
+        #[\SensitiveParameter] string $passwordHash,
+        Org $org,
+        Site $site,
+        string &$step,
+    ): void {
+        $step = 'creating the owner\'s account';
+        /* The address is the name too: nothing can edit a name yet, and the panel needs one to show. */
+        $user = $userModel::provisionAccount($email, $email, $passwordHash);
+
+        /*
+         * The stored row, not the instance: a host that hashed the hash again stored a password nobody can type. Read past
+         * the scopes, because the account is no member of anything yet, so its own scoped query cannot see it.
+         */
+        $found = $userModel::query()->withoutGlobalScopes()->whereKey($user->getKey())->first();
+        $stored = $found instanceof Authenticatable ? $found->getAuthPassword() : null;
+
+        if (! is_string($stored) || ! hash_equals($passwordHash, $stored)) {
+            throw new RuntimeException(sprintf(
+                'Refusing to create the owner: %s::provisionAccount() did not store the password hash it was given as the '
+                .'account\'s password, so the owner could not sign in with the password typed. Nothing was written.',
+                $userModel,
+            ));
+        }
+
+        $step = 'making the owner a member of the organisation';
+        $user->admitToOrg($org);
+
+        $step = 'letting the owner enter the site';
+        $user->admitToSite($site);
+
+        $step = 'creating the owner role';
+        $role = Role::create(['handle' => self::OWNER_ROLE, 'name' => self::OWNER_ROLE_NAME, 'is_owner' => true]);
+
+        $step = 'assigning the owner role';
+        $role->assignTo($user->getAuthIdentifier());
+
+        $step = 'checking the owner can sign in';
+
+        if (! Permissions::isOwner($user)) {
+            throw new RuntimeException(sprintf(
+                'Refusing to create the owner: Kitsune\'s authorisation does not see the new account as the owner of [%s] — '
+                .'%s::admitToOrg() wrote no membership its scope can see. Nothing was written.',
+                $org->slug,
+                $userModel,
+            ));
+        }
+
+        if (! $user->canAccessTenant($site)) {
+            throw new RuntimeException(sprintf(
+                'Refusing to create the owner: the new account cannot enter site [%s] in the admin — %s::admitToSite() '
+                .'gave it no access the panel can see. Nothing was written.',
+                $site->slug,
+                $userModel,
+            ));
+        }
+
+        if (app()->bound(KitsunePanel::PANEL_BINDING) && $user instanceof FilamentUser && ! $user->canAccessPanel(app(KitsunePanel::PANEL_BINDING))) {
+            throw new RuntimeException(sprintf(
+                'Refusing to create the owner: the admin panel would not let the new account in — %s::canAccessPanel() '
+                .'refused it. Nothing was written.',
+                $userModel,
+            ));
+        }
+
+        self::refuseUnlessSignInFinds($user, $email, $passwordHash, $org, $userModel);
+    }
+
+    /**
+     * Prove the sign-in form would find the owner: through the provider it asks, by the address as typed, with no org in
+     * context — as a visitor to the sign-in page has none.
+     *
+     * ⚠️ THE CHECKS ABOVE READ THE ACCOUNT THEIR OWN WAY, AND SIGNING IN DOES NOT. They read it by key, past every scope,
+     * with the new org in context; the panel's guard asks its user provider for the address, through the model's
+     * scopes, before any org exists. Review found all of them passing — and "Sign in at …" printed — for an owner that
+     * provider could not find: a host whose panel guard kept Laravel's stock provider, where the membership scope
+     * matches nobody with no org; a scope of the host's own that hides a new account; an address the model rewrites
+     * on the way in. The org would then exist, so `--owner` is refused for good, and the failure reads as a wrong
+     * password. So the account is looked up the way signing in looks it up, and it must be this account, holding this hash.
+     *
+     * @param  class-string<Model&ProvisionsMembership&HasTenants>  $userModel
+     *
+     * @throws RuntimeException
+     */
+    private static function refuseUnlessSignInFinds(
+        ProvisionsMembership $user,
+        string $email,
+        #[\SensitiveParameter] string $passwordHash,
+        Org $org,
+        string $userModel,
+    ): void {
+        $provider = self::signInProvider();
+        $context = app(Context::class);
+
+        $context->forget();
+
+        try {
+            $found = $provider?->retrieveByCredentials(['email' => $email]);
+        } finally {
+            $context->setOrg($org);
+        }
+
+        if ($found instanceof Authenticatable
+            && (string) $found->getAuthIdentifier() === (string) $user->getAuthIdentifier()
+            && hash_equals($passwordHash, (string) $found->getAuthPassword())) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to create the owner: signing in looks an account up by its address through %s, and that does not '
+            .'find the new %s account — so the owner could not sign in. A user model scoped to its members is found '
+            .'before any organisation is in context only through Kitsune\'s org-aware provider '
+            .'(`RegistersOrgAwareProvider::on()`, naming the provider the panel\'s guard uses). Nothing was written.',
+            $provider === null ? 'no user provider at all' : '['.$provider::class.']',
+            $userModel,
+        ));
+    }
+
+    /**
+     * The user provider the sign-in form asks: the guard's behind Kitsune's panel, or, with no panel, the `users`
+     * provider — the one `Permissions::userModel()` reads the model from in that case.
+     */
+    private static function signInProvider(): ?UserProvider
+    {
+        $panel = app()->bound(KitsunePanel::PANEL_BINDING) ? app(KitsunePanel::PANEL_BINDING) : null;
+
+        if ($panel instanceof Panel) {
+            $guard = $panel->auth();
+
+            return method_exists($guard, 'getProvider') ? $guard->getProvider() : null;
+        }
+
+        return Auth::createUserProvider('users');
     }
 }

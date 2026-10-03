@@ -26,7 +26,10 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table): void {
             $table->ulid('id')->primary();
+            $table->string('name')->nullable();
             $table->string('email')->unique();
+            $table->string('password')->nullable();
+            $table->nullableTimestamps();
         });
 
         Schema::create('org_user', function (Blueprint $table): void {
@@ -34,6 +37,12 @@ return new class extends Migration
             $table->foreignUlid('user_id')->constrained()->cascadeOnDelete();
             $table->primary(['org_id', 'user_id']);
             $table->index(['user_id', 'org_id']);
+        });
+
+        Schema::create('site_user', function (Blueprint $table): void {
+            $table->foreignId('site_id')->constrained()->cascadeOnDelete();
+            $table->foreignUlid('user_id')->constrained()->cascadeOnDelete();
+            $table->primary(['site_id', 'user_id']);
         });
 
         Schema::create('role_user', function (Blueprint $table): void {
@@ -47,6 +56,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('role_user');
+        Schema::dropIfExists('site_user');
         Schema::dropIfExists('org_user');
         Schema::dropIfExists('users');
     }

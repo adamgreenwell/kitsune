@@ -9,12 +9,17 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RegistersOrgAwareProvider;
+use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\FirstOwnerUlidUser;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 use Kitsune\Core\Tests\Fixtures\UlidUser;
 
@@ -169,4 +174,26 @@ it('offers, labels and names ULID-keyed holders in the Roles resource', function
 
     expect(array_keys($labels))->toBe([$member->getKey(), $former->getKey()])
         ->and($labels[$former->getKey()])->toBe("User #{$former->getKey()} — no longer a member of this organisation");
+});
+
+/**
+ * ⚠️ THE FIRST OWNER, ON A HOST WHOSE USERS CARRY ULIDs. The bootstrap hands `Role::assignTo()` the account's own key,
+ * and nothing between reads it as an integer — which, as above, would name user 1, or nobody — ADR-026, as amended.
+ */
+it('creates the first owner on a ULID-keyed host, and names them by their ULID', function (): void {
+    app(Context::class)->forget();
+    Site::query()->withoutGlobalScopes()->forceDelete();
+    Org::query()->withoutGlobalScopes()->forceDelete();
+    config(['auth.providers.users.model' => FirstOwnerUlidUser::class]);
+    RegistersOrgAwareProvider::on($this->app);
+
+    FirstOrg::createWithOwner('ulid-blog', null, null, 'en', 'owner@kitsune.test', Hash::make('correct-horse-battery-staple'));
+
+    $user = FirstOwnerUlidUser::query()->withoutGlobalScopes()->sole();
+    $audit = AuditLog::query()->withoutGlobalScopes()->where('action', 'role.owner_assigned')->sole();
+
+    expect($user->getKey())->toBeString()->toHaveLength(26)
+        ->and(DB::table('role_user')->pluck('user_id')->all())->toBe([$user->getKey()])
+        ->and($audit->target_id)->toBe($user->getKey())
+        ->and(Permissions::isOwner($user))->toBeTrue();
 });

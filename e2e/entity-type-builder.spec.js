@@ -1,6 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 /*
@@ -17,6 +18,11 @@ const path = require('node:path');
  */
 
 const SITE = '/admin/golfdom';
+
+/** The ids `e2e/global-setup.js` read out of the database, for what the admin offers no link to. */
+function mediaFixture() {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.playwright', 'media-fixture.json'), 'utf8'));
+}
 
 /*
  * Open a named type's edit page.
@@ -118,11 +124,13 @@ test.describe('entity type builder', () => {
         // Typing the URL got the form, the save and the field relation
         // manager, so an org could rewrite schema every other org shares.
         //
-        // `image` is the first type the seeder creates, so id 1. Hardcoded
-        // because the gate leaves no link to read an id from — which is the
-        // other half of what this asserts. If the seeder is reordered this
-        // fails loudly with 200, pointing here.
-        const response = await page.goto(`${SITE}/entry-types/1/edit`);
+        // `image` is the first type the seeder creates — ~~so id 1~~ but no
+        // longer the first type the build creates, since Blog's come before
+        // the seeder (ADR-026, as amended). So its id is read in
+        // `e2e/global-setup.js` and taken from the fixture file: the gate
+        // leaves no link to read an id from — which is the other half of what
+        // this asserts.
+        const response = await page.goto(`${SITE}/entry-types/${mediaFixture().imageTypeId}/edit`);
 
         expect(response?.status()).toBe(403);
     });
