@@ -169,6 +169,24 @@ describe('creating the first owner', function (): void {
             ->toBe(['role.owner_assigned']);
     });
 
+    /** ⚠️ ADR-030's FIRST CONDITION, WHOLE: an empty installation to a Marketing Site its owner signs in to, in one command. */
+    it('creates the org, its site and its owner, then applies the Marketing Site, from a password piped in', function (): void {
+        [$status, $out] = applyThroughStream(ownerOverStdin(['handle' => 'marketing-site', '--org' => 'mysite']), OWNER_COMMAND_PASSWORD."\n");
+
+        expect($status)->toBe(0)
+            ->and($out)->toContain('Created organisation mysite, its first site mysite and its first owner owner@example.test (ADR-026).')
+            ->and($out)->toContain('Applied marketing-site 1.0.0 into mysite. 0 indexed.')
+            ->and($out)->toContain('2 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).');
+
+        $actions = AuditLog::query()->withoutGlobalScopes()->pluck('action');
+
+        expect(Hash::check(OWNER_COMMAND_PASSWORD, ownerCommandUser()->password))->toBeTrue()
+            ->and(Role::query()->withoutGlobalScopes()->orderBy('handle')->pluck('handle')->all())->toBe(['marketing_editor', 'marketing_writer', 'owner'])
+            ->and(Role::query()->withoutGlobalScopes()->where('is_owner', true)->pluck('handle')->all())->toBe(['owner'])
+            ->and($actions->filter(fn (string $action): bool => $action === 'role.granted'))->toHaveCount(8)
+            ->and($actions->filter(fn (string $action): bool => $action === 'role.owner_assigned'))->toHaveCount(1);
+    });
+
     /** Once it exists, `--owner` is refused for good; the apply itself is as idempotent as ever. */
     it('applies again without `--owner`, and refuses it with', function (): void {
         applyThroughStream(ownerOverStdin(), OWNER_COMMAND_PASSWORD."\n");

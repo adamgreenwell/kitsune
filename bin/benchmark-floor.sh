@@ -11,9 +11,9 @@
 # Without --image the interpreter is built from bin/benchmark-floor.Dockerfile, which is the one the floor is
 # recorded on: `php:8.4-cli` at a pinned digest, plus the ext-intl and ext-zip the dependency graph requires.
 #
-# After the two columns it times Phase 5's one command, `kitsune:blueprint apply blog`, under the same limits: once on
-# an empty installation, where it creates the org, its site and its first owner, and once into the corpus org with
-# --entries in the table.
+# After the two columns it times Phase 5's one command, `kitsune:blueprint apply`, under the same limits, for each of
+# core's blueprints — Blog, and the Marketing Site ADR-030 moves kitsunecms.org onto: once on an empty installation,
+# where it creates the org, its site and its first owner, and once into the corpus org with --entries in the table.
 #
 # ⚠️ WHY THIS EXISTS. docs/roadmap.md recorded a constrained column — peak memory and workers "verified
 # inside a container limited to 1 vCPU and 1 GB, not merely on the dev machine" — and nothing in this
@@ -358,24 +358,26 @@ echo "  many running at once."
 # `od` reads exactly sixteen bytes, so nothing is left writing into a closed pipe under pipefail.
 owner_password=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
 
-apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first, $4 true to create the first owner
-  local run="$work/run-blog-$1" out status=0
+# ⚠️ ONE FUNCTION FOR EVERY BLUEPRINT, so each is timed the same way: ADR-030 makes the Marketing Site's figure the
+# trigger for moving kitsunecms.org, and a second copy of this would be a second place for the measurement to drift.
+apply_blueprint() {   # $1 handle, $2 name in refusals, $3 label, $4 org slug, $5 true to seed the corpus, $6 true to create the owner
+  local run="$work/run-$1-$3" out status=0
   rm -rf "$run"
   cp -R "$app" "$run"
 
-  if [[ "$3" == true ]]; then
+  if [[ "$5" == true ]]; then
     docker run --rm -v "$run":/app -w /app "$image" \
       php artisan kitsune:benchmark-floor --entries="$entries" --keep >/dev/null 2>&1 \
-      || refuse "seeding the corpus for the $1 Blog apply failed"
+      || refuse "seeding the corpus for the $3 $2 apply failed"
   fi
 
   local owner_args=''
-  [[ "$4" == true ]] && owner_args=' --owner=floor-owner@kitsune.test --owner-password-stdin'
+  [[ "$6" == true ]] && owner_args=' --owner=floor-owner@kitsune.test --owner-password-stdin'
 
   # One line, so the whole command is one line of anything that logs it.
-  local timed='$t = hrtime(true); passthru("php artisan kitsune:blueprint apply blog --org='"$2$owner_args"' --no-interaction 2>&1", $s); printf("blueprint apply took: %d ms\n", intdiv(hrtime(true) - $t, 1000000)); exit($s);'
+  local timed='$t = hrtime(true); passthru("php artisan kitsune:blueprint apply '"$1"' --org='"$4$owner_args"' --no-interaction 2>&1", $s); printf("blueprint apply took: %d ms\n", intdiv(hrtime(true) - $t, 1000000)); exit($s);'
 
-  if [[ "$4" == true ]]; then
+  if [[ "$6" == true ]]; then
     out=$(printf '%s\n' "$owner_password" | docker run -i --rm --cpus="$vcpu" --memory="${memory_mb}m" \
       --memory-swap="${memory_mb}m" -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
   else
@@ -383,12 +385,12 @@ apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first, $4 t
       -v "$run":/app -w /app "$image" php -r "$timed" 2>&1) || status=$?
   fi
 
-  ((status == 0)) || { printf '%s\n' "$out" >&2; refuse "the $1 Blog apply exited $status"; }
-  printf '%s\n' "$out" | grep -q '^Applied blog ' || refuse "the $1 Blog apply did not report applying blog"
+  ((status == 0)) || { printf '%s\n' "$out" >&2; refuse "the $3 $2 apply exited $status"; }
+  printf '%s\n' "$out" | grep -q "^Applied $1 " || refuse "the $3 $2 apply did not report applying $1"
 
   # A here-string, not a pipe: the same closed-pipe hazard as the status read below.
-  if [[ "$4" == true ]] && ! grep -q 'its first owner floor-owner@kitsune.test' <<<"$out"; then
-    refuse "the $1 Blog apply created no owner"
+  if [[ "$6" == true ]] && ! grep -q 'its first owner floor-owner@kitsune.test' <<<"$out"; then
+    refuse "the $3 $2 apply created no owner"
   fi
 
   # A receipt left unfinished is an apply that did not happen, however quickly it stopped.
@@ -396,20 +398,28 @@ apply_blog() {   # $1 label, $2 org slug, $3 true to seed the corpus first, $4 t
   # was written into a closed pipe — and under pipefail the SIGPIPE turned the pipeline false and skipped the refusal.
   local status_out
   status_out=$(docker run --rm -v "$run":/app -w /app "$image" php artisan kitsune:blueprint status 2>&1) \
-    || refuse "could not read blueprint status after the $1 Blog apply"
+    || refuse "could not read blueprint status after the $3 $2 apply"
   if grep -q INTERRUPTED <<<"$status_out"; then
-    refuse "the $1 Blog apply left its receipt unfinished"
+    refuse "the $3 $2 apply left its receipt unfinished"
   fi
 
   field_of 'blueprint apply took' "$out" 4
 }
 
-# Assigned before they are printed, as the peaks above are.
-blog_fresh=$(apply_blog fresh blog false true)
-blog_content=$(apply_blog content floor-benchmark true false)
+# Assigned before anything is printed, as the peaks above are: a block printed before a later leg refused would read
+# as a measurement of a run that did not finish.
+blog_fresh=$(apply_blueprint blog Blog fresh blog false true)
+blog_content=$(apply_blueprint blog Blog content floor-benchmark true false)
+marketing_fresh=$(apply_blueprint marketing-site 'Marketing Site' fresh marketing false true)
+marketing_content=$(apply_blueprint marketing-site 'Marketing Site' content floor-benchmark true false)
 
-echo
-echo "──── Phase 5: kitsune:blueprint apply blog at ${vcpu} vCPU / ${memory_mb} MB ────"
-printf '  %-66s %8s ms\n' 'empty installation (creates the org, its site and its first owner)' "$blog_fresh"
-printf '  %-66s %8s ms\n' "into floor-benchmark, ${entries} entries in the table" "$blog_content"
-echo "  Budget: 60,000 ms (roadmap Phase 5). Reported, not enforced."
+phase5_block() {   # $1 handle, $2 fresh ms, $3 content ms
+  echo
+  echo "──── Phase 5: kitsune:blueprint apply $1 at ${vcpu} vCPU / ${memory_mb} MB ────"
+  printf '  %-66s %8s ms\n' 'empty installation (creates the org, its site and its first owner)' "$2"
+  printf '  %-66s %8s ms\n' "into floor-benchmark, ${entries} entries in the table" "$3"
+  echo "  Budget: 60,000 ms (roadmap Phase 5). Reported, not enforced."
+}
+
+phase5_block blog "$blog_fresh" "$blog_content"
+phase5_block marketing-site "$marketing_fresh" "$marketing_content"
