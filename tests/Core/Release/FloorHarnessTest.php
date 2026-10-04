@@ -641,6 +641,8 @@ it('refuses a Marketing Site apply that did not happen, however quickly it stopp
 })->with([
     'exited non-zero' => [['marketingExit' => 1], 'the fresh Marketing Site apply exited 1'],
     'did not report applying marketing-site' => [['marketingReport' => 'Refusing to create an organisation'], 'the fresh Marketing Site apply did not report applying marketing-site'],
+    /* An apply reporting another blueprint is not this one's: the check names the handle it ran. */
+    'reported applying another blueprint' => [['marketingReport' => 'Applied blog 1.0.0 into X. 0 indexed.'], 'the fresh Marketing Site apply did not report applying marketing-site'],
     'left its receipt interrupted' => [['marketingStatus' => 'interrupted'], 'the fresh Marketing Site apply left its receipt unfinished'],
     'created no owner' => [['marketingOwner' => false], 'the fresh Marketing Site apply created no owner'],
 ]);
