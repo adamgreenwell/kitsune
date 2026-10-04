@@ -4,7 +4,8 @@ const path = require('node:path');
 const { BLOG_OWNER } = require('./accounts');
 
 /*
- * Signs in the two people the Blog blueprint's browser test needs — Phase 5, ADR-039.
+ * Signs in the ~~two~~ three people the blueprints' browser tests need — Phase 5, ADR-039: Blog's owner and writer,
+ * and the Marketing Site's writer, in the same org.
  *
  * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but ~~its seeded owner role and~~ what
  * `kitsune:blueprint apply blog --owner` wrote, so the owner measures what the command created and the writer measures
@@ -66,4 +67,8 @@ setup('authenticate as the blog owner', async ({ page }) => {
 
 setup('authenticate as the blog writer', async ({ page }) => {
     await signIn(page, 'blog-writer@kitsune.test', 'password', 'blog-writer-auth.json');
+});
+
+setup('authenticate as the marketing writer', async ({ page }) => {
+    await signIn(page, 'marketing-writer@kitsune.test', 'password', 'marketing-writer-auth.json');
 });

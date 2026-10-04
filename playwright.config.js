@@ -124,6 +124,17 @@ module.exports = defineConfig({
             dependencies: ['setup', 'setup-blog'],
             use: { ...devices['Desktop Chrome'] },
         },
+        /*
+         * The Marketing Site blueprint, as `kitsune:blueprint apply marketing-site` left it in Blog's org — ADR-030's
+         * blueprint. No storageState, for Blog's reason: the spec opens the blog owner, the marketing writer and
+         * Golfdom's owner, each from the state its setup saved.
+         */
+        {
+            name: 'marketing-site',
+            testMatch: /marketing-site\.spec\.js/,
+            dependencies: ['setup', 'setup-blog'],
+            use: { ...devices['Desktop Chrome'] },
+        },
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,

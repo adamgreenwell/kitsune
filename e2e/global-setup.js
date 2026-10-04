@@ -84,11 +84,36 @@ module.exports = async () => {
         throw new Error(`global-setup: a second Blog apply into inkwell was not a no-op:\n${again}`);
     }
 
+    /*
+     * ⚠️ AND THE MARKETING SITE, BY ITS COMMAND, INTO THE SAME ORG — kitsunecms.org's likely shape, and ADR-030's
+     * blueprint. No `--owner`: the org exists, and the installation's one first owner is Blog's above. Applied twice for
+     * the same reason Blog is: a second apply at the same version is a no-op, and the output says so.
+     */
+    const marketing = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'marketing-site', '--org=inkwell', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! marketing.includes('Applied marketing-site 1.0.0 into inkwell.')
+        || ! marketing.includes('2 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).')) {
+        throw new Error(`global-setup: the Marketing Site did not apply into inkwell:\n${marketing}`);
+    }
+
+    const marketingAgain = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'marketing-site', '--org=inkwell', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! marketingAgain.includes('already applied at this version')) {
+        throw new Error(`global-setup: a second Marketing Site apply into inkwell was not a no-op:\n${marketingAgain}`);
+    }
+
+    /* Each writer their own blueprint's role, through `Role::assignTo()`, the audited path: a blueprint assigns nobody. */
     execFileSync('php', [
         'artisan', 'tinker', '--execute',
         "$o = Kitsune\\Core\\Models\\Org::where('slug', 'inkwell')->firstOrFail(); app(Kitsune\\Core\\Tenancy\\Context::class)->setOrg($o);"
             + " Kitsune\\Core\\Models\\Role::where('handle', 'blog_writer')->firstOrFail()"
-            + "->assignTo(App\\Models\\User::where('email', 'blog-writer@kitsune.test')->value('id'));",
+            + "->assignTo(App\\Models\\User::where('email', 'blog-writer@kitsune.test')->value('id'));"
+            + " Kitsune\\Core\\Models\\Role::where('handle', 'marketing_writer')->firstOrFail()"
+            + "->assignTo(App\\Models\\User::where('email', 'marketing-writer@kitsune.test')->value('id'));",
     ], { cwd: skeleton, stdio: 'inherit' });
 
     run(['filament:assets']);
