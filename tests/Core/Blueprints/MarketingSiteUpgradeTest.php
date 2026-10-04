@@ -56,8 +56,15 @@ function upgradeRows(): array
 {
     $rows = [];
 
+    /* ⚠️ `role_user` is a pivot with no `id`: SQLite reads an unknown quoted name as a string and orders by nothing, the other engines refuse it. */
     foreach (['entry_types', 'field_storage', 'fields', 'roles', 'role_permissions', 'role_user', 'audit_log', 'entries'] as $table) {
-        $rows[$table] = DB::table($table)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
+        $query = DB::table($table);
+
+        foreach ($table === 'role_user' ? ['role_id', 'user_id'] : ['id'] as $column) {
+            $query->orderBy($column);
+        }
+
+        $rows[$table] = $query->get()->map(static fn (object $row): array => (array) $row)->all();
     }
 
     return $rows;
