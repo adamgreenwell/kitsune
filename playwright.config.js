@@ -51,7 +51,7 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         // The user with one grant, whose session is what makes the permission specs mean anything.
         { name: 'setup-reader', testMatch: /auth-reader\.setup\.js/ },
-        // The Blog blueprint's owner and writer, in an org of their own.
+        // The blueprints' owner and writers — Blog's owner and writer, the Marketing Site's writer — in an org of their own.
         { name: 'setup-blog', testMatch: /auth-blog\.setup\.js/ },
         {
             name: 'skeleton',
@@ -121,6 +121,17 @@ module.exports = defineConfig({
         {
             name: 'blog',
             testMatch: /blog-blueprint\.spec\.js/,
+            dependencies: ['setup', 'setup-blog'],
+            use: { ...devices['Desktop Chrome'] },
+        },
+        /*
+         * The Marketing Site blueprint, as `kitsune:blueprint apply marketing-site` left it in Blog's org — ADR-030's
+         * blueprint. No storageState, for Blog's reason: the spec opens the blog owner, the marketing writer and
+         * Golfdom's owner, each from the state its setup saved.
+         */
+        {
+            name: 'marketing-site',
+            testMatch: /marketing-site\.spec\.js/,
             dependencies: ['setup', 'setup-blog'],
             use: { ...devices['Desktop Chrome'] },
         },

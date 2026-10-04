@@ -7,6 +7,7 @@
  */
 
 declare(strict_types=1);
+use Kitsune\Core\Blueprints\BlueprintRegistry;
 
 /*
  * The commands the README tells a newcomer to run have to exist.
@@ -74,6 +75,29 @@ it('names only sign-in accounts the seeder creates', function (): void {
     ));
 
     expect($unseeded)->toBe([], 'the README names accounts the seeder does not create: '.implode(', ', $unseeded));
+});
+
+/**
+ * ⚠️ A BLUEPRINT THE README NAMES IS ONE CORE REGISTERS. The handle is the command's argument and the contract a
+ * blueprint keeps (ADR-039), so a renamed or misspelt one would send a newcomer to "No blueprint is registered" at the
+ * one step written down for them.
+ */
+it('names only blueprints core registers', function (): void {
+    $readme = (string) file_get_contents(dirname(__DIR__, 2).'/README.md');
+
+    preg_match_all('/kitsune:blueprint apply ([a-z0-9][a-z0-9_-]*)/', $readme, $matches);
+
+    $named = array_values(array_unique($matches[1]));
+
+    // ⚠️ Not vacuous: the README has to name both of core's blueprints.
+    expect($named)->toContain('blog', 'marketing-site');
+
+    $unregistered = array_values(array_filter(
+        $named,
+        static fn (string $handle): bool => app(BlueprintRegistry::class)->get($handle) === null,
+    ));
+
+    expect($unregistered)->toBe([], 'the README names blueprints core does not register: '.implode(', ', $unregistered));
 });
 
 it('keeps the skeleton resolvable the way the README says it is', function (): void {

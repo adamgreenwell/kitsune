@@ -93,6 +93,14 @@ can read; it is never accepted as an argument or an environment variable, which 
 read. `--owner` is refused on an installation that already has an organisation or an account — `migrate --seed`
 above included — because it creates the *first* owner and nothing else.
 
+For a site of pages instead, apply `marketing-site` — and either blueprint can be added to the other's organisation
+afterwards, without `--owner`:
+
+```bash
+php skeleton/artisan kitsune:blueprint apply marketing-site --org=mysite --owner=you@example.com
+php skeleton/artisan kitsune:blueprint apply blog --org=mysite
+```
+
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
 an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011

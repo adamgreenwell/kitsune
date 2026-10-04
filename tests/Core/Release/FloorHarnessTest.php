@@ -55,10 +55,16 @@ function floorStubs(
     string $blogStatus = 'applied',
     string $symlinkOne = '',
     bool $blogOwner = true,
+    int $marketingExit = 0,
+    string $marketingReport = 'Applied marketing-site 1.0.0 into X. 0 indexed.',
+    string $marketingStatus = 'applied',
+    bool $marketingOwner = true,
 ): void {
     $platformFailsFlag = $platformFails ? 1 : 0;
     $blogOwnerFlag = $blogOwner ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
+    $marketingOwnerFlag = $marketingOwner ? 1 : 0;
+    $marketingStatusLine = $marketingStatus === 'applied' ? '| 1 | marketing-site | 1.0.0 | 2026-10-04 12:00:00 |' : '| 1 | marketing-site | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
 
     File::put($dir.'/bin/docker', <<<STUB
     #!/usr/bin/env bash
@@ -90,14 +96,28 @@ function floorStubs(
 
     # Phase 5's one command, timed in the image by a wrapper; and the status read after it.
     case "\$*" in
-      # The first owner's password arrives on standard input, and only there: kept, to be looked for in argv.
+      # The first owner's password arrives on standard input, and only there: kept, to be looked for in argv. The
+      # Marketing Site answers apart from Blog, so each blueprint's refusals can be told from the other's.
+      *kitsune:blueprint\ apply\ marketing-site*)
+        took=978
+        if [[ "\$*" == *--owner-password-stdin* ]]; then
+          cat > "$dir/stdin-marketing.log"
+          [[ "$marketingOwnerFlag" == 1 ]] && echo 'Created organisation marketing, its first site marketing and its first owner floor-owner@kitsune.test (ADR-026).'
+          took=945
+        fi
+        echo "$marketingReport"
+        echo "blueprint apply took: \$took ms"
+        exit $marketingExit
+        ;;
       *kitsune:blueprint\ apply*)
+        took=834
         if [[ "\$*" == *--owner-password-stdin* ]]; then
           cat > "$dir/stdin.log"
           [[ "$blogOwnerFlag" == 1 ]] && echo 'Created organisation blog, its first site blog and its first owner floor-owner@kitsune.test (ADR-026).'
+          took=812
         fi
         echo "$blogReport"
-        echo "blueprint apply took: 812 ms"
+        echo "blueprint apply took: \$took ms"
         exit $blogExit
         ;;
       # The whole table, as Symfony writes it: the row is followed by a border, which a reader that stops at its
@@ -106,7 +126,11 @@ function floorStubs(
         echo '+-----+--------+---------+------+'
         echo '| Org | Handle | Version | Applied |'
         echo '+-----+--------+---------+------+'
-        echo '$blogStatusLine'
+        if [[ "\$*" == *run-marketing-site-* ]]; then
+          echo '$marketingStatusLine'
+        else
+          echo '$blogStatusLine'
+        fi
         sleep 0.2
         # A closed pipe kills the real docker CLI with SIGPIPE (141). This suite's runner ignores SIGPIPE, and a
         # signal ignored at a shell's start cannot be restored, so the write's failure is turned into that death.
@@ -250,8 +274,8 @@ it('seeds each column in a process of its own before measuring in another', func
 
     $benchmarkRuns = array_values(array_filter(
         explode("\n", (string) File::get($this->dir.'/argv.log')),
-        /* The Blog apply's corpus is seeded in a copy of its own, and is not one of the two columns. */
-        static fn (string $line): bool => str_contains($line, 'benchmark-floor') && ! str_contains($line, 'run-blog-'),
+        /* Each blueprint apply's corpus is seeded in a copy of its own, and is not one of the two columns. */
+        static fn (string $line): bool => str_contains($line, 'benchmark-floor') && preg_match('/run-(blog|marketing-site)-/', $line) !== 1,
     ));
 
     // Seed, measure constrained; seed, measure unconstrained — each measurement preceded by its own seeding.
@@ -534,8 +558,8 @@ it('times the Blog apply under the floor limits, on an empty install with its fi
         ->and($lines[$seeding])->not->toContain('--cpus=');
 
     expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply blog at 1 vCPU / 1024 MB')
-        ->toMatch('/empty installation \(creates the org, its site and its first owner\)\s+812 ms/')
-        ->toMatch('/into floor-benchmark, 25 entries in the table\s+812 ms/')
+        /* Each leg its own figure, so a fresh figure printed on the content line, or twice, is told apart. */
+        ->toMatch('/apply blog at[^\n]*\n\s*empty installation \(creates the org, its site and its first owner\)\s+812 ms\n\s*into floor-benchmark, 25 entries in the table\s+834 ms/')
         ->toContain('Budget: 60,000 ms');
 });
 
@@ -551,4 +575,74 @@ it('refuses a Blog apply that did not happen, however quickly it stopped', funct
     'did not report applying blog' => [['blogReport' => 'Refusing to create an organisation'], 'the fresh Blog apply did not report applying blog'],
     'left its receipt interrupted' => [['blogStatus' => 'interrupted'], 'the fresh Blog apply left its receipt unfinished'],
     'created no owner' => [['blogOwner' => false], 'the fresh Blog apply created no owner'],
+]);
+
+/**
+ * ⚠️ THE MARKETING SITE'S FIGURE IS ADR-030's THIRD CONDITION — the trigger for moving kitsunecms.org onto Kitsune — so
+ * it is timed exactly as Blog's is: the same limits, the same two legs, the owner's password on standard input alone.
+ */
+it('times the Marketing Site apply under the floor limits, on an empty install with its first owner and into the corpus org', function (): void {
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $lines = explode("\n", (string) File::get($this->dir.'/argv.log'));
+    $applies = array_values(array_filter($lines, static fn (string $line): bool => str_contains($line, 'kitsune:blueprint apply marketing-site')));
+
+    expect($applies)->toHaveCount(2);
+
+    foreach ($applies as $apply) {
+        expect($apply)->toContain('--cpus='.Kitsune::FLOOR_VCPU)
+            ->toContain('--memory='.Kitsune::FLOOR_MEMORY_MB.'m')
+            ->toContain('--memory-swap='.Kitsune::FLOOR_MEMORY_MB.'m')
+            ->toContain('--no-interaction')
+            ->not->toContain('apply blog');
+    }
+
+    expect($applies[0])->toContain('--org=marketing')
+        ->toContain('run-marketing-site-fresh')
+        ->toContain('run -i ')
+        ->toContain('--owner=floor-owner@kitsune.test')
+        ->toContain('--owner-password-stdin')
+        ->and($applies[1])->toContain('--org=floor-benchmark')
+        ->and($applies[1])->toContain('run-marketing-site-content')
+        ->and($applies[1])->not->toContain(' -i ')
+        ->and($applies[1])->not->toContain('--owner');
+
+    $stdin = (string) File::get($this->dir.'/stdin-marketing.log');
+
+    expect($stdin)->toMatch('/\A[0-9a-f]{32}\n\z/');
+
+    foreach ($lines as $line) {
+        expect($line)->not->toContain(trim($stdin));
+    }
+
+    /* The corpus is in the table before the content leg: a --keep seeding in that same copy, earlier in the log. */
+    $seeding = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'run-marketing-site-content') && str_contains($line, '--keep')));
+    $content = array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, 'kitsune:blueprint apply marketing-site --org=floor-benchmark')));
+
+    expect($seeding)->not->toBeNull()
+        ->and($seeding)->toBeLessThan($content)
+        ->and($lines[$seeding])->toContain('--entries=25')
+        ->and($lines[$seeding])->not->toContain('--cpus=');
+
+    expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply marketing-site at 1 vCPU / 1024 MB')
+        ->toMatch('/apply marketing-site at[^\n]*\n\s*empty installation \(creates the org, its site and its first owner\)\s+945 ms\n\s*into floor-benchmark, 25 entries in the table\s+978 ms/');
+});
+
+it('refuses a Marketing Site apply that did not happen, however quickly it stopped', function (array $stub, string $reason): void {
+    floorStubs($this->dir, ...$stub);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($reason)
+        ->and($run->getOutput())->not->toContain('Phase 5:');
+})->with([
+    'exited non-zero' => [['marketingExit' => 1], 'the fresh Marketing Site apply exited 1'],
+    'did not report applying marketing-site' => [['marketingReport' => 'Refusing to create an organisation'], 'the fresh Marketing Site apply did not report applying marketing-site'],
+    /* An apply reporting another blueprint is not this one's: the check names the handle it ran. */
+    'reported applying another blueprint' => [['marketingReport' => 'Applied blog 1.0.0 into X. 0 indexed.'], 'the fresh Marketing Site apply did not report applying marketing-site'],
+    'left its receipt interrupted' => [['marketingStatus' => 'interrupted'], 'the fresh Marketing Site apply left its receipt unfinished'],
+    'created no owner' => [['marketingOwner' => false], 'the fresh Marketing Site apply created no owner'],
 ]);

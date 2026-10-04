@@ -53,6 +53,12 @@ it('lists Blog', function (): void {
         ->and(Artisan::output())->toMatch('/\|\s*blog\s*\|\s*1\.0\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\BlogBlueprint\s*\|/');
 });
 
+/** The Marketing Site is core's too, matched as one row for the reason Blog's is. */
+it('lists the Marketing Site', function (): void {
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'list']))->toBe(0)
+        ->and(Artisan::output())->toMatch('/\|\s*marketing-site\s*\|\s*1\.0\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\MarketingSiteBlueprint\s*\|/');
+});
+
 it('applies into a named org', function (): void {
     $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
 
@@ -325,5 +331,52 @@ describe('on an installation with no organisation at all', function (): void {
             ->assertSuccessful();
 
         expect(RolePermission::query()->withoutGlobalScopes()->count())->toBe(14);
+    });
+
+    /**
+     * ⚠️ ADR-030's FIRST CONDITION, IN THE COMMAND ITS SITE WILL RUN: an empty installation to a Marketing Site, with no
+     * step outside the one command — and every line it prints, so a line that changes is a change somebody reviews.
+     */
+    it('applies the Marketing Site to an empty installation in one command', function (): void {
+        $this->artisan('kitsune:blueprint apply marketing-site --org=acme --no-interaction')
+            ->expectsOutputToContain('Created organisation acme and its first site, with no owner because `--owner` was '
+                .'not given: nobody can sign in to it, and `--owner` is now refused on this installation, because it '
+                .'creates a first owner only where there is no organisation and no account (ADR-026).')
+            ->expectsOutputToContain('  created  entry type page')
+            ->expectsOutputToContain('  created  field storage page_body')
+            ->expectsOutputToContain('  created  field storage page_summary')
+            ->expectsOutputToContain('  created  role marketing_editor: entry.page.create, entry.page.delete, entry.page.publish, entry.page.update, entry.page.view')
+            ->expectsOutputToContain('  created  role marketing_writer: entry.page.create, entry.page.update, entry.page.view')
+            ->expectsOutputToContain('Applied marketing-site 1.0.0 into acme. 0 indexed.')
+            ->expectsOutputToContain('2 roles were created and nobody holds them, and this organisation has no owner yet to assign them (ADR-033).')
+            ->assertSuccessful();
+
+        $org = Org::query()->where('slug', 'acme')->firstOrFail();
+
+        expect(Org::query()->count())->toBe(1)
+            ->and(Site::query()->withoutGlobalScopes()->where('org_id', $org->getKey())->count())->toBe(1)
+            ->and(EntryType::query()->where('org_id', $org->getKey())->pluck('handle')->all())->toBe(['page'])
+            ->and(Role::query()->withoutGlobalScopes()->where('org_id', $org->getKey())->count())->toBe(2)
+            ->and(RolePermission::query()->withoutGlobalScopes()->count())->toBe(8)
+            ->and(DB::table('users')->count())->toBe(0)
+            ->and(app(Context::class)->orgId())->toBeNull();
+
+        $this->artisan('kitsune:blueprint apply marketing-site --org=acme --no-interaction')
+            ->expectsOutputToContain('already applied at this version')
+            ->assertSuccessful();
+    });
+
+    /** Blog joins the Marketing Site's org afterwards, with no `--owner` — the org exists, so none is wanted. */
+    it('then applies Blog into the same org', function (): void {
+        $this->artisan('kitsune:blueprint apply marketing-site --org=acme --no-interaction')->assertSuccessful();
+
+        $this->artisan('kitsune:blueprint apply blog --org=acme --no-interaction')
+            ->expectsOutputToContain('Applied blog 1.0.0 into acme. 0 indexed.')
+            ->assertSuccessful();
+
+        $org = Org::query()->where('slug', 'acme')->firstOrFail();
+
+        expect(EntryType::query()->where('org_id', $org->getKey())->orderBy('handle')->pluck('handle')->all())->toBe(['page', 'post', 'tag'])
+            ->and(RolePermission::query()->withoutGlobalScopes()->count())->toBe(22);
     });
 });
