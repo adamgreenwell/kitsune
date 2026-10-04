@@ -175,7 +175,7 @@ describe('creating the first owner', function (): void {
 
         expect($status)->toBe(0)
             ->and($out)->toContain('Created organisation mysite, its first site mysite and its first owner owner@example.test (ADR-026).')
-            ->and($out)->toContain('Applied marketing-site 1.0.0 into mysite. 0 indexed.')
+            ->and($out)->toContain('Applied marketing-site 1.1.0 into mysite. 0 indexed.')
             ->and($out)->toContain('2 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).');
 
         $actions = AuditLog::query()->withoutGlobalScopes()->pluck('action');

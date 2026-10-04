@@ -26,17 +26,17 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
-use Kitsune\Core\Tests\Fixtures\MarketingSiteAtAnotherVersion;
+use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
  * Marketing Site — the second first-party blueprint (Phase 5, ADR-039), as it ships, and the one ADR-030 moves
  * kitsunecms.org onto.
  *
- * ⚠️ GOLDEN, ON PURPOSE, for Blog's reason: once 1.0.0 is applied in a real org, every column below is what that org
- * has, and the receipt says 1.0.0 — so a change here that keeps the version is a change no applied org will ever
- * receive, and a new version ~~is refused until ADR-039's merge exists~~ may only add to it: the merge refuses any
- * change to what 1.0.0 recorded (`MarketingSiteUpgradeTest`).
+ * ⚠️ GOLDEN, ON PURPOSE, for Blog's reason: once ~~1.0.0~~ 1.1.0 is applied in a real org, every column below is what
+ * that org has, and the receipt says 1.1.0 — so a change here that keeps the version is a change no applied org will
+ * ever receive, and a new version ~~is refused until ADR-039's merge exists~~ may only add to it: the merge refuses
+ * any change to what an earlier version recorded (`MarketingSiteUpgradeTest`, `ReleasedBlueprintsTest`).
  */
 
 beforeEach(function (): void {
@@ -101,12 +101,12 @@ function marketingManifest(Org $org): array
 }
 
 /** Core's own provider registers it beside Blog: no test, module or host does. */
-it('is registered by core at 1.0.0, beside Blog', function (): void {
+it('is registered by core at 1.1.0, beside Blog', function (): void {
     $registry = app(BlueprintRegistry::class);
     $site = $registry->get('marketing-site');
 
     expect($site)->toBeInstanceOf(MarketingSiteBlueprint::class)
-        ->and($site->version())->toBe('1.0.0')
+        ->and($site->version())->toBe('1.1.0')
         ->and(array_keys($registry->all()))->toContain('blog', 'marketing-site');
 });
 
@@ -160,14 +160,17 @@ it('creates each field exactly', function (string $handle, array $storage, array
     'page_summary' => ['page_summary',
         ['type' => 'textarea', 'pii_class' => 'none', 'cardinality' => 1, 'settings' => [], 'is_indexed' => false, 'is_locked' => false],
         ['label' => 'Summary', 'help_text' => 'A sentence or two summing the page up, for wherever it is listed or linked.', 'is_required' => false, 'ordering' => 20, 'group' => null]],
+    'page_meta, 1.1.0' => ['page_meta',
+        ['type' => 'textarea', 'pii_class' => 'none', 'cardinality' => 1, 'settings' => [], 'is_indexed' => false, 'is_locked' => false],
+        ['label' => 'Meta description', 'help_text' => 'A sentence or two for search results and link previews.', 'is_required' => false, 'ordering' => 30, 'group' => null]],
 ]);
 
 it('attaches no field it does not declare', function (): void {
     BlueprintApplier::apply(new MarketingSiteBlueprint);
 
     expect(FieldStorage::query()->where('org_id', $this->org->getKey())->orderBy('handle')->pluck('handle')->all())
-        ->toBe(['page_body', 'page_summary'])
-        ->and(Field::query()->count())->toBe(2);
+        ->toBe(['page_body', 'page_meta', 'page_summary'])
+        ->and(Field::query()->count())->toBe(3);
 });
 
 /** ⚠️ Exactly these grants, and nobody an owner: a sixth action or a wildcard here is authority nobody reviewed. */
@@ -262,7 +265,7 @@ it('composes with Blog in one org, in either order', function (string $order): v
     }
 
     expect(EntryType::query()->where('org_id', $this->org->getKey())->orderBy('handle')->pluck('handle')->all())->toBe(['page', 'post', 'tag'])
-        ->and(FieldStorage::query()->where('org_id', $this->org->getKey())->count())->toBe(6)
+        ->and(FieldStorage::query()->where('org_id', $this->org->getKey())->count())->toBe(7)
         ->and(Role::query()->orderBy('handle')->pluck('handle')->all())->toBe(['blog_editor', 'blog_writer', 'marketing_editor', 'marketing_writer'])
         ->and(Blueprint::query()->withoutGlobalScopes()->where('org_id', $this->org->getKey())->whereNotNull('applied_at')->orderBy('handle')->pluck('handle')->all())
         ->toBe(['blog', 'marketing-site']);
@@ -350,7 +353,7 @@ it('keeps the operator\'s edits and the lock across a re-apply', function (): vo
     Field::query()->where('field_storage_id', $summary->getKey())->firstOrFail()->update(['label' => 'Standfirst']);
 
     $meta = FieldStorage::create(['org_id' => $this->org->getKey(), 'handle' => 'meta_description', 'type' => 'text', 'cardinality' => 1, 'pii_class' => 'none']);
-    Field::create(['entry_type_id' => $page->getKey(), 'field_storage_id' => $meta->getKey(), 'label' => 'Meta description']);
+    Field::create(['entry_type_id' => $page->getKey(), 'field_storage_id' => $meta->getKey(), 'label' => 'Their meta description']);
 
     Role::query()->where('handle', 'marketing_writer')->firstOrFail()->update(['name' => 'Page writer']);
 
@@ -368,20 +371,20 @@ it('keeps the operator\'s edits and the lock across a re-apply', function (): vo
         ->and(Role::query()->where('handle', 'marketing_writer')->value('name'))->toBe('Page writer')
         ->and((bool) $storage('page_body')->is_locked)->toBeTrue()
         ->and((bool) $storage('page_summary')->is_locked)->toBeFalse()
-        ->and(FieldStorage::query()->where('org_id', $this->org->getKey())->count())->toBe(3)
-        ->and(Field::query()->where('entry_type_id', $page->getKey())->count())->toBe(3);
+        ->and(FieldStorage::query()->where('org_id', $this->org->getKey())->count())->toBe(4)
+        ->and(Field::query()->where('entry_type_id', $page->getKey())->count())->toBe(4);
 });
 
 /**
- * A test's 1.1.0 over 1.0.0 merges ~~is refused~~: its meta description is written, and nothing else. The upgrade's
- * own proof — the operator's edits, a locked field, the oracle — is `MarketingSiteUpgradeTest`.
+ * 1.1.0 over 1.0.0 merges ~~is refused~~: its meta description is written, and nothing else. The upgrade's own proof —
+ * the operator's edits, a locked field, the oracle — is `MarketingSiteUpgradeTest`.
  */
-it('merges a test\'s 1.1.0, adding only its meta description', function (): void {
-    BlueprintApplier::apply(new MarketingSiteBlueprint);
+it('merges 1.1.0 over the released 1.0.0, adding only its meta description', function (): void {
+    BlueprintApplier::apply(new MarketingSite100);
 
     $counts = marketingCounts();
 
-    $result = BlueprintApplier::apply(new MarketingSiteAtAnotherVersion);
+    $result = BlueprintApplier::apply(new MarketingSiteBlueprint);
 
     expect($result['created'])->toBe(['field storage page_meta'])
         ->and($result['roles_created'])->toBe([])
@@ -425,7 +428,7 @@ it('refuses a global page type, and writes nothing', function (): void {
     expect(array_diff_key(marketingCounts(), ['blueprints' => 0]))->toBe(array_diff_key($before, ['blueprints' => 0]));
 });
 
-/** What 1.0.0 leaves out reaches an org through the admin, whose schema is its owner's — this org's, and no other's. */
+/** What ~~1.0.0~~ 1.1.0 leaves out reaches an org through the admin, whose schema is its owner's — this org's, and no other's. */
 it('leaves the page type to its org\'s owner to extend', function (): void {
     BlueprintApplier::apply(new MarketingSiteBlueprint);
 

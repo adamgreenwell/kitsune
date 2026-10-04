@@ -56,7 +56,7 @@ function floorStubs(
     string $symlinkOne = '',
     bool $blogOwner = true,
     int $marketingExit = 0,
-    string $marketingReport = 'Applied marketing-site 1.0.0 into X. 0 indexed.',
+    string $marketingReport = 'Applied marketing-site 1.1.0 into X. 0 indexed.',
     string $marketingStatus = 'applied',
     bool $marketingOwner = true,
 ): void {
@@ -64,7 +64,7 @@ function floorStubs(
     $blogOwnerFlag = $blogOwner ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
     $marketingOwnerFlag = $marketingOwner ? 1 : 0;
-    $marketingStatusLine = $marketingStatus === 'applied' ? '| 1 | marketing-site | 1.0.0 | 2026-10-04 12:00:00 |' : '| 1 | marketing-site | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
+    $marketingStatusLine = $marketingStatus === 'applied' ? '| 1 | marketing-site | 1.1.0 | 2026-10-04 12:00:00 |' : '| 1 | marketing-site | 1.1.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
 
     File::put($dir.'/bin/docker', <<<STUB
     #!/usr/bin/env bash

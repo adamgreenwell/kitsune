@@ -16,6 +16,7 @@ use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
+use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
@@ -28,7 +29,6 @@ use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\BlogAtAnotherVersion;
-use Kitsune\Core\Tests\Fixtures\MarketingSiteAtAnotherVersion;
 use Kitsune\Core\Tests\Fixtures\Released\Blog100;
 use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -322,7 +322,7 @@ it('merges one blueprint without touching the other\'s rows, receipt or roles', 
     $blog = blogWrittenBy('blog', ['blog_editor', 'blog_writer']);
     $blogFields = Field::query()->whereIn('entry_type_id', EntryType::query()->where('org_id', $this->org->getKey())->whereIn('handle', ['post', 'tag'])->pluck('id'))->orderBy('id')->get()->toArray();
 
-    BlueprintApplier::apply(new MarketingSiteAtAnotherVersion);
+    BlueprintApplier::apply(new MarketingSiteBlueprint);
 
     expect(blogWrittenBy('blog', ['blog_editor', 'blog_writer']))->toBe($blog)
         ->and(Field::query()->whereIn('entry_type_id', EntryType::query()->where('org_id', $this->org->getKey())->whereIn('handle', ['post', 'tag'])->pluck('id'))->orderBy('id')->get()->toArray())->toBe($blogFields);

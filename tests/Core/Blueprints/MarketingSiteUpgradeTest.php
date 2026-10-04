@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
+use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -20,7 +21,6 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
-use Kitsune\Core\Tests\Fixtures\MarketingSiteAtAnotherVersion;
 use Kitsune\Core\Tests\Fixtures\MarketingSiteReshaped;
 use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -28,9 +28,10 @@ use Kitsune\Core\Tests\Fixtures\TestUser;
 /*
  * ADR-030's condition 2 — "upgrades cleanly" — for the Marketing Site, checkable by a stranger on a bare clone.
  *
- * ⚠️ FROM THE RELEASE AN ORG ACTUALLY HAS. 1.0.0 is the frozen copy of what #172 shipped, so this upgrades what real
- * orgs hold; the version it upgrades to is a test's 1.1.0 until a released one replaces it (`upgradeNext()`), and only
- * then is the condition met (Adam, 2026-10-04: not "while there is one version").
+ * ⚠️ FROM THE RELEASE AN ORG ACTUALLY HAS, TO THE ONE THAT SHIPS. 1.0.0 is the frozen copy of what #172 shipped, so this
+ * upgrades what real orgs hold; the version it upgrades to is the Marketing Site as it ships (`upgradeNext()`) —
+ * ~~a test's 1.1.0 until a released one replaces it~~ the released 1.1.0, which is what meets the condition (Adam,
+ * 2026-10-04: not "while there is one version").
  *
  * ⚠️ THE OPERATOR'S EDITS ARE MADE THROUGH THE MODELS, AND THE LOCK BY AN EDITOR'S SAVE, because that is how an org that
  * has used its site for a year looks — and every one of those edits must come through an upgrade untouched.
@@ -45,10 +46,10 @@ beforeEach(function (): void {
 
 afterEach(fn () => app(Context::class)->forget());
 
-/** The version the upgrade goes to: a test's 1.1.0, until Marketing Site 1.1.0 is released and replaces it here. */
+/** The version the upgrade goes to: the Marketing Site as it ships — 1.1.0, ~~a test's 1.1.0~~ released 2026-10-04. */
 function upgradeNext(): BlueprintDefinition
 {
-    return new MarketingSiteAtAnotherVersion;
+    return new MarketingSiteBlueprint;
 }
 
 /** Every row an apply writes, in every org, as the database holds it. */
@@ -179,7 +180,7 @@ it('upgrades a Marketing Site its operator has edited, adding only what the new 
         ->toBe(['type' => 'textarea', 'cardinality' => 1, 'pii_class' => 'none', 'is_indexed' => false, 'is_locked' => false])
         ->and($meta->settings ?? [])->toBe([])
         ->and($metaField->only(['entry_type_id', 'label', 'help_text', 'is_required', 'ordering', 'group']))
-        ->toBe(['entry_type_id' => $page->getKey(), 'label' => 'Meta description', 'help_text' => null, 'is_required' => false, 'ordering' => 30, 'group' => null])
+        ->toBe(['entry_type_id' => $page->getKey(), 'label' => 'Meta description', 'help_text' => 'A sentence or two for search results and link previews.', 'is_required' => false, 'ordering' => 30, 'group' => null])
         ->and(count($after['field_storage']))->toBe(count($before['field_storage']) + 1)
         ->and(count($after['fields']))->toBe(count($before['fields']) + 1);
 

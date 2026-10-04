@@ -13,9 +13,10 @@ namespace Kitsune\Core\Tests\Fixtures;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
+use Kitsune\Core\Tests\Fixtures\Released\MarketingSite110;
 
 /**
- * A test's 1.2.0 that RESHAPES what 1.0.0 shipped: the test's 1.1.0, with `page_body` a textarea instead of rich text.
+ * A test's 1.2.0 that RESHAPES what 1.0.0 shipped: the released 1.1.0, with `page_body` a textarea instead of rich text.
  *
  * ⚠️ NOT A RELEASE, AND NOTHING MAY EVER SHIP LIKE IT. A merge refuses it by name, and over a page an editor has saved
  * names the lock too — which is what this exists to prove, from the locked side.
@@ -54,12 +55,12 @@ final class MarketingSiteReshaped implements BlueprintDefinition
                 ordering: $type->ordering,
                 onCollision: $type->onCollision,
             ),
-            (new MarketingSiteAtAnotherVersion)->entryTypes(),
+            (new MarketingSite110)->entryTypes(),
         );
     }
 
     public function roles(): array
     {
-        return (new MarketingSiteAtAnotherVersion)->roles();
+        return (new MarketingSite110)->roles();
     }
 }

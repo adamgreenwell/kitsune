@@ -12,7 +12,7 @@ const { test, expect } = require('@playwright/test');
  *
  * ⚠️ ADR-030's FOURTH CONDITION, ON EVERY BUILD: "editable by its operator through the admin — content changes without
  * a deploy". The owner writes a page, publishes it and changes it; the writer edits and publishes nothing; the other
- * site and the other org are refused from the side of the person crossing; and what 1.0.0 leaves out reaches the org
+ * site and the other org are refused from the side of the person crossing; and what 1.1.0 leaves out reaches the org
  * through the admin, because its owner can add a field to `page` there.
  */
 
@@ -161,7 +161,7 @@ test.describe.serial('the Marketing Site blueprint, applied by its command', () 
         await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
         await page.mouse.wheel(0, 1200);
 
-        for (const label of ['Body', 'Summary']) {
+        for (const label of ['Body', 'Summary', 'Meta description']) {
             await expect(page.getByRole('cell', { name: label, exact: true }).first()).toBeVisible({ timeout: 10_000 });
         }
 
@@ -274,10 +274,9 @@ test.describe.serial('the Marketing Site blueprint, applied by its command', () 
     });
 
     /*
-     * ⚠️ WHAT 1.0.0 LEAVES OUT REACHES THE ORG THROUGH THE ADMIN. A meta description, an image, a date — none ships, and
-     * ~~until ADR-039's merge exists none arrives by a newer version either~~ a newer version may only add one, so the
-     * owner's own reaches `page` here, under a handle that is not `page_`. Last, because it changes the form the tests
-     * above read.
+     * ⚠️ WHAT ~~1.0.0~~ 1.1.0 LEAVES OUT REACHES THE ORG THROUGH THE ADMIN. ~~A meta description,~~ An image, a date —
+     * neither ships (1.1.0 ships the meta description), and a newer version may only add one, so the owner's own reaches
+     * `page` here, under a handle that is not `page_`. Last, because it changes the form the tests above read.
      */
     test('lets the owner add a field to the page type in the admin', async ({ browser }) => {
         const owner = await browser.newContext({ storageState: OWNER });
@@ -291,16 +290,16 @@ test.describe.serial('the Marketing Site blueprint, applied by its command', () 
         await page.getByRole('button', { name: 'New field' }).click();
 
         const modal = page.getByRole('dialog');
-        await modal.locator('[id$=".storage_handle"]').fill(`meta_${RUN}`);
+        await modal.locator('[id$=".storage_handle"]').fill(`teaser_${RUN}`);
         await modal.locator('[id$=".storage_type"]').selectOption('textarea');
         await modal.locator('[id$=".storage_pii_class"]').selectOption('none');
-        await modal.locator('[id$=".label"]').fill(`Meta ${RUN}`);
+        await modal.locator('[id$=".label"]').fill(`Teaser ${RUN}`);
         await modal.getByRole('button', { name: 'Create', exact: true }).click();
 
-        await expect(page.getByText(`Meta ${RUN}`)).toBeVisible();
+        await expect(page.getByText(`Teaser ${RUN}`)).toBeVisible();
 
         await page.goto(`/admin/${SITE}/c/page/create`);
-        await expect(page.getByRole('textbox', { name: new RegExp(`^Meta ${RUN}`) })).toBeVisible();
+        await expect(page.getByRole('textbox', { name: new RegExp(`^Teaser ${RUN}`) })).toBeVisible();
 
         await owner.close();
     });

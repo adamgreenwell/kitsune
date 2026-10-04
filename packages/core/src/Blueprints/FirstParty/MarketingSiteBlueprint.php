@@ -29,11 +29,18 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * reads it exists. So: no seed pages — content is a separate, opt-in key that is not built, and the operator writing
  * the pages is ADR-030's fourth condition (Adam, 2026-10-04: ship it empty); no availability — a no-op on a one-site
  * install, and no admin screen undoes a row; no image — a fresh install has no media type and a blueprint cannot yet
- * declare one; no parent page — a tree the admin does not have; no menu, no singleton home, no SEO fields, no repeating
- * sections — menus, routing and theming are v1.1, and v1.0 has no repeater; no `slug` field — every entry has the
+ * declare one; no parent page — a tree the admin does not have; no menu, no singleton home, no SEO fields ~~(1.0.0)~~
+ * but the meta description 1.1.0 adds, no repeating sections — menus, routing and theming are v1.1, and v1.0 has no
+ * repeater; no `slug` field — every entry has the
  * platform's slug already; no date — nothing writes `entries.published_at` yet. ~~Until ADR-039's merge exists,~~
  * Anything left out of 1.0.0 reaches an org that applied it through the admin, where its owner can add a field or a
  * type — or by a later version, which may only add (ADR-039, the merge as built).
+ *
+ * ⚠️ 1.1.0 ADDS ONE FIELD, `page_meta`, AND CHANGES NOTHING 1.0.0 SHIPPED (Adam, 2026-10-04). A merge only adds
+ * (ADR-039), so an org at 1.0.0 gains the field and keeps every edit; `ReleasedBlueprintsTest` merges this class over
+ * every frozen release under `tests/Core/Fixtures/Released/`, and a version that changed anything recorded would fail
+ * there before it reached an org. A textarea with no settings, optional and not indexed: no DDL, every existing page
+ * stays valid, and it is the widest shape, so a lock never forces it narrower. Nothing renders it until v1.1's theming.
  *
  * ⚠️ PREFIXED STORAGE HANDLES, as Blog's are: storage is shared across an org, and a seeded org has `body` and
  * `summary`. Handles beginning `page_` are this blueprint's; an operator adding fields by hand should choose another
@@ -63,7 +70,7 @@ final class MarketingSiteBlueprint implements BlueprintDefinition
 
     public function version(): string
     {
-        return '1.0.0';
+        return '1.1.0';
     }
 
     public function entryTypes(): array
@@ -82,6 +89,15 @@ final class MarketingSiteBlueprint implements BlueprintDefinition
                         piiClass: 'none',
                         helpText: 'A sentence or two summing the page up, for wherever it is listed or linked.',
                         ordering: 20,
+                    ),
+                    /* 1.1.0. */
+                    new FieldDeclaration(
+                        handle: 'page_meta',
+                        type: 'textarea',
+                        label: 'Meta description',
+                        piiClass: 'none',
+                        helpText: 'A sentence or two for search results and link previews.',
+                        ordering: 30,
                     ),
                 ],
                 icon: 'heroicon-o-document',
