@@ -11,16 +11,26 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
+use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
+use Kitsune\Core\Models\Blueprint;
+use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\BlogAtAnotherVersion;
+use Kitsune\Core\Tests\Fixtures\MarketingSiteAtAnotherVersion;
+use Kitsune\Core\Tests\Fixtures\Released\Blog100;
+use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
@@ -28,8 +38,9 @@ use Kitsune\Core\Tests\Fixtures\TestUser;
  *
  * ⚠️ GOLDEN, ON PURPOSE. Once 1.0.0 is applied in a real org, every column below is what that org has, and the
  * receipt says 1.0.0 — so a change here that keeps the version is a change no applied org will ever receive. These
- * tests make that change loud: changing what Blog creates means changing its version, and that is refused until
- * ADR-039's merge exists.
+ * tests make that change loud: changing what Blog creates means changing its version, and ~~that is refused until
+ * ADR-039's merge exists~~ a new version may only add — the merge refuses any change to what 1.0.0 recorded, and
+ * `ReleasedBlueprintsTest` merges the shipped class over the frozen 1.0.0 to prove it does not.
  */
 
 beforeEach(function (): void {
@@ -236,4 +247,143 @@ it('points the tags relation at tags alone', function (): void {
 
     expect(FieldStorage::query()->where('org_id', $this->org->getKey())->where('handle', 'post_tags')->firstOrFail()->settings)
         ->toBe(['targetTypes' => ['tag']]);
+});
+
+/** A post carrying a tag, related as the admin relates one — which locks `post_tags`. */
+function blogTaggedPost(Org $org): void
+{
+    $type = static fn (string $handle): int => (int) EntryType::query()->where('org_id', $org->getKey())->where('handle', $handle)->value('id');
+    $site = Site::create(['org_id' => $org->getKey(), 'handle' => 'main', 'slug' => $org->slug.'-main', 'name' => 'Main']);
+    app(Context::class)->setSite($site);
+
+    $tag = Entry::create(['entry_type_id' => $type('tag'), 'title' => 'News', 'values' => []]);
+    $post = Entry::create(['entry_type_id' => $type('post'), 'title' => 'Hello', 'values' => []]);
+    $post->related()->attach($tag->getKey(), [
+        'field_storage_id' => FieldStorage::query()->where('org_id', $org->getKey())->where('handle', 'post_tags')->value('id'),
+    ]);
+
+    app(Context::class)->setOrg($org);
+}
+
+/** What one blueprint wrote into the org: its receipt, as stored, and its roles with their grants and holders. */
+function blogWrittenBy(string $handle, array $roles): array
+{
+    $ids = Role::query()->whereIn('handle', $roles)->pluck('id')->all();
+
+    return [
+        DB::table('blueprints')->where('handle', $handle)->get()->map(static fn (object $row): array => (array) $row)->all(),
+        DB::table('roles')->whereIn('id', $ids)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        DB::table('role_permissions')->whereIn('role_id', $ids)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        DB::table('role_user')->whereIn('role_id', $ids)->orderBy('user_id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+    ];
+}
+
+/**
+ * ⚠️ EVERY KIND OF ADDITION, ON A REAL BLUEPRINT, PAST DATA. A test's 1.1.0 adds a type, a relation on `post` that
+ * targets it, and a role granting on both — over an org whose posts already carry tags, so `post_tags` is locked and
+ * both 1.0.0 roles have holders. None of that is touched.
+ */
+it('merges a test\'s 1.1.0 over 1.0.0, past a tagged post', function (): void {
+    BlueprintApplier::apply(new Blog100);
+    blogHolder($this->org, 'blog_editor');
+    blogHolder($this->org, 'blog_writer');
+    blogTaggedPost($this->org);
+    $before = blogWrittenBy('blog', ['blog_editor', 'blog_writer']);
+
+    $result = BlueprintApplier::apply(new BlogAtAnotherVersion);
+    $orgId = $this->org->getKey();
+    $series = EntryType::query()->where('org_id', $orgId)->where('handle', 'series')->firstOrFail();
+    $post = EntryType::query()->where('org_id', $orgId)->where('handle', 'post')->firstOrFail();
+    $postSeries = FieldStorage::query()->where('org_id', $orgId)->where('handle', 'post_series')->firstOrFail();
+    $seriesEditor = Role::query()->where('handle', 'blog_series_editor')->firstOrFail();
+
+    expect($result['roles_created'])->toBe(['blog_series_editor'])
+        ->and($result['created'])->toBe([
+            'entry type series',
+            'field storage series_description',
+            'field storage post_series',
+            'role blog_series_editor: entry.post.view, entry.series.create, entry.series.delete, entry.series.publish, entry.series.update, entry.series.view',
+        ])
+        ->and($series->only(['name', 'plural_name']))->toBe(['name' => 'Series', 'plural_name' => 'Series'])
+        ->and($postSeries->only(['type', 'cardinality', 'settings']))->toBe(['type' => 'relation', 'cardinality' => 1, 'settings' => ['targetTypes' => ['series']]])
+        ->and(Field::query()->where('entry_type_id', $post->getKey())->where('field_storage_id', $postSeries->getKey())->value('label'))->toBe('Series')
+        ->and(RolePermission::query()->withoutGlobalScopes()->where('role_id', $seriesEditor->getKey())->count())->toBe(6)
+        ->and(DB::table('role_user')->where('role_id', $seriesEditor->getKey())->exists())->toBeFalse()
+        ->and((bool) FieldStorage::query()->where('org_id', $orgId)->where('handle', 'post_tags')->value('is_locked'))->toBeTrue()
+        ->and(array_slice(blogWrittenBy('blog', ['blog_editor', 'blog_writer']), 1))->toBe(array_slice($before, 1))
+        ->and(Blueprint::receiptFor('blog')->version)->toBe('1.1.0');
+});
+
+/** Two blueprints in one org keep separate receipts, and a merge reads and writes only its own. */
+it('merges one blueprint without touching the other\'s rows, receipt or roles', function (): void {
+    BlueprintApplier::apply(new Blog100);
+    BlueprintApplier::apply(new MarketingSite100);
+    blogHolder($this->org, 'blog_writer');
+    $blog = blogWrittenBy('blog', ['blog_editor', 'blog_writer']);
+    $blogFields = Field::query()->whereIn('entry_type_id', EntryType::query()->where('org_id', $this->org->getKey())->whereIn('handle', ['post', 'tag'])->pluck('id'))->orderBy('id')->get()->toArray();
+
+    BlueprintApplier::apply(new MarketingSiteAtAnotherVersion);
+
+    expect(blogWrittenBy('blog', ['blog_editor', 'blog_writer']))->toBe($blog)
+        ->and(Field::query()->whereIn('entry_type_id', EntryType::query()->where('org_id', $this->org->getKey())->whereIn('handle', ['post', 'tag'])->pluck('id'))->orderBy('id')->get()->toArray())->toBe($blogFields);
+
+    $marketing = blogWrittenBy('marketing-site', ['marketing_editor', 'marketing_writer']);
+
+    BlueprintApplier::apply(new BlogAtAnotherVersion);
+
+    expect(blogWrittenBy('marketing-site', ['marketing_editor', 'marketing_writer']))->toBe($marketing)
+        ->and(Blueprint::receiptFor('blog')->version)->toBe('1.1.0')
+        ->and(Blueprint::receiptFor('marketing-site')->version)->toBe('1.1.0');
+});
+
+/** ⚠️ A RELATION LOCKS TOO: tag rows hold data for `post_tags`, so narrowing it to one tag is named as the lock it is. */
+it('names the lock relation rows arm when a version reshapes the field', function (): void {
+    BlueprintApplier::apply(new Blog100);
+    blogTaggedPost($this->org);
+
+    $narrowed = new class implements BlueprintDefinition
+    {
+        public function handle(): string
+        {
+            return 'blog';
+        }
+
+        public function version(): string
+        {
+            return '1.1.0';
+        }
+
+        public function entryTypes(): array
+        {
+            return array_map(static fn (EntryTypeDeclaration $type): EntryTypeDeclaration => new EntryTypeDeclaration(
+                handle: $type->handle,
+                name: $type->name,
+                pluralName: $type->pluralName,
+                fields: array_map(static fn (FieldDeclaration $field): FieldDeclaration => $field->handle !== 'post_tags' ? $field : new FieldDeclaration(
+                    handle: $field->handle,
+                    type: $field->type,
+                    label: $field->label,
+                    piiClass: $field->piiClass,
+                    cardinality: 1,
+                    settings: $field->settings,
+                    helpText: $field->helpText,
+                    ordering: $field->ordering,
+                ), $type->fields),
+                icon: $type->icon,
+                description: $type->description,
+                ordering: $type->ordering,
+            ), (new Blog100)->entryTypes());
+        }
+
+        public function roles(): array
+        {
+            return (new Blog100)->roles();
+        }
+    };
+
+    expect(fn () => BlueprintApplier::apply($narrowed))->toThrow(RuntimeException::class,
+        'field post_tags on post changes its cardinality — and post_tags is locked because entries hold data for it: '
+        .'create a new field, migrate the data, verify, then remove the old one (ADR-006). Nothing was written, and the '
+        .'receipt still says 1.0.0.'
+    );
 });

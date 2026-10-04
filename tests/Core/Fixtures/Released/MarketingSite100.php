@@ -1,0 +1,74 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+namespace Kitsune\Core\Tests\Fixtures\Released;
+
+use Kitsune\Core\Blueprints\BlueprintDefinition;
+use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
+use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
+use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+
+/**
+ * Marketing Site 1.0.0, AS RELEASED in #172 — written out literally, not derived from the shipped class.
+ *
+ * ⚠️ NEVER EDITED: A RELEASE ADDS A SIBLING. Every org that applied 1.0.0 has these rows and a manifest recording them,
+ * so this is what every later version is merged over — and `ReleasedBlueprintsTest` merges the shipped class over it,
+ * which is what stops a version the merge would refuse from ever shipping. Derived from the shipped class, it would
+ * move with it, and the test would compare the shipped class with itself.
+ */
+final class MarketingSite100 implements BlueprintDefinition
+{
+    public function handle(): string
+    {
+        return 'marketing-site';
+    }
+
+    public function version(): string
+    {
+        return '1.0.0';
+    }
+
+    public function entryTypes(): array
+    {
+        return [
+            new EntryTypeDeclaration(
+                handle: 'page',
+                name: 'Page',
+                pluralName: 'Pages',
+                fields: [
+                    new FieldDeclaration(handle: 'page_body', type: 'rich_text', label: 'Body', piiClass: 'none', ordering: 10),
+                    new FieldDeclaration(
+                        handle: 'page_summary',
+                        type: 'textarea',
+                        label: 'Summary',
+                        piiClass: 'none',
+                        helpText: 'A sentence or two summing the page up, for wherever it is listed or linked.',
+                        ordering: 20,
+                    ),
+                ],
+                icon: 'heroicon-o-document',
+                description: 'The site\'s own pages, such as its home page and its about page.',
+                ordering: 5,
+            ),
+        ];
+    }
+
+    public function roles(): array
+    {
+        return [
+            new RoleDeclaration(handle: 'marketing_editor', name: 'Marketing editor', grants: [
+                'page' => ['view', 'create', 'update', 'delete', 'publish'],
+            ]),
+            new RoleDeclaration(handle: 'marketing_writer', name: 'Marketing writer', grants: [
+                'page' => ['view', 'create', 'update'],
+            ]),
+        ];
+    }
+}

@@ -31,8 +31,9 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * install, and no admin screen undoes a row; no image — a fresh install has no media type and a blueprint cannot yet
  * declare one; no parent page — a tree the admin does not have; no menu, no singleton home, no SEO fields, no repeating
  * sections — menus, routing and theming are v1.1, and v1.0 has no repeater; no `slug` field — every entry has the
- * platform's slug already; no date — nothing writes `entries.published_at` yet. Until ADR-039's merge exists, anything
- * left out of 1.0.0 reaches an org that applied it only through the admin, where its owner can add a field or a type.
+ * platform's slug already; no date — nothing writes `entries.published_at` yet. ~~Until ADR-039's merge exists,~~
+ * Anything left out of 1.0.0 reaches an org that applied it through the admin, where its owner can add a field or a
+ * type — or by a later version, which may only add (ADR-039, the merge as built).
  *
  * ⚠️ PREFIXED STORAGE HANDLES, as Blog's are: storage is shared across an org, and a seeded org has `body` and
  * `summary`. Handles beginning `page_` are this blueprint's; an operator adding fields by hand should choose another
@@ -47,8 +48,9 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * ⚠️ A WRITER DRAFTS AND EDITS, AND MOVES NOTHING INTO PUBLISHED. Grants have no "own pages" dimension (ADR-033): a
  * writer edits every page, a published one included, and the edit is live; may take any page back to draft or archive
  * it; and cannot move one into Published, which is the editor's `publish`. The `marketing_` prefix names the blueprint,
- * as Blog's `blog_` does — not the type, which a later version may add to, and not "site", which is a scoping level
- * (Adam, 2026-10-04).
+ * as Blog's `blog_` does — not the type, ~~which a later version may add to~~ because a later version's new type gets
+ * a role of its own: a merge never adds a grant to a role an earlier version created — and not "site", which is a
+ * scoping level (Adam, 2026-10-04).
  */
 final class MarketingSiteBlueprint implements BlueprintDefinition
 {

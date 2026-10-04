@@ -56,15 +56,17 @@ return new class extends Migration
             /*
              * ⚠️ WHAT WAS APPLIED, AS APPLIED — not a progress log, and not the blueprint's source.
              *
-             * ADR-030 requires that re-applying upgrades rather than clobbers, and a merge needs three inputs:
+             * ADR-030 requires that re-applying upgrades rather than clobbers — as amended by ADR-039, an additive
+             * upgrade, a shape change being a refusal naming the field — and a merge needs three inputs:
              * the new bundle, the bundle as it was originally applied, and the current state of the rows. The
              * repository stores none of the second today, which is why "upgrade" could only ever have meant
              * "overwrite". This column is that second input.
              *
-             * It records the RESOLVED declaration — every type, field and setting the apply actually wrote,
-             * including the ones it adopted rather than created — so a later version can tell an operator's
-             * deliberate edit from drift the blueprint should correct. Nothing reads it yet, and ADR-039's
-             * `Enforced by` says so: it is written now because it cannot be reconstructed later.
+             * It records ~~the RESOLVED declaration~~ every declaration as declared, with each row's id and what
+             * became of it — created, adopted or skipped — ~~so a later version can tell an operator's deliberate
+             * edit from drift the blueprint should correct~~ and a merge only adds, so an operator's edit is never
+             * overwritten and needs no telling apart. ~~Nothing reads it yet~~ The finish and the merge read it
+             * (ADR-039, the merge as built); it was written before either because it cannot be reconstructed later.
              */
             $table->json('manifest')->nullable();
 

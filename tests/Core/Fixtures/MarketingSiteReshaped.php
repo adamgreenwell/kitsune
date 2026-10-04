@@ -13,17 +13,14 @@ namespace Kitsune\Core\Tests\Fixtures;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
-use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 
 /**
- * The Marketing Site at a version that is not the one an org has: 1.0.0 with one field more.
+ * A test's 1.2.0 that RESHAPES what 1.0.0 shipped: the test's 1.1.0, with `page_body` a textarea instead of rich text.
  *
- * ⚠️ A TEST'S 1.1.0, NOT A RELEASE — the merge's first consumer. ~~Until ADR-039's merge exists, a different version
- * over a finished apply is refused with nothing written — which is what this proves —~~ ADR-039's merge adds its meta
- * description to an org at 1.0.0, and Marketing Site 1.1.0 is not released (Adam, 2026-10-04). Derived from the frozen
- * `MarketingSite100` rather than the shipped class, so a release cannot double the field it adds.
+ * ⚠️ NOT A RELEASE, AND NOTHING MAY EVER SHIP LIKE IT. A merge refuses it by name, and over a page an editor has saved
+ * names the lock too — which is what this exists to prove, from the locked side.
  */
-final class MarketingSiteAtAnotherVersion implements BlueprintDefinition
+final class MarketingSiteReshaped implements BlueprintDefinition
 {
     public function handle(): string
     {
@@ -32,7 +29,7 @@ final class MarketingSiteAtAnotherVersion implements BlueprintDefinition
 
     public function version(): string
     {
-        return '1.1.0';
+        return '1.2.0';
     }
 
     public function entryTypes(): array
@@ -42,21 +39,27 @@ final class MarketingSiteAtAnotherVersion implements BlueprintDefinition
                 handle: $type->handle,
                 name: $type->name,
                 pluralName: $type->pluralName,
-                fields: [
-                    ...$type->fields,
-                    new FieldDeclaration(handle: 'page_meta', type: 'textarea', label: 'Meta description', piiClass: 'none', ordering: 30),
-                ],
+                fields: array_map(
+                    static fn (FieldDeclaration $field): FieldDeclaration => $field->handle !== 'page_body' ? $field : new FieldDeclaration(
+                        handle: $field->handle,
+                        type: 'textarea',
+                        label: $field->label,
+                        piiClass: $field->piiClass,
+                        ordering: $field->ordering,
+                    ),
+                    $type->fields,
+                ),
                 icon: $type->icon,
                 description: $type->description,
                 ordering: $type->ordering,
                 onCollision: $type->onCollision,
             ),
-            (new MarketingSite100)->entryTypes(),
+            (new MarketingSiteAtAnotherVersion)->entryTypes(),
         );
     }
 
     public function roles(): array
     {
-        return (new MarketingSite100)->roles();
+        return (new MarketingSiteAtAnotherVersion)->roles();
     }
 }

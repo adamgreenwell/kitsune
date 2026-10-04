@@ -382,26 +382,33 @@ it('refuses, never as a raw constraint error, a role the org has in another case
         ->and(Role::query()->where('handle', 'Dispatcher')->count())->toBe(1);
 });
 
-it('refuses another version over the one recorded, and writes nothing', function (string $to): void {
+/**
+ * ⚠️ MERGED, ~~REFUSED~~, AND NOTHING PARSES THE VERSION. A version that only adds merges whether its string reads as
+ * newer or older; one that drops or changes what the receipt records is refused, whichever way it reads
+ * (`BlueprintMergeTest`). The role it adds is created with its grants, and the recorded one is not touched.
+ */
+it('merges another version, newer or older, that only adds a role', function (string $to): void {
     BlueprintApplier::apply(new FixtureBlueprint);
-    $receipt = Blueprint::receiptFor('fixture');
-    $applied = $receipt->applied_at?->toIso8601String();
-    $manifest = $receipt->manifest;
+    $dispatcher = Role::query()->where('handle', 'dispatcher')->firstOrFail();
+    $holder = blueprintHolder($this->org, $dispatcher);
 
     FixtureBlueprint::$version = $to;
     FixtureBlueprint::$roles[] = new RoleDeclaration('router', 'Router', ['dispatch' => ['view']]);
 
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(
-        RuntimeException::class,
-        "Blueprint [fixture] is applied in this organisation at 1.0.0; this definition is {$to}. Applying a different version over it, newer or older, waits on ADR-039's merge, which is not built yet, and nothing clears a receipt yet either. Nothing was written, and the receipt still says 1.0.0.",
-    );
-
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
     $receipt = Blueprint::receiptFor('fixture');
+    $router = Role::query()->where('handle', 'router')->firstOrFail();
 
-    expect($receipt->version)->toBe('1.0.0')
-        ->and($receipt->applied_at?->toIso8601String())->toBe($applied)
-        ->and($receipt->manifest)->toBe($manifest)
-        ->and(Role::query()->where('handle', 'router')->count())->toBe(0);
+    expect($result['roles_created'])->toBe(['router'])
+        ->and($result['version'])->toBe($to)
+        ->and(blueprintGrantsOf($router->getKey()))->toBe(['entry.dispatch.view'])
+        ->and(blueprintGrantsOf($dispatcher->getKey()))->toBe(['entry.dispatch.update', 'entry.dispatch.view'])
+        ->and(DB::table('role_user')->pluck('user_id')->all())->toBe([$holder->getKey()])
+        ->and($receipt->version)->toBe($to)
+        ->and($receipt->applied_at)->not->toBeNull()
+        ->and($receipt->manifest['version'])->toBe($to)
+        ->and(array_column($receipt->manifest['roles'], 'handle'))->toBe(['dispatcher', 'router'])
+        ->and($receipt->manifest['roles'][0]['id'])->toBe($dispatcher->getKey());
 })->with(['an upgrade' => '1.1.0', 'a downgrade' => '0.9.0']);
 
 it('records each role and every field as declared in the manifest', function (): void {

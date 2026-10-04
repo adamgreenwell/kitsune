@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Blueprints;
 
+use Illuminate\Contracts\Database\ConcurrencyErrorDetector as ConcurrencyErrorDetectorContract;
+use Illuminate\Database\ConcurrencyErrorDetector;
 use Illuminate\Database\UniqueConstraintViolationException;
 use InvalidArgumentException;
 use Kitsune\Core\Auth\Permissions;
@@ -57,8 +59,10 @@ use Throwable;
  *   version;
  * - `manifest` set, `applied_at` null — the rows committed and the finish did not run: the next run finishes the
  *   version the receipt records, whichever version it is itself, rather than refusing its own types;
- * - `applied_at` set — done: the same version is a no-op, and a different one is refused before anything is
- *   written, because ADR-039's additive merge is not built. Applying over it stranded the org: the intent record
+ * - `applied_at` set — done: the same version is a no-op, and a different one is ~~refused before anything is
+ *   written, because ADR-039's additive merge is not built~~ merged (ADR-039, the merge as built): it adds what that
+ *   version declares and the manifest does not record, and refuses — before anything is written — any change to or
+ *   removal of what the manifest records. Applying over it as a fresh apply stranded the org: the intent record
  *   cleared the manifest, then the default policy refused the types the first version had created.
  *
  * ⚠️ AN APPLY WRITES NO `role_user` ROW, AND NO GRANT ON A ROLE IT DID NOT CREATE. A role a blueprint declares is
@@ -71,6 +75,18 @@ final class BlueprintApplier
      * escaping where it is shown — and so `*`, which the grant grammar reads as every type, is never a type's handle.
      */
     private const HANDLE = '/^[a-z][a-z0-9_]*$/';
+
+    /**
+     * The keys of `typeRecord()`, `fieldRecord()` and `roleRecord()`, which a manifest must hold for a merge to read it.
+     */
+    private const TYPE_RECORD = ['name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision'];
+
+    private const FIELD_RECORD = ['type', 'label', 'pii_class', 'cardinality', 'is_indexed', 'settings', 'is_required', 'help_text', 'ordering', 'group'];
+
+    private const ROLE_RECORD = ['name', 'on_collision', 'grants'];
+
+    /** The field keys whose change reshapes storage — what a lock forbids (`FieldStorage::saving()`, ADR-006). */
+    private const RESHAPING = ['type', 'cardinality', 'settings'];
 
     /**
      * @return array{handle: string, version: string, created: list<string>, adopted: list<string>, skipped: list<string>, indexed: int, roles_created: list<string>}
@@ -104,16 +120,16 @@ final class BlueprintApplier
         $receipt = Blueprint::receiptFor($definition->handle());
 
         if ($receipt !== null && $receipt->applied_at !== null) {
-            /*
-             * ⚠️ ANOTHER VERSION IS REFUSED, AND THE RECEIPT IS LEFT AS IT IS. ADR-039's merge — add what the new
-             * version declares and the old one did not — is not built, and an apply over the old version cleared
-             * the manifest and then refused, under the default policy, the very types that version had created.
-             */
-            if ($receipt->version !== $definition->version()) {
-                throw new RuntimeException(self::versionRefusal($definition, $receipt));
+            if ($receipt->version === $definition->version()) {
+                return self::nothingToDo($definition);
             }
 
-            return self::nothingToDo($definition);
+            /*
+             * ⚠️ ANOTHER VERSION IS MERGED, ~~REFUSED~~, AND NEVER APPLIED AFRESH. An apply over the old version cleared
+             * the manifest and then refused, under the default policy, the very types that version had created; the
+             * merge reads the manifest instead, and adds only what this version declares and it does not record.
+             */
+            return self::merge($definition, $receipt, $orgId);
         }
 
         /*
@@ -158,9 +174,17 @@ final class BlueprintApplier
                     self::applyEntryType($declaration, $orgId, $outcome, $indexable, $rows);
                 }
 
-                /* After every type, so a role's grants name types that exist — this apply's own among them. */
+                /*
+                 * After every type, so a role's grants name types that exist — and only types this apply created: one
+                 * adopted under Skip is the operator's.
+                 */
+                $grantable = array_keys(array_filter(
+                    $rows['entry_types'],
+                    static fn (array $row): bool => $row['outcome'] === 'created',
+                ));
+
                 foreach ($definition->roles() as $declaration) {
-                    self::applyRole($declaration, $outcome, $rows);
+                    self::applyRole($declaration, $grantable, $outcome, $rows);
                 }
 
                 /*
@@ -266,6 +290,7 @@ final class BlueprintApplier
             }
 
             $types[$type->handle] = true;
+            $fields = [];
 
             foreach ($type->fields as $field) {
                 /* A type no registry knows was stored without complaint, and failed closed only where it was shown. */
@@ -278,6 +303,19 @@ final class BlueprintApplier
                         $field->type,
                     ));
                 }
+
+                /*
+                 * ⚠️ BEFORE THE RECEIPT, AND NOT LEFT TO THE ROWS. The second declaration failed only inside the rows
+                 * transaction, as one of StorageAdoption's refusals — and a manifest keyed by handle records one of the
+                 * two, so a merge could not tell which of them a later version changed.
+                 */
+                if (isset($fields[$field->handle])) {
+                    throw new InvalidArgumentException(
+                        "Blueprint [{$handle}] declares field [{$field->handle}] on [{$type->handle}] twice."
+                    );
+                }
+
+                $fields[$field->handle] = true;
             }
         }
 
@@ -431,26 +469,721 @@ final class BlueprintApplier
         return $permissions;
     }
 
-    private static function versionRefusal(BlueprintDefinition $definition, Blueprint $receipt): string
-    {
-        return sprintf(
-            'Blueprint [%s] is applied in this organisation at %s; this definition is %s. Applying a different '
-            .'version over it, newer or older, waits on ADR-039\'s merge, which is not built yet, and nothing clears '
-            .'a receipt yet either. Nothing was written, and the receipt still says %s.',
-            $definition->handle(),
-            (string) $receipt->version,
-            $definition->version(),
-            (string) $receipt->version,
-        );
-    }
-
     private static function concurrent(BlueprintDefinition $definition): string
     {
         return sprintf(
             'The apply of [%s] stopped, and this organisation\'s receipt for it now records rows this run did not '
             .'commit: another apply of it ran at the same moment, or this run\'s own commit landed as it failed. '
-            .'Re-run it — it finishes what the receipt records, or does nothing if that is done.',
+            .'Re-run it — it finishes what the receipt records, merges over it, or does nothing if that is done.',
             $definition->handle(),
+        );
+    }
+
+    /**
+     * Merge a later version over a finished apply — ADR-039's additive merge, as built.
+     *
+     * ⚠️ A NEW VERSION IS THE OLD ONE PLUS ADDITIONS, AND NOTHING ELSE MERGES. The definition is compared with the
+     * manifest before anything is written: any change to or removal of what the manifest records is refused, every
+     * difference named, so what reaches the transaction can only add — new entry types, new fields on types this
+     * blueprint created, new roles. No row an earlier version wrote is written, so every edit the operator made since
+     * wins without being looked for, and an upgraded org ends with the rows a fresh apply of the new version writes.
+     *
+     * ⚠️ VERSION AND MANIFEST MOVE IN THE ROWS' TRANSACTION, WITH `applied_at` NULLED THERE. A merge that commits and
+     * does not reach its index sync is then state 2 at the new version — rows and manifest committed, the finish owed
+     * — which the next run completes, as it does an interrupted fresh apply.
+     *
+     * @return array{handle: string, version: string, created: list<string>, adopted: list<string>, skipped: list<string>, indexed: int, roles_created: list<string>}
+     *
+     * @throws RuntimeException
+     */
+    private static function merge(BlueprintDefinition $definition, Blueprint $receipt, int $orgId): array
+    {
+        $from = (string) $receipt->version;
+        $to = $definition->version();
+        $planned = $receipt->manifest;
+
+        /* The plan: both refusals are thrown before the transaction opens, and neither writes. */
+        $recorded = self::recordedOf($definition, $receipt);
+        self::refuseChanges($definition, $recorded, $from, $orgId);
+
+        $outcome = ['created' => [], 'adopted' => [], 'skipped' => []];
+        $indexable = [];
+        $notes = [];
+        $rows = self::seededRows($recorded);
+        $createdRoles = [];
+
+        try {
+            $receipt->getConnection()->transaction(function () use ($definition, $receipt, $orgId, $from, $to, $planned, $recorded, &$outcome, &$indexable, &$notes, &$rows, &$createdRoles): void {
+                /*
+                 * ⚠️ 1. THE RECEIPT AGAIN, FOR UPDATE, BEFORE ANYTHING. Two merges both planned from `$from`; without
+                 * this the second would write its manifest over the first's — a version-only or grant-free merge
+                 * meets no unique index to stop it. PostgreSQL, MySQL and MariaDB make the second wait here and then
+                 * read the first's commit; SQLite fails its first write instead, and the catch names either.
+                 */
+                $fresh = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
+
+                if (self::receiptMoved($fresh, $from, $planned)) {
+                    throw new RuntimeException(self::concurrent($definition));
+                }
+
+                /* 2. What each row the manifest records as created is now. Recorded types are locked, in id order. */
+                $types = $recorded['entry_types'];
+                uasort($types, static fn (array $a, array $b): int => (int) $a['id'] <=> (int) $b['id']);
+                $typeState = [];
+                $held = [];
+
+                foreach ($types as $handle => $row) {
+                    if ($row['outcome'] === 'created') {
+                        [$typeState[$handle], $live] = self::recordedRow('entry_types', $row['id'], $handle, $orgId, lock: true);
+
+                        if ($typeState[$handle] === 'holds' && $live instanceof EntryType) {
+                            $held[$handle] = $live;
+                        }
+                    }
+                }
+
+                $roleState = [];
+                $roleLive = [];
+
+                foreach ($recorded['roles'] as $handle => $row) {
+                    if ($row['outcome'] === 'created') {
+                        [$roleState[$handle], $roleLive[$handle]] = self::recordedRow('roles', $row['id'], $handle, $orgId);
+                    }
+                }
+
+                $foreign = [];
+
+                foreach (['entry type' => [$recorded['entry_types'], $typeState], 'role' => [$recorded['roles'], $roleState]] as $kind => [$records, $states]) {
+                    foreach ($records as $handle => $row) {
+                        $state = $states[$handle] ?? null;
+
+                        /* A type under another handle is not the admin's doing — it disables the handle on edit. */
+                        if ($state === 'foreign' || ($state === 'renamed' && $kind === 'entry type')) {
+                            $foreign[] = sprintf('%s id %s is not this organisation\'s %s', $kind, self::idOf($row['id']), $handle);
+                        }
+                    }
+                }
+
+                if ($foreign !== []) {
+                    throw new RuntimeException(sprintf(
+                        'The receipt for [%1$s] cannot be merged: %2$s. Its manifest is not this organisation\'s record '
+                        .'of this blueprint\'s rows, so nothing was written and the receipt still says %3$s.',
+                        $definition->handle(),
+                        implode('; ', $foreign),
+                        $from,
+                    ));
+                }
+
+                /*
+                 * ⚠️ 3. NOTHING LANDS ON WHAT THE OPERATOR REMOVED. A field added to a type they deleted would
+                 * re-create it, and a grant on a handle nothing of this blueprint's holds any more reaches whatever
+                 * type takes it next — the global one included.
+                 */
+                $removed = [];
+
+                foreach ($definition->entryTypes() as $declaration) {
+                    if (($typeState[$declaration->handle] ?? null) !== 'gone') {
+                        continue;
+                    }
+
+                    foreach ($declaration->fields as $field) {
+                        if (! isset($recorded['entry_types'][$declaration->handle]['fields'][$field->handle])) {
+                            $removed[] = sprintf(
+                                'it adds field %s to entry type %s, which this blueprint created and this organisation '
+                                .'has since removed — a merge never re-creates what was removed',
+                                $field->handle,
+                                $declaration->handle,
+                            );
+                        }
+                    }
+                }
+
+                foreach ($definition->roles() as $declaration) {
+                    if (isset($recorded['roles'][$declaration->handle])) {
+                        continue;
+                    }
+
+                    foreach (array_keys($declaration->grants) as $type) {
+                        $state = $typeState[$type] ?? null;
+
+                        if ($state === 'gone') {
+                            $removed[] = sprintf(
+                                'role %s, new in %s, grants on %s, which this blueprint created and this organisation has '
+                                .'since removed — a grant on that handle would reach whatever type takes it next',
+                                $declaration->handle,
+                                $to,
+                                $type,
+                            );
+                        } elseif ($state === 'holds' && EntryType::query()->whereNull('org_id')->where('handle', $type)->exists()) {
+                            $removed[] = sprintf(
+                                'role %s, new in %s, grants on %s, and a global type with that handle now exists — the '
+                                .'grant would reach the global type\'s entries here too',
+                                $declaration->handle,
+                                $to,
+                                $type,
+                            );
+                        }
+                    }
+                }
+
+                if ($removed !== []) {
+                    throw new RuntimeException(sprintf(
+                        'Blueprint [%1$s] cannot be merged from %2$s to %3$s in this organisation: %4$s. A merge writes '
+                        .'only onto what this blueprint created and this organisation still has as it was written. '
+                        .'Nothing was written, and the receipt still says %2$s.',
+                        $definition->handle(),
+                        $from,
+                        $to,
+                        implode('; ', $removed),
+                    ));
+                }
+
+                /* 4. What the operator changed that a merge leaves as it is, said rather than undone. */
+                foreach ($recorded['entry_types'] as $handle => $row) {
+                    if (($typeState[$handle] ?? null) === 'gone') {
+                        $notes[] = "entry type {$handle}: removed since this blueprint wrote it; not written again";
+                    }
+
+                    $type = $held[$handle] ?? null;
+
+                    foreach ($type === null ? [] : array_keys($row['fields']) as $field) {
+                        $kept = Field::query()
+                            ->where('entry_type_id', $type->getKey())
+                            ->whereIn('field_storage_id', FieldStorage::query()->select('id')->where('org_id', $orgId)->where('handle', $field))
+                            ->exists();
+
+                        if (! $kept) {
+                            $notes[] = "field {$field} on {$handle}: removed since this blueprint wrote it; not written again";
+                        }
+                    }
+                }
+
+                foreach (array_keys($recorded['roles']) as $handle) {
+                    $state = $roleState[$handle] ?? null;
+                    $live = $roleLive[$handle] ?? null;
+
+                    if ($state === 'gone') {
+                        $notes[] = "role {$handle}: removed since this blueprint wrote it; not written again";
+                    } elseif ($state === 'renamed' && $live !== null) {
+                        $notes[] = sprintf(
+                            'role %s: renamed %s since this blueprint wrote it; left as it is',
+                            $handle,
+                            (string) $live->getAttribute('handle'),
+                        );
+                    }
+                }
+
+                /* 5. New types, under the collision policy exactly as a fresh apply meets it. */
+                foreach ($definition->entryTypes() as $declaration) {
+                    if (! isset($recorded['entry_types'][$declaration->handle])) {
+                        self::applyEntryType($declaration, $orgId, $outcome, $indexable, $rows);
+                    }
+                }
+
+                /* 6. New fields, on the types this blueprint created and this org still has — after 5, so a relation may target a new type. */
+                foreach ($definition->entryTypes() as $declaration) {
+                    $type = $held[$declaration->handle] ?? null;
+
+                    foreach ($type === null ? [] : $declaration->fields as $field) {
+                        if (! isset($recorded['entry_types'][$declaration->handle]['fields'][$field->handle])) {
+                            $rows['entry_types'][$declaration->handle]['fields'][$field->handle] = self::applyField($field, $type, $orgId, $outcome, $indexable);
+                        }
+                    }
+                }
+
+                /*
+                 * 7. New roles, granting on what this merge created and on what an earlier version created that this
+                 * org still has. A recorded role is never written: whoever holds it would gain or lose with nobody
+                 * choosing to (ADR-033).
+                 */
+                $grantable = [...array_keys($held), ...array_keys(array_filter(
+                    array_diff_key($rows['entry_types'], $recorded['entry_types']),
+                    static fn (array $row): bool => $row['outcome'] === 'created',
+                ))];
+
+                foreach ($definition->roles() as $declaration) {
+                    if (isset($recorded['roles'][$declaration->handle])) {
+                        continue;
+                    }
+
+                    self::applyRole($declaration, $grantable, $outcome, $rows);
+
+                    if ($rows['roles'][$declaration->handle]['outcome'] === 'created') {
+                        $createdRoles[] = $declaration->handle;
+                    }
+                }
+
+                /*
+                 * ⚠️ 8. LAST, AND INSIDE. The manifest is seeded from the recorded ids and outcomes, so it keeps every
+                 * earlier row — the ones the operator removed included, which is what stops a later version re-adding
+                 * them — and records what this version declares, as a fresh apply of it would.
+                 */
+                $receipt->version = $to;
+                $receipt->manifest = self::manifestOf($definition, $outcome, $rows);
+                $receipt->applied_at = null;
+                $receipt->save();
+            });
+        } catch (Throwable $e) {
+            /*
+             * ⚠️ NAMED BY WHAT THE RECEIPT SAYS NOW, NOT BY WHAT WAS THROWN. A receipt that moved is another apply's;
+             * a lock or a unique index lost with the receipt where it was is a write that reached the same rows at the
+             * same moment; anything else is this run's own refusal, and reads as itself.
+             */
+            try {
+                $fresh = Blueprint::query()->whereKey($receipt->getKey())->first();
+            } catch (Throwable) {
+                throw $e;
+            }
+
+            if (self::receiptMoved($fresh, $from, $planned)) {
+                throw new RuntimeException(self::concurrent($definition), 0, $e);
+            }
+
+            if ($e instanceof UniqueConstraintViolationException || self::causedByContention($e)) {
+                throw new RuntimeException(self::contended($definition, $from), 0, $e);
+            }
+
+            throw $e;
+        }
+
+        /* After the commit, as a fresh apply's: DDL cannot join the transaction on two engines of four. */
+        $indexed = self::syncIndexes($indexable);
+
+        $receipt->applied_at = now();
+        $receipt->save();
+
+        return [
+            'handle' => $definition->handle(),
+            'version' => $to,
+            'created' => $outcome['created'],
+            'adopted' => $outcome['adopted'],
+            'skipped' => [
+                sprintf(
+                    'version: merged over %1$s, which the receipt recorded — what %2$s adds was written, and nothing '
+                    .'%1$s wrote was changed',
+                    $from,
+                    $to,
+                ),
+                ...$notes,
+                ...$outcome['skipped'],
+            ],
+            'indexed' => $indexed,
+            /* ⚠️ THIS RUN'S, NEVER THE SEEDED ROWS': those would report every role an earlier version created. */
+            'roles_created' => $createdRoles,
+        ];
+    }
+
+    /**
+     * The manifest, checked and keyed by handle in manifest order — refused, every problem named, when a merge cannot
+     * read it.
+     *
+     * ⚠️ CHECKED, NOT TRUSTED, AND BEFORE ANYTHING IS WRITTEN. `manifest` is one of the receipt's two columns a bulk
+     * write is not refused for, and a merge decides from it which rows are this blueprint's.
+     *
+     * @return array{
+     *     entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>,
+     *     roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>
+     * }
+     *
+     * @throws RuntimeException
+     */
+    private static function recordedOf(BlueprintDefinition $definition, Blueprint $receipt): array
+    {
+        $manifest = $receipt->manifest;
+        $problems = [];
+        $recorded = ['entry_types' => [], 'roles' => []];
+
+        if (! is_array($manifest) || $manifest === []) {
+            $problems[] = 'it records nothing';
+            $manifest = [];
+        } elseif (($manifest['version'] ?? null) !== $receipt->version) {
+            $problems[] = 'it records version '.(is_scalar($manifest['version'] ?? null) ? (string) $manifest['version'] : get_debug_type($manifest['version'] ?? null));
+        }
+
+        foreach (['entry type' => 'entry_types', 'role' => 'roles'] as $kind => $key) {
+            $rows = $manifest[$key] ?? null;
+
+            if ($manifest !== [] && (! is_array($rows) || ! array_is_list($rows))) {
+                $problems[] = "its {$key} are not a list";
+
+                continue;
+            }
+
+            foreach ((array) $rows as $row) {
+                $checked = self::recordedRowOf($kind, '', $row, $problems);
+
+                if ($checked === null) {
+                    continue;
+                }
+
+                [$handle, $entry] = $checked;
+
+                if (isset($recorded[$key][$handle])) {
+                    $problems[] = "it records {$kind} {$handle} twice";
+
+                    continue;
+                }
+
+                if ($key === 'entry_types') {
+                    $entry['fields'] = [];
+                    $fields = $row['fields'] ?? null;
+
+                    if (! is_array($fields) || ! array_is_list($fields)) {
+                        $problems[] = "its fields on {$handle} are not a list";
+                    } else {
+                        foreach ($fields as $field) {
+                            $checkedField = self::recordedRowOf('field', " on {$handle}", $field, $problems);
+
+                            if ($checkedField === null) {
+                                continue;
+                            }
+
+                            if (isset($entry['fields'][$checkedField[0]])) {
+                                $problems[] = "it records field {$checkedField[0]} on {$handle} twice";
+
+                                continue;
+                            }
+
+                            $entry['fields'][$checkedField[0]] = $checkedField[1];
+                        }
+                    }
+                }
+
+                $recorded[$key][$handle] = $entry;
+            }
+        }
+
+        if ($problems !== []) {
+            throw new RuntimeException(sprintf(
+                'The receipt for [%1$s] records %2$s, but its manifest is not a record a merge can read: %3$s. Nothing '
+                .'was written and the receipt is left as it is — and no command clears a receipt yet, because '
+                .'ADR-039\'s reverse is not built.',
+                $definition->handle(),
+                (string) $receipt->version,
+                implode('; ', $problems),
+            ));
+        }
+
+        /** @var array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>} $recorded */
+        return $recorded;
+    }
+
+    /**
+     * One row of the manifest, checked: its handle and what a merge reads of it — or null, with the problem added.
+     *
+     * @param  'entry type'|'role'|'field'  $kind
+     * @param  string  $where  ` on {type}` for a field, and empty otherwise
+     * @param  list<string>  $problems
+     * @return array{0: string, 1: array<string, mixed>}|null
+     */
+    private static function recordedRowOf(string $kind, string $where, mixed $row, array &$problems): ?array
+    {
+        if (! is_array($row) || ! is_string($row['handle'] ?? null)) {
+            $problems[] = sprintf('%s %s it records%s has no handle', $kind === 'entry type' ? 'an' : 'a', $kind, $where);
+
+            return null;
+        }
+
+        $handle = $row['handle'];
+
+        [$keys, $outcomes] = match ($kind) {
+            'entry type' => [self::TYPE_RECORD, ['created', 'skipped']],
+            'role' => [self::ROLE_RECORD, ['created', 'skipped']],
+            'field' => [self::FIELD_RECORD, ['created', 'adopted']],
+        };
+
+        $missing = array_values(array_filter(
+            [...($kind === 'field' ? [] : ['id']), 'outcome', ...$keys],
+            static fn (string $key): bool => ! array_key_exists($key, $row),
+        ));
+
+        if ($missing !== []) {
+            $problems[] = sprintf('%s %s%s has no %s', $kind, $handle, $where, implode(', ', $missing));
+
+            return null;
+        }
+
+        if (! in_array($row['outcome'], $outcomes, true)) {
+            $problems[] = sprintf('%s %s%s has the outcome %s', $kind, $handle, $where, (string) json_encode($row['outcome'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+            return null;
+        }
+
+        /* Both a created and an adopted type record the type's id (A: applyEntryType); a skipped role records none. */
+        if (($kind === 'entry type' || ($kind === 'role' && $row['outcome'] === 'created')) && ! self::integerLike($row['id'])) {
+            $problems[] = "{$kind} {$handle} has no id";
+
+            return null;
+        }
+
+        if ($kind === 'role' && (! is_array($row['grants']) || ! array_is_list($row['grants']) || array_filter($row['grants'], is_string(...)) !== $row['grants'])) {
+            $problems[] = "role {$handle}'s grants are not a list";
+
+            return null;
+        }
+
+        $record = [];
+
+        foreach ($keys as $key) {
+            $record[$key] = $row[$key];
+        }
+
+        return [$handle, $kind === 'field'
+            ? ['outcome' => $row['outcome'], 'record' => $record]
+            : ['id' => $row['id'], 'outcome' => $row['outcome'], 'record' => $record]];
+    }
+
+    /**
+     * Refuse a definition that changes or removes anything the manifest records — every difference named, nothing
+     * written.
+     *
+     * ⚠️ THE ONE RULE, AND WHY IT IS A REFUSAL RATHER THAN A WRITE. A merge that changed a recorded row would overwrite
+     * whatever the operator made of it, and one that dropped a recorded grant would take authority from whoever holds
+     * the role with nobody choosing to. Every rule here can be loosened later without undoing anything applied; none
+     * could be tightened again once a merge had written past it.
+     *
+     * ⚠️ IT READS ONE THING: whether the storage a reshaped field names is locked, for the refusal's wording alone.
+     *
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     *
+     * @throws RuntimeException
+     */
+    private static function refuseChanges(BlueprintDefinition $definition, array $recorded, string $from, int $orgId): void
+    {
+        $to = $definition->version();
+        $types = [];
+        $roles = [];
+        $items = [];
+
+        foreach ($definition->entryTypes() as $type) {
+            $types[$type->handle] = $type;
+        }
+
+        foreach ($definition->roles() as $role) {
+            $roles[$role->handle] = $role;
+        }
+
+        foreach ($recorded['entry_types'] as $handle => $row) {
+            $type = $types[$handle] ?? null;
+
+            if ($type === null) {
+                $items[] = "entry type {$handle} is no longer declared";
+
+                continue;
+            }
+
+            $changed = self::changedKeys(self::typeRecord($type), $row['record']);
+
+            if ($changed !== []) {
+                $items[] = sprintf('entry type %s changes its %s', $handle, implode(', ', $changed));
+            }
+
+            $fields = [];
+
+            foreach ($type->fields as $field) {
+                $fields[$field->handle] = $field;
+            }
+
+            foreach ($row['fields'] as $handled => $field) {
+                $declared = $fields[$handled] ?? null;
+
+                if ($declared === null) {
+                    $items[] = "field {$handled} on {$handle} is no longer declared";
+
+                    continue;
+                }
+
+                $changed = self::changedKeys(self::fieldRecord($declared), $field['record']);
+
+                if ($changed === []) {
+                    continue;
+                }
+
+                $item = sprintf('field %s on %s changes its %s', $handled, $handle, implode(', ', $changed));
+
+                /*
+                 * ⚠️ READ FROM THE ROW, NOT THE DEFINITION, AND ONLY FOR THE WORDING. Storage is org-wide, so data
+                 * written through another type locks it too; a lock armed after this read changes only the words.
+                 */
+                $reshapes = array_intersect($changed, self::RESHAPING) !== [];
+
+                if ($reshapes && FieldStorage::query()->where('org_id', $orgId)->where('handle', $handled)->where('is_locked', true)->exists()) {
+                    $item .= " — and {$handled} is locked because entries hold data for it: create a new field, migrate "
+                        .'the data, verify, then remove the old one (ADR-006)';
+                }
+
+                $items[] = $item;
+            }
+
+            /* ⚠️ A TYPE ADOPTED UNDER SKIP IS THE OPERATOR'S: a fresh apply adds its fields, and a merge never does. */
+            if ($row['outcome'] === 'skipped') {
+                foreach ($type->fields as $field) {
+                    if (! isset($row['fields'][$field->handle])) {
+                        $items[] = sprintf(
+                            'field %s is added to entry type %s, which this blueprint adopted (onCollision: skip) '
+                            .'rather than created — a merge adds fields only to types this blueprint created',
+                            $field->handle,
+                            $handle,
+                        );
+                    }
+                }
+            }
+        }
+
+        foreach ($recorded['roles'] as $handle => $row) {
+            $role = $roles[$handle] ?? null;
+
+            if ($role === null) {
+                $items[] = "role {$handle} is no longer declared";
+
+                continue;
+            }
+
+            $declared = self::roleRecord($role);
+            $changed = array_values(array_diff(self::changedKeys($declared, $row['record']), ['grants']));
+
+            if ($changed !== []) {
+                $items[] = sprintf('role %s changes its %s', $handle, implode(', ', $changed));
+            }
+
+            /** @var list<string> $held */
+            $held = $row['record']['grants'];
+            $gains = array_values(array_diff($declared['grants'], $held));
+            $loses = array_values(array_diff($held, $declared['grants']));
+            sort($gains);
+            sort($loses);
+
+            if ($gains !== []) {
+                $items[] = sprintf(
+                    'role %s gains %s — a merge never adds to a role an earlier version created, because whoever holds '
+                    .'it would gain them with nobody choosing to (ADR-033); declare them on a new role',
+                    $handle,
+                    implode(', ', $gains),
+                );
+            }
+
+            if ($loses !== []) {
+                $items[] = sprintf('role %s loses %s — a merge never revokes', $handle, implode(', ', $loses));
+            }
+        }
+
+        foreach ($roles as $handle => $role) {
+            if (isset($recorded['roles'][$handle])) {
+                continue;
+            }
+
+            foreach (array_keys($role->grants) as $type) {
+                if (($recorded['entry_types'][$type]['outcome'] ?? null) === 'skipped') {
+                    $items[] = sprintf(
+                        'role %s, new in %s, grants on %s, which this blueprint adopted (onCollision: skip) rather than '
+                        .'created — authority over that type is the operator\'s to give',
+                        $handle,
+                        $to,
+                        (string) $type,
+                    );
+                }
+            }
+        }
+
+        if ($items !== []) {
+            throw new RuntimeException(sprintf(
+                'Blueprint [%1$s] cannot be merged from %2$s to %3$s: a merge adds what %3$s declares and %2$s did not, '
+                .'and never changes or removes what %2$s recorded — %4$s. Nothing was written, and the receipt still '
+                .'says %2$s.',
+                $definition->handle(),
+                $from,
+                $to,
+                implode('; ', $items),
+            ));
+        }
+    }
+
+    /**
+     * The keys of a declaration's record whose values differ from the manifest's, in record order.
+     *
+     * ⚠️ `settings` LOOSELY, AS `StorageAdoption` COMPARES THEM, AND EVERYTHING ELSE STRICTLY. Settings are the field
+     * type's to read, and a JSON column may hand an object back with its keys reordered (MySQL does); everything else
+     * is a scalar the projection wrote, and loosely `'1.1' == '1.10'` and `null == ''`.
+     *
+     * @param  array<string, mixed>  $declared
+     * @param  array<string, mixed>  $recorded
+     * @return list<string>
+     */
+    private static function changedKeys(array $declared, array $recorded): array
+    {
+        $changed = [];
+
+        foreach ($declared as $key => $value) {
+            $was = $recorded[$key] ?? null;
+
+            if ($key === 'settings' ? $value != $was : $value !== $was) {
+                $changed[] = $key;
+            }
+        }
+
+        return $changed;
+    }
+
+    /**
+     * The manifest's ids and outcomes as `$rows`, so the manifest a merge writes keeps every row an earlier version
+     * wrote — under its id, removed or not.
+     *
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @return array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}
+     */
+    private static function seededRows(array $recorded): array
+    {
+        $rows = ['entry_types' => [], 'roles' => []];
+
+        foreach ($recorded['entry_types'] as $handle => $row) {
+            $rows['entry_types'][$handle] = [
+                'id' => $row['id'],
+                'outcome' => $row['outcome'],
+                'fields' => array_map(static fn (array $field): string => $field['outcome'], $row['fields']),
+            ];
+        }
+
+        foreach ($recorded['roles'] as $handle => $row) {
+            $rows['roles'][$handle] = ['id' => $row['id'], 'outcome' => $row['outcome']];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Whether the receipt is no longer the one the merge planned from: gone, unfinished, at another version, or
+     * recording something else.
+     *
+     * ⚠️ THE MANIFEST STRICTLY. Both sides decode what the database stored, so `!==` is exact — and loosely, a
+     * manifest at `'1.10'` equals one at `'1.1'`.
+     */
+    private static function receiptMoved(?Blueprint $fresh, string $from, mixed $planned): bool
+    {
+        return $fresh === null
+            || $fresh->applied_at === null
+            || $fresh->version !== $from
+            || $fresh->manifest !== $planned;
+    }
+
+    /** A lock, deadlock or serialisation failure, by Laravel's own detector: the one bound, or its default. */
+    private static function causedByContention(Throwable $e): bool
+    {
+        $detector = app()->bound(ConcurrencyErrorDetectorContract::class)
+            ? app(ConcurrencyErrorDetectorContract::class)
+            : new ConcurrencyErrorDetector;
+
+        return $detector->causedByConcurrencyError($e);
+    }
+
+    private static function contended(BlueprintDefinition $definition, string $from): string
+    {
+        return sprintf(
+            'The merge of [%1$s] from %2$s to %3$s stopped: another write reached the same rows at the same moment, and '
+            .'nothing this run wrote was kept. Run it again — it merges over whatever the receipt then records, or does '
+            .'nothing if that is done.',
+            $definition->handle(),
+            $from,
+            $definition->version(),
         );
     }
 
@@ -460,13 +1193,19 @@ final class BlueprintApplier
      * ⚠️ THE VERSION THE RECEIPT RECORDS, WHICHEVER VERSION THIS DEFINITION IS. The finish reads only the manifest —
      * which fields to index, which rows to look for — so it needs nothing of the version that wrote them but the
      * record, and Blog's version moves with core's: an org whose rows committed under an older core is finished by a
-     * newer one, at the old version, and the newer version is then refused as any other is.
+     * newer one, at the old version, and the next run then merges the newer version over it ~~is then refused as any
+     * other is~~.
+     *
+     * The merge's own interruption is this state too: it commits the new version and its manifest with its rows and
+     * `applied_at` null, so a merge stopped in its index sync is finished here, at the version it merged to.
      *
      * ⚠️ THE MANIFEST IS CHECKED AGAINST THE DATABASE FIRST. It is one of the receipt's two columns a bulk write is
      * not refused for (`applied_at` is the other), so a manifest that is not this org's record of these rows is
      * refused rather than trusted into an `applied_at`:
      * - at the same version, it must record every type and role the definition declares, as created or skipped;
-     * - a row it records as created must not be another org's, nor another type's or role's under its id.
+     * - a row it records as created must not be another org's, nor another type under its id. ~~Nor another role's~~:
+     *   a role under another handle in this org is its owner's rename — the admin edits a role's handle, never a
+     *   type's — so it is reported and the finish goes ahead, as the merge does.
      *
      * A row it records as created that is gone altogether is one the operator removed while the finish was owed —
      * which they may do after a finish at no cost — so it is reported and the finish goes ahead, rather than leaving
@@ -509,11 +1248,23 @@ final class BlueprintApplier
                 }
 
                 if ($outcome === 'created') {
-                    $holds = self::recordedRowHolds($key, $row['id'] ?? null, $handle, $orgId);
+                    [$state, $live] = self::recordedRow($key, $row['id'] ?? null, $handle, $orgId);
 
-                    if ($holds === false) {
-                        $refused[] = sprintf('%s id %s is not this organisation\'s %s', $kind, (string) ($row['id'] ?? '?'), $handle);
-                    } elseif ($holds === null) {
+                    /*
+                     * ⚠️ A ROLE UNDER ANOTHER HANDLE IN THIS ORG IS ITS OWNER'S RENAME, ~~A FORGERY~~. The admin edits
+                     * a role's handle and never a type's, and an interrupted merge records roles an earlier version
+                     * created long before — so refusing the rename stranded the org at state 2. The finish writes
+                     * nothing to roles, so it goes ahead and says so; a type under another handle is still refused.
+                     */
+                    if ($state === 'renamed' && $key === 'roles' && $live !== null) {
+                        $removed[] = sprintf(
+                            'role %s: renamed %s since the interrupted apply wrote it; left as it is',
+                            $handle,
+                            (string) $live->getAttribute('handle'),
+                        );
+                    } elseif ($state === 'foreign' || $state === 'renamed') {
+                        $refused[] = sprintf('%s id %s is not this organisation\'s %s', $kind, self::idOf($row['id'] ?? null), $handle);
+                    } elseif ($state === 'gone') {
                         $removed[] = "{$kind} {$handle}: removed since the interrupted apply wrote it; not written again";
                     }
                 }
@@ -552,8 +1303,8 @@ final class BlueprintApplier
 
         if (! $sameVersion) {
             $notes[] = sprintf(
-                'version: finished at %s, which the receipt records; this definition is %s, and applying it over %s '
-                .'waits on ADR-039\'s merge',
+                'version: finished at %s, which the receipt records; this definition is %s — run it again to merge it '
+                .'over %s',
                 (string) $receipt->version,
                 $definition->version(),
                 (string) $receipt->version,
@@ -572,27 +1323,55 @@ final class BlueprintApplier
     }
 
     /**
-     * Whether the row a manifest records under an id is this org's, by that handle: true; another's: false; gone: null.
+     * What the row a manifest records under an id is now: this org's under that handle, gone, this org's under another
+     * handle, or not this org's at all — with the row itself when it is this org's.
      *
      * ⚠️ PAST THE SCOPE FOR A ROLE, AND ONLY TO TELL "ANOTHER ORG'S" FROM "GONE". Through the scope the two read the
      * same, and they mean opposite things: one is a manifest that is not this org's, the other a row its operator
-     * removed. Nothing read here is written or returned.
+     * removed. A row of another org's is never returned, and nothing read here is written.
+     *
+     * ⚠️ `$lock` TAKES THE ROW FOR UPDATE, so a type a merge is about to add fields to cannot be deleted under it on
+     * PostgreSQL, MySQL and MariaDB. SQLite compiles it away and serialises writers instead, so no SQLite test can see
+     * it go (ADR-039, the merge as built).
+     *
+     * @return array{0: 'holds'|'gone'|'renamed'|'foreign', 1: EntryType|Role|null}
      */
-    private static function recordedRowHolds(string $key, mixed $id, string $handle, int $orgId): ?bool
+    private static function recordedRow(string $key, mixed $id, string $handle, int $orgId, bool $lock = false): array
     {
-        if (! is_int($id) && ! (is_string($id) && ctype_digit($id))) {
-            return false;
+        if (! self::integerLike($id)) {
+            return ['foreign', null];
         }
 
-        $row = $key === 'entry_types'
-            ? EntryType::query()->whereKey($id)->first(['id', 'org_id', 'handle'])
-            : Role::query()->withoutGlobalScopes()->whereKey($id)->first(['id', 'org_id', 'handle']);
+        $query = $key === 'entry_types'
+            ? EntryType::query()->whereKey($id)
+            : Role::query()->withoutGlobalScopes()->whereKey($id)->select(['id', 'org_id', 'handle']);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        $row = $query->first();
 
         if ($row === null) {
-            return null;
+            return ['gone', null];
         }
 
-        return (int) $row->getAttribute('org_id') === $orgId && $row->getAttribute('handle') === $handle;
+        if ((int) $row->getAttribute('org_id') !== $orgId) {
+            return ['foreign', null];
+        }
+
+        return $row->getAttribute('handle') === $handle ? ['holds', $row] : ['renamed', $row];
+    }
+
+    private static function integerLike(mixed $id): bool
+    {
+        return is_int($id) || (is_string($id) && ctype_digit($id));
+    }
+
+    /** An id as a message names it: as recorded when it is a scalar, and `?` when there is none. */
+    private static function idOf(mixed $id): string
+    {
+        return is_scalar($id) ? (string) $id : '?';
     }
 
     /**
@@ -603,10 +1382,12 @@ final class BlueprintApplier
      * the default collation matches an operator's `Blog_Editor` too, which agrees with the unique index, so the
      * outcome is the named refusal rather than a raw constraint error.
      *
+     * @param  list<string>  $grantable  the entry type handles a grant may name: those this apply created — and, for a
+     *                                   role a merge creates, those an earlier version created that this org still has
      * @param  array{created: list<string>, adopted: list<string>, skipped: list<string>}  $outcome
      * @param  array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
      */
-    private static function applyRole(RoleDeclaration $declaration, array &$outcome, array &$rows): void
+    private static function applyRole(RoleDeclaration $declaration, array $grantable, array &$outcome, array &$rows): void
     {
         $existing = Role::query()->where('handle', $declaration->handle)->first();
 
@@ -629,12 +1410,13 @@ final class BlueprintApplier
         }
 
         /*
-         * ⚠️ ONLY ON A TYPE THIS APPLY CREATED. One adopted under Skip is the operator's — its entries theirs, its
-         * authority theirs to give — so a grant on it is refused, and the whole apply with it, rather than handed to
-         * whoever an owner later assigns this role to, believing it the blueprint's.
+         * ⚠️ ONLY ON A TYPE THIS APPLY CREATED, OR — FOR A ROLE A MERGE CREATES — ONE AN EARLIER VERSION CREATED THAT
+         * THIS ORG STILL HAS. One adopted under Skip is the operator's — its entries theirs, its authority theirs to
+         * give — so a grant on it is refused, and the whole apply with it, rather than handed to whoever an owner
+         * later assigns this role to, believing it the blueprint's.
          */
         foreach (array_keys($declaration->grants) as $type) {
-            if (($rows['entry_types'][$type]['outcome'] ?? null) !== 'created') {
+            if (! in_array($type, $grantable, true)) {
                 throw new RuntimeException(sprintf(
                     'Role [%s] grants on [%s], which this apply adopted rather than created (onCollision: skip): that '
                     .'type is the operator\'s, and authority over it is theirs to give (ADR-039). Nothing was written. '
@@ -801,7 +1583,12 @@ final class BlueprintApplier
      *
      * ⚠️ EVERY DECLARATION AS DECLARED, PLUS EACH ROW'S ID AND WHAT BECAME OF IT. Once a version is applied in a
      * real org, this is the only record ADR-039's merge can read: it finds the rows a blueprint owns by id, through
-     * scoped queries, adds what a later version declares and this did not, and never touches a role it skipped.
+     * scoped queries, adds what a later version declares and this did not, and never touches a role it skipped. It
+     * never revokes, never writes a row an earlier version wrote — so the operator's edits win without being looked
+     * for — refuses a change to anything recorded here, and writes the next manifest in the rows' own transaction.
+     *
+     * ⚠️ BUILT ON THE THREE RECORD PROJECTIONS, WHICH THE MERGE COMPARES WITH. One projection for the record and the
+     * comparison, so a key added to one cannot be missing from the other.
      *
      * @param  array{created: list<string>, adopted: list<string>, skipped: list<string>}  $outcome
      * @param  array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
@@ -816,26 +1603,12 @@ final class BlueprintApplier
                     'handle' => $type->handle,
                     'id' => $rows['entry_types'][$type->handle]['id'] ?? null,
                     'outcome' => $rows['entry_types'][$type->handle]['outcome'] ?? null,
-                    'name' => $type->name,
-                    'plural_name' => $type->pluralName,
-                    'icon' => $type->icon,
-                    'description' => $type->description,
-                    'ordering' => $type->ordering,
-                    'on_collision' => $type->onCollision->value,
+                    ...self::typeRecord($type),
                     'fields' => array_map(
                         static fn (FieldDeclaration $field): array => [
                             'handle' => $field->handle,
                             'outcome' => $rows['entry_types'][$type->handle]['fields'][$field->handle] ?? null,
-                            'type' => $field->type,
-                            'label' => $field->label,
-                            'pii_class' => $field->piiClass,
-                            'cardinality' => $field->cardinality,
-                            'is_indexed' => $field->isIndexed,
-                            'settings' => $field->settings,
-                            'is_required' => $field->isRequired,
-                            'help_text' => $field->helpText,
-                            'ordering' => $field->ordering,
-                            'group' => $field->group,
+                            ...self::fieldRecord($field),
                         ],
                         $type->fields,
                     ),
@@ -847,13 +1620,63 @@ final class BlueprintApplier
                     'handle' => $role->handle,
                     'id' => $rows['roles'][$role->handle]['id'] ?? null,
                     'outcome' => $rows['roles'][$role->handle]['outcome'] ?? null,
-                    'name' => $role->name,
-                    'on_collision' => $role->onCollision->value,
-                    'grants' => self::permissionsOf($role),
+                    ...self::roleRecord($role),
                 ],
                 $definition->roles(),
             ),
             'outcome' => $outcome,
+        ];
+    }
+
+    /**
+     * An entry type declaration as the manifest records it, less its handle, id, outcome and fields.
+     *
+     * @return array{name: string, plural_name: string, icon: ?string, description: ?string, ordering: int, on_collision: string}
+     */
+    private static function typeRecord(EntryTypeDeclaration $type): array
+    {
+        return [
+            'name' => $type->name,
+            'plural_name' => $type->pluralName,
+            'icon' => $type->icon,
+            'description' => $type->description,
+            'ordering' => $type->ordering,
+            'on_collision' => $type->onCollision->value,
+        ];
+    }
+
+    /**
+     * A field declaration as the manifest records it, less its handle and outcome.
+     *
+     * @return array{type: string, label: string, pii_class: string, cardinality: int, is_indexed: bool, settings: array<string, mixed>, is_required: bool, help_text: ?string, ordering: int, group: ?string}
+     */
+    private static function fieldRecord(FieldDeclaration $field): array
+    {
+        return [
+            'type' => $field->type,
+            'label' => $field->label,
+            'pii_class' => $field->piiClass,
+            'cardinality' => $field->cardinality,
+            'is_indexed' => $field->isIndexed,
+            'settings' => $field->settings,
+            'is_required' => $field->isRequired,
+            'help_text' => $field->helpText,
+            'ordering' => $field->ordering,
+            'group' => $field->group,
+        ];
+    }
+
+    /**
+     * A role declaration as the manifest records it, less its handle, id and outcome — its grants derived.
+     *
+     * @return array{name: string, on_collision: string, grants: list<string>}
+     */
+    private static function roleRecord(RoleDeclaration $role): array
+    {
+        return [
+            'name' => $role->name,
+            'on_collision' => $role->onCollision->value,
+            'grants' => self::permissionsOf($role),
         ];
     }
 
