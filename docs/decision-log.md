@@ -1536,7 +1536,10 @@ So the ADR is **not** amended to constrain what a `Control::RichText` type may e
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
 **Status:** Decided · 2026-09-10 · **Amended 2026-09-22 by ADR-039** — the idempotency condition is met by an
-additive re-apply and cannot be met for a field that already holds data; see the trigger conditions below
+additive re-apply and cannot be met for a field that already holds data; see the trigger conditions below ·
+**Trigger status, 2026-10-04** (ADR-039's Marketing Site amendment): conditions 1 and 4 met, each by a named test;
+condition 2 met for a re-apply at the same version and not for an upgrade, which waits on ADR-039's merge; condition
+3's figures owed. **Not met.** Once met, the public side is the placeholder and the admin until v1.1, said publicly
 
 Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
 
@@ -3148,7 +3151,7 @@ This is the third time this ADR has been amended in two days, and all three are 
 
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
-**Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
+**Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
 Phase 5 item list, the *kernel primitive* line and the *done when*) and **the pillar table at the top of this
 log** (which cites ADR-001 for a phrase ADR-001 does not contain), **`architecture.md`** (the *kernel
 primitive, not a module* line, and the open item on blueprint rollback) and **this log's own Open questions**
@@ -3266,8 +3269,11 @@ attached to this entry's type and then to the rows it actually holds data for, a
 null, `''` and `[]` as no data; that is narrower than "every field the blueprint created" and still enough to
 decide this. An operator who wants the demo asks for it. Content also cannot be applied where schema can — an
 entry write needs an **org in context**, because `AuditedBuilder` calls `recordOrFail()` and an unauditable
-entry write is refused rather than merely unaudited. A site is not required: `site_id` NULL is an org-shared
-entry (ADR-021).
+entry write is refused rather than merely unaudited. ~~A site is not required: `site_id` NULL is an org-shared
+entry (ADR-021).~~ *(corrected 2026-10-04, with the Marketing Site: false for any non-media entry carrying a slug
+since ADR-042 decision 2 — `AuditedBuilder` refuses a slug on an org-shared insert, and a non-media type's admin list
+keeps this site's rows only. The content key, when built, writes into one site the apply names, in that site's
+locale.)*
 
 **Blueprints are a kernel primitive in the only sense the log has ever defined: the mechanism is core code
 nothing can replace, and the payload may live anywhere.** The phrase is asserted in three places and argued in
@@ -3400,6 +3406,44 @@ The manifest records every declaration as declared, plus each row's id and what 
 
 **Still not enforced:** a second `is_owner` role is not refused; there is no password reset, profile page or invitation in the product; the address is matched exactly at sign-in on SQLite and PostgreSQL, so it is stored as typed; on PostgreSQL and MySQL two first runs at once can both pass the empty check, and the loser fails on the org's unique slug or creates a second account beside the first — the window is one console command on an empty installation; the 72-byte cap is bcrypt's; query loggers (Telescope, Debugbar, `DB::listen`) see the hash as one binding of an `INSERT`; no list of breached passwords is consulted; and `unset()` after hashing drops the variable, not the bytes — PHP gives no way to wipe them.
 
+
+⚠️ **Amended 2026-10-04 — the Marketing Site, as built.** Adam chose to ship it empty, not to count ADR-030's idempotency condition met while there is one version, and to name its roles after the blueprint. The amendments above stay as they were.
+
+**The blueprint.** `Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint`, handle `marketing-site`, version `1.0.0`, `@internal`, in `kitsune/core` and registered by core's own provider beside Blog, for Blog's reason — it needs no install, enable or boot before its one command, `kitsune:blueprint apply marketing-site --org=<slug> [--owner=<email>]`.
+- `page` (Page / Pages), icon `heroicon-o-document`, ordering 5 — after an operator's own types and before Blog's Posts (10) and Tags (11); the admin cannot change ordering, so this is final — declared with `Fail`, because `Skip` could never succeed: both roles grant on `page`, and a grant on an adopted type is refused.
+- `page_body` (rich text, Body) and `page_summary` (textarea, Summary, "A sentence or two summing the page up, for wherever it is listed or linked."): prefixed, as Blog's are, because storage is org-wide and a seeded org has `body` and `summary`; every field `none`, for Blog's reason; nothing required and nothing indexed, so the apply issues no DDL.
+- `marketing_editor` (all five actions on `page`) and `marketing_writer` (view, create and update): 8 grants, no holders, no owner flag. The prefix names the blueprint, as `blog_` does — not the type, which a later version may add to, and not "site", which is a scoping level. The writer's limits are Blog's: ADR-033 has no "own entries" dimension.
+- **Left out, each with its reason in the class's docblock:** seed pages (the content key is not built, seeding locks every field it fills, and needs a site the command does not set — and the operator writing the pages is ADR-030's fourth condition); availability (a no-op on a one-site install); an image (a blueprint cannot yet declare a media type); a page tree, menus, a singleton home, SEO fields and structured blocks (v1.1's routing and theming, and v1.0 has no repeater); a `slug` field (every entry has the platform's); a date (nothing writes `published_at` yet); page ordering (entries have no position); a blog (Blog is its own blueprint, applicable to the same org); a release or download type (only kitsunecms.org needs one, which is ADR-030's distortion risk). Until the merge exists, anything left out of 1.0.0 reaches an org that applied it only through the admin, where its owner can add a field — the browser suite does exactly that.
+
+**No format change.** No new key, method, declaration, public symbol, pre-flight refusal, manifest field, receipt state, table, command option or output line: the two keys already built carry it, and the surface stays at five symbols.
+
+**With Blog, in one org, in either order:** 3 types, 6 storage rows, 4 blueprint roles and 22 grants, disjoint — each role names only its own blueprint's types — with a receipt each. kitsunecms.org's likely shape, and the browser suite's: `e2e/global-setup.js` applies the Marketing Site into Blog's `inkwell`, with no `--owner`, because the org exists.
+
+**Guidance, not code:** storage handles beginning `page_` are this blueprint's, and an operator adding fields by hand should choose another prefix, because a later version declaring the same handle adopts it only if identical and refuses otherwise; and no first-party module may claim `page` as a global type, which would make the Marketing Site unapplicable on every installation that has the module.
+
+**ADR-030's four conditions, after this slice** — each answerable by somebody who is not the maintainer:
+
+| # | Condition | Status | Answered by |
+|---|---|---|---|
+| 1 | Applies to a fresh install with no manual step | **Met** | `BlueprintCommandOwnerTest` › "creates the org, its site and its owner, then applies the Marketing Site, from a password piped in", and `BlueprintCommandTest` › "applies the Marketing Site to an empty installation in one command", on a bare clone |
+| 2 | Idempotent: an additive upgrade | **Half** | A re-apply at the same version changes nothing and another version is refused untouched (`MarketingSiteBlueprintTest`); the upgrade half waits on this ADR's merge, the next slice |
+| 3 | At the ADR-027 floor | **Figures owed** | `bin/benchmark-floor.sh` times it as Blog's, fresh with the owner and into the corpus org; the floor image could not be built where this slice landed |
+| 4 | Editable by its operator through the admin | **Met** | `e2e/marketing-site.spec.js`, on every build |
+
+**The trigger is not met**, and ADR-030's status line says so. Even once it is, kitsunecms.org's public face is the placeholder and an admin until v1.1.
+
+**The next slice is the merge,** on the rules this ADR decided: it finds owned rows by manifest id, adds only what the new version declares and the manifest does not, never revokes, never touches a skipped role, lets the operator's later edits win, refuses a shape change to a locked field by name, and moves the receipt's version and manifest in the same transaction. It owes two decisions: whether new grants may be added to a role an earlier version created, and what becomes of a declared field the operator deleted. Its first real consumer can be Marketing Site 1.1.0, which is not released until then.
+
+**The floor figures, owed,** with the invocations that now time both blueprints: `bin/benchmark-floor.sh --entries 1000 --save-lock docs/benchmarks/floor.composer.lock` and `--entries 100000 --lock docs/benchmarks/floor.composer.lock`. @@HOSTFIGURE@@
+
+**Enforced by**, each with a test that fails when the rule is removed — @@MUTATIONS@@:
+- `MarketingSiteBlueprintTest` (golden): the registration beside Blog; the type, both fields and both roles exactly; no field it does not declare; no DDL and nothing on the subject-identifier report; nothing global; composing with a seeded org and the corpus org; composing with Blog in either order, each blueprint's roles refused on the other's types; the writer's and the editor's authority; a re-apply changing no row, audit row or manifest; the operator's edits and the lock surviving a re-apply at the same version; another version refused with nothing written; an existing `page` or `marketing_editor` refused by name, and a global `page`; and the type's schema its own org owner's;
+- `BlueprintCommandTest` and `BlueprintCommandOwnerTest`: the list row; every line an empty installation's apply prints; Blog joining the same org; and the one command with its first owner;
+- `DocumentedCommandsTest`: every blueprint the README names is one core registers;
+- `FloorHarnessTest`: both Marketing Site legs under the floor's limits, the owner's password on standard input alone, the corpus seeded first, each leg's figure on its own line, and an apply that failed, did not report, left its receipt unfinished or created no owner refused;
+- `e2e/marketing-site.spec.js` — AGENTS.md §9 coverage, four of its eight tests outside `/c/{type}` and a fifth reaching `/roles` and `/entry-types` for their refusals: the dashboard listing Pages before Posts; the roles with exactly their grants and none on Blog's types or the wildcard; the type and its fields; the owner writing, publishing and changing a page; a page kept to the site it was written on; the writer's limits at the URL, in the sidebar and in the status control; the other org refused from the side of the one crossing; and the owner adding a field to `page` in the admin.
+
+**Still not enforced:** the availability and content keys; the merge; the reverse; an admin route to blueprints; both blueprints' floor figures; and, found while designing this slice and left as follow-ups, the built-in slug input, which stores what is typed without slugifying it, and the `Fail` refusal's advice to declare `Skip`, which an operator cannot follow for a first-party blueprint.
 ---
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
