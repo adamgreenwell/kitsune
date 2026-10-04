@@ -93,7 +93,7 @@ module.exports = async () => {
         cwd: skeleton, encoding: 'utf8',
     });
 
-    if (! marketing.includes('Applied marketing-site 1.0.0 into inkwell.')
+    if (! marketing.includes('Applied marketing-site 1.1.0 into inkwell.')
         || ! marketing.includes('2 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).')) {
         throw new Error(`global-setup: the Marketing Site did not apply into inkwell:\n${marketing}`);
     }

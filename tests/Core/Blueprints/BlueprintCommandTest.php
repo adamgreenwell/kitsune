@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Blueprints\FirstOrg;
+use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -21,6 +22,7 @@ use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
+use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 
 /*
  * The console seam — ADR-039. The work lives in `BlueprintApplier`, so what these assert is argument handling,
@@ -56,7 +58,7 @@ it('lists Blog', function (): void {
 /** The Marketing Site is core's too, matched as one row for the reason Blog's is. */
 it('lists the Marketing Site', function (): void {
     expect(Artisan::call('kitsune:blueprint', ['action' => 'list']))->toBe(0)
-        ->and(Artisan::output())->toMatch('/\|\s*marketing-site\s*\|\s*1\.0\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\MarketingSiteBlueprint\s*\|/');
+        ->and(Artisan::output())->toMatch('/\|\s*marketing-site\s*\|\s*1\.1\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\MarketingSiteBlueprint\s*\|/');
 });
 
 it('applies into a named org', function (): void {
@@ -216,6 +218,28 @@ it('refuses a version that changes what it shipped, printing why, and exits 1', 
         ->assertExitCode(1);
 
     expect(Blueprint::query()->withoutGlobalScopes()->where('handle', 'fixture')->value('version'))->toBe('1.0.0');
+});
+
+/**
+ * ⚠️ ADR-030's SECOND CONDITION, IN THE COMMAND ITS SITE WILL RUN: an org at the released Marketing Site 1.0.0 takes 1.1.0
+ * with the same command, and every line it prints is the report — the field 1.1.0 adds, and that nothing 1.0.0 wrote was
+ * changed. The registry is swapped between the two runs, as an upgrade of core swaps the class behind the handle.
+ */
+it('upgrades the Marketing Site from 1.0.0 to 1.1.0 in one command', function (): void {
+    app()->instance(BlueprintRegistry::class, (new BlueprintRegistry)->register(new MarketingSite100));
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'apply', 'handle' => 'marketing-site', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toContain('Applied marketing-site 1.0.0 into acme. 0 indexed.');
+
+    app()->instance(BlueprintRegistry::class, (new BlueprintRegistry)->register(new MarketingSiteBlueprint));
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'apply', 'handle' => 'marketing-site', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  created  field storage page_meta',
+            '  skipped  version: merged over 1.0.0, which the receipt recorded — what 1.1.0 adds was written, and nothing 1.0.0 wrote was changed',
+            'Applied marketing-site 1.1.0 into acme. 0 indexed.',
+        ])."\n")
+        ->and(Blueprint::query()->withoutGlobalScopes()->where('handle', 'marketing-site')->value('version'))->toBe('1.1.0');
 });
 
 /*
@@ -380,9 +404,10 @@ describe('on an installation with no organisation at all', function (): void {
             ->expectsOutputToContain('  created  entry type page')
             ->expectsOutputToContain('  created  field storage page_body')
             ->expectsOutputToContain('  created  field storage page_summary')
+            ->expectsOutputToContain('  created  field storage page_meta')
             ->expectsOutputToContain('  created  role marketing_editor: entry.page.create, entry.page.delete, entry.page.publish, entry.page.update, entry.page.view')
             ->expectsOutputToContain('  created  role marketing_writer: entry.page.create, entry.page.update, entry.page.view')
-            ->expectsOutputToContain('Applied marketing-site 1.0.0 into acme. 0 indexed.')
+            ->expectsOutputToContain('Applied marketing-site 1.1.0 into acme. 0 indexed.')
             ->expectsOutputToContain('2 roles were created and nobody holds them, and this organisation has no owner yet to assign them (ADR-033).')
             ->assertSuccessful();
 

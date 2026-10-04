@@ -101,6 +101,10 @@ php skeleton/artisan kitsune:blueprint apply marketing-site --org=mysite --owner
 php skeleton/artisan kitsune:blueprint apply blog --org=mysite
 ```
 
+When a newer core ships a newer version of a blueprint, the same `apply` command upgrades it: it adds what the new
+version declares, never changes or removes anything the organisation already has — its owner's edits included — and
+refuses, saying why, a version that would ([ADR-039](docs/decision-log.md)).
+
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
 an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011
