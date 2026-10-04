@@ -386,7 +386,10 @@ apply_blueprint() {   # $1 handle, $2 name in refusals, $3 label, $4 org slug, $
   fi
 
   ((status == 0)) || { printf '%s\n' "$out" >&2; refuse "the $3 $2 apply exited $status"; }
-  printf '%s\n' "$out" | grep -q "^Applied $1 " || refuse "the $3 $2 apply did not report applying $1"
+  # ⚠️ A HERE-STRING, NOT A PIPE, for the reason the status read below gives: `grep -q` stops at the `Applied` line, and
+  # the builtin `printf` writing the lines after it into the closed pipe failed the pipeline under pipefail — a good
+  # apply refused, which review reproduced in about one run in five hundred under load.
+  grep -q "^Applied $1 " <<<"$out" || refuse "the $3 $2 apply did not report applying $1"
 
   # A here-string, not a pipe: the same closed-pipe hazard as the status read below.
   if [[ "$6" == true ]] && ! grep -q 'its first owner floor-owner@kitsune.test' <<<"$out"; then

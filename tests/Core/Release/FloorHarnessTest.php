@@ -99,21 +99,25 @@ function floorStubs(
       # The first owner's password arrives on standard input, and only there: kept, to be looked for in argv. The
       # Marketing Site answers apart from Blog, so each blueprint's refusals can be told from the other's.
       *kitsune:blueprint\ apply\ marketing-site*)
+        took=978
         if [[ "\$*" == *--owner-password-stdin* ]]; then
           cat > "$dir/stdin-marketing.log"
           [[ "$marketingOwnerFlag" == 1 ]] && echo 'Created organisation marketing, its first site marketing and its first owner floor-owner@kitsune.test (ADR-026).'
+          took=945
         fi
         echo "$marketingReport"
-        echo "blueprint apply took: 945 ms"
+        echo "blueprint apply took: \$took ms"
         exit $marketingExit
         ;;
       *kitsune:blueprint\ apply*)
+        took=834
         if [[ "\$*" == *--owner-password-stdin* ]]; then
           cat > "$dir/stdin.log"
           [[ "$blogOwnerFlag" == 1 ]] && echo 'Created organisation blog, its first site blog and its first owner floor-owner@kitsune.test (ADR-026).'
+          took=812
         fi
         echo "$blogReport"
-        echo "blueprint apply took: 812 ms"
+        echo "blueprint apply took: \$took ms"
         exit $blogExit
         ;;
       # The whole table, as Symfony writes it: the row is followed by a border, which a reader that stops at its
@@ -554,8 +558,8 @@ it('times the Blog apply under the floor limits, on an empty install with its fi
         ->and($lines[$seeding])->not->toContain('--cpus=');
 
     expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply blog at 1 vCPU / 1024 MB')
-        ->toMatch('/empty installation \(creates the org, its site and its first owner\)\s+812 ms/')
-        ->toMatch('/into floor-benchmark, 25 entries in the table\s+812 ms/')
+        /* Each leg its own figure, so a fresh figure printed on the content line, or twice, is told apart. */
+        ->toMatch('/apply blog at[^\n]*\n\s*empty installation \(creates the org, its site and its first owner\)\s+812 ms\n\s*into floor-benchmark, 25 entries in the table\s+834 ms/')
         ->toContain('Budget: 60,000 ms');
 });
 
@@ -624,7 +628,7 @@ it('times the Marketing Site apply under the floor limits, on an empty install w
         ->and($lines[$seeding])->not->toContain('--cpus=');
 
     expect($run->getOutput())->toContain('Phase 5: kitsune:blueprint apply marketing-site at 1 vCPU / 1024 MB')
-        ->toMatch('/apply marketing-site at[^\n]*\n\s*empty installation \(creates the org, its site and its first owner\)\s+945 ms\n\s*into floor-benchmark, 25 entries in the table\s+945 ms/');
+        ->toMatch('/apply marketing-site at[^\n]*\n\s*empty installation \(creates the org, its site and its first owner\)\s+945 ms\n\s*into floor-benchmark, 25 entries in the table\s+978 ms/');
 });
 
 it('refuses a Marketing Site apply that did not happen, however quickly it stopped', function (array $stub, string $reason): void {

@@ -8,9 +8,9 @@ const { BLOG_OWNER } = require('./accounts');
  * and the Marketing Site's writer, in the same org.
  *
  * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but ~~its seeded owner role and~~ what
- * `kitsune:blueprint apply blog --owner` wrote, so the owner measures what the command created and the writer measures
- * the role it created — assigned to her in `e2e/global-setup.js` through the audited path, because a blueprint assigns
- * nobody.
+ * `kitsune:blueprint apply blog --owner` ~~wrote~~ and then `kitsune:blueprint apply marketing-site` wrote, so the owner
+ * measures what the commands created and each writer measures the role their blueprint created — assigned in
+ * `e2e/global-setup.js` through the audited path, because a blueprint assigns nobody.
  *
  * ⚠️ THE OWNER SIGNS IN WITH THE PASSWORD THE COMMAND WAS GIVEN (ADR-026, as amended): their account is the one
  * `--owner` created, so this sign-in is the proof it can be signed in to. The writer is the seeder's, as before.
