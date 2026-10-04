@@ -50,8 +50,10 @@ interface BlueprintDefinition
      * What version this definition is, as the author declares it.
      *
      * The receipt records which version an org got, so a later apply can tell a re-run of the same thing from a
-     * different version — which, once applied, is refused until ADR-039's merge exists. Any string an author can
-     * compare; nothing here parses it as semver, so newer and older are refused alike.
+     * different version — which, once applied, is ~~refused until ADR-039's merge exists~~ merged, adding only
+     * (ADR-039): what it declares and the receipt does not record is written, and any change to or removal of what the
+     * receipt records is refused. Any string an author can compare; nothing here parses it, so an older version is
+     * refused only because it drops what the receipt records, and one that only adds merges whatever it reads as.
      */
     public function version(): string;
 

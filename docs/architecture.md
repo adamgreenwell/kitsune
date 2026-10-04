@@ -312,7 +312,10 @@ org_modules                               -- per-org enablement. DEFERRED by ADR
 
 blueprints                                -- the manifest commits WITH the rows, so manifest set and applied_at
                                           -- null means "rows committed, finish not run", which the next run
-                                          -- completes (ADR-039, amended 2026-10-02)
+                                          -- completes (ADR-039, amended 2026-10-02); a different version is
+                                          -- merged, writing version, manifest and applied_at = null with its
+                                          -- rows, so a merge stopped after them is finished the same way
+                                          -- (ADR-039, the merge, as built)
   id, org_id, handle, version, applied_at, manifest json
 ```
 
@@ -342,7 +345,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 
 ### Per-type authorization
 
-One `Entry` model means one Eloquent policy for all types — neither routing design gives per-type authorization for free. `EntryPolicy` resolves permissions against `type_handle` and the RBAC layer, with permissions named `entry.{type_handle}.{view|create|update|delete|publish}`. Blueprints seed these ~~when they create a type~~ as the grants of the roles they declare, derived from the types the same apply creates — never the owner flag, never the wildcard, never on a role the blueprint did not create (ADR-039, amended 2026-10-02).
+One `Entry` model means one Eloquent policy for all types — neither routing design gives per-type authorization for free. `EntryPolicy` resolves permissions against `type_handle` and the RBAC layer, with permissions named `entry.{type_handle}.{view|create|update|delete|publish}`. Blueprints seed these ~~when they create a type~~ as the grants of the roles they declare, derived from the types the same apply creates — or, for a role a merge adds, an earlier version created (ADR-039, the merge, as built) — never the owner flag, never the wildcard, never on a role the blueprint did not create (ADR-039, amended 2026-10-02).
 
 > **Shipped 2026-09-13 — [ADR-033](decision-log.md), [#81](https://github.com/adamgreenwell/kitsune/issues/81).** The paragraph above fixed the naming and settled nothing about where any of it lives; the ADR settles that.
 >

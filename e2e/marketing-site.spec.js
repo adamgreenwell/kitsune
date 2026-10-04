@@ -275,8 +275,9 @@ test.describe.serial('the Marketing Site blueprint, applied by its command', () 
 
     /*
      * ⚠️ WHAT 1.0.0 LEAVES OUT REACHES THE ORG THROUGH THE ADMIN. A meta description, an image, a date — none ships, and
-     * until ADR-039's merge exists none arrives by a newer version either; the owner adds one to `page` here. Last,
-     * because it changes the form the tests above read.
+     * ~~until ADR-039's merge exists none arrives by a newer version either~~ a newer version may only add one, so the
+     * owner's own reaches `page` here, under a handle that is not `page_`. Last, because it changes the form the tests
+     * above read.
      */
     test('lets the owner add a field to the page type in the admin', async ({ browser }) => {
         const owner = await browser.newContext({ storageState: OWNER });

@@ -145,10 +145,10 @@ it('applies afresh at a new version over a receipt that wrote no rows', function
 /**
  * ⚠️ AND ONE WHOSE ROWS COMMITTED IS FINISHED AT THE VERSION IT RECORDS. Refusing it — the newer definition is not the
  * version that wrote the rows — stranded the org, because an operator cannot get an older core's Blog back. So the
- * finish completes the recorded version, says so, and the newer one is refused as any other version over an applied
- * receipt is.
+ * finish completes the recorded version, says so, and the next run merges the newer one ~~is refused as any other
+ * version over an applied receipt is~~.
  */
-it('finishes the recorded version under a newer definition, and then refuses the newer one', function (): void {
+it('finishes the recorded version under a newer definition, and merges the newer one on the next run', function (): void {
     resumeInterrupted();
     $manifest = Blueprint::receiptFor('fixture')->manifest;
 
@@ -159,16 +159,86 @@ it('finishes the recorded version under a newer definition, and then refuses the
     $receipt = Blueprint::receiptFor('fixture');
 
     expect($result['version'])->toBe('1.0.0')
-        ->and($result['skipped'])->toContain('version: finished at 1.0.0, which the receipt records; this definition is 1.1.0, and applying it over 1.0.0 waits on ADR-039\'s merge')
+        ->and($result['skipped'])->toContain('version: finished at 1.0.0, which the receipt records; this definition is 1.1.0 — run it again to merge it over 1.0.0')
         ->and($result['indexed'])->toBe(1)
         ->and($receipt->version)->toBe('1.0.0')
         ->and($receipt->applied_at)->not->toBeNull()
         ->and($receipt->manifest)->toBe($manifest)
         ->and(Role::query()->where('handle', 'router')->exists())->toBeFalse();
 
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(RuntimeException::class, 'is applied in this organisation at 1.0.0; this definition is 1.1.0');
+    $merged = BlueprintApplier::apply(new FixtureBlueprint);
+
+    expect($merged['version'])->toBe('1.1.0')
+        ->and($merged['roles_created'])->toBe(['router'])
+        ->and($merged['indexed'])->toBe(0)
+        ->and(Blueprint::receiptFor('fixture')->version)->toBe('1.1.0');
 });
+
+/** Version 1.1.0 of the fixture: 1.0.0 with an indexed field more, so the merge has a sync to stop in. */
+function resumeNextVersion(): void
+{
+    FixtureBlueprint::$version = '1.1.0';
+    FixtureBlueprint::$override = [
+        new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [
+            new FieldDeclaration(handle: 'dispatch_code', type: 'text', label: 'Code', piiClass: 'none', isIndexed: true),
+            new FieldDeclaration(handle: 'dispatch_ref', type: 'text', label: 'Reference', piiClass: 'none', isIndexed: true),
+        ]),
+    ];
+}
+
+/**
+ * ⚠️ A MERGE COMMITS ITS VERSION AND MANIFEST WITH ITS ROWS, AND `applied_at` NULL. So one stopped in its index sync is
+ * exactly an interrupted apply at the new version — state 2 — and the next run finishes it as it finishes any other.
+ */
+it('finishes a merge stopped after its rows committed, at the new version', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    resumeNextVersion();
+
+    resumeInterrupted();
+
+    $receipt = Blueprint::receiptFor('fixture');
+
+    expect($receipt->version)->toBe('1.1.0')
+        ->and($receipt->applied_at)->toBeNull()
+        ->and($receipt->manifest['version'])->toBe('1.1.0')
+        ->and(array_column($receipt->manifest['entry_types'][0]['fields'], 'handle'))->toBe(['dispatch_code', 'dispatch_ref'])
+        ->and(FieldStorage::query()->where('handle', 'dispatch_ref')->count())->toBe(1);
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+
+    /* Every indexed field the manifest records, re-synced — idempotent, and what the stopped merge never reached. */
+    expect($result['version'])->toBe('1.1.0')
+        ->and($result['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
+        ->and($result['indexed'])->toBe(2)
+        ->and(array_slice($this->schema->syncedHandles, -2))->toBe(['dispatch_code', 'dispatch_ref'])
+        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull()
+        ->and(FieldStorage::query()->where('handle', 'dispatch_ref')->count())->toBe(1)
+        ->and(BlueprintApplier::apply(new FixtureBlueprint)['skipped'])->toBe(['already applied at this version']);
+});
+
+/**
+ * ⚠️ A ROLE RENAMED IN THIS ORG IS ITS OWNER'S EDIT, ~~A FORGERY~~. An interrupted merge records roles an earlier version
+ * created long before, and the admin edits a role's handle; refusing the rename left the org at state 2 for good. The
+ * finish writes nothing to roles, so it goes ahead and says so.
+ */
+it('finishes over a role its operator renamed, saying so', function (bool $merging): void {
+    if ($merging) {
+        BlueprintApplier::apply(new FixtureBlueprint);
+        resumeNextVersion();
+    }
+
+    resumeInterrupted();
+    Role::query()->where('handle', 'dispatcher')->firstOrFail()->update(['handle' => 'dispatch_lead']);
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+
+    expect($result['skipped'])->toBe([
+        'rows: written by an earlier run that stopped before it finished; finished now',
+        'role dispatcher: renamed dispatch_lead since this blueprint wrote it; left as it is',
+    ])
+        ->and(Role::query()->pluck('handle')->all())->toBe(['dispatch_lead'])
+        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
+})->with(['an interrupted merge' => true, 'an interrupted fresh apply' => false]);
 
 /**
  * ⚠️ A MANIFEST IS CHECKED, NOT TRUSTED. It names rows by id, and a row under that id that is another org's — or this
@@ -228,7 +298,7 @@ it('finishes over a row the operator removed while the finish was owed, and says
 
     expect($result['skipped'])->toBe([
         'rows: written by an earlier run that stopped before it finished; finished now',
-        'role dispatcher: removed since the interrupted apply wrote it; not written again',
+        'role dispatcher: removed since this blueprint wrote it; not written again',
     ])
         ->and(Role::query()->where('handle', 'dispatcher')->exists())->toBeFalse()
         ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();

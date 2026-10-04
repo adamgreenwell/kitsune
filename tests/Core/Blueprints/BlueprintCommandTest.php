@@ -183,6 +183,41 @@ it('says how many roles it created, that nobody holds them, and who can assign t
     'an org with none' => [false, '1 role was created and nobody holds it, and this organisation has no owner yet to assign it (ADR-033).'],
 ]);
 
+/**
+ * A later version is merged by the same command — ADR-039's merge, as an operator meets it. Matched as the whole
+ * output, because the lines are the report: what the version added, that nothing the earlier one wrote was changed,
+ * and the new role nobody holds yet.
+ */
+it('merges a later version in one command', function (): void {
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'apply', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0);
+
+    FixtureBlueprint::$version = '1.1.0';
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'apply', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  created  role dispatcher: entry.dispatch.view',
+            '  skipped  version: merged over 1.0.0, which the receipt recorded — what 1.1.0 adds was written, and nothing 1.0.0 wrote was changed',
+            'Applied fixture 1.1.0 into acme. 0 indexed.',
+            '1 role was created and nobody holds it, and this organisation has no owner yet to assign it (ADR-033).',
+        ])."\n");
+});
+
+/** And one that changes what an earlier version shipped is refused, saying what, with the receipt where it was. */
+it('refuses a version that changes what it shipped, printing why, and exits 1', function (): void {
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+
+    FixtureBlueprint::$version = '1.1.0';
+    FixtureBlueprint::$piiClass = 'personal';
+
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')
+        /* One expectation: the refusal is one line, and the output mock gives a line to the first that fits it. */
+        ->expectsOutputToContain('never changes or removes what 1.0.0 recorded — field dispatch_body on dispatch changes its pii_class. Nothing was written')
+        ->assertExitCode(1);
+
+    expect(Blueprint::query()->withoutGlobalScopes()->where('handle', 'fixture')->value('version'))->toBe('1.0.0');
+});
+
 /*
  * ⚠️ THE BOOTSTRAP, WHICH IS WHAT MAKES ADR-030's CONDITION SATISFIABLE.
  *

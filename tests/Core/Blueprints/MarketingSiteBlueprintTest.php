@@ -35,7 +35,8 @@ use Kitsune\Core\Tests\Fixtures\TestUser;
  *
  * ⚠️ GOLDEN, ON PURPOSE, for Blog's reason: once 1.0.0 is applied in a real org, every column below is what that org
  * has, and the receipt says 1.0.0 — so a change here that keeps the version is a change no applied org will ever
- * receive, and changing the version is refused until ADR-039's merge exists.
+ * receive, and a new version ~~is refused until ADR-039's merge exists~~ may only add to it: the merge refuses any
+ * change to what 1.0.0 recorded (`MarketingSiteUpgradeTest`).
  */
 
 beforeEach(function (): void {
@@ -337,7 +338,7 @@ it('changes nothing when applied again at the same version', function (): void {
 
 /**
  * The operator's edits, and the lock their first page arms, survive a re-apply. ⚠️ AT THE SAME VERSION, which returns
- * before reading anything — so this pins that path; whether edits survive an UPGRADE is ADR-039's merge's to prove.
+ * before reading anything — so this pins that path; that edits survive an UPGRADE is `MarketingSiteUpgradeTest`'s.
  */
 it('keeps the operator\'s edits and the lock across a re-apply', function (): void {
     BlueprintApplier::apply(new MarketingSiteBlueprint);
@@ -371,19 +372,21 @@ it('keeps the operator\'s edits and the lock across a re-apply', function (): vo
         ->and(Field::query()->where('entry_type_id', $page->getKey())->count())->toBe(3);
 });
 
-/** Another version over a finished apply waits on ADR-039's merge: refused, and nothing written, the receipt included. */
-it('refuses another version, and writes nothing', function (): void {
+/**
+ * A test's 1.1.0 over 1.0.0 merges ~~is refused~~: its meta description is written, and nothing else. The upgrade's
+ * own proof — the operator's edits, a locked field, the oracle — is `MarketingSiteUpgradeTest`.
+ */
+it('merges a test\'s 1.1.0, adding only its meta description', function (): void {
     BlueprintApplier::apply(new MarketingSiteBlueprint);
 
     $counts = marketingCounts();
-    $manifest = marketingManifest($this->org);
 
-    expect(fn () => BlueprintApplier::apply(new MarketingSiteAtAnotherVersion))
-        ->toThrow(RuntimeException::class, 'is applied in this organisation at 1.0.0; this definition is 1.1.0');
+    $result = BlueprintApplier::apply(new MarketingSiteAtAnotherVersion);
 
-    expect(marketingCounts())->toBe($counts)
-        ->and(marketingManifest($this->org))->toBe($manifest)
-        ->and(Blueprint::query()->withoutGlobalScopes()->where('org_id', $this->org->getKey())->value('version'))->toBe('1.0.0');
+    expect($result['created'])->toBe(['field storage page_meta'])
+        ->and($result['roles_created'])->toBe([])
+        ->and(marketingCounts())->toBe(array_replace($counts, ['field_storage' => $counts['field_storage'] + 1, 'fields' => $counts['fields'] + 1]))
+        ->and(Blueprint::query()->withoutGlobalScopes()->where('org_id', $this->org->getKey())->value('version'))->toBe('1.1.0');
 });
 
 /**
