@@ -84,7 +84,7 @@ function mergeCode(array $changes = []): FieldDeclaration
         'type' => 'text',
         'label' => 'Code',
         'piiClass' => 'none',
-        'settings' => ['maxLength' => 32, 'pattern' => '^[A-Z0-9-]+$'],
+        'settings' => ['maxLength' => 32, 'pattern' => null],
         'isIndexed' => true,
         'ordering' => 20,
     ], $changes));
@@ -369,7 +369,8 @@ it('merges a definition that differs only in its version, writing no row', funct
         ->and(Arr::except($after, ['receipts']))->toBe(Arr::except($before, ['receipts']))
         ->and(Arr::except($manifest, ['version', 'outcome']))->toBe(Arr::except($recorded, ['version', 'outcome']))
         ->and($manifest['version'])->toBe('1.0.1')
-        ->and($manifest['outcome'])->toBe(['created' => [], 'adopted' => [], 'skipped' => []]);
+        /* By key: MySQL hands a JSON object back with its keys re-sorted, so its order says nothing. */
+        ->and($manifest['outcome'])->toEqual(['created' => [], 'adopted' => [], 'skipped' => []]);
 });
 
 /** M4 */
@@ -408,7 +409,10 @@ function mergeChange(string $case): string
         'field pii_class' => [$field(['piiClass' => 'personal']), null, 'field dispatch_body on dispatch changes its pii_class'],
         'field cardinality' => [$field(['cardinality' => -1]), null, 'field dispatch_body on dispatch changes its cardinality'],
         'field is_indexed' => [$field(['isIndexed' => true]), null, 'field dispatch_body on dispatch changes its is_indexed'],
-        'field settings' => [mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['maxLength' => 40, 'pattern' => '^[A-Z0-9-]+$']])])), null, 'field dispatch_code on dispatch changes its settings'],
+        'field settings' => [mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['maxLength' => 40, 'pattern' => null]])])), null, 'field dispatch_code on dispatch changes its settings'],
+        /* ⚠️ Loosely, null equals '' and 32 equals '32': settings are compared strictly once their keys are sorted. */
+        'field settings null to empty' => [mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['maxLength' => 32, 'pattern' => '']])])), null, 'field dispatch_code on dispatch changes its settings'],
+        'field settings 32 to "32"' => [mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['maxLength' => '32', 'pattern' => null]])])), null, 'field dispatch_code on dispatch changes its settings'],
         'field is_required' => [$field(['isRequired' => true]), null, 'field dispatch_body on dispatch changes its is_required'],
         /* ⚠️ Loosely, null equals '' — so this is the row a loose comparison of scalars lets through. */
         'field help_text null to empty' => [$field(['helpText' => '']), null, 'field dispatch_body on dispatch changes its help_text'],
@@ -440,7 +444,7 @@ it('refuses each change to what an earlier version recorded, naming it, and writ
 })->with([
     'type dropped', 'type name', 'type plural_name', 'type icon', 'type description', 'type ordering', 'type on_collision',
     'field dropped', 'field moved', 'field type', 'field label', 'field pii_class', 'field cardinality', 'field is_indexed',
-    'field settings', 'field is_required', 'field help_text null to empty', 'field ordering', 'field group',
+    'field settings', 'field settings null to empty', 'field settings 32 to "32"', 'field is_required', 'field help_text null to empty', 'field ordering', 'field group',
     'role dropped', 'role name', 'role on_collision', 'role loses a grant',
 ]);
 
@@ -462,11 +466,106 @@ it('refuses a change to a role it skipped, as to one it created', function (): v
     expect(mergeSnapshot())->toBe($before);
 });
 
-/** M6 */
-it('does not count reordered settings keys as a change', function (): void {
+/**
+ * M3's sibling, for the outcomes a merge must carry over as recorded: a type adopted under Skip, storage adopted from the
+ * operator, and a role skipped. Seeded as "created", any of them would let the next version write onto the operator's.
+ */
+it('carries a skipped type, an adopted field and a skipped role over as they were recorded', function (): void {
+    EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'bulletin', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    FieldStorage::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch_body', 'type' => 'textarea', 'cardinality' => 1, 'pii_class' => 'none']);
+    Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
+    FixtureBlueprint::$override = [mergeDispatch(), mergeBulletin(['onCollision' => OnCollision::Skip])];
+    FixtureBlueprint::$roles = [mergeDispatcher(['onCollision' => OnCollision::Skip])];
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $recorded = Blueprint::receiptFor('fixture')->manifest;
+
+    expect($recorded['entry_types'][1]['outcome'])->toBe('skipped')
+        ->and($recorded['entry_types'][0]['fields'][0]['outcome'])->toBe('adopted')
+        ->and($recorded['roles'][0]['outcome'])->toBe('skipped');
+
+    mergeNext(version: '1.0.1');
     BlueprintApplier::apply(new FixtureBlueprint);
 
-    mergeNext(mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['pattern' => '^[A-Z0-9-]+$', 'maxLength' => 32]])])));
+    expect(Arr::except(Blueprint::receiptFor('fixture')->manifest, ['version', 'outcome']))->toBe(Arr::except($recorded, ['version', 'outcome']));
+
+    $fields = Field::query()->where('entry_type_id', mergeType('bulletin')->getKey())->count();
+    mergeNext([mergeDispatch(), mergeBulletin(['onCollision' => OnCollision::Skip], [new FieldDeclaration(handle: 'bulletin_text', type: 'textarea', label: 'Text', piiClass: 'none'), mergeNew('bulletin_note')])], version: '1.1.0');
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, mergeRefusal(
+        'field bulletin_note is added to entry type bulletin, which this blueprint adopted (onCollision: skip) rather '
+        .'than created — a merge adds fields only to types this blueprint created',
+        from: '1.0.1',
+    ));
+
+    expect(Field::query()->where('entry_type_id', mergeType('bulletin')->getKey())->count())->toBe($fields);
+});
+
+/**
+ * ⚠️ A NEW ROLE THAT MEETS THE OPERATOR'S UNDER SKIP GRANTS NOTHING, so its grants are not refused — as a fresh apply's
+ * are not. Refusing them, on a type removed or adopted, was stricter than the apply it stands in for, and its reason
+ * ("a grant on that handle would reach…") was not true of a role nothing would be granted to.
+ */
+it('leaves a new role it meets under Skip exactly as it is, granting nothing, as a fresh apply does', function (string $type): void {
+    if ($type === 'adopted') {
+        EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'bulletin', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+        FixtureBlueprint::$override = [mergeDispatch(), mergeBulletin(['onCollision' => OnCollision::Skip])];
+    }
+
+    BlueprintApplier::apply(new FixtureBlueprint);
+
+    if ($type === 'removed') {
+        mergeType('bulletin')->delete();
+    }
+
+    $theirs = Role::create(['handle' => 'reader', 'name' => 'Theirs']);
+    mergeNext(roles: [new RoleDeclaration('reader', 'Reader', ['bulletin' => ['view']], OnCollision::Skip)]);
+
+    $result = BlueprintApplier::apply(new FixtureBlueprint);
+
+    expect($result['skipped'])->toContain('role reader (already defined here; left as it is — its grants were not added)')
+        ->and($result['roles_created'])->toBe([])
+        ->and(RolePermission::query()->withoutGlobalScopes()->where('role_id', $theirs->getKey())->count())->toBe(0)
+        ->and($theirs->fresh()->name)->toBe('Theirs');
+})->with(['on a type the operator removed' => 'removed', 'on a type adopted under Skip' => 'adopted']);
+
+/** And one that meets no role of its handle is created — so its grants are refused as any new role's are. */
+it('refuses the grants of a new Skip role that meets no role of its handle, as any new role\'s', function (string $type, string $refusal): void {
+    if ($type === 'adopted') {
+        EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'bulletin', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+        FixtureBlueprint::$override = [mergeDispatch(), mergeBulletin(['onCollision' => OnCollision::Skip])];
+    }
+
+    BlueprintApplier::apply(new FixtureBlueprint);
+
+    if ($type === 'removed') {
+        mergeType('bulletin')->delete();
+    }
+
+    mergeNext(roles: [new RoleDeclaration('reader', 'Reader', ['bulletin' => ['view']], OnCollision::Skip)]);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, $refusal);
+})->with([
+    'on a type the operator removed' => ['removed', 'role reader, new in 1.1.0, grants on bulletin, which this blueprint created and this organisation has since removed'],
+    'on a type adopted under Skip' => ['adopted', 'role reader, new in 1.1.0, grants on bulletin, which this blueprint adopted (onCollision: skip) rather than created'],
+]);
+
+/**
+ * M6 — ⚠️ AT ANY DEPTH, because MySQL re-sorts a JSON object's keys at every depth: compared in order, a select's options
+ * read back from the manifest there would refuse every merge on one engine of four. So an options map only reordered is
+ * not a change — the limit ADR-039 records — while a list, whose order every engine keeps, is compared in order.
+ */
+it('does not count reordered settings keys as a change, at any depth', function (): void {
+    $kind = static fn (array $options): FieldDeclaration => new FieldDeclaration(
+        handle: 'bulletin_kind', type: 'select', label: 'Kind', piiClass: 'none', settings: ['options' => $options],
+    );
+    $text = new FieldDeclaration(handle: 'bulletin_text', type: 'textarea', label: 'Text', piiClass: 'none');
+    FixtureBlueprint::$override = [mergeDispatch(), mergeBulletin(fields: [$text, $kind(['urgent' => 'Urgent', 'routine' => 'Routine'])])];
+    BlueprintApplier::apply(new FixtureBlueprint);
+
+    mergeNext([
+        mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['pattern' => null, 'maxLength' => 32]])]),
+        mergeBulletin(fields: [$text, $kind(['routine' => 'Routine', 'urgent' => 'Urgent'])]),
+    ]);
 
     expect(BlueprintApplier::apply(new FixtureBlueprint)['version'])->toBe('1.1.0');
 });
@@ -538,6 +637,8 @@ it('keeps a field the operator deleted deleted, says so, and still does at the n
     BlueprintApplier::apply(new FixtureBlueprint);
     $dispatch = mergeType('dispatch');
     $code = FieldStorage::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch_code')->firstOrFail();
+    /* The operator's own use of the same storage on another type, which must not read as the deleted field. */
+    Field::create(['entry_type_id' => mergeType('bulletin')->getKey(), 'field_storage_id' => $code->getKey(), 'label' => 'Their code']);
     Field::query()->where('entry_type_id', $dispatch->getKey())->where('field_storage_id', $code->getKey())->firstOrFail()->delete();
 
     $note = 'field dispatch_code on dispatch: removed since this blueprint wrote it; not written again';
@@ -561,19 +662,22 @@ it('keeps a field the operator deleted deleted, says so, and still does at the n
 
 /** M11 */
 it('reports a type the operator deleted, and refuses a version adding a field to it, or a role granting on it', function (): void {
+    /* A role 1.0.0 created grants on the type the operator deletes — as every first-party type is granted on. */
+    $crier = new RoleDeclaration('crier', 'Crier', ['bulletin' => ['view']]);
+    FixtureBlueprint::$roles = [mergeDispatcher(), $crier];
     BlueprintApplier::apply(new FixtureBlueprint);
     mergeType('bulletin')->delete();
     $before = mergeSnapshot();
 
     mergeNext(
         [mergeDispatch(), mergeBulletin(fields: [new FieldDeclaration(handle: 'bulletin_text', type: 'textarea', label: 'Text', piiClass: 'none'), mergeNew('bulletin_note')])],
-        [new RoleDeclaration('crier', 'Crier', ['bulletin' => ['view']])],
+        [new RoleDeclaration('herald', 'Herald', ['bulletin' => ['view']])],
     );
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
         'Blueprint [fixture] cannot be merged from 1.0.0 to 1.1.0 in this organisation: it adds field bulletin_note to '
         .'entry type bulletin, which this blueprint created and this organisation has since removed — a merge never '
-        .'re-creates what was removed; role crier, new in 1.1.0, grants on bulletin, which this blueprint created and '
+        .'re-creates what was removed; role herald, new in 1.1.0, grants on bulletin, which this blueprint created and '
         .'this organisation has since removed — a grant on that handle would reach whatever type takes it next. A merge '
         .'writes only onto what this blueprint created and this organisation still has as it was written. Nothing was '
         .'written, and the receipt still says 1.0.0.'
@@ -581,13 +685,14 @@ it('reports a type the operator deleted, and refuses a version adding a field to
 
     expect(mergeSnapshot())->toBe($before);
 
-    /* A version that lands nothing on it merges, and says what became of it. */
+    /* A version that lands nothing on it merges — its recorded role's grant on it included — and says what became of it. */
     mergeNext(mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(), mergeNew()])));
-    FixtureBlueprint::$roles = [mergeDispatcher()];
+    FixtureBlueprint::$roles = [mergeDispatcher(), $crier];
 
     $result = BlueprintApplier::apply(new FixtureBlueprint);
 
     expect($result['skipped'])->toContain('entry type bulletin: removed since this blueprint wrote it; not written again')
+        ->and($result['created'])->toBe(['field storage dispatch_note'])
         ->and(EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'bulletin')->exists())->toBeFalse();
 });
 
@@ -756,6 +861,10 @@ it('refuses a manifest it cannot read, naming why, and writes nothing', function
             return $m;
         }),
         'null' => DB::table('blueprints')->update(['manifest' => null]),
+        'role id' => mergeForge(static fn (array $m): array => mergeSet($m, 'roles.0.id', null)),
+        'grants' => mergeForge(static fn (array $m): array => mergeSet($m, 'roles.0.grants', 'entry.dispatch.view')),
+        'fields' => mergeForge(static fn (array $m): array => mergeSet($m, 'entry_types.0.fields', ['body' => $m['entry_types'][0]['fields'][0]])),
+        'types' => mergeForge(static fn (array $m): array => mergeSet($m, 'entry_types', ['dispatch' => $m['entry_types'][0]])),
     };
 
     $before = mergeSnapshot();
@@ -776,6 +885,10 @@ it('refuses a manifest it cannot read, naming why, and writes nothing', function
     'a handle recorded twice' => ['twice', 'it records entry type bulletin twice'],
     '#141\'s format' => ['format 141', 'entry type dispatch has no id, outcome; entry type bulletin has no id, outcome; role dispatcher has no id, outcome'],
     'no manifest, finished' => ['null', 'it records nothing'],
+    'a created role with no id' => ['role id', 'role dispatcher has no id'],
+    'grants that are not a list' => ['grants', 'role dispatcher\'s grants are not a list'],
+    'fields that are not a list' => ['fields', 'its fields on dispatch are not a list'],
+    'types that are not a list' => ['types', 'its entry_types are not a list'],
 ]);
 
 /** M18 — what a version adds meets the collision policy exactly as a fresh apply's declaration does. */
@@ -841,6 +954,12 @@ it('applies the collision policy to what a version adds', function (string $case
 
 /** M19 — asserted from the locked side (DL:3315): the lock is armed by an editor's save, not set by hand. */
 it('names a locked field when a version reshapes it, and only then', function (bool $locked): void {
+    /* ⚠️ Storage is per org: another org's lock on the same handle is not this org's, whatever the wording reads. */
+    app(Context::class)->setOrg($this->rival);
+    BlueprintApplier::apply(new FixtureBlueprint);
+    mergeWriteEntry($this->rival, ['dispatch_body' => 'Elsewhere.']);
+    app(Context::class)->setOrg($this->org);
+
     BlueprintApplier::apply(new FixtureBlueprint);
 
     if ($locked) {
@@ -861,6 +980,19 @@ it('names a locked field when a version reshapes it, and only then', function (b
 
     expect(mergeSnapshot())->toBe($before);
 })->with(['locked by a saved entry' => true, 'open' => false]);
+
+/** M19, through settings: a type's settings are its shape too (`FieldStorage::guardProjectionSettings()`). */
+it('names the lock when a version changes a locked field\'s settings', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    mergeWriteEntry($this->org, ['dispatch_code' => 'AB-1']);
+
+    mergeNext(mergeTypes(mergeDispatch(fields: [mergeBody(), mergeCode(['settings' => ['maxLength' => 16, 'pattern' => null]])])));
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, mergeRefusal(
+        'field dispatch_code on dispatch changes its settings — and dispatch_code is locked because entries hold data '
+        .'for it: create a new field, migrate the data, verify, then remove the old one (ADR-006)'
+    ));
+});
 
 /** M19: a change that does not reshape names no lock, locked or not. */
 it('names no lock for a change that does not reshape the field', function (): void {

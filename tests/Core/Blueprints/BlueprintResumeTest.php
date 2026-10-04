@@ -234,7 +234,7 @@ it('finishes over a role its operator renamed, saying so', function (bool $mergi
 
     expect($result['skipped'])->toBe([
         'rows: written by an earlier run that stopped before it finished; finished now',
-        'role dispatcher: renamed dispatch_lead since the interrupted apply wrote it; left as it is',
+        'role dispatcher: renamed dispatch_lead since this blueprint wrote it; left as it is',
     ])
         ->and(Role::query()->pluck('handle')->all())->toBe(['dispatch_lead'])
         ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
@@ -298,7 +298,7 @@ it('finishes over a row the operator removed while the finish was owed, and says
 
     expect($result['skipped'])->toBe([
         'rows: written by an earlier run that stopped before it finished; finished now',
-        'role dispatcher: removed since the interrupted apply wrote it; not written again',
+        'role dispatcher: removed since this blueprint wrote it; not written again',
     ])
         ->and(Role::query()->where('handle', 'dispatcher')->exists())->toBeFalse()
         ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();

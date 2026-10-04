@@ -12,6 +12,8 @@ namespace Kitsune\Core\Blueprints;
 
 use Illuminate\Contracts\Database\ConcurrencyErrorDetector as ConcurrencyErrorDetectorContract;
 use Illuminate\Database\ConcurrencyErrorDetector;
+use Illuminate\Database\Connection;
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 use InvalidArgumentException;
 use Kitsune\Core\Auth\Permissions;
@@ -202,6 +204,7 @@ final class BlueprintApplier
              * "its own" types, or its raw constraint error, would be telling the operator something false.
              */
             try {
+                self::discardLeftOpen($receipt->getConnection());
                 $fresh = Blueprint::query()->whereKey($receipt->getKey())->first();
             } catch (Throwable) {
                 throw $e;
@@ -598,8 +601,14 @@ final class BlueprintApplier
                     }
                 }
 
+                /* The types an earlier version created that a new role may grant on: still this org's, and no global type's handle. */
+                $recordedGrantable = array_keys(array_filter(
+                    $held,
+                    static fn (EntryType $type): bool => ! EntryType::query()->whereNull('org_id')->where('handle', $type->handle)->exists(),
+                ));
+
                 foreach ($definition->roles() as $declaration) {
-                    if (isset($recorded['roles'][$declaration->handle])) {
+                    if (isset($recorded['roles'][$declaration->handle]) || self::leavesRoleAsItIs($declaration)) {
                         continue;
                     }
 
@@ -614,7 +623,7 @@ final class BlueprintApplier
                                 $to,
                                 $type,
                             );
-                        } elseif ($state === 'holds' && EntryType::query()->whereNull('org_id')->where('handle', $type)->exists()) {
+                        } elseif ($state === 'holds' && ! in_array($type, $recordedGrantable, true)) {
                             $removed[] = sprintf(
                                 'role %s, new in %s, grants on %s, and a global type with that handle now exists — the '
                                 .'grant would reach the global type\'s entries here too',
@@ -696,7 +705,7 @@ final class BlueprintApplier
                  * org still has. A recorded role is never written: whoever holds it would gain or lose with nobody
                  * choosing to (ADR-033).
                  */
-                $grantable = [...array_keys($held), ...array_keys(array_filter(
+                $grantable = [...$recordedGrantable, ...array_keys(array_filter(
                     array_diff_key($rows['entry_types'], $recorded['entry_types']),
                     static fn (array $row): bool => $row['outcome'] === 'created',
                 ))];
@@ -730,6 +739,7 @@ final class BlueprintApplier
              * same moment; anything else is this run's own refusal, and reads as itself.
              */
             try {
+                self::discardLeftOpen($receipt->getConnection());
                 $fresh = Blueprint::query()->whereKey($receipt->getKey())->first();
             } catch (Throwable) {
                 throw $e;
@@ -942,7 +952,8 @@ final class BlueprintApplier
      * the role with nobody choosing to. Every rule here can be loosened later without undoing anything applied; none
      * could be tightened again once a merge had written past it.
      *
-     * ⚠️ IT READS ONE THING: whether the storage a reshaped field names is locked, for the refusal's wording alone.
+     * ⚠️ IT READS TWO THINGS: whether the storage a reshaped field names is locked, for the refusal's wording alone; and
+     * whether a new role declared `Skip` meets one the org already has, which it would leave exactly as it is.
      *
      * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
      *
@@ -1068,7 +1079,7 @@ final class BlueprintApplier
         }
 
         foreach ($roles as $handle => $role) {
-            if (isset($recorded['roles'][$handle])) {
+            if (isset($recorded['roles'][$handle]) || self::leavesRoleAsItIs($role)) {
                 continue;
             }
 
@@ -1101,9 +1112,16 @@ final class BlueprintApplier
     /**
      * The keys of a declaration's record whose values differ from the manifest's, in record order.
      *
-     * ⚠️ `settings` LOOSELY, AS `StorageAdoption` COMPARES THEM, AND EVERYTHING ELSE STRICTLY. Settings are the field
-     * type's to read, and a JSON column may hand an object back with its keys reordered (MySQL does); everything else
-     * is a scalar the projection wrote, and loosely `'1.1' == '1.10'` and `null == ''`.
+     * ⚠️ STRICTLY, `settings` WITH ITS OBJECTS' KEYS SORTED FIRST, AT ANY DEPTH. MySQL hands a JSON object back with its
+     * keys re-sorted at every depth, so compared in order a select's options read from the manifest would refuse every
+     * merge on one engine of four; the cost is that an options map only reordered is not a change. A list keeps its
+     * order on every engine, and is compared in order. ~~Loosely, as `StorageAdoption` compares them~~ — but loosely,
+     * `null == 0`, `null == ''` and `'1.1' == '1.10'` at any depth, so a minimum moved from none to 0 merged as no
+     * change, left the org's storage as it was, and recorded the new value in the manifest, where no later merge could
+     * see the difference again (found by review).
+     *
+     * ⚠️ A KEY THE RECORD DOES NOT HOLD IS A CHANGE, not a null: the projection and the keys a manifest is read with are
+     * written twice, and a key missing from one must refuse every merge rather than compare as equal.
      *
      * @param  array<string, mixed>  $declared
      * @param  array<string, mixed>  $recorded
@@ -1116,12 +1134,28 @@ final class BlueprintApplier
         foreach ($declared as $key => $value) {
             $was = $recorded[$key] ?? null;
 
-            if ($key === 'settings' ? $value != $was : $value !== $was) {
+            if (! array_key_exists($key, $recorded) || ($key === 'settings' ? self::sortedKeys($value) !== self::sortedKeys($was) : $value !== $was)) {
                 $changed[] = $key;
             }
         }
 
         return $changed;
+    }
+
+    /** A value with every object in it — every array that is not a list — sorted by key, at any depth. */
+    private static function sortedKeys(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map(self::sortedKeys(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return $value;
     }
 
     /**
@@ -1151,6 +1185,18 @@ final class BlueprintApplier
     }
 
     /**
+     * Whether a new role meets one the org already has under `Skip`, so is left exactly as it is and grants nothing.
+     *
+     * ⚠️ THEN ITS GRANTS ARE NOT REFUSED, AS A FRESH APPLY DOES NOT REFUSE THEM: `applyRole()` writes none of them. Read
+     * through the scope, as `applyRole()` reads it; a role gone by the time it runs meets the grants check there.
+     */
+    private static function leavesRoleAsItIs(RoleDeclaration $declaration): bool
+    {
+        return $declaration->onCollision === OnCollision::Skip
+            && Role::query()->where('handle', $declaration->handle)->exists();
+    }
+
+    /**
      * Whether the receipt is no longer the one the merge planned from: gone, unfinished, at another version, or
      * recording something else.
      *
@@ -1163,6 +1209,21 @@ final class BlueprintApplier
             || $fresh->applied_at === null
             || $fresh->version !== $from
             || $fresh->manifest !== $planned;
+    }
+
+    /**
+     * Roll back what a failed COMMIT left open on the connection, which Laravel no longer counts.
+     *
+     * ⚠️ SQLITE KEEPS A TRANSACTION WHOSE COMMIT FAILED BUSY, and Laravel's commit handler drops its count to 0 without
+     * rolling it back — so the receipt re-read next saw this run's own uncommitted receipt and named it another apply's,
+     * and the connection kept the write lock for whatever it ran next (found by review). Only at level 0: inside a
+     * caller's own transaction, the open one is the caller's.
+     */
+    private static function discardLeftOpen(ConnectionInterface $connection): void
+    {
+        if ($connection instanceof Connection && $connection->transactionLevel() === 0 && $connection->getPdo()->inTransaction()) {
+            $connection->getPdo()->rollBack();
+        }
     }
 
     /** A lock, deadlock or serialisation failure, by Laravel's own detector: the one bound, or its default. */
@@ -1258,14 +1319,19 @@ final class BlueprintApplier
                      */
                     if ($state === 'renamed' && $key === 'roles' && $live !== null) {
                         $removed[] = sprintf(
-                            'role %s: renamed %s since the interrupted apply wrote it; left as it is',
+                            'role %s: renamed %s since this blueprint wrote it; left as it is',
                             $handle,
                             (string) $live->getAttribute('handle'),
                         );
                     } elseif ($state === 'foreign' || $state === 'renamed') {
                         $refused[] = sprintf('%s id %s is not this organisation\'s %s', $kind, self::idOf($row['id'] ?? null), $handle);
                     } elseif ($state === 'gone') {
-                        $removed[] = "{$kind} {$handle}: removed since the interrupted apply wrote it; not written again";
+                        /*
+                         * ⚠️ "SINCE THIS BLUEPRINT WROTE IT", ~~"SINCE THE INTERRUPTED APPLY WROTE IT"~~: an interrupted
+                         * merge records rows an earlier version wrote, which the operator may have removed before the
+                         * merge began — the words the merge's own notes use, true of either.
+                         */
+                        $removed[] = "{$kind} {$handle}: removed since this blueprint wrote it; not written again";
                     }
                 }
 

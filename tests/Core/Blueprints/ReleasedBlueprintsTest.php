@@ -108,8 +108,13 @@ it('merges every first-party blueprint as shipped over each of its released vers
         $checked[] = "{$release->handle()} {$release->version()}";
     }
 
-    /* Every blueprint that ships has its releases frozen here — one with none is merged over by nothing. */
-    expect(array_values(array_unique(array_map(static fn (string $release): string => explode(' ', $release)[0], $checked))))
-        ->toEqualCanonicalizing(array_keys($shipped))
-        ->and($checked)->toContain('blog 1.0.0', 'marketing-site 1.0.0');
+    /*
+     * ⚠️ EVERY VERSION THAT SHIPS IS FROZEN HERE, the one shipping now included. A release with no frozen copy is merged
+     * over by nothing, so the next one could change what it added — refused in every org that took it — and pass.
+     */
+    foreach ($shipped as $handle => $current) {
+        expect($checked)->toContain("{$handle} {$current->version()}");
+    }
+
+    expect($checked)->toContain('blog 1.0.0', 'marketing-site 1.0.0');
 });

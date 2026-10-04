@@ -256,3 +256,103 @@ it('names a rival that committed while it planned', function (): void {
     expect($staged)->toBeTrue()
         ->and(receiptZeroSeen($this->custodyFile)['receipt']['version'])->toBe('1.2.0');
 });
+
+/**
+ * ⚠️ AND IN ONE STATEMENT, INSIDE THE ROWS' TRANSACTION. A version written after the commit — even before the sync — would
+ * leave a moment where 1.1.0's rows and manifest stand under a receipt that says 1.0.0, finished; and an `applied_at`
+ * left set would let a kill there read as done. So the write is caught as it happens: one update carrying all three, at
+ * transaction level 1, while a second connection cannot yet see the field the merge added.
+ */
+it('writes a merge\'s version, manifest and applied_at together, inside its rows\' transaction', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    receiptZeroNextVersion();
+    SchemaManagerStandIn::install();
+
+    $file = $this->custodyFile;
+    $seen = null;
+
+    DB::listen(function (QueryExecuted $query) use (&$seen, $file): void {
+        if ($seen === null && str_starts_with($query->sql, 'update "blueprints"') && str_contains($query->sql, '"manifest"')) {
+            $pdo = new PDO('sqlite:'.$file);
+            $seen = [
+                'level' => DB::connection()->transactionLevel(),
+                'version' => str_contains($query->sql, '"version"'),
+                'applied_at' => str_contains($query->sql, '"applied_at"') && in_array(null, $query->bindings, true),
+                'visible' => (int) $pdo->query("select count(*) from field_storage where handle = 'dispatch_ref'")->fetchColumn(),
+            ];
+        }
+    });
+
+    expect(BlueprintApplier::apply(new FixtureBlueprint)['version'])->toBe('1.1.0')
+        ->and($seen)->toBe(['level' => 1, 'version' => true, 'applied_at' => true, 'visible' => 0]);
+});
+
+/**
+ * ⚠️ A COMMIT THAT FAILS IS ROLLED BACK, NOT LEFT OPEN. In rollback-journal mode a reader holding its lock makes this
+ * run's COMMIT fail busy, and SQLite keeps the transaction — while Laravel's count drops to 0 — so the re-read saw this
+ * run's own receipt, named it another apply's, and the connection kept the write lock for whatever it ran next. Found
+ * by review; the busy timeout is shortened here only so the test does not wait out the configured five seconds.
+ */
+it('rolls back a merge whose commit failed, names the contention, and leaves the connection usable', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    receiptZeroNextVersion();
+    SchemaManagerStandIn::install();
+    DB::connection()->getPdo()->exec('pragma busy_timeout = 200');
+
+    $reader = new PDO('sqlite:'.$this->custodyFile);
+    $reader->exec('begin');
+    $reader->query('select count(*) from orgs')->fetchColumn();
+
+    try {
+        expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(
+            RuntimeException::class,
+            'The merge of [fixture] from 1.0.0 to 1.1.0 stopped: another write reached the same rows at the same moment',
+        );
+
+        expect(DB::connection()->transactionLevel())->toBe(0)
+            ->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
+    } finally {
+        $reader->exec('rollback');
+    }
+
+    $seen = receiptZeroSeen($this->custodyFile);
+
+    expect($seen['receipt']['version'])->toBe('1.0.0')
+        ->and($seen['receipt']['applied_at'])->not->toBeNull()
+        ->and((int) (new PDO('sqlite:'.$this->custodyFile))->query("select count(*) from field_storage where handle = 'dispatch_ref'")->fetchColumn())->toBe(0)
+        /* And the same connection, run again as the refusal says, merges. */
+        ->and(BlueprintApplier::apply(new FixtureBlueprint)['version'])->toBe('1.1.0');
+});
+
+/** The fresh apply's catch discards a failed commit too; its lock error still reads as itself (ADR-039's limit). */
+it('rolls back a fresh apply whose commit failed, and leaves the connection usable', function (): void {
+    DB::connection()->getPdo()->exec('pragma busy_timeout = 200');
+
+    /* The reader takes its lock inside the rows' transaction, after the intent record committed, so it is the COMMIT that fails. */
+    $reader = new PDO('sqlite:'.$this->custodyFile);
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use ($reader, &$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'insert into "entry_types"')) {
+            $staged = true;
+            $reader->exec('begin');
+            $reader->query('select count(*) from orgs')->fetchColumn();
+        }
+    });
+
+    try {
+        expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(PDOException::class, 'database is locked');
+
+        expect(DB::connection()->getPdo()->inTransaction())->toBeFalse();
+    } finally {
+        if ($reader->inTransaction()) {
+            $reader->exec('rollback');
+        }
+    }
+
+    expect(receiptZeroSeen($this->custodyFile))->toBe([
+        'receipt' => ['version' => '1.0.0', 'manifest' => null, 'applied_at' => null],
+        'entry_types' => 0,
+        'roles' => 0,
+    ])
+        ->and(BlueprintApplier::apply(new FixtureBlueprint)['roles_created'])->toBe(['dispatcher']);
+});
