@@ -89,8 +89,8 @@ it('names only blueprints core registers', function (): void {
 
     $named = array_values(array_unique($matches[1]));
 
-    // ⚠️ Not vacuous: the README has to name both of core's blueprints.
-    expect($named)->toContain('blog', 'marketing-site');
+    // ⚠️ Not vacuous: the README has to name each of core's blueprints.
+    expect($named)->toContain('blog', 'marketing-site', 'dam');
 
     $unregistered = array_values(array_filter(
         $named,

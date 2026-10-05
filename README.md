@@ -101,6 +101,25 @@ php skeleton/artisan kitsune:blueprint apply marketing-site --org=mysite --owner
 php skeleton/artisan kitsune:blueprint apply blog --org=mysite
 ```
 
+For a library of files — pictures, documents, anything Kitsune stores — apply `dam`, on its own or beside either of
+the others:
+
+```bash
+php skeleton/artisan kitsune:blueprint apply dam --org=mysite
+```
+
+It adds one media type, **Assets**, recording who holds the rights to each file, the licence it is used under and when
+that licence ends, and three roles — Asset manager, Asset contributor and Asset viewer — that an owner assigns under
+Roles. Worth knowing before they do:
+
+- An upload is **private** — behind sign-in, to whoever may view Assets — until someone makes it public.
+- An **Asset contributor can make files public**, any of the organisation's and not only their own: uploading needs
+  that permission ([ADR-042](docs/decision-log.md)). Only an Asset manager deletes.
+- **Nothing acts on the licence's end date.** It is recorded; nothing is hidden or withdrawn when it passes.
+- **Rights holder is personal data.** Choose it as the Assets type's *Subject identifier*, on its page under Entry
+  types, so that a photographer's access request finds every file crediting them.
+- A Blog or Marketing Site writer needs **Asset viewer** beside their own role to pick an asset in a relation field.
+
 When a newer core ships a newer version of a blueprint, the same `apply` command upgrades it: it adds what the new
 version declares, never changes or removes anything the organisation already has — its owner's edits included — and
 refuses, saying why, a version that would ([ADR-039](docs/decision-log.md)).

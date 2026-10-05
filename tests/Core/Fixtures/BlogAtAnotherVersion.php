@@ -58,6 +58,7 @@ final class BlogAtAnotherVersion implements BlueprintDefinition
                 icon: $post->icon,
                 description: $post->description,
                 ordering: $post->ordering,
+                isMedia: $post->isMedia,
             ),
             $tag,
             new EntryTypeDeclaration(

@@ -193,7 +193,7 @@ entry_types
   handle             string               -- machine name, "product"
   name, plural_name, icon, description
   is_system          bool                 -- undeletable
-  is_media           bool                 -- media type: set at creation, locked; MediaLibrary::store() refuses any other type (ADR-042)
+  is_media           bool                 -- media type: set at creation — by the admin's toggle or a blueprint's isMedia (ADR-039) — locked; MediaLibrary::store() refuses any other type (ADR-042)
   ordering
   settings           json                 -- revisions on/off, sluggable, publishable; a media type's `accepts`, the formats it takes (ADR-042 decision 33)
   timestamps
@@ -395,8 +395,10 @@ by the kernel rather than by extension authors' discipline. Applied to blueprint
 the format, the apply flow, the receipt and the refusal — is core code nothing can replace, while a blueprint's
 *payload* may ship inside `kitsune/core`, inside a module, or be handed to the apply command by an operator.
 Read as "a blueprint may never arrive inside a package", the line would contradict Standing Principle #5's own
-answer that Composer and Packagist do that job. One payload ships inside `kitsune/core` today: Blog
-(`Kitsune\Core\Blueprints\FirstParty\BlogBlueprint`), registered by core's own provider.
+answer that Composer and Packagist do that job. ~~One payload ships inside `kitsune/core` today: Blog
+(`Kitsune\Core\Blueprints\FirstParty\BlogBlueprint`), registered by core's own provider.~~ Three ship inside
+`kitsune/core`: Blog, the Marketing Site and the DAM (`Kitsune\Core\Blueprints\FirstParty\BlogBlueprint`,
+`MarketingSiteBlueprint` and `DamBlueprint`), registered by core's own provider.
 
 ### Module manifest
 

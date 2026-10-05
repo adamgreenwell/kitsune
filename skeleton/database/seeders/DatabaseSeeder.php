@@ -641,6 +641,13 @@ class DatabaseSeeder extends Seeder
         $marketer = User::create(['name' => 'Marketing Writer', 'email' => 'marketing-writer@kitsune.test', 'password' => Hash::make('password')]);
         $marketer->sites()->attach([$site->id]);
         $marketer->orgs()->attach($inkwell->id);
+
+        // The DAM's contributor and viewer (ADR-039, the DAM as built), on the same terms again.
+        foreach (['DAM Contributor' => 'dam-contributor@kitsune.test', 'DAM Viewer' => 'dam-viewer@kitsune.test'] as $name => $email) {
+            $member = User::create(['name' => $name, 'email' => $email, 'password' => Hash::make('password')]);
+            $member->sites()->attach([$site->id]);
+            $member->orgs()->attach($inkwell->id);
+        }
     }
 
     /**

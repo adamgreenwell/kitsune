@@ -667,7 +667,8 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 > ⚠️ **Amended 2026-09-23 by ADR-042:** "a system entry type" is now "a type declared as a media type" — any type
 > with `entry_types.is_media` set, org-owned or global. Core ships none of `image`, `document` or `video`, and an
 > org adds fields only to a media type it owns. `is_media` arrived by a migration of its own, which marked every
-> type whose entries already carried stored files.
+> type whose entries already carried stored files. A media type carries no fields until its owner or a blueprint adds
+> them (the DAM declares three — amended 2026-10-05, ADR-039).
 
 The bytes live in a companion table:
 
@@ -708,7 +709,15 @@ A "media picker" field is therefore just **`relation` constrained to media entry
 
 Three things fall out of this for free, and they're the reason it's worth doing:
 
-1. **The DAM use case is a blueprint, not a subsystem.** Add fields to the `image` type — rights holder, licence expiry, usage notes — and you have digital asset management. That was one of the four use cases in the project's premise, and it costs nothing extra.
+1. **The DAM use case is a blueprint, not a subsystem.** ~~Add fields to the `image` type — rights holder, licence expiry, usage notes — and you have digital asset management.~~ That was one of the four use cases in the project's premise, and it costs nothing extra.
+
+   > ⚠️ **Amended 2026-10-05 by [ADR-039](decision-log.md) (the DAM, as built):** not "the `image` type" — a global
+   > type's shape is editable by no org — but an org-owned media type the `dam` blueprint declares, `asset`, with
+   > rights holder, licence and licence expiry. And "you have digital asset management" claims more than v1.0
+   > delivers: what it has is a library of files with who holds their rights and the licence each is used under,
+   > behind roles and private-by-default delivery; nothing acts on an expiry date, and the list shows no field and
+   > searches titles alone.
+
 2. **Revisions, permissions, audit and tenancy all apply to media automatically**, because media are entries and entries already have all four.
 3. **"What uses this image?" is a query on `entry_relations`**, not a full-text search for the filename across every JSON blob.
 

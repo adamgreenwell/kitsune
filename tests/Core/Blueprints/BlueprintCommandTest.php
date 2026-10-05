@@ -66,6 +66,12 @@ it('lists the Marketing Site', function (): void {
         ->and(Artisan::output())->toMatch('/\|\s*marketing-site\s*\|\s*1\.1\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\MarketingSiteBlueprint\s*\|/');
 });
 
+/** The DAM is core's too, matched as one row for the reason Blog's is. */
+it('lists the DAM', function (): void {
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'list']))->toBe(0)
+        ->and(Artisan::output())->toMatch('/\|\s*dam\s*\|\s*1\.0\.0\s*\|\s*Kitsune\\\\Core\\\\Blueprints\\\\FirstParty\\\\DamBlueprint\s*\|/');
+});
+
 it('applies into a named org', function (): void {
     $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
 

@@ -402,6 +402,8 @@ function mergeChange(string $case): string
         'type description' => [mergeTypes(mergeDispatch(['description' => ''])), null, 'entry type dispatch changes its description'],
         'type ordering' => [mergeTypes(mergeDispatch(['ordering' => 4])), null, 'entry type dispatch changes its ordering'],
         'type on_collision' => [mergeTypes(mergeDispatch(['onCollision' => OnCollision::Skip])), null, 'entry type dispatch changes its on_collision'],
+        /* ⚠️ Decided at creation and locked by the model (ADR-042 decision 1), so a version may never change it. */
+        'type is_media' => [mergeTypes(mergeDispatch(['isMedia' => true])), null, 'entry type dispatch changes its is_media'],
         'field dropped' => [mergeTypes(mergeDispatch(fields: [mergeBody()])), null, 'field dispatch_code on dispatch is no longer declared'],
         'field moved' => [[mergeDispatch(fields: [mergeBody()]), mergeBulletin(fields: [new FieldDeclaration(handle: 'bulletin_text', type: 'textarea', label: 'Text', piiClass: 'none'), mergeCode()])], null, 'field dispatch_code on dispatch is no longer declared'],
         'field type' => [$field(['type' => 'text']), null, 'field dispatch_body on dispatch changes its type'],
@@ -442,7 +444,7 @@ it('refuses each change to what an earlier version recorded, naming it, and writ
 
     expect(mergeSnapshot())->toBe($before);
 })->with([
-    'type dropped', 'type name', 'type plural_name', 'type icon', 'type description', 'type ordering', 'type on_collision',
+    'type dropped', 'type name', 'type plural_name', 'type icon', 'type description', 'type ordering', 'type on_collision', 'type is_media',
     'field dropped', 'field moved', 'field type', 'field label', 'field pii_class', 'field cardinality', 'field is_indexed',
     'field settings', 'field settings null to empty', 'field settings 32 to "32"', 'field is_required', 'field help_text null to empty', 'field ordering', 'field group',
     'role dropped', 'role name', 'role on_collision', 'role loses a grant',

@@ -65,3 +65,22 @@ it('declares a role by handle, name, grants and collision policy alone', functio
         ->and((new ReflectionClass(RoleDeclaration::class))->isFinal())->toBeTrue()
         ->and((new ReflectionClass(RoleDeclaration::class))->isReadOnly())->toBeTrue();
 });
+
+/** ⚠️ AN ENTRY TYPE CARRIES NO ORG, NO SETTINGS, NO SYSTEM FLAG AND NO SUBJECT — and `isMedia` arrived by decision (ADR-039, the DAM). */
+it('declares an entry type by these parameters alone, media off unless declared', function (): void {
+    $constructor = new ReflectionMethod(EntryTypeDeclaration::class, '__construct');
+
+    expect(array_map(fn (ReflectionParameter $parameter): string => $parameter->getName(), $constructor->getParameters()))
+        ->toBe(['handle', 'name', 'pluralName', 'fields', 'icon', 'description', 'ordering', 'onCollision', 'isMedia'])
+        ->and($constructor->getParameters()[8]->getDefaultValue())->toBeFalse()
+        ->and((new ReflectionClass(EntryTypeDeclaration::class))->isFinal())->toBeTrue()
+        ->and((new ReflectionClass(EntryTypeDeclaration::class))->isReadOnly())->toBeTrue();
+});
+
+/** ⚠️ A FIELD CARRIES NO DEFAULT CLASSIFICATION AND NOTHING NEW — its next parameter is a decision too. */
+it('declares a field by these parameters alone', function (): void {
+    expect(array_map(
+        fn (ReflectionParameter $parameter): string => $parameter->getName(),
+        (new ReflectionMethod(FieldDeclaration::class, '__construct'))->getParameters(),
+    ))->toBe(['handle', 'type', 'label', 'piiClass', 'cardinality', 'settings', 'isIndexed', 'isRequired', 'helpText', 'ordering', 'group']);
+});

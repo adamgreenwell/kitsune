@@ -23,6 +23,7 @@ use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
+use Kitsune\Core\Blueprints\FirstParty\DamBlueprint;
 use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
@@ -125,7 +126,8 @@ final class KitsuneServiceProvider extends ServiceProvider
             /* Core's own payload, registered with the binding: no database is touched to register a blueprint. */
             static fn (): BlueprintRegistry => (new BlueprintRegistry)
                 ->register(new BlogBlueprint)
-                ->register(new MarketingSiteBlueprint),
+                ->register(new MarketingSiteBlueprint)
+                ->register(new DamBlueprint),
         );
 
         /*

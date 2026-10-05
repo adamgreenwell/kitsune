@@ -21,9 +21,18 @@ use Kitsune\Core\Blueprints\OnCollision;
  * is the opposite of what a blueprint is for.
  *
  * ⚠️ NO `settings`, THOUGH THE COLUMN EXISTS. `entry_types.settings` is published as "revisions on/off,
- * sluggable, publishable" in two documents and is read by nothing — it is a cast on the model and nothing
- * else. Declaring it would be configuring behaviour that does not exist (AGENTS.md §14). It arrives in the
- * format when something reads it.
+ * sluggable, publishable" in two documents ~~and is read by nothing — it is a cast on the model and nothing
+ * else~~. Declaring it would be configuring behaviour that does not exist (AGENTS.md §14). ~~It arrives in the
+ * format when something reads it.~~ One key is read now — `accepts`, the formats a media type takes (ADR-042
+ * decision 33) — and it still does not arrive here: a declared media type accepts every format, as one made in the
+ * admin does by default, and its owner narrows it on the type's page. It arrives as its own parameter when a
+ * blueprint needs to narrow it — the Storefront's product images (ADR-040) are the expected first — never as
+ * `settings`, whose other three published keys are still read by nothing.
+ *
+ * ⚠️ `isMedia` IS DECIDED HERE, ONCE (ADR-039, the DAM as built). The apply writes it when it creates the type and
+ * never again: the model locks it (`EntryType::guardMediaFlag()`), a merge refuses a version that changes it either
+ * way, and `Skip` refuses to adopt a type whose flag differs, because an adopted type keeps the flag it was created
+ * with for good.
  *
  * ⚠️ NO `is_system`. Published as "undeletable" and enforced nowhere: `guardCascade()` never consults it.
  * ADR-038 declined to rely on it and used `org_id IS NULL` instead; a blueprint does not get to lean on it
@@ -37,6 +46,8 @@ final readonly class EntryTypeDeclaration
      * @param  list<FieldDeclaration>  $fields
      * @param  OnCollision  $onCollision  defaults to Fail: a type belongs to one thing, so finding one already
      *                                    there means adopting somebody else's work under this blueprint's name
+     * @param  bool  $isMedia  whether the type's entries are uploaded files (ADR-042 decision 1) — written when the
+     *                         apply CREATES the type, never on one it adopts, and never changed after
      */
     public function __construct(
         public string $handle,
@@ -47,5 +58,6 @@ final readonly class EntryTypeDeclaration
         public ?string $description = null,
         public int $ordering = 0,
         public OnCollision $onCollision = OnCollision::Fail,
+        public bool $isMedia = false,
     ) {}
 }

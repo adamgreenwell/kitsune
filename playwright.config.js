@@ -135,6 +135,17 @@ module.exports = defineConfig({
             dependencies: ['setup', 'setup-blog'],
             use: { ...devices['Desktop Chrome'] },
         },
+        /*
+         * The DAM blueprint, as `kitsune:blueprint apply dam` left it in the same org — ADR-039, the DAM as built. No
+         * storageState, for Blog's reason: the spec opens the blog owner and writer, the asset contributor and viewer,
+         * and Golfdom's owner, each from the state its setup saved.
+         */
+        {
+            name: 'dam',
+            testMatch: /dam-blueprint\.spec\.js/,
+            dependencies: ['setup', 'setup-blog'],
+            use: { ...devices['Desktop Chrome'] },
+        },
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,
