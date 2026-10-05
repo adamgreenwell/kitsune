@@ -85,7 +85,7 @@ it('names only sign-in accounts the seeder creates', function (): void {
 it('names only blueprints core registers', function (): void {
     $readme = (string) file_get_contents(dirname(__DIR__, 2).'/README.md');
 
-    preg_match_all('/kitsune:blueprint apply ([a-z0-9][a-z0-9_-]*)/', $readme, $matches);
+    preg_match_all('/kitsune:blueprint (?:apply|reverse) ([a-z0-9][a-z0-9_-]*)/', $readme, $matches);
 
     $named = array_values(array_unique($matches[1]));
 

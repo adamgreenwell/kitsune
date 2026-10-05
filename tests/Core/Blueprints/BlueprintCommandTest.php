@@ -11,18 +11,23 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
+use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Schema\SchemaManager;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
 use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
+use Kitsune\Core\Tests\Fixtures\SchemaManagerStandIn;
 
 /*
  * The console seam — ADR-039. The work lives in `BlueprintApplier`, so what these assert is argument handling,
@@ -243,6 +248,175 @@ it('upgrades the Marketing Site from 1.0.0 to 1.1.0 in one command', function ()
 });
 
 /*
+ * ⚠️ THE REVERSE — ADR-039, as built. One action on this command, acting at once with no `--force` and no prompt, as
+ * `kitsune:module uninstall` does; it looks the organisation up and never creates one, and needs no registered blueprint.
+ */
+
+/** Every line it prints is the report, so every line is asserted — and then the org is as if Blog had never been applied. */
+it('reverses Blog in one command, printing what it removed, and a later apply starts afresh', function (): void {
+    $this->artisan('kitsune:blueprint apply blog --org=acme')->assertSuccessful();
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'blog', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  removed  entry type post, with fields post_body, post_excerpt, post_tags',
+            '  removed  entry type tag, with field tag_description',
+            '  removed  field storage post_body',
+            '  removed  field storage post_excerpt',
+            '  removed  field storage post_tags',
+            '  removed  field storage tag_description',
+            '  removed  role blog_editor, revoking its 10 grants',
+            '  removed  role blog_writer, revoking its 4 grants',
+            'Reversed blog 1.0.0 in acme; a later apply of it starts afresh, as the blueprint then declares it, not as it was edited here. 0 un-indexed.',
+        ])."\n")
+        ->and(app(Context::class)->orgId())->toBeNull();
+
+    $this->artisan('kitsune:blueprint status')
+        ->expectsOutputToContain('No blueprint has been applied in any organisation.')
+        ->assertSuccessful();
+
+    $this->artisan('kitsune:blueprint apply blog --org=acme')
+        ->expectsOutputToContain('created  entry type post')
+        ->assertSuccessful();
+});
+
+it('prints a reverse\'s refusal, exits 1, writes nothing and gives the context back', function (): void {
+    $this->artisan('kitsune:blueprint apply blog --org=acme')->assertSuccessful();
+    app(Context::class)->setOrg($this->org);
+    $editor = Role::query()->where('handle', 'blog_editor')->firstOrFail();
+    app(Context::class)->forget();
+    $user = DB::table('users')->insertGetId(['name' => 'Sam', 'email' => 'sam@kitsune.test', 'password' => 'x']);
+    DB::table('role_user')->insert(['role_id' => $editor->getKey(), 'user_id' => $user]);
+
+    /* The whole output: the refusal as itself, never wrapped in "stopped". */
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'blog', '--org' => 'acme']))->toBe(1)
+        ->and(Artisan::output())->toBe('Blueprint [blog] cannot be reversed in this organisation: role blog_editor is held '
+            .'by 1 account — an owner unassigns it under Roles first, which is audited (ADR-033). A reverse removes only '
+            .'what this blueprint created, and only while nothing holds data or authority for it and nothing this '
+            .'organisation added rests on it — it never deletes content and never takes a role from anybody (ADR-039). '
+            ."Nothing was written, and the receipt still says 1.0.0.\n");
+
+    expect(Blueprint::query()->withoutGlobalScopes()->where('handle', 'blog')->exists())->toBeTrue()
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->count())->toBe(2)
+        ->and(app(Context::class)->orgId())->toBeNull();
+});
+
+/** Every kind of line at once, in the order §2.8 gives them: removed, kept, gone, then the notes. */
+it('prints what it removed, kept, found gone and noted, in that order', function (): void {
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+    FieldStorage::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch_body', 'type' => 'textarea', 'pii_class' => 'none', 'cardinality' => 1]);
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+    app(Context::class)->setOrg($this->org);
+    Role::query()->where('handle', 'dispatcher')->firstOrFail()->delete();
+    Role::create(['handle' => 'content_lead', 'name' => 'Content lead'])->grant('entry.dispatch.view');
+    app(Context::class)->forget();
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  removed  entry type dispatch, with field dispatch_body',
+            '  kept     field storage dispatch_body: adopted, not created, by this blueprint',
+            '  gone     role dispatcher: removed since this blueprint wrote it',
+            '  note     role content_lead holds entry.dispatch.view on dispatch, which this reverse removes: it stays, and '
+            .'reaches whatever type takes dispatch next — a later apply of fixture included',
+            'Reversed fixture 1.0.0 in acme; a later apply of it starts afresh, as the blueprint then declares it, not as it '
+            .'was edited here. 0 un-indexed.',
+        ])."\n");
+});
+
+it('refuses a reverse with its arguments wrong, writing nothing', function (string $command, string $refusal): void {
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+
+    $this->artisan($command)
+        ->expectsOutputToContain($refusal)
+        ->assertExitCode(1);
+
+    expect(Blueprint::query()->withoutGlobalScopes()->count())->toBe(1)
+        ->and(Org::query()->count())->toBe(1)
+        ->and(app(Context::class)->orgId())->toBeNull();
+})->with([
+    'no blueprint' => ['kitsune:blueprint reverse --org=acme', '`kitsune:blueprint reverse` needs a blueprint, e.g. `kitsune:blueprint reverse blog --org=acme`.'],
+    'no organisation' => ['kitsune:blueprint reverse fixture', '`kitsune:blueprint reverse` needs an organisation, e.g. `--org=acme`. A blueprint is reversed out of one organisation at a time (ADR-039).'],
+    'an unknown organisation' => ['kitsune:blueprint reverse fixture --org=ghost', 'No organisation has the slug [ghost], and a reverse never creates one. Nothing was written.'],
+    '--owner' => ['kitsune:blueprint reverse fixture --org=acme --owner=me@kitsune.test', '`--owner` belongs to `kitsune:blueprint apply`, which can create an organisation; a reverse creates nothing. Nothing was written.'],
+    '--owner-password-stdin' => ['kitsune:blueprint reverse fixture --org=acme --owner-password-stdin', '`--owner-password-stdin` belongs to `kitsune:blueprint apply`'],
+    '--org-name' => ['kitsune:blueprint reverse fixture --org=acme --org-name=Acme', '`--org-name` belongs to `kitsune:blueprint apply`'],
+    '--site' => ['kitsune:blueprint reverse fixture --org=acme --site=main', '`--site` belongs to `kitsune:blueprint apply`'],
+    '--locale, even its default' => ['kitsune:blueprint reverse fixture --org=acme --locale=en', '`--locale` belongs to `kitsune:blueprint apply`'],
+]);
+
+it('lists reverse among the actions', function (): void {
+    $this->artisan('kitsune:blueprint undo fixture --org=acme')
+        ->expectsOutputToContain('`undo` is not a blueprint action. Use: list, status, apply, reverse.')
+        ->assertExitCode(1);
+});
+
+/** ⚠️ NEVER AN APPLY: a reverse of a blueprint this org does not have writes no receipt and no row. */
+it('refuses to reverse what was never applied, and applies nothing', function (): void {
+    $this->artisan('kitsune:blueprint reverse fixture --org=acme')
+        ->expectsOutputToContain('Blueprint [fixture] has not been applied in this organisation, so there is no receipt to reverse.')
+        ->assertExitCode(1);
+
+    expect(Blueprint::query()->withoutGlobalScopes()->exists())->toBeFalse()
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse();
+});
+
+it('clears the receipt of an apply that wrote no rows, and exits 0', function (): void {
+    EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertFailed();
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe("Reversed fixture 1.0.0 in acme: its apply had written no rows, so only its receipt was removed.\n")
+        ->and(Blueprint::query()->withoutGlobalScopes()->exists())->toBeFalse()
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch')->value('name'))->toBe('Theirs');
+});
+
+it('clears a receipt whose manifest it cannot read, saying why, and exits 0', function (): void {
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+    DB::table('blueprints')->update(['manifest' => null]);
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  note     manifest: not this organisation\'s record of what this blueprint wrote — it records nothing',
+            'Removed the receipt for fixture 1.0.0 in acme, and nothing else: no row it names could be identified as this '
+            .'blueprint\'s. A later apply starts afresh, and refuses by name any type of its own it finds still here.',
+        ])."\n")
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch')->exists())->toBeTrue();
+});
+
+/** A module removed takes its blueprint out of the registry; only the reverse can clear the receipt it left. */
+it('reverses a blueprint no longer registered', function (): void {
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+    app()->instance(BlueprintRegistry::class, new BlueprintRegistry);
+
+    $this->artisan('kitsune:blueprint reverse fixture --org=acme')
+        ->expectsOutputToContain('Reversed fixture 1.0.0 in acme')
+        ->assertSuccessful();
+
+    expect(Blueprint::query()->withoutGlobalScopes()->exists())->toBeFalse();
+});
+
+/** The rows and the receipt are gone; a column left behind holds no data, and the message names the repair. */
+it('prints every line, then the column it could not drop, and exits 1', function (): void {
+    FixtureBlueprint::$override = [new EntryTypeDeclaration(handle: 'dispatch', name: 'Dispatch', pluralName: 'Dispatches', fields: [
+        new FieldDeclaration(handle: 'dispatch_code', type: 'text', label: 'Code', piiClass: 'none', isIndexed: true),
+    ])];
+    $schema = SchemaManagerStandIn::install()->recordOnly();
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+    $schema->throwOnce(new RuntimeException('the disk said no'));
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'fixture', '--org' => 'acme']))->toBe(1)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  removed  entry type dispatch, with field dispatch_code',
+            '  removed  field storage dispatch_code',
+            'Reversed fixture 1.0.0 in acme — its rows and its receipt are gone — but 1 generated column could not be '
+            .'dropped: dispatch_code: the disk said no. Nothing holds data in it; run `kitsune:schema-sync --force` to drop it.',
+        ])."\n")
+        ->and(Blueprint::query()->withoutGlobalScopes()->exists())->toBeFalse()
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse();
+
+    app()->forgetInstance(SchemaManager::class);
+});
+
+/*
  * ⚠️ THE BOOTSTRAP, WHICH IS WHAT MAKES ADR-030's CONDITION SATISFIABLE.
  *
  * That ADR will not move kitsunecms.org onto Kitsune until a blueprint applies to a fresh install "with no
@@ -272,6 +446,16 @@ describe('on an installation with no organisation at all', function (): void {
     });
 
     /** ADR-026: onboarding creates the first user interactively, so a bootstrap that made one would pre-empt it. */
+    /** ⚠️ THE ONE PLACE `apply` WOULD CREATE AN ORGANISATION, AND `reverse` STILL DOES NOT. */
+    it('creates no organisation for a reverse', function (): void {
+        $this->artisan('kitsune:blueprint reverse fixture --org=acme')
+            ->expectsOutputToContain('No organisation has the slug [acme], and a reverse never creates one. Nothing was written.')
+            ->assertExitCode(1);
+
+        expect(Org::query()->withTrashed()->count())->toBe(0)
+            ->and(DB::table('sites')->count())->toBe(0);
+    });
+
     it('creates no user', function (): void {
         $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
 

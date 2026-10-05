@@ -105,6 +105,15 @@ When a newer core ships a newer version of a blueprint, the same `apply` command
 version declares, never changes or removes anything the organisation already has — its owner's edits included — and
 refuses, saying why, a version that would ([ADR-039](docs/decision-log.md)).
 
+To take a blueprint back out of an organisation:
+
+```bash
+php skeleton/artisan kitsune:blueprint reverse blog --org=mysite
+```
+
+It removes what the blueprint created while nothing holds data for it — and otherwise refuses, saying what is in the
+way and writing nothing ([ADR-039](docs/decision-log.md)).
+
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
 an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011

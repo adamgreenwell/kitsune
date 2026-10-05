@@ -29,8 +29,11 @@ use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
  * that fails should leave no claim that it succeeded. A blueprint's is written FIRST, because the failure that
  * matters here is different: apply is not one transaction — a blueprint that indexes a field issues DDL, which
  * commits implicitly on MySQL and MariaDB — so a crash mid-apply is a reachable state, and a half-applied
- * blueprint with no receipt is one nothing can find to finish or undo. The receipt is an intent record, and
- * `applied_at` is what distinguishes intended from completed.
+ * blueprint with no receipt is one nothing can find to finish ~~or undo~~ or reverse. The receipt is an intent record,
+ * and `applied_at` is what distinguishes intended from completed.
+ *
+ * ⚠️ A REVERSE DELETES THE ROW, WITH THE ROWS IT RECORDS, IN ONE TRANSACTION (ADR-039, the reverse as built) — no
+ * "reversed" state: the next apply writes a new one, as it does where there never was one.
  *
  * ⚠️ THE ROW IS A PROOF, SO IT MAY NOT BE WRITTEN IN BULK, on the reasoning `Module` records: a plantable
  * receipt is a claim that schema was installed and checked when it was not. Below Eloquent nothing here
