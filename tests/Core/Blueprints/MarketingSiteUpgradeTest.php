@@ -238,3 +238,66 @@ it('ends an unedited site exactly where a fresh apply of the new version ends', 
         ->and(upgradeShape($this->org)['types'][0]['fields'])->toHaveCount(3)
         ->and(upgradeOracle($this->org))->toBe(upgradeOracle($fresh));
 });
+
+/*
+ * ⚠️ THE ORG THAT DELETED `page` (ADR-039, Marketing Site 1.1.0's known limit), UNSTUCK BY THE REVERSE. Every later
+ * version adds a field to `page`, and a merge never re-creates what was removed — so this org could take no later
+ * version at all. The reverse removes what nothing holds data or authority for, keeps the storage its pages locked, and
+ * clears the receipt; a fresh apply of the current version then adopts that storage as it is.
+ */
+it('unsticks an org that deleted its pages and the page type, through the reverse and a fresh apply', function (): void {
+    BlueprintApplier::apply(new MarketingSite100);
+    upgradeWritePage($this->org);
+    $orgId = $this->org->getKey();
+    $site = Site::query()->where('org_id', $orgId)->firstOrFail();
+
+    $editor = Role::query()->where('handle', 'marketing_editor')->firstOrFail();
+    /** @var TestUser $holder */
+    $holder = TestUser::create(['email' => 'editor@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $orgId, 'user_id' => $holder->getKey()]);
+    $editor->assignTo($holder->getKey());
+
+    /* Delete forever, then the type: what the admin lets an owner do, and what stranded the org. */
+    app(Context::class)->setSite($site);
+    $page = Entry::query()->firstOrFail();
+    $page->delete();
+    $page->forceDelete();
+    app(Context::class)->forget()->setOrg($this->org);
+    EntryType::query()->where('org_id', $orgId)->where('handle', 'page')->firstOrFail()->delete();
+
+    expect(fn () => BlueprintApplier::apply(upgradeNext()))->toThrow(RuntimeException::class,
+        'it adds field page_meta to entry type page, which this blueprint created and this organisation has since '
+        .'removed — a merge never re-creates what was removed. A merge writes only onto what this blueprint created and '
+        .'this organisation still has as it was written. Nothing was written, and the receipt still says 1.0.0. To start '
+        .'afresh at 1.1.0 instead, `kitsune:blueprint reverse marketing-site` removes what this blueprint created while '
+        .'nothing holds data or authority for it, and clears the receipt — or refuses, naming what is in the way.'
+    );
+
+    /* The reverse takes no role from anybody: an owner unassigns it first, audited as theirs. */
+    expect(fn () => BlueprintApplier::reverse('marketing-site'))->toThrow(RuntimeException::class,
+        'role marketing_editor is held by 1 account — an owner unassigns it under Roles first, which is audited (ADR-033).'
+    );
+
+    $editor->removeFrom($holder->getKey());
+
+    $reversed = BlueprintApplier::reverse('marketing-site');
+
+    expect($reversed['removed'])->toBe([
+        'field storage page_summary',
+        'role marketing_editor, revoking its 5 grants',
+        'role marketing_writer, revoking its 3 grants',
+    ])
+        ->and($reversed['kept'])->toBe(['field storage page_body: locked, because entries once held data for it (ADR-006) — a later apply adopts it as it is'])
+        ->and($reversed['gone'])->toBe(['entry type page: removed since this blueprint wrote it'])
+        ->and(Blueprint::receiptFor('marketing-site'))->toBeNull();
+
+    $applied = BlueprintApplier::apply(upgradeNext());
+    $fields = array_column(Blueprint::receiptFor('marketing-site')->manifest['entry_types'][0]['fields'], 'outcome', 'handle');
+
+    expect($applied['version'])->toBe('1.1.0')
+        ->and($applied['created'])->toContain('entry type page', 'field storage page_summary', 'field storage page_meta')
+        ->and($applied['adopted'])->toBe(['field storage page_body'])
+        ->and($applied['roles_created'])->toBe(['marketing_editor', 'marketing_writer'])
+        ->and($fields)->toBe(['page_body' => 'adopted', 'page_summary' => 'created', 'page_meta' => 'created'])
+        ->and((bool) FieldStorage::query()->where('org_id', $orgId)->where('handle', 'page_body')->value('is_locked'))->toBeTrue();
+});

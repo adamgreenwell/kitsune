@@ -680,7 +680,9 @@ it('reports a type the operator deleted, and refuses a version adding a field to
         .'re-creates what was removed; role herald, new in 1.1.0, grants on bulletin, which this blueprint created and '
         .'this organisation has since removed — a grant on that handle would reach whatever type takes it next. A merge '
         .'writes only onto what this blueprint created and this organisation still has as it was written. Nothing was '
-        .'written, and the receipt still says 1.0.0.'
+        .'written, and the receipt still says 1.0.0. To start afresh at 1.1.0 instead, `kitsune:blueprint reverse '
+        .'fixture` removes what this blueprint created while nothing holds data or authority for it, and clears the '
+        .'receipt — or refuses, naming what is in the way.'
     );
 
     expect(mergeSnapshot())->toBe($before);
@@ -826,7 +828,8 @@ it('refuses a manifest naming another organisation\'s rows, and leaves that orga
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
         "The receipt for [fixture] cannot be merged: {$named}. Its manifest is not this organisation's record of this "
-        .'blueprint\'s rows, so nothing was written and the receipt still says 1.0.0.'
+        .'blueprint\'s rows, so nothing was written and the receipt still says 1.0.0. `kitsune:blueprint reverse fixture` '
+        .'clears it alone.'
     );
 
     expect([mergeSnapshot(), $rival()])->toBe($before);
@@ -872,8 +875,9 @@ it('refuses a manifest it cannot read, naming why, and writes nothing', function
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
         "The receipt for [fixture] records 1.0.0, but its manifest is not a record a merge can read: {$problem}. Nothing "
-        .'was written and the receipt is left as it is — and no command clears a receipt yet, because ADR-039\'s reverse '
-        .'is not built.'
+        .'was written and the receipt is left as it is. `kitsune:blueprint reverse fixture` clears a receipt like this '
+        .'one, removing it and nothing else, because a manifest that is not this organisation\'s record names no row a '
+        .'reverse may remove.'
     );
 
     expect(mergeSnapshot())->toBe($before);

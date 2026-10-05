@@ -266,7 +266,10 @@ it('refuses to finish a receipt whose manifest names a row that is not this orga
     ]]);
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(RuntimeException::class, "The receipt for [fixture] cannot be finished: {$named}.");
+        ->toThrow(RuntimeException::class, "The receipt for [fixture] cannot be finished: {$named}. Its manifest is not "
+            .'this organisation\'s record of this blueprint\'s rows, so nothing was written and the receipt is left as it '
+            .'is. `kitsune:blueprint reverse fixture` clears a receipt like this one, removing it and nothing else, because '
+            .'a manifest that is not this organisation\'s record names no row a reverse may remove.');
 
     expect(Blueprint::receiptFor('fixture')->applied_at)->toBeNull()
         ->and(EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch')->exists())->toBeFalse()
@@ -287,7 +290,8 @@ it('refuses to finish a receipt whose manifest records none of what is declared'
 /**
  * ⚠️ BUT A ROW THE OPERATOR REMOVED IS NOT A FORGERY. The rows are live in the admin while the finish is owed, and
  * removing one after a finish costs nothing — so removing it before one must not leave an org that no command can
- * finish or clear. It is reported, and the finish goes ahead without writing it again.
+ * finish or clear (the reverse now clears one, but only by removing what it can prove is this blueprint's). It is
+ * reported, and the finish goes ahead without writing it again.
  */
 it('finishes over a row the operator removed while the finish was owed, and says so', function (): void {
     resumeInterrupted();
@@ -356,3 +360,108 @@ it('names a concurrent apply, rather than a constraint or a type it did not crea
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
         ->toThrow(RuntimeException::class, 'another apply of it ran at the same moment');
 })->with(['before either receipt' => false, 'after the other\'s intent record' => true]);
+
+/*
+ * ⚠️ A RECEIPT A REVERSE REMOVED IS NAMED AS REMOVED — ADR-039, the reverse as built. Before the reverse nothing deleted
+ * a receipt, so the apply neither re-read its intent record inside the rows' transaction nor checked that its finish
+ * wrote anything: a save to a deleted row writes nothing and returns true.
+ */
+
+/** Delete the receipt below Eloquent, as a reverse in another process would. */
+function resumeReverseNow(): void
+{
+    DB::table('blueprints')->where('org_id', test()->org->getKey())->delete();
+}
+
+/** No row of the fixture's in the org — what an apply that wrote nothing leaves. */
+function resumeNothingWritten(): void
+{
+    expect(Blueprint::query()->exists())->toBeFalse()
+        ->and(EntryType::query()->where('handle', 'dispatch')->exists())->toBeFalse()
+        ->and(FieldStorage::query()->where('handle', 'dispatch_code')->exists())->toBeFalse()
+        ->and(Role::query()->exists())->toBeFalse()
+        ->and(RolePermission::query()->withoutGlobalScopes()->exists())->toBeFalse();
+}
+
+it('stops a fresh apply whose intent record was removed before its rows, writing none of them', function (): void {
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use (&$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'insert') && str_contains($query->sql, 'blueprints')) {
+            $staged = true;
+            resumeReverseNow();
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
+        'The apply of [fixture] stopped and wrote nothing: this organisation\'s receipt for it was removed while it ran — '
+        .'`kitsune:blueprint reverse` reached it at the same moment. Run it again to apply afresh.'
+    );
+
+    expect($staged)->toBeTrue();
+    resumeNothingWritten();
+
+    /* And the run it asks for applies afresh. */
+    expect(BlueprintApplier::apply(new FixtureBlueprint)['roles_created'])->toBe(['dispatcher']);
+});
+
+it('refuses to mark finished a receipt removed after its rows committed, in an apply, a merge and a finish', function (string $run): void {
+    $expected = 'The apply of [fixture] committed its rows, and its receipt was removed before this run could mark it '
+        .'finished — `kitsune:blueprint reverse` reached it at the same moment and reversed them. `kitsune:blueprint '
+        .'status` shows where this organisation stands, and `kitsune:schema-sync --force` drops any generated column '
+        .'left for a field that no longer exists.';
+
+    match ($run) {
+        'merge' => (function (): void {
+            BlueprintApplier::apply(new FixtureBlueprint);
+            resumeNextVersion();
+        })(),
+        'finish' => resumeInterrupted(),
+        'apply' => null,
+    };
+
+    $this->schema->onSync = static fn () => resumeReverseNow();
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, $expected);
+
+    /* Nothing re-created the receipt: a plain save of `applied_at` to the deleted row wrote nothing, and said so. */
+    expect(Blueprint::query()->exists())->toBeFalse();
+})->with(['apply', 'merge', 'finish']);
+
+it('names a receipt removed under a merge as removed, not as rows another apply committed', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    resumeNextVersion();
+
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use (&$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'blueprints')) {
+            $staged = true;
+            resumeReverseNow();
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
+        'The apply of [fixture] stopped and wrote nothing: this organisation\'s receipt for it was removed while it ran'
+    );
+
+    expect($staged)->toBeTrue()
+        ->and(FieldStorage::query()->where('handle', 'dispatch_ref')->exists())->toBeFalse();
+});
+
+/** ⚠️ BY VERSION, NOT BY `applied_at` NULL: two finishes of one owed receipt are harmless, and neither claims a removal. */
+it('lets two finishes of one owed receipt both succeed', function (): void {
+    resumeInterrupted();
+
+    $inner = null;
+    $this->schema->onSync = function () use (&$inner): void {
+        if ($inner === null) {
+            $inner = false;
+            $inner = BlueprintApplier::apply(new FixtureBlueprint);
+        }
+    };
+
+    $outer = BlueprintApplier::apply(new FixtureBlueprint);
+
+    expect($inner['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
+        ->and($outer['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
+        ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
+});

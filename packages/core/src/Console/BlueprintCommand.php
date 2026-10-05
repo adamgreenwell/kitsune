@@ -29,11 +29,16 @@ use Symfony\Component\Console\Input\StreamableInputInterface;
 use Throwable;
 
 /**
- * List, apply and report on blueprints — ADR-039.
+ * List, apply, reverse and report on blueprints — ADR-039.
  *
- * ⚠️ ONE COMMAND, NOT THREE, for the reason `kitsune:module` gives: the split in this repo is by blast radius
- * rather than by verb, and three names is three things frozen at v1.2 for one subject. The work lives in
+ * ⚠️ ONE COMMAND, ~~NOT THREE~~ NOT FOUR, for the reason `kitsune:module` gives: the split in this repo is by blast
+ * radius rather than by verb, and ~~three~~ four names is four things frozen at v1.2 for one subject. The work lives in
  * `BlueprintApplier`, so it is testable without a console and this class is argument handling.
+ *
+ * ⚠️ `reverse` ACTS AT ONCE, WITH NO `--force` AND NO PROMPT (Adam, 2026-10-05), as `kitsune:module uninstall` does —
+ * the precedent ADR-039 names for it. It already stops, writing nothing, on everything that matters: content, a holder,
+ * anything the organisation added. It never creates an organisation, and needs no registered blueprint: the receipt's
+ * manifest is the record.
  *
  * ⚠️ `--org` IS REQUIRED FOR `apply`, AND ON AN EMPTY INSTALLATION IT IS CREATED. ADR-039's *done when* is
  * one command on a fresh install, and ADR-030 will not move `kitsunecms.org` onto Kitsune until a blueprint
@@ -54,11 +59,14 @@ use Throwable;
  */
 final class BlueprintCommand extends Command
 {
-    private const ACTIONS = ['list', 'status', 'apply'];
+    private const ACTIONS = ['list', 'status', 'apply', 'reverse'];
 
-    protected $signature = 'kitsune:blueprint {action=list : list, status or apply} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into, created with a first site when the installation has none} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale} {--owner= : on an installation with no organisation and no account only — the email address of its first owner, created with the organisation; the password is asked twice, hidden (ADR-026)} {--owner-password-stdin : read the first owner\'s password from the first line of standard input instead of asking}';
+    /** What only `apply` takes: each can create an organisation or its owner, and a reverse creates nothing. */
+    private const APPLY_ONLY = ['--owner', '--owner-password-stdin', '--org-name', '--site', '--locale'];
 
-    protected $description = 'List, apply and report on Kitsune blueprints (ADR-039)';
+    protected $signature = 'kitsune:blueprint {action=list : list, status, apply or reverse} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into — created with a first site when the installation has none — or to reverse out of} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale} {--owner= : on an installation with no organisation and no account only — the email address of its first owner, created with the organisation; the password is asked twice, hidden (ADR-026)} {--owner-password-stdin : read the first owner\'s password from the first line of standard input instead of asking}';
+
+    protected $description = 'List, apply, reverse and report on Kitsune blueprints (ADR-039)';
 
     public function handle(): int
     {
@@ -70,10 +78,12 @@ final class BlueprintCommand extends Command
             return self::FAILURE;
         }
 
+        /* ⚠️ AN ARM PER ACTION AND NO DEFAULT: an action added without one throws, rather than applying. */
         return match ($action) {
             'list' => $this->list(),
             'status' => $this->status(),
-            default => $this->apply(),
+            'apply' => $this->apply(),
+            'reverse' => $this->reverse(),
         };
     }
 
@@ -278,6 +288,113 @@ final class BlueprintCommand extends Command
         if ($ownerEmail !== null) {
             $this->info($this->signInLine($ownerEmail, $slug));
         }
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Reverse a blueprint out of one organisation — ADR-039, the reverse as built.
+     *
+     * ⚠️ THE ORGANISATION IS LOOKED UP, NEVER CREATED, and the blueprint is not looked up at all: a receipt whose
+     * blueprint's module was removed is exactly one only a reverse can clear.
+     */
+    private function reverse(): int
+    {
+        $handle = $this->argument('handle');
+
+        if (! is_string($handle) || $handle === '') {
+            $this->error('`kitsune:blueprint reverse` needs a blueprint, e.g. `kitsune:blueprint reverse blog --org=acme`.');
+
+            return self::FAILURE;
+        }
+
+        /* As given, defaults aside: `--locale` has one, so its value cannot say whether it was typed. */
+        foreach (self::APPLY_ONLY as $option) {
+            if ($this->input->hasParameterOption($option, true)) {
+                $this->error("`{$option}` belongs to `kitsune:blueprint apply`, which can create an organisation; a reverse creates nothing. Nothing was written.");
+
+                return self::FAILURE;
+            }
+        }
+
+        $slug = $this->option('org');
+
+        if (! is_string($slug) || $slug === '') {
+            $this->error('`kitsune:blueprint reverse` needs an organisation, e.g. `--org=acme`. A blueprint is reversed out of one organisation at a time (ADR-039).');
+
+            return self::FAILURE;
+        }
+
+        $org = Org::query()->where('slug', $slug)->first();
+
+        if ($org === null) {
+            $this->error("No organisation has the slug [{$slug}], and a reverse never creates one. Nothing was written.");
+
+            return self::FAILURE;
+        }
+
+        $context = app(Context::class);
+
+        try {
+            $context->setOrg($org);
+
+            $result = BlueprintApplier::reverse($handle);
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        } finally {
+            $context->forget();
+        }
+
+        foreach (['removed' => 'removed', 'kept' => 'kept', 'gone' => 'gone', 'notes' => 'note'] as $key => $kind) {
+            foreach ($result[$key] as $what) {
+                $this->line(sprintf('  %-8s %s', $kind, $what));
+            }
+        }
+
+        /* The rows and the receipt are gone either way; a column left behind holds no data, and the repair is named. */
+        if ($result['undropped'] !== []) {
+            $one = count($result['undropped']) === 1;
+
+            $this->error(sprintf(
+                'Reversed %1$s %2$s in %3$s — its rows and its receipt are gone — but %4$d generated column%5$s could not '
+                .'be dropped: %6$s. Nothing holds data in %7$s; run `kitsune:schema-sync --force` to drop %7$s.',
+                $handle,
+                $result['version'],
+                $slug,
+                count($result['undropped']),
+                $one ? '' : 's',
+                implode('; ', $result['undropped']),
+                $one ? 'it' : 'them',
+            ));
+
+            return self::FAILURE;
+        }
+
+        $this->info(match ($result['outcome']) {
+            'abandoned' => sprintf(
+                'Reversed %1$s %2$s in %3$s: its apply had written no rows, so only its receipt was removed.',
+                $handle,
+                $result['version'],
+                $slug,
+            ),
+            'receipt-only' => sprintf(
+                'Removed the receipt for %1$s %2$s in %3$s, and nothing else: no row it names could be identified as this '
+                .'blueprint\'s. A later apply starts afresh, and refuses by name any type of its own it finds still here.',
+                $handle,
+                $result['version'],
+                $slug,
+            ),
+            'reversed' => sprintf(
+                'Reversed %1$s %2$s in %3$s; a later apply of it starts afresh, as the blueprint then declares it, not as '
+                .'it was edited here. %4$d un-indexed.',
+                $handle,
+                $result['version'],
+                $slug,
+                $result['dropped'],
+            ),
+        });
 
         return self::SUCCESS;
     }

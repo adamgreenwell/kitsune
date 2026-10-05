@@ -356,3 +356,203 @@ it('rolls back a fresh apply whose commit failed, and leaves the connection usab
     ])
         ->and(BlueprintApplier::apply(new FixtureBlueprint)['roles_created'])->toBe(['dispatcher']);
 });
+
+/*
+ * ── The reverse (ADR-039, the reverse as built) ─────────────────────────────────────────────────────────────────────
+ */
+
+/**
+ * ⚠️ THE ROWS AND THE RECEIPT GO TOGETHER OR NOT AT ALL. A receipt naming rows that are gone is the one state nothing
+ * can recover from, so at the moment the receipt is deleted — the transaction's last statement — a second process must
+ * still see both; and after the commit, neither.
+ */
+it('removes the rows and the receipt in one commit', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $file = $this->custodyFile;
+    $seen = null;
+
+    DB::listen(function (QueryExecuted $query) use (&$seen, $file): void {
+        if ($seen === null && str_starts_with($query->sql, 'delete from "blueprints"')) {
+            $seen = receiptZeroSeen($file) + ['level' => DB::connection()->transactionLevel()];
+        }
+    });
+
+    expect(BlueprintApplier::reverse('fixture')['outcome'])->toBe('reversed');
+
+    expect($seen['receipt'])->not->toBeNull()
+        ->and($seen['entry_types'])->toBe(1)
+        ->and($seen['roles'])->toBe(1)
+        ->and($seen['level'])->toBe(1)
+        ->and(receiptZeroSeen($this->custodyFile))->toBe(['receipt' => null, 'entry_types' => 0, 'roles' => 0]);
+});
+
+/** The generated column's name, as the real schema manager names it — read off the table, so nothing is assumed. */
+function receiptZeroColumns(): array
+{
+    return array_values(array_filter(Schema::getColumnListing('entries'), static fn (string $column): bool => str_starts_with($column, 'idx_dispatch_code')));
+}
+
+/**
+ * ⚠️ DDL AFTER THE COMMIT, AND REFERENCE-COUNTED. The column is dropped once the receipt is gone for every process — DDL
+ * commits implicitly on MySQL and MariaDB, so inside it would have committed half a reverse — and a column another
+ * organisation's indexed field still projects to is kept.
+ */
+it('drops the generated column after its commit, and keeps one another organisation still uses', function (bool $shared): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $column = receiptZeroColumns();
+    expect($column)->toHaveCount(1);
+
+    if ($shared) {
+        $other = Org::create(['slug' => 'receipt-zero-other', 'name' => 'Other']);
+        app(Context::class)->setOrg($other);
+        BlueprintApplier::apply(new FixtureBlueprint);
+        app(Context::class)->setOrg($this->org);
+    }
+
+    $file = $this->custodyFile;
+    $seen = null;
+
+    DB::listen(function (QueryExecuted $query) use (&$seen, $file): void {
+        if ($seen === null && str_contains(strtolower($query->sql), 'drop')) {
+            $seen = receiptZeroSeen($file) + ['level' => DB::connection()->transactionLevel()];
+        }
+    });
+
+    $result = BlueprintApplier::reverse('fixture');
+
+    expect($result['dropped'])->toBe(1)
+        ->and($result['undropped'])->toBe([])
+        ->and(receiptZeroColumns())->toBe($shared ? $column : []);
+
+    if ($shared) {
+        /* Nothing was dropped, and the other organisation's rows and receipt stand. */
+        expect($seen)->toBeNull()
+            ->and((int) (new PDO('sqlite:'.$this->custodyFile))->query("select count(*) from blueprints where handle = 'fixture'")->fetchColumn())->toBe(1);
+    } else {
+        expect($seen)->toBe(['receipt' => null, 'entry_types' => 0, 'roles' => 0, 'level' => 0]);
+    }
+})->with(['its own' => false, 'shared with another organisation' => true]);
+
+/**
+ * ⚠️ A RIVAL HOLDING THE WRITE LOCK IS NAMED, AND NOTHING IS WRITTEN. As the merge measured: SQLite compiles every
+ * `lockForUpdate()` away, so the reverse plans under no lock and fails at its first write, at once, in both journal
+ * modes — and the receipt it re-reads has not moved.
+ */
+it('names a rival holding the database\'s write lock, and reverses when run again', function (string $mode): void {
+    DB::statement("pragma journal_mode = {$mode}");
+    BlueprintApplier::apply(new FixtureBlueprint);
+    SchemaManagerStandIn::install()->recordOnly();
+
+    $rival = new PDO('sqlite:'.$this->custodyFile);
+    $rival->exec('begin immediate');
+
+    try {
+        $started = microtime(true);
+
+        expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+            'The reverse of [fixture] stopped: another write reached the same rows at the same moment, and nothing this run '
+            .'wrote was kept. Run it again.'
+        );
+
+        expect(microtime(true) - $started)->toBeLessThan(2.0);
+    } finally {
+        $rival->exec('rollback');
+    }
+
+    $seen = receiptZeroSeen($this->custodyFile);
+
+    expect($seen['receipt'])->not->toBeNull()
+        ->and($seen['entry_types'])->toBe(1)
+        ->and(DB::connection()->transactionLevel())->toBe(0)
+        ->and(BlueprintApplier::reverse('fixture')['outcome'])->toBe('reversed');
+})->with(['delete', 'wal']);
+
+/** ⚠️ A COMMIT THAT FAILS IS ROLLED BACK, NOT LEFT OPEN — the merge's finding, held for the reverse's catch too. */
+it('rolls back a reverse whose commit failed, names the contention, and leaves the connection usable', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    SchemaManagerStandIn::install()->recordOnly();
+    DB::connection()->getPdo()->exec('pragma busy_timeout = 200');
+
+    $reader = new PDO('sqlite:'.$this->custodyFile);
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use ($reader, &$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'delete from "blueprints"')) {
+            $staged = true;
+            $reader->exec('begin');
+            $reader->query('select count(*) from orgs')->fetchColumn();
+        }
+    });
+
+    try {
+        expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+            'The reverse of [fixture] stopped: another write reached the same rows at the same moment'
+        );
+
+        expect(DB::connection()->transactionLevel())->toBe(0)
+            ->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
+    } finally {
+        if ($reader->inTransaction()) {
+            $reader->exec('rollback');
+        }
+    }
+
+    $seen = receiptZeroSeen($this->custodyFile);
+
+    expect($staged)->toBeTrue()
+        ->and($seen['receipt'])->not->toBeNull()
+        ->and($seen['entry_types'])->toBe(1)
+        ->and(BlueprintApplier::reverse('fixture')['outcome'])->toBe('reversed');
+});
+
+/**
+ * ⚠️ AN INTENT RECORD A REVERSE DELETED BEFORE THE ROWS IS NAMED, AND NO ROW COMMITS WITHOUT IT. Before the apply re-read
+ * its receipt inside the rows' transaction, the rows committed with no receipt naming them and the run printed "Applied".
+ */
+it('stops a fresh apply whose intent record another process deleted, in either journal mode', function (string $mode): void {
+    DB::statement("pragma journal_mode = {$mode}");
+    SchemaManagerStandIn::install()->recordOnly();
+    $file = $this->custodyFile;
+    $staged = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$staged, $file): void {
+        if (! $staged && str_starts_with($query->sql, 'insert into "blueprints"')) {
+            $staged = true;
+            (new PDO('sqlite:'.$file))->exec("delete from blueprints where handle = 'fixture'");
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
+        'The apply of [fixture] stopped and wrote nothing: this organisation\'s receipt for it was removed while it ran'
+    );
+
+    expect($staged)->toBeTrue()
+        ->and(receiptZeroSeen($this->custodyFile))->toBe(['receipt' => null, 'entry_types' => 0, 'roles' => 0])
+        ->and(DB::connection()->transactionLevel())->toBe(0);
+})->with(['delete', 'wal']);
+
+/**
+ * ⚠️ AND IN WAL MODE, ONE DELETED AFTER THE APPLY'S RE-READ: the apply's snapshot is then stale, its first write fails
+ * busy, and its catch finds the receipt gone — named as removed, not as the raw lock error. In rollback-journal mode the
+ * deleter cannot get in at that moment at all: the apply's read holds the shared lock until it commits.
+ */
+it('names an intent record deleted after its re-read as removed, in WAL mode', function (): void {
+    DB::statement('pragma journal_mode = wal');
+    SchemaManagerStandIn::install()->recordOnly();
+    $file = $this->custodyFile;
+    $staged = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$staged, $file): void {
+        if (! $staged && DB::connection()->transactionLevel() === 1 && str_contains($query->sql, 'from "blueprints"')) {
+            $staged = true;
+            (new PDO('sqlite:'.$file))->exec("delete from blueprints where handle = 'fixture'");
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class,
+        'The apply of [fixture] stopped and wrote nothing: this organisation\'s receipt for it was removed while it ran'
+    );
+
+    expect($staged)->toBeTrue()
+        ->and(receiptZeroSeen($this->custodyFile))->toBe(['receipt' => null, 'entry_types' => 0, 'roles' => 0])
+        ->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
+});

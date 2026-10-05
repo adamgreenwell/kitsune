@@ -134,10 +134,16 @@ final class PersonServiceProvider extends ModuleServiceProvider
      * people. The count is the thing this refusal rests on, so it has to be the honest one.
      *
      * ⚠️ AND `withoutScopeBecause()` IS THE WRONG TOOL FOR IT, which the first version of this method used and
-     * a test caught. That hatch suspends WRITE scoping (`ScopeWrites::suspend`); it leaves the global read
+     * a test caught. ~~That hatch suspends WRITE scoping (`ScopeWrites::suspend`); it leaves the global read
      * scope in place. Measured with a person sitting in a site no context named: plain count 0,
-     * `withoutScopeBecause` count 0, `withoutGlobalScopes()` count 1, raw row count 1. A read past a scope is
-     * `withoutGlobalScopes()`, and the two are not interchangeable however similar the names read.
+     * `withoutScopeBecause` count 0, `withoutGlobalScopes()` count 1, raw row count 1.~~ Re-measured for ADR-039's
+     * reverse, and pinned by `BlueprintReverseTest`: the builder that hatch hands its callback has the site and org
+     * scopes removed and keeps soft deletes, so it counts live rows only — and 0 reproduces only for a callback that
+     * ignores that builder and builds `Entry::query()` itself, as the first version did. A read past every scope is
+     * `withoutGlobalScopes()`, which counts the trash without being asked and cannot be defeated that way.
+     *
+     * This counts entries only. ADR-039's reverse also counts the revisions of entries moved to another type, which
+     * a type's delete would take with it; a global type's are left to `EntryType::guardCascade()`.
      */
     public function uninstall(): void
     {
