@@ -22,7 +22,6 @@ use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
-use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
