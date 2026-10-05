@@ -101,10 +101,11 @@ php skeleton/artisan kitsune:blueprint apply marketing-site --org=mysite --owner
 php skeleton/artisan kitsune:blueprint apply blog --org=mysite
 ```
 
-For a library of files — pictures, documents, anything Kitsune stores — apply `dam`, on its own or beside either of
-the others:
+For a library of files — pictures, documents, anything Kitsune stores — apply `dam`: on an empty installation with
+`--owner`, as above, or into an organisation that already has either of the others, without it:
 
 ```bash
+php skeleton/artisan kitsune:blueprint apply dam --org=mylibrary --owner=you@example.com
 php skeleton/artisan kitsune:blueprint apply dam --org=mysite
 ```
 
