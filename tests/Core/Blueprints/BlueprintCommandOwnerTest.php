@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Contracts\ProvisionsMembership;
 use Kitsune\Core\Auth\FirstOwnerCredentials;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\RegistersOrgAwareProvider;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
@@ -185,6 +186,35 @@ describe('creating the first owner', function (): void {
             ->and(Role::query()->withoutGlobalScopes()->where('is_owner', true)->pluck('handle')->all())->toBe(['owner'])
             ->and($actions->filter(fn (string $action): bool => $action === 'role.granted'))->toHaveCount(8)
             ->and($actions->filter(fn (string $action): bool => $action === 'role.owner_assigned'))->toHaveCount(1);
+    });
+
+    /**
+     * D17 — and to a file library its owner can upload into: the first one-command route to an upload, since a fresh
+     * production install has no media type at all (ADR-039, the DAM as built).
+     */
+    it('creates the org, its site and its owner, then applies the DAM, and the owner may upload into assets', function (): void {
+        [$status, $out] = applyThroughStream(ownerOverStdin(['handle' => 'dam', '--org' => 'mylibrary']), OWNER_COMMAND_PASSWORD."\n");
+
+        expect($status)->toBe(0)
+            ->and($out)->toContain('Created organisation mylibrary, its first site mylibrary and its first owner owner@example.test (ADR-026).')
+            ->and($out)->toContain('Applied dam 1.0.0 into mylibrary. 0 indexed.')
+            ->and($out)->toContain('3 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).');
+
+        $owner = ownerCommandUser();
+        $org = Org::query()->withoutGlobalScopes()->where('slug', 'mylibrary')->firstOrFail();
+        $actions = AuditLog::query()->withoutGlobalScopes()->pluck('action');
+
+        app(Context::class)->setOrg($org);
+
+        try {
+            expect(Role::query()->withoutGlobalScopes()->orderBy('handle')->pluck('handle')->all())->toBe(['dam_contributor', 'dam_manager', 'dam_viewer', 'owner'])
+                ->and(EntryType::query()->withoutGlobalScopes()->where('handle', 'asset')->value('is_media'))->toBeTrue()
+                ->and($actions->filter(fn (string $action): bool => $action === 'role.granted'))->toHaveCount(10)
+                ->and(Permissions::mayUpload($owner, 'asset'))->toBeTrue()
+                ->and(Permissions::mayStageUploads($owner))->toBeTrue();
+        } finally {
+            app(Context::class)->forget();
+        }
     });
 
     /** Once it exists, `--owner` is refused for good; the apply itself is as idempotent as ever. */

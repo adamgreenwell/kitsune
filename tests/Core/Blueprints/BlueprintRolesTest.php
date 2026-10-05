@@ -452,6 +452,8 @@ it('records each role and every field as declared in the manifest', function ():
             'on_collision' => 'fail',
             'grants' => ['entry.dispatch.update', 'entry.dispatch.view'],
         ])
+        /* The type row's key set pinned exactly too, as the role row's is (ADR-039, the DAM as built). */
+        ->and(array_keys($manifest['entry_types'][0]))->toEqualCanonicalizing(['handle', 'id', 'outcome', 'name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media', 'fields'])
         ->and($manifest['entry_types'][0])->toMatchArray([
             'handle' => 'dispatch',
             'id' => $type->getKey(),
@@ -460,6 +462,7 @@ it('records each role and every field as declared in the manifest', function ():
             'description' => 'Dispatches.',
             'ordering' => 3,
             'on_collision' => 'fail',
+            'is_media' => false,
         ])
         ->and($manifest['entry_types'][0]['fields'][0])->toMatchArray([
             'handle' => 'dispatch_body',

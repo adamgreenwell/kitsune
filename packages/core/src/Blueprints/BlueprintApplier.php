@@ -89,7 +89,27 @@ final class BlueprintApplier
     /**
      * The keys of `typeRecord()`, `fieldRecord()` and `roleRecord()`, which a manifest must hold for a merge to read it.
      */
-    private const TYPE_RECORD = ['name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision'];
+    private const TYPE_RECORD = ['name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media'];
+
+    /**
+     * Type-record keys the format gained after receipts had been written without them, each with the one value every such
+     * receipt meant — ADR-039, the DAM as built.
+     *
+     * ⚠️ A FACT ABOUT THE CORE THAT WROTE THE MANIFEST, NOT A GUESS. A manifest whose entry types hold no `is_media` was
+     * written by a core whose `EntryTypeDeclaration` could not declare a media type, so every type it records was declared
+     * ordinary. Read as `false`, it compares equal to a later version still declaring the type ordinary and refuses one
+     * declaring it media — exactly as the key would have, had it been there. Only these keys are read this way; a row
+     * missing any other key is not a manifest any core wrote, and is refused as before. A key joins this list only in the
+     * change that adds it to `TYPE_RECORD`, with the value every earlier writer could only have meant.
+     *
+     * ⚠️ AND ONLY EVER COMPARED — which is narrower than it sounds, as review found. No merge, finish or reverse writes a
+     * recorded `is_media` to any row; but like every recorded key it decides whether a merge is refused, so a manifest
+     * whose key was stripped or set to `false` on a media type lets through a version that wrongly declares the type
+     * ordinary, and the merge writes what that version adds. The live column never moves (`guardMediaFlag()`), and the
+     * manifest is a bulk-writable record the merge already trusts this far for every key (ADR-039, the merge's known
+     * limits). Absence is safe because it means exactly what every earlier writer declared.
+     */
+    private const ADDED_TO_TYPE_RECORD = ['is_media' => false];
 
     private const FIELD_RECORD = ['type', 'label', 'pii_class', 'cardinality', 'is_indexed', 'settings', 'is_required', 'help_text', 'ordering', 'group'];
 
@@ -968,15 +988,16 @@ final class BlueprintApplier
 
         $handle = $row['handle'];
 
-        [$keys, $outcomes] = match ($kind) {
-            'entry type' => [self::TYPE_RECORD, ['created', 'skipped']],
-            'role' => [self::ROLE_RECORD, ['created', 'skipped']],
-            'field' => [self::FIELD_RECORD, ['created', 'adopted']],
+        /* `$added`: the keys a manifest written before the format had them may lack, and what each then meant. */
+        [$keys, $outcomes, $added] = match ($kind) {
+            'entry type' => [self::TYPE_RECORD, ['created', 'skipped'], self::ADDED_TO_TYPE_RECORD],
+            'role' => [self::ROLE_RECORD, ['created', 'skipped'], []],
+            'field' => [self::FIELD_RECORD, ['created', 'adopted'], []],
         };
 
         $missing = array_values(array_filter(
             [...($kind === 'field' ? [] : ['id']), 'outcome', ...$keys],
-            static fn (string $key): bool => ! array_key_exists($key, $row),
+            static fn (string $key): bool => ! array_key_exists($key, $row) && ! array_key_exists($key, $added),
         ));
 
         if ($missing !== []) {
@@ -1006,8 +1027,9 @@ final class BlueprintApplier
 
         $record = [];
 
+        /* `array_key_exists`, not `??`: a present null is what the manifest says, and compares as the change it is. */
         foreach ($keys as $key) {
-            $record[$key] = $row[$key];
+            $record[$key] = array_key_exists($key, $row) ? $row[$key] : $added[$key];
         }
 
         return [$handle, $kind === 'field'
@@ -1193,7 +1215,9 @@ final class BlueprintApplier
      * see the difference again (found by review).
      *
      * ⚠️ A KEY THE RECORD DOES NOT HOLD IS A CHANGE, not a null: the projection and the keys a manifest is read with are
-     * written twice, and a key missing from one must refuse every merge rather than compare as equal.
+     * written twice, and a key missing from one must refuse every merge rather than compare as equal. The reader fills
+     * only `ADDED_TO_TYPE_RECORD`'s keys, with the value their writer could only have meant, before this runs; every other
+     * missing key is still a change.
      *
      * @param  array<string, mixed>  $declared
      * @param  array<string, mixed>  $recorded
@@ -1638,6 +1662,29 @@ final class BlueprintApplier
                  * receipt last. A type's fields and availability go with it by cascade; its storage is then unreferenced.
                  */
                 foreach ($plan['types'] as $type) {
+                    /*
+                     * ⚠️ THE NOMINATED SUBJECT FIRST. `subject_field_id` names one of the type's own fields, which cascade
+                     * from it while the key nulls back onto the row being deleted — a cycle whose handling is the
+                     * engine's, measured on SQLite alone. The nomination goes with the type either way, so it goes first
+                     * and the cycle never runs (ADR-039, the DAM as built: the DAM invites one).
+                     *
+                     * ⚠️ ONE COLUMN, NOT A SAVE — review found the save. `save()` runs every `saving` guard on the whole
+                     * row, so an icon from a set since uninstalled, or formats a builder wrote, refused the reverse of a
+                     * nominated type and of no other; `delete()` asks none of them. The bulk-write guard names this
+                     * column, so the write goes through the model's own hatch, on a row this transaction already holds.
+                     */
+                    if ($type->subject_field_id !== null) {
+                        $cleared = EntryType::withoutScopeBecause(
+                            'the reverse clears the nomination of a type it deletes next',
+                            static fn ($query): int => $query->whereKey($type->getKey())->where('org_id', $orgId)
+                                ->update(['subject_field_id' => null]),
+                        );
+
+                        if ($cleared !== 1) {
+                            throw new RuntimeException("entry type {$type->handle} was not there to clear its subject.");
+                        }
+                    }
+
                     self::refuseVetoed($type->delete(), "entry type {$type->handle}");
                 }
 
@@ -2556,6 +2603,24 @@ final class BlueprintApplier
             ));
         }
 
+        /*
+         * ⚠️ ADOPTED ONLY ON THE SAME SIDE OF THE MEDIA LINE — ADR-042 decision 1. The flag is fixed when a type is created,
+         * so a type adopted with the other flag stays that way for good: a declared media type with no Upload, or a
+         * declared ordinary type the blueprint's fields would describe as files. Neither can be repaired, so it is refused
+         * here, before the first field is added — and the merge reaches this for a type a later version adds.
+         */
+        if ($type !== null && $type->is_media !== $declaration->isMedia) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%1$s] already exists in this organisation as %2$s, and this blueprint declares it as %3$s, '
+                .'with onCollision: skip. Whether a type holds uploaded files is decided when it is created and never '
+                .'changed (ADR-042), so it cannot be adopted as declared. Nothing was written. Give the declared type '
+                .'another handle, or remove the one that is there.',
+                $declaration->handle,
+                $type->is_media ? 'a media type' : 'a type that holds no files',
+                $declaration->isMedia ? 'a media type' : 'one that holds no files',
+            ));
+        }
+
         $created = $type === null;
 
         if ($type !== null) {
@@ -2569,6 +2634,8 @@ final class BlueprintApplier
                 'icon' => $declaration->icon,
                 'description' => $declaration->description,
                 'ordering' => $declaration->ordering,
+                /* ⚠️ AT CREATION AND ONLY HERE — ADR-042 decision 1. `guardMediaFlag()` refuses it on every later save. */
+                'is_media' => $declaration->isMedia,
             ]);
 
             $outcome['created'][] = "entry type {$declaration->handle}";
@@ -2702,7 +2769,10 @@ final class BlueprintApplier
     /**
      * An entry type declaration as the manifest records it, less its handle, id, outcome and fields.
      *
-     * @return array{name: string, plural_name: string, icon: ?string, description: ?string, ordering: int, on_collision: string}
+     * ⚠️ `is_media` ALWAYS, NOT ONLY WHEN TRUE: the merge compares the keys a declaration emits, so a key written only for
+     * a media type would let a later version drop the flag unseen (ADR-039, the DAM as built).
+     *
+     * @return array{name: string, plural_name: string, icon: ?string, description: ?string, ordering: int, on_collision: string, is_media: bool}
      */
     private static function typeRecord(EntryTypeDeclaration $type): array
     {
@@ -2713,6 +2783,7 @@ final class BlueprintApplier
             'description' => $type->description,
             'ordering' => $type->ordering,
             'on_collision' => $type->onCollision->value,
+            'is_media' => $type->isMedia,
         ];
     }
 

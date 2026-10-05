@@ -27,8 +27,8 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * ⚠️ POSTS AND TAGS, AND NOTHING THE ADMIN CANNOT YET CARRY (Adam, 2026-10-02: the lean set). No date field —
  * `entries.published_at` is the platform's column for one (field-types.md §2), though neither the admin nor
  * publishing writes it yet, so a post has no publication date until core does: a gap in core, not one to paper over
- * here with a second date; no featured image — a fresh install has no media type and a blueprint cannot yet declare
- * one; no byline type — it would hold personal data with no subject to nominate, and users are not entries; no
+ * here with a second date; no featured image — a fresh install has no media type ~~and a blueprint cannot yet declare
+ * one~~ — a blueprint can now (ADR-039, the DAM as built), and a later version may add one; no byline type — it would hold personal data with no subject to nominate, and users are not entries; no
  * `page`, which is the Marketing Site's; no category, which wants a tree the admin does not have; and no SEO fields,
  * which nothing renders until v1.1.
  *

@@ -106,6 +106,28 @@ module.exports = async () => {
         throw new Error(`global-setup: a second Marketing Site apply into inkwell was not a no-op:\n${marketingAgain}`);
     }
 
+    /*
+     * ⚠️ AND THE DAM, THE SAME WAY — ADR-039, the DAM as built. A media type in an org that already has Blog's and the
+     * Marketing Site's types, beside the seeded global `image`, so `dam-blueprint.spec.js` meets the library where it
+     * will usually be: added to a site that exists. Applied twice for the same reason again.
+     */
+    const dam = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'dam', '--org=inkwell', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! dam.includes('Applied dam 1.0.0 into inkwell.')
+        || ! dam.includes('3 roles were created and nobody holds them: an owner assigns them under Roles (ADR-033).')) {
+        throw new Error(`global-setup: the DAM did not apply into inkwell:\n${dam}`);
+    }
+
+    const damAgain = execFileSync('php', ['artisan', 'kitsune:blueprint', 'apply', 'dam', '--org=inkwell', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! damAgain.includes('already applied at this version')) {
+        throw new Error(`global-setup: a second DAM apply into inkwell was not a no-op:\n${damAgain}`);
+    }
+
     /* Each writer their own blueprint's role, through `Role::assignTo()`, the audited path: a blueprint assigns nobody. */
     execFileSync('php', [
         'artisan', 'tinker', '--execute',
@@ -113,7 +135,11 @@ module.exports = async () => {
             + " Kitsune\\Core\\Models\\Role::where('handle', 'blog_writer')->firstOrFail()"
             + "->assignTo(App\\Models\\User::where('email', 'blog-writer@kitsune.test')->value('id'));"
             + " Kitsune\\Core\\Models\\Role::where('handle', 'marketing_writer')->firstOrFail()"
-            + "->assignTo(App\\Models\\User::where('email', 'marketing-writer@kitsune.test')->value('id'));",
+            + "->assignTo(App\\Models\\User::where('email', 'marketing-writer@kitsune.test')->value('id'));"
+            + " Kitsune\\Core\\Models\\Role::where('handle', 'dam_contributor')->firstOrFail()"
+            + "->assignTo(App\\Models\\User::where('email', 'dam-contributor@kitsune.test')->value('id'));"
+            + " Kitsune\\Core\\Models\\Role::where('handle', 'dam_viewer')->firstOrFail()"
+            + "->assignTo(App\\Models\\User::where('email', 'dam-viewer@kitsune.test')->value('id'));",
     ], { cwd: skeleton, stdio: 'inherit' });
 
     run(['filament:assets']);

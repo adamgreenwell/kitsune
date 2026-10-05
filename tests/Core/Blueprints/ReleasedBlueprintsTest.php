@@ -116,5 +116,5 @@ it('merges every first-party blueprint as shipped over each of its released vers
         expect($checked)->toContain("{$handle} {$current->version()}");
     }
 
-    expect($checked)->toContain('blog 1.0.0', 'marketing-site 1.0.0');
+    expect($checked)->toContain('blog 1.0.0', 'marketing-site 1.0.0', 'dam 1.0.0');
 });

@@ -51,7 +51,8 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         // The user with one grant, whose session is what makes the permission specs mean anything.
         { name: 'setup-reader', testMatch: /auth-reader\.setup\.js/ },
-        // The blueprints' owner and writers — Blog's owner and writer, the Marketing Site's writer — in an org of their own.
+        // The blueprints' owner and members — Blog's owner and writer, the Marketing Site's writer, the DAM's contributor and
+        // viewer — in an org of their own.
         { name: 'setup-blog', testMatch: /auth-blog\.setup\.js/ },
         {
             name: 'skeleton',
@@ -132,6 +133,17 @@ module.exports = defineConfig({
         {
             name: 'marketing-site',
             testMatch: /marketing-site\.spec\.js/,
+            dependencies: ['setup', 'setup-blog'],
+            use: { ...devices['Desktop Chrome'] },
+        },
+        /*
+         * The DAM blueprint, as `kitsune:blueprint apply dam` left it in the same org — ADR-039, the DAM as built. No
+         * storageState, for Blog's reason: the spec opens the blog owner and writer, the asset contributor and viewer,
+         * and Golfdom's owner, each from the state its setup saved.
+         */
+        {
+            name: 'dam',
+            testMatch: /dam-blueprint\.spec\.js/,
             dependencies: ['setup', 'setup-blog'],
             use: { ...devices['Desktop Chrome'] },
         },

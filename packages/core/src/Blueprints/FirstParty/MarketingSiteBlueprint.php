@@ -28,8 +28,8 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * admin, never a rendered page (ADR-039), and declaring what nothing reads yet would lock a shape before the code that
  * reads it exists. So: no seed pages — content is a separate, opt-in key that is not built, and the operator writing
  * the pages is ADR-030's fourth condition (Adam, 2026-10-04: ship it empty); no availability — a no-op on a one-site
- * install, and no admin screen undoes a row; no image — a fresh install has no media type and a blueprint cannot yet
- * declare one; no parent page — a tree the admin does not have; no menu, no singleton home, no SEO fields ~~(1.0.0)~~
+ * install, and no admin screen undoes a row; no image — a fresh install has no media type ~~and a blueprint cannot yet
+ * declare one~~ — a blueprint can now (ADR-039, the DAM as built), and a later version may add one; no parent page — a tree the admin does not have; no menu, no singleton home, no SEO fields ~~(1.0.0)~~
  * but the meta description 1.1.0 adds, no repeating sections — menus, routing and theming are v1.1, and v1.0 has no
  * repeater; no `slug` field — every entry has the
  * platform's slug already; no date — nothing writes `entries.published_at` yet. ~~Until ADR-039's merge exists,~~

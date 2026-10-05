@@ -4,13 +4,13 @@ const path = require('node:path');
 const { BLOG_OWNER } = require('./accounts');
 
 /*
- * Signs in the ~~two~~ three people the blueprints' browser tests need — Phase 5, ADR-039: Blog's owner and writer,
- * and the Marketing Site's writer, in the same org.
+ * Signs in the ~~two~~ ~~three~~ five people the blueprints' browser tests need — Phase 5, ADR-039: Blog's owner and
+ * writer, the Marketing Site's writer, and the DAM's contributor and viewer, in the same org.
  *
  * ⚠️ IN AN ORG OF THEIR OWN. `inkwell` holds no entry type or role but ~~its seeded owner role and~~ what
- * `kitsune:blueprint apply blog --owner` ~~wrote~~ and then `kitsune:blueprint apply marketing-site` wrote, so the owner
- * measures what the commands created and each writer measures the role their blueprint created — assigned in
- * `e2e/global-setup.js` through the audited path, because a blueprint assigns nobody.
+ * `kitsune:blueprint apply blog --owner` ~~wrote~~ and then `kitsune:blueprint apply marketing-site` and `dam`
+ * wrote, so the owner measures what the commands created and each writer measures the role their blueprint created —
+ * assigned in `e2e/global-setup.js` through the audited path, because a blueprint assigns nobody.
  *
  * ⚠️ THE OWNER SIGNS IN WITH THE PASSWORD THE COMMAND WAS GIVEN (ADR-026, as amended): their account is the one
  * `--owner` created, so this sign-in is the proof it can be signed in to. The writer is the seeder's, as before.
@@ -71,4 +71,12 @@ setup('authenticate as the blog writer', async ({ page }) => {
 
 setup('authenticate as the marketing writer', async ({ page }) => {
     await signIn(page, 'marketing-writer@kitsune.test', 'password', 'marketing-writer-auth.json');
+});
+
+setup('authenticate as the asset contributor', async ({ page }) => {
+    await signIn(page, 'dam-contributor@kitsune.test', 'password', 'dam-contributor-auth.json');
+});
+
+setup('authenticate as the asset viewer', async ({ page }) => {
+    await signIn(page, 'dam-viewer@kitsune.test', 'password', 'dam-viewer-auth.json');
 });
