@@ -157,17 +157,24 @@ final class BlueprintApplier
          * The intent record, committed on its own. An interrupted apply leaves this row with `applied_at`
          * null, which is what a later run recognises — and what makes "a blueprint half applied into this org"
          * a thing an operator can be told rather than a thing they have to notice.
+         *
+         * ⚠️ ONE ALREADY HERE ALREADY SAYS THAT, SO IT IS NOT SAVED HERE: it takes this run's version inside the rows'
+         * transaction, under its lock, with the manifest. Saved here, a run that had read an intent record while another
+         * apply committed over it wrote its version onto the other's receipt — 1.1.0 over a finished 1.0.0 manifest —
+         * before its own re-read stopped it (found by review, ADR-039's reverse as built).
          */
-        $receipt ??= new Blueprint(['handle' => $definition->handle()]);
-        $receipt->version = $definition->version();
-        $receipt->applied_at = null;
-        $receipt->manifest = null;
+        if ($receipt === null) {
+            $receipt = new Blueprint(['handle' => $definition->handle()]);
+            $receipt->version = $definition->version();
+            $receipt->applied_at = null;
+            $receipt->manifest = null;
 
-        /* A receipt that appeared since it was read is another apply's, begun at the same moment. */
-        try {
-            $receipt->save();
-        } catch (UniqueConstraintViolationException $e) {
-            throw new RuntimeException(self::concurrent($definition), 0, $e);
+            /* A receipt that appeared since it was read is another apply's, begun at the same moment. */
+            try {
+                $receipt->save();
+            } catch (UniqueConstraintViolationException $e) {
+                throw new RuntimeException(self::concurrent($definition), 0, $e);
+            }
         }
 
         $outcome = ['created' => [], 'adopted' => [], 'skipped' => []];
@@ -184,7 +191,7 @@ final class BlueprintApplier
                  * ⚠️ THE INTENT RECORD AGAIN, FOR UPDATE, BEFORE ANY ROW. It committed on its own, so a reverse could
                  * delete it before this transaction opened — and the rows then committed with no receipt naming them,
                  * printed "Applied", and the next apply refused its own types (ADR-039, the reverse as built). Gone is
-                 * a reverse's doing; recording rows, or another version, is another apply's.
+                 * a reverse's doing; recording rows, or a version other than the one read, is another apply's.
                  */
                 $fresh = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
 
@@ -192,9 +199,12 @@ final class BlueprintApplier
                     throw new RuntimeException(self::receiptRemoved($definition->handle(), rowsCommitted: false));
                 }
 
-                if ($fresh->manifest !== null || $fresh->applied_at !== null || $fresh->version !== $definition->version()) {
+                if ($fresh->manifest !== null || $fresh->applied_at !== null || $fresh->version !== $receipt->version) {
                     throw new RuntimeException(self::concurrent($definition));
                 }
+
+                /* Written with the manifest, last: an intent record that rolls back keeps the version it had. */
+                $receipt->version = $definition->version();
 
                 foreach ($definition->entryTypes() as $declaration) {
                     self::applyEntryType($declaration, $orgId, $outcome, $indexable, $rows);
@@ -557,11 +567,6 @@ final class BlueprintApplier
                  */
                 $fresh = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
 
-                /* ⚠️ GONE IS A REVERSE, NOT AN APPLY: "rows this run did not commit" would be false of a receipt that is gone. */
-                if ($fresh === null) {
-                    throw new RuntimeException(self::receiptRemoved($definition->handle(), rowsCommitted: false));
-                }
-
                 if (self::receiptMoved($fresh, $from, $planned)) {
                     throw new RuntimeException(self::concurrent($definition));
                 }
@@ -785,6 +790,7 @@ final class BlueprintApplier
                 throw $e;
             }
 
+            /* ⚠️ GONE IS A REVERSE, NOT AN APPLY: "rows this run did not commit" would be false of a receipt that is gone. */
             if ($fresh === null) {
                 throw new RuntimeException(self::receiptRemoved($definition->handle(), rowsCommitted: false), 0, $e);
             }
@@ -1325,7 +1331,8 @@ final class BlueprintApplier
      * by `applied_at` null: two finishes of one owed receipt are harmless, and the second must not claim a removal.
      *
      * ⚠️ ZERO ROWS IS NOT YET "REMOVED". MySQL and MariaDB count rows changed, not rows matched, so a second finish in
-     * the same second writes an identical value and reports 0 — the receipt is asked for before it is called gone.
+     * the same second writes an identical value and reports 0 — the receipt is asked for before it is called gone, and
+     * one still here at another version is said to have moved, not to have been reversed (found by review).
      *
      * @throws RuntimeException
      */
@@ -1335,7 +1342,16 @@ final class BlueprintApplier
         $mine = static fn () => Blueprint::query()->whereKey($receipt->getKey())->where('version', (string) $receipt->version);
 
         if ($mine()->update(['applied_at' => $at]) !== 1 && ! $mine()->exists()) {
-            throw new RuntimeException(self::receiptRemoved($handle, rowsCommitted: true));
+            $now = Blueprint::query()->whereKey($receipt->getKey())->value('version');
+
+            throw new RuntimeException($now === null ? self::receiptRemoved($handle, rowsCommitted: true) : sprintf(
+                'The apply of [%1$s] committed its rows at %2$s, and before this run could mark them finished another '
+                .'run moved this organisation\'s receipt for it to %3$s. Nothing was reversed. `kitsune:blueprint status` '
+                .'shows where this organisation stands.',
+                $handle,
+                (string) $receipt->version,
+                is_scalar($now) ? (string) $now : '?',
+            ));
         }
 
         $receipt->applied_at = $at;
@@ -1394,6 +1410,7 @@ final class BlueprintApplier
         $manifest = (array) $receipt->manifest;
         $sameVersion = $receipt->version === $definition->version();
         $refused = [];
+        $untrusted = false;
         $removed = [];
         $indexedHandles = [];
 
@@ -1437,6 +1454,7 @@ final class BlueprintApplier
                             (string) $live->getAttribute('handle'),
                         );
                     } elseif ($state === 'foreign' || $state === 'renamed') {
+                        $untrusted = true;
                         $refused[] = sprintf('%s id %s is not this organisation\'s %s', $kind, self::idOf($row['id'] ?? null), $handle);
                     } elseif ($state === 'gone') {
                         /*
@@ -1457,13 +1475,30 @@ final class BlueprintApplier
         }
 
         if ($refused !== []) {
+            /*
+             * ⚠️ THE WAY OUT SAID AS THE REVERSE WILL TAKE IT. A row that is another org's, or a type under another
+             * handle, or a manifest it cannot read, makes the reverse clear the receipt alone; a manifest that only
+             * fails to record what this definition declares is one it trusts, and reverses in full (found by review).
+             */
+            $alone = $untrusted || self::readManifest($receipt)[1] !== [];
+
             throw new RuntimeException(sprintf(
                 'The receipt for [%1$s] cannot be finished: %2$s. Its manifest is not this organisation\'s record of this '
-                .'blueprint\'s rows, so nothing was written and the receipt is left as it is. `kitsune:blueprint reverse '
-                .'%1$s` clears a receipt like this one, removing it and nothing else, because a manifest that is not this '
-                .'organisation\'s record names no row a reverse may remove.',
+                .'blueprint\'s rows, so nothing was written and the receipt is left as it is. %3$s',
                 $definition->handle(),
                 implode('; ', $refused),
+                $alone
+                    ? sprintf(
+                        '`kitsune:blueprint reverse %s` clears a receipt like this one, removing it and nothing else, '
+                        .'because a manifest that is not this organisation\'s record names no row a reverse may remove.',
+                        $definition->handle(),
+                    )
+                    : sprintf(
+                        '`kitsune:blueprint reverse %s` removes what this receipt records this blueprint created, while '
+                        .'nothing holds data or authority for it, and clears the receipt — or refuses, naming what is in '
+                        .'the way; a row it does not record is left as it is.',
+                        $definition->handle(),
+                    ),
             ));
         }
 
@@ -1516,7 +1551,7 @@ final class BlueprintApplier
      * transaction, DDL last and outside — `dropIndex()`, reference-counted, never `sync()`, which re-creates the column
      * of a row it is handed. No option and no prompt, as that command has none.
      *
-     * ⚠️ EVERY LOCK BEFORE THE FIRST PLAIN READ: receipt, recorded types, candidate storage, the org, recorded roles,
+     * ⚠️ EVERY LOCK BEFORE THE FIRST PLAIN READ: receipt, the org, recorded types, candidate storage, recorded roles,
      * their holders. MySQL's REPEATABLE READ fixes its snapshot at the first plain read, so a holder counted after one
      * could predate a lock it waited on — and `Role::delete()`'s own locking read would then find them, delete the role,
      * and the reverse would have taken a role from somebody (`Role::assignTo()` records the hazard).
@@ -1567,7 +1602,7 @@ final class BlueprintApplier
 
                 /* 2. No row of any version committed: none can be this blueprint's, so the receipt goes alone. */
                 if ($locked->manifest === null && $locked->applied_at === null) {
-                    $locked->delete();
+                    self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                     return self::reverseOutcome('abandoned', $version);
                 }
@@ -1584,7 +1619,7 @@ final class BlueprintApplier
                 }
 
                 if ($problems !== [] || $held === null) {
-                    $locked->delete();
+                    self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                     return self::reverseOutcome('receipt-only', $version, problems: $problems);
                 }
@@ -1603,11 +1638,13 @@ final class BlueprintApplier
                  * receipt last. A type's fields and availability go with it by cascade; its storage is then unreferenced.
                  */
                 foreach ($plan['types'] as $type) {
-                    $type->delete();
+                    self::refuseVetoed($type->delete(), "entry type {$type->handle}");
                 }
 
                 foreach ($plan['storage'] as $storage) {
-                    FieldStorage::query()->whereKey($storage->getKey())->where('org_id', $orgId)->delete();
+                    if (FieldStorage::query()->whereKey($storage->getKey())->where('org_id', $orgId)->delete() !== 1) {
+                        throw new RuntimeException("field storage {$storage->handle} was not there to delete.");
+                    }
                 }
 
                 /* ⚠️ EACH GRANT REVOKED, SO EACH IS RECORDED: the apply audited every one as `role.granted` (ADR-033). */
@@ -1616,10 +1653,10 @@ final class BlueprintApplier
                         $role->revoke($permission);
                     }
 
-                    $role->delete();
+                    self::refuseVetoed($role->delete(), "role {$role->handle}");
                 }
 
-                $locked->delete();
+                self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                 return self::reverseOutcome('reversed', $version, $plan);
             });
@@ -1695,14 +1732,32 @@ final class BlueprintApplier
     }
 
     /**
+     * A delete a `deleting` listener vetoed, refused as the reverse's own — so the grants it revoked and every row it
+     * deleted roll back with it, and nothing reports a row removed that is still there (found by review: `Role::delete()`
+     * documents the veto, and a reverse that ignored it revoked a role's grants, kept the role and printed "removed").
+     *
+     * @throws RuntimeException
+     */
+    private static function refuseVetoed(?bool $deleted, string $what): void
+    {
+        if ($deleted === false) {
+            throw new RuntimeException("{$what} was not deleted: a listener on its deleting event refused it.");
+        }
+    }
+
+    /**
      * Lock every row the manifest names, in the documented order, and say what each is now — or the problems that make
      * the manifest one this org cannot trust.
      *
-     * ⚠️ THE ORDER IS RECEIPT → TYPES (BY ID) → CANDIDATE STORAGE (BY ID) → ORG → ROLES (BY ID) → HOLDERS, and it agrees
+     * ⚠️ THE ORDER IS RECEIPT → ORG → TYPES (BY ID) → CANDIDATE STORAGE (BY ID) → ROLES (BY ID) → HOLDERS, and it agrees
      * with every other path: the merge (receipt, then types), `Role::delete()` and `save()` (org, then role),
-     * `assignTo()` (role), an entry's save (type, then storage). Storage is locked so the admin cannot attach a field to
-     * a row the reverse is about to delete; holders by a locking `pluck`, because PostgreSQL refuses `FOR UPDATE`
-     * with an aggregate. SQLite compiles every one of these away and serialises writers instead.
+     * `assignTo()` (role), and every insert into an org-scoped table, whose foreign-key checks take the org row's share
+     * lock before the type's or the storage row's — an entry's save, a relation's. ~~Org after storage~~: with the org
+     * last, an entry saved into a type the reverse had locked held the org's share lock and waited on the type, while
+     * the reverse held the type and waited on the org — a deadlock on PostgreSQL, MySQL and MariaDB (found by review).
+     * Storage is locked so the admin cannot attach a field to a row the reverse is about to delete; holders by a locking
+     * `pluck`, because PostgreSQL refuses `FOR UPDATE` with an aggregate. SQLite compiles every one of these away and
+     * serialises writers instead.
      *
      * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
      * @return array{0: array{types: array<string, array{0: 'holds'|'gone', 1: ?EntryType}>, storage: array<string, FieldStorage>, roles: array<string, array{0: 'holds'|'gone'|'renamed', 1: ?Role, 2: int}>}|null, 1: list<string>}
@@ -1711,6 +1766,9 @@ final class BlueprintApplier
     {
         $byId = static fn (array $a, array $b): int => (int) $a['id'] <=> (int) $b['id'];
         $problems = [];
+
+        /* `Role::lockSharedOrgRow()`'s statement, first, as `Role::delete()` and `save()` take it before a role. */
+        Org::query()->withoutGlobalScopes()->whereKey($orgId)->lockForUpdate()->value('id');
 
         $types = $recorded['entry_types'];
         uasort($types, $byId);
@@ -1752,9 +1810,6 @@ final class BlueprintApplier
 
             $held['storage'] = $storage;
         }
-
-        /* `Role::lockSharedOrgRow()`'s statement, before any role, as `Role::delete()` and `save()` take it. */
-        Org::query()->withoutGlobalScopes()->whereKey($orgId)->lockForUpdate()->value('id');
 
         $roles = array_filter($recorded['roles'], static fn (array $row): bool => $row['outcome'] === 'created');
         uasort($roles, $byId);
@@ -1984,7 +2039,23 @@ final class BlueprintApplier
             }
 
             if ($storage->is_locked) {
-                $lines['storage']['kept'][] = "field storage {$handle}: locked, because entries once held data for it (ADR-006) — a later apply adopts it as it is";
+                /*
+                 * ⚠️ "ADOPTS IT AS IT IS" ONLY WHILE IT IS AS DECLARED. A lock forbids a change of shape, not of indexing,
+                 * classification or settings, and `StorageAdoption` refuses a row that differs in any of the three — so the
+                 * line names the difference rather than promise an adoption the next apply refuses (found by review).
+                 */
+                $drift = self::storageDrift($storage, $recorded, $handle);
+
+                $lines['storage']['kept'][] = $drift === []
+                    ? "field storage {$handle}: locked, because entries once held data for it (ADR-006) — a later apply adopts it as it is"
+                    : sprintf(
+                        'field storage %1$s: locked, because entries once held data for it (ADR-006) — but its %2$s no '
+                        .'longer match%3$s what this blueprint declared, so a later apply declaring it the same way refuses '
+                        .'it, naming the difference',
+                        $handle,
+                        implode(' and ', $drift),
+                        count($drift) === 1 ? 'es' : '',
+                    );
 
                 continue;
             }
@@ -1999,7 +2070,12 @@ final class BlueprintApplier
             }
         }
 
+        /* Kept, and said only of a row still here: one removed since is nobody's to keep (found by review). */
         foreach ($adopted as $handle) {
+            if (! FieldStorage::query()->where('org_id', $orgId)->where('handle', $handle)->exists()) {
+                continue;
+            }
+
             $lines['storage']['kept'][] = "field storage {$handle}: adopted, not created, by this blueprint";
         }
 
@@ -2007,7 +2083,9 @@ final class BlueprintApplier
 
         foreach ($recorded['roles'] as $handle => $row) {
             if ($row['outcome'] === 'skipped') {
-                $lines['roles']['kept'][] = "role {$handle}: this organisation's before this blueprint was applied (onCollision: skip)";
+                if (Role::query()->where('handle', $handle)->exists()) {
+                    $lines['roles']['kept'][] = "role {$handle}: this organisation's before this blueprint was applied (onCollision: skip)";
+                }
 
                 continue;
             }
@@ -2090,6 +2168,43 @@ final class BlueprintApplier
             'gone' => [...$lines['types']['gone'], ...$lines['storage']['gone'], ...$lines['roles']['gone']],
             'notes' => self::freedNotes($blueprint, $freed, $orgId, $removingTypes, $removingStorage, $removingRoles),
         ];
+    }
+
+    /**
+     * What of a kept storage row no longer matches the field this manifest records the blueprint creating it with — in
+     * `StorageAdoption::refuseDivergentDefinition()`'s words and by its comparisons, settings loosely.
+     *
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @return list<string>
+     */
+    private static function storageDrift(FieldStorage $storage, array $recorded, string $handle): array
+    {
+        foreach ($recorded['entry_types'] as $row) {
+            $field = $row['fields'][$handle] ?? null;
+
+            if ($field === null || $field['outcome'] !== 'created') {
+                continue;
+            }
+
+            $declared = $field['record'];
+            $drift = [];
+
+            if ((string) $storage->pii_class !== $declared['pii_class']) {
+                $drift[] = 'privacy classification';
+            }
+
+            if ($storage->is_indexed !== (bool) $declared['is_indexed']) {
+                $drift[] = 'indexing';
+            }
+
+            if (($declared['settings'] ?? []) != ($storage->settings ?? [])) {
+                $drift[] = 'settings';
+            }
+
+            return $drift;
+        }
+
+        return [];
     }
 
     /**

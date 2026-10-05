@@ -18,6 +18,7 @@ use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Blueprints\FirstParty\MarketingSiteBlueprint;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
@@ -286,15 +287,39 @@ it('prints a reverse\'s refusal, exits 1, writes nothing and gives the context b
     $user = DB::table('users')->insertGetId(['name' => 'Sam', 'email' => 'sam@kitsune.test', 'password' => 'x']);
     DB::table('role_user')->insert(['role_id' => $editor->getKey(), 'user_id' => $user]);
 
-    $this->artisan('kitsune:blueprint reverse blog --org=acme')
-        ->expectsOutputToContain('Blueprint [blog] cannot be reversed in this organisation: role blog_editor is held by 1 '
-            .'account — an owner unassigns it under Roles first, which is audited (ADR-033). A reverse removes only what '
-            .'this blueprint created')
-        ->assertExitCode(1);
+    /* The whole output: the refusal as itself, never wrapped in "stopped". */
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'blog', '--org' => 'acme']))->toBe(1)
+        ->and(Artisan::output())->toBe('Blueprint [blog] cannot be reversed in this organisation: role blog_editor is held '
+            .'by 1 account — an owner unassigns it under Roles first, which is audited (ADR-033). A reverse removes only '
+            .'what this blueprint created, and only while nothing holds data or authority for it and nothing this '
+            .'organisation added rests on it — it never deletes content and never takes a role from anybody (ADR-039). '
+            ."Nothing was written, and the receipt still says 1.0.0.\n");
 
     expect(Blueprint::query()->withoutGlobalScopes()->where('handle', 'blog')->exists())->toBeTrue()
         ->and(EntryType::query()->where('org_id', $this->org->getKey())->count())->toBe(2)
         ->and(app(Context::class)->orgId())->toBeNull();
+});
+
+/** Every kind of line at once, in the order §2.8 gives them: removed, kept, gone, then the notes. */
+it('prints what it removed, kept, found gone and noted, in that order', function (): void {
+    FixtureBlueprint::$roles = [new RoleDeclaration('dispatcher', 'Dispatcher', ['dispatch' => ['view']])];
+    FieldStorage::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch_body', 'type' => 'textarea', 'pii_class' => 'none', 'cardinality' => 1]);
+    $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+    app(Context::class)->setOrg($this->org);
+    Role::query()->where('handle', 'dispatcher')->firstOrFail()->delete();
+    Role::create(['handle' => 'content_lead', 'name' => 'Content lead'])->grant('entry.dispatch.view');
+    app(Context::class)->forget();
+
+    expect(Artisan::call('kitsune:blueprint', ['action' => 'reverse', 'handle' => 'fixture', '--org' => 'acme']))->toBe(0)
+        ->and(Artisan::output())->toBe(implode("\n", [
+            '  removed  entry type dispatch, with field dispatch_body',
+            '  kept     field storage dispatch_body: adopted, not created, by this blueprint',
+            '  gone     role dispatcher: removed since this blueprint wrote it',
+            '  note     role content_lead holds entry.dispatch.view on dispatch, which this reverse removes: it stays, and '
+            .'reaches whatever type takes dispatch next — a later apply of fixture included',
+            'Reversed fixture 1.0.0 in acme; a later apply of it starts afresh, as the blueprint then declares it, not as it '
+            .'was edited here. 0 un-indexed.',
+        ])."\n");
 });
 
 it('refuses a reverse with its arguments wrong, writing nothing', function (string $command, string $refusal): void {

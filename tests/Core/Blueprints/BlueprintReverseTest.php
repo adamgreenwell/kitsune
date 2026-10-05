@@ -127,6 +127,15 @@ function reverseRefusal(string $items, string $version = '1.0.0'): string
         ."the receipt still says {$version}.";
 }
 
+/**
+ * The refusal as an exception, so `toThrow()` compares the whole message — a substring would pass the refusal wrapped in
+ * "stopped", which the catch did once nothing rethrew the reverse's own refusal (found by review).
+ */
+function reverseRefused(string $items, string $version = '1.0.0'): RuntimeException
+{
+    return new RuntimeException(reverseRefusal($items, $version));
+}
+
 /** A user of the org holding the role, written as the merge's tests write one. */
 function reverseHolder(Org $org, Role $role): TestUser
 {
@@ -250,12 +259,12 @@ it('refuses a blueprint never applied in this organisation, though another organ
     app(Context::class)->setOrg($this->org);
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
         'Blueprint [fixture] has not been applied in this organisation, so there is no receipt to reverse. Nothing was '
         .'written. `kitsune:blueprint status` lists every organisation\'s receipts; if an earlier reverse of it stopped '
         .'after its commit, its rows are already gone, and `kitsune:schema-sync --force` drops any generated column it '
         .'left.'
-    );
+    ));
 
     expect(reverseSnapshot())->toBe($before);
 });
@@ -265,10 +274,10 @@ it('refuses with no organisation in context', function (): void {
     $before = reverseSnapshot();
     app(Context::class)->forget();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
         'Cannot reverse [fixture]: no organisation is in context, and a blueprint is reversed out of one (ADR-039). Set '
         .'it — app(Context::class)->setOrg(...) — first.'
-    );
+    ));
 
     expect(reverseSnapshot())->toBe($before);
 });
@@ -498,7 +507,7 @@ it('refuses while a type it created has entries in any site, the trash included,
     reverseOrgOnly();
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'entry type dispatch still has 4 entries, 1 of them in the trash — delete the rest, then empty the trash with '
         .'Delete forever'
     ));
@@ -521,7 +530,7 @@ it('names what is in the trash, and what is not', function (int $live, int $tras
         }
     }
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal($item));
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused($item));
 })->with([
     'one, live' => [1, 0, 'entry type dispatch still has 1 entry — delete it, then empty the trash with Delete forever'],
     'two, live' => [2, 0, 'entry type dispatch still has 2 entries — delete them, then empty the trash with Delete forever'],
@@ -541,12 +550,12 @@ it('refuses on revisions of entries since moved to another type, and counts no r
     $stray = 'entry type dispatch: 1 revision of entries since moved to another type still records it — nothing in '
         .'Kitsune deletes a revision (ADR-020), and they go only when those entries are deleted forever';
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal($stray));
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused($stray));
 
     /* An entry still of the type, with its own revision: counted as an entry, never as a stray revision. */
     reverseEntry('dispatch', $site);
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'entry type dispatch still has 1 entry — delete it, then empty the trash with Delete forever; '.$stray
     ));
 });
@@ -557,7 +566,7 @@ it('refuses while a type it created carries a field the operator added, and goes
     $field = Field::create(['entry_type_id' => reverseType('dispatch')->getKey(), 'field_storage_id' => $theirs->getKey(), 'label' => 'Extra']);
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'entry type dispatch carries field dispatch_extra, which this blueprint did not write — remove it from dispatch '
         .'in the admin first'
     ));
@@ -579,7 +588,7 @@ it('refuses while a type it adopted under Skip carries a field it attached, and 
     BlueprintApplier::apply(new FixtureBlueprint);
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'entry type bulletin was this organisation\'s before this blueprint adopted it (onCollision: skip), and a '
         .'reverse removes nothing from a type it did not create — remove field bulletin_text from it in the admin first'
     ));
@@ -604,7 +613,7 @@ it('refuses while anybody holds a role it created, taking it from nobody', funct
     reverseHolder($this->org, reverseRole('dispatcher'));
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'role dispatcher is held by 2 accounts — an owner unassigns it under Roles first, which is audited (ADR-033)'
     ));
 
@@ -616,7 +625,7 @@ it('refuses a role it created that now has Owner turned on', function (): void {
     reverseRole('dispatcher')->update(['is_owner' => true]);
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'role dispatcher has Owner turned on, and no blueprint creates an owner role — turn it off under Roles first, or '
         .'rename the role to keep it as your own'
     ));
@@ -631,7 +640,7 @@ it('refuses a role holding a grant it did not make, and revokes only what is lef
     $role->grant('entry.bulletin.update');
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'role dispatcher holds entry.bulletin.update, entry.dispatch.delete, which this blueprint did not grant — revoke '
         .'them under Roles first, or rename the role to keep it as your own'
     ));
@@ -670,7 +679,7 @@ it('names every obstacle in one refusal, in order', function (): void {
     $role->grant('entry.notice.view');
     $before = reverseSnapshot();
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class, reverseRefusal(
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(reverseRefused(
         'entry type dispatch still has 1 entry — delete it, then empty the trash with Delete forever; entry type '
         .'dispatch: 1 revision of entries since moved to another type still records it — nothing in Kitsune deletes a '
         .'revision (ADR-020), and they go only when those entries are deleted forever; entry type dispatch carries field '
@@ -694,12 +703,16 @@ it('keeps a role it skipped and one the operator renamed, and reports what the o
     $crier = Role::create(['handle' => 'crier', 'name' => 'Theirs']);
     $crier->grant('entry.*.view');
     reverseHolder($this->org, $crier);
+    Role::create(['handle' => 'scribe', 'name' => 'Theirs too']);
     FixtureBlueprint::$roles = [
         reverseDispatcher(),
         new RoleDeclaration('crier', 'Crier', ['dispatch' => ['view']], OnCollision::Skip),
         new RoleDeclaration('herald', 'Herald', ['bulletin' => ['view']]),
+        new RoleDeclaration('scribe', 'Scribe', ['dispatch' => ['view']], OnCollision::Skip),
     ];
     BlueprintApplier::apply(new FixtureBlueprint);
+    /* A role it skipped that the operator has since removed is nobody's to keep, and is not said to be kept. */
+    reverseRole('scribe')->delete();
     $crierRows = reverseOrgRows($this->org)[2];
     reverseRole('dispatcher')->update(['handle' => 'dispatch_lead']);
     reverseRole('herald')->delete();
@@ -804,21 +817,22 @@ it('notes a grant and a relation that name a handle no type will hold, and chang
         ->and($refs->fresh()->settings)->toBe($settings);
 });
 
-it('notes a handle the operator removed, and none a type holds again', function (bool $reused): void {
+it('notes a handle the operator removed, and none a type holds again', function (?string $successor): void {
     BlueprintApplier::apply(new FixtureBlueprint);
     $lead = Role::create(['handle' => 'content_lead', 'name' => 'Content lead']);
     $lead->grant('entry.bulletin.view');
     reverseType('bulletin')->delete();
 
-    if ($reused) {
-        EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'bulletin', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    /* The handle taken again: by the operator's own type, or by a global one, which every org has. */
+    if ($successor !== null) {
+        EntryType::create(['org_id' => $successor === 'theirs' ? $this->org->getKey() : null, 'handle' => 'bulletin', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
     }
 
-    expect(BlueprintApplier::reverse('fixture')['notes'])->toBe($reused ? [] : [
+    expect(BlueprintApplier::reverse('fixture')['notes'])->toBe($successor !== null ? [] : [
         'role content_lead holds entry.bulletin.view on bulletin, which this organisation has removed: it stays, and '
         .'reaches whatever type takes bulletin next — a later apply of fixture included',
     ]);
-})->with(['removed' => false, 'reused by the operator' => true]);
+})->with(['removed' => null, 'reused by the operator' => 'theirs', 'taken by a global type' => 'global']);
 
 /** `_` is a `LIKE` wildcard: `entry.my_type.%` matches `entry.myxtype.view`. */
 it('matches grants by their exact strings', function (): void {
@@ -836,6 +850,62 @@ it('matches grants by their exact strings', function (): void {
         .'whatever type takes my_type next — a later apply of fixture included',
     ]);
 });
+
+/** "Adopts it as it is" only while it is as declared: a lock forbids a change of shape, not of indexing or settings. */
+it('says when locked storage it keeps no longer matches what the blueprint declared', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $site = reverseSite($this->org, 'main');
+    $entry = reverseEntry('bulletin', $site, ['bulletin_text' => 'Held']);
+    $text = FieldStorage::query()->where('org_id', $this->org->getKey())->where('handle', 'bulletin_text')->firstOrFail();
+    $text->update(['is_indexed' => true]);
+    app(Context::class)->setSite($site);
+    $entry->delete();
+    $entry->forceDelete();
+    reverseOrgOnly();
+
+    expect($text->fresh()->is_locked)->toBeTrue()
+        ->and(BlueprintApplier::reverse('fixture')['kept'])->toBe([
+            'field storage bulletin_text: locked, because entries once held data for it (ADR-006) — but its indexing no '
+            .'longer matches what this blueprint declared, so a later apply declaring it the same way refuses it, naming '
+            .'the difference',
+        ])
+        ->and(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'Its indexing differs from what was asked for');
+});
+
+it('says nothing of adopted storage the operator has since removed', function (): void {
+    FieldStorage::create(['org_id' => $this->org->getKey(), 'handle' => 'dispatch_body', 'type' => 'textarea', 'pii_class' => 'none', 'cardinality' => 1]);
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $body = FieldStorage::query()->where('org_id', $this->org->getKey())->where('handle', 'dispatch_body')->firstOrFail();
+    Field::query()->where('field_storage_id', $body->getKey())->firstOrFail()->delete();
+    $body->delete();
+
+    $result = BlueprintApplier::reverse('fixture');
+
+    expect($result['outcome'])->toBe('reversed')
+        ->and($result['kept'])->toBe([]);
+});
+
+/**
+ * ⚠️ A DELETE A LISTENER VETOES IS THE REVERSE'S OWN REFUSAL. `Role::delete()` documents the veto; ignored, the reverse
+ * revoked a role's grants, kept the role, deleted the receipt and printed "removed" (found by review). Now everything it
+ * wrote rolls back with it.
+ */
+it('rolls everything back when a listener vetoes a delete, and says which', function (string $model, string $what): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $before = reverseSnapshot();
+    $model::deleting(static fn (): bool => false);
+
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
+        "The reverse of [fixture] stopped: {$what} was not deleted: a listener on its deleting event refused it. Nothing "
+        .'was written, and the receipt still says 1.0.0.'
+    ));
+
+    expect(reverseSnapshot())->toBe($before);
+})->with([
+    'a role' => [Role::class, 'role dispatcher'],
+    'an entry type' => [EntryType::class, 'entry type dispatch'],
+    'the receipt' => [Blueprint::class, 'the receipt for fixture'],
+]);
 
 /*
  * ── Audit ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -861,16 +931,21 @@ it('records one role.revoked per grant of each role it removes, and nothing else
  * ── Tenancy and coexistence ─────────────────────────────────────────────────────────────────────────────────────────
  */
 
-it('leaves another organisation\'s same blueprint exactly as it was', function (): void {
-    app(Context::class)->setOrg($this->rival);
-    BlueprintApplier::apply(new FixtureBlueprint);
+/** In either order, so that a lookup by handle alone would find the other org's row before or after this one's. */
+it('leaves another organisation\'s same blueprint exactly as it was', function (bool $theirsFirst): void {
+    foreach ($theirsFirst ? [$this->rival, $this->org] : [$this->org, $this->rival] as $org) {
+        app(Context::class)->setOrg($org);
+        BlueprintApplier::apply(new FixtureBlueprint);
+    }
+
     app(Context::class)->setOrg($this->org);
-    BlueprintApplier::apply(new FixtureBlueprint);
     $theirs = reverseOrgRows($this->rival);
 
     expect(BlueprintApplier::reverse('fixture')['outcome'])->toBe('reversed')
-        ->and(reverseOrgRows($this->rival))->toBe($theirs);
-});
+        ->and(reverseOrgRows($this->rival))->toBe($theirs)
+        ->and(FieldStorage::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse()
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse();
+})->with(['theirs applied first' => true, 'theirs applied second' => false]);
 
 it('reverses Blog beside the Marketing Site without touching it, and then the Marketing Site', function (): void {
     BlueprintApplier::apply(new BlogBlueprint);
@@ -933,9 +1008,9 @@ it('rolls every write back with the receipt\'s, revocations included, and says i
         throw new RuntimeException('The receipt would not go.');
     });
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
         'The reverse of [fixture] stopped: The receipt would not go. Nothing was written, and the receipt still says 1.0.0.'
-    );
+    ));
 
     expect(reverseSnapshot())->toBe($before)
         ->and($this->schema->droppedHandles)->toBe([]);
@@ -955,10 +1030,11 @@ it('wraps a model guard\'s own refusal, with nothing written', function (): void
         }
     });
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
         'The reverse of [fixture] stopped: Entry type [dispatch] still has 1 entry, and the database would delete them '
-        .'by cascade'
-    );
+        .'by cascade — permanently, with nothing in the audit trail saying they existed (ADR-020). Delete the entries '
+        .'first, which is audited. Nothing was written, and the receipt still says 1.0.0.'
+    ));
 
     expect($staged)->toBeTrue()
         ->and(reverseSnapshot())->toBe($before);
@@ -984,10 +1060,10 @@ it('stops when the receipt moves between its read and its lock', function (strin
         }
     });
 
-    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(RuntimeException::class,
+    expect(fn () => BlueprintApplier::reverse('fixture'))->toThrow(new RuntimeException(
         'The reverse of [fixture] stopped: this organisation\'s receipt for it changed while it ran — an apply, a merge or '
         .'another reverse reached it at the same moment. Run it again; it reverses whatever the receipt then records.'
-    );
+    ));
 
     expect($staged)->toBeTrue()
         ->and(reverseSnapshot())->toBe($after);

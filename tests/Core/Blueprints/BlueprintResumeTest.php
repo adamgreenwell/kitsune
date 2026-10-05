@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
@@ -282,7 +283,11 @@ it('refuses to finish a receipt whose manifest records none of what is declared'
     Blueprint::create(['handle' => 'fixture', 'version' => '1.0.0', 'applied_at' => null, 'manifest' => ['version' => '1.0.0']]);
 
     expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))
-        ->toThrow(RuntimeException::class, 'cannot be finished: entry type dispatch is not recorded; role dispatcher is not recorded.');
+        /* A manifest it cannot read: the reverse clears the receipt alone, and the refusal says so. */
+        ->toThrow(RuntimeException::class, 'cannot be finished: entry type dispatch is not recorded; role dispatcher is not '
+            .'recorded. Its manifest is not this organisation\'s record of this blueprint\'s rows, so nothing was written '
+            .'and the receipt is left as it is. `kitsune:blueprint reverse fixture` clears a receipt like this one, removing '
+            .'it and nothing else');
 
     expect(Blueprint::receiptFor('fixture')->applied_at)->toBeNull();
 });
@@ -464,4 +469,140 @@ it('lets two finishes of one owed receipt both succeed', function (): void {
     expect($inner['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
         ->and($outer['skipped'])->toBe(['rows: written by an earlier run that stopped before it finished; finished now'])
         ->and(Blueprint::receiptFor('fixture')->applied_at)->not->toBeNull();
+});
+
+/*
+ * ⚠️ THE INTENT RECORD'S RE-READ, FOR UPDATE, REFUSES ONE ANOTHER RUN HAS MOVED — not only one a reverse removed. Before,
+ * the catch caught most of these as the loser refused the winner's type; a definition the winner's rows did not collide
+ * with went on to commit under a receipt naming another version (found by review).
+ */
+it('stops a fresh apply whose intent record another run moved before its rows, writing none of them', function (): void {
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use (&$staged): void {
+        if (! $staged && str_starts_with($query->sql, 'insert') && str_contains($query->sql, 'blueprints')) {
+            $staged = true;
+            DB::table('blueprints')->update(['version' => '1.1.0']);
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(new RuntimeException(
+        'The apply of [fixture] stopped, and this organisation\'s receipt for it now records rows this run did not '
+        .'commit: another apply of it ran at the same moment, or this run\'s own commit landed as it failed. Re-run it — '
+        .'it finishes what the receipt records, merges over it, or does nothing if that is done.'
+    ));
+
+    expect($staged)->toBeTrue()
+        ->and(EntryType::query()->where('handle', 'dispatch')->exists())->toBeFalse()
+        ->and(FieldStorage::query()->where('handle', 'dispatch_code')->exists())->toBeFalse()
+        ->and(Role::query()->exists())->toBeFalse()
+        ->and(Blueprint::receiptFor('fixture')->manifest)->toBeNull();
+});
+
+/**
+ * ⚠️ AN INTENT RECORD ALREADY HERE TAKES THIS RUN'S VERSION UNDER ITS LOCK, NOT BEFORE IT. Saved before, a run that read it
+ * while another apply committed over it wrote its version onto the other's finished receipt — 1.1.0 over a 1.0.0
+ * manifest — and then stopped, leaving a receipt no merge could read (found by review).
+ */
+it('leaves another apply\'s finished receipt as it wrote it when an older intent record was read', function (): void {
+    $theirs = Role::create(['handle' => 'dispatcher', 'name' => 'Theirs']);
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'Role [dispatcher] already exists');
+    $theirs->delete();
+    $winner = resumeFrozen();
+    FixtureBlueprint::$version = '1.1.0';
+
+    $staged = false;
+    DB::listen(function (QueryExecuted $query) use (&$staged, $winner): void {
+        if (! $staged && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'blueprints')) {
+            $staged = true;
+            BlueprintApplier::apply($winner);
+        }
+    });
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'another apply of it ran at the same moment');
+
+    $receipt = Blueprint::receiptFor('fixture');
+
+    expect($staged)->toBeTrue()
+        ->and($receipt->version)->toBe('1.0.0')
+        ->and($receipt->manifest['version'])->toBe('1.0.0')
+        ->and($receipt->applied_at)->not->toBeNull();
+});
+
+/** The fixture as it stands, frozen — an apply staged inside another must not see the other's version. */
+function resumeFrozen(): BlueprintDefinition
+{
+    $definition = new FixtureBlueprint;
+    $parts = [$definition->version(), $definition->entryTypes(), $definition->roles()];
+
+    return new class(...$parts) implements BlueprintDefinition
+    {
+        public function __construct(private string $version, private array $types, private array $roles) {}
+
+        public function handle(): string
+        {
+            return 'fixture';
+        }
+
+        public function version(): string
+        {
+            return $this->version;
+        }
+
+        public function entryTypes(): array
+        {
+            return $this->types;
+        }
+
+        public function roles(): array
+        {
+            return $this->roles;
+        }
+    };
+}
+
+/** A receipt still here at another version was moved, not reversed — and the message says so (found by review). */
+it('says the receipt moved, not that it was reversed, when another run changed its version after the commit', function (): void {
+    $this->schema->onSync = static fn () => DB::table('blueprints')->update(['version' => '9.9.9']);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(new RuntimeException(
+        'The apply of [fixture] committed its rows at 1.0.0, and before this run could mark them finished another run '
+        .'moved this organisation\'s receipt for it to 9.9.9. Nothing was reversed. `kitsune:blueprint status` shows where '
+        .'this organisation stands.'
+    ));
+});
+
+/**
+ * ⚠️ THE WAY OUT IS SAID AS THE REVERSE WILL TAKE IT. A manifest that only fails to record what the definition declares is
+ * one the reverse trusts and reverses in full — so the finish's refusal no longer tells the operator it removes the
+ * receipt and nothing else (found by review).
+ */
+it('names a full reverse, not a receipt-only one, when the finish refuses only what the manifest does not record', function (): void {
+    resumeInterrupted();
+    FixtureBlueprint::$override[] = new EntryTypeDeclaration(handle: 'notice', name: 'Notice', pluralName: 'Notices', fields: []);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(new RuntimeException(
+        'The receipt for [fixture] cannot be finished: entry type notice is not recorded. Its manifest is not this '
+        .'organisation\'s record of this blueprint\'s rows, so nothing was written and the receipt is left as it is. '
+        .'`kitsune:blueprint reverse fixture` removes what this receipt records this blueprint created, while nothing '
+        .'holds data or authority for it, and clears the receipt — or refuses, naming what is in the way; a row it does '
+        .'not record is left as it is.'
+    ));
+});
+
+/** And a manifest it reads, naming another org's row, is one the reverse clears alone — so that is what it says. */
+it('names a receipt-only reverse when the finish refuses another organisation\'s row in a manifest it can read', function (): void {
+    $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+    $theirs = EntryType::create(['org_id' => $rival->getKey(), 'handle' => 'dispatch', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+    resumeInterrupted();
+    $receipt = Blueprint::receiptFor('fixture');
+    $manifest = $receipt->manifest;
+    $manifest['entry_types'][0]['id'] = $theirs->getKey();
+    DB::table('blueprints')->where('id', $receipt->getKey())->update(['manifest' => json_encode($manifest)]);
+
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(new RuntimeException(
+        "The receipt for [fixture] cannot be finished: entry type id {$theirs->getKey()} is not this organisation's "
+        .'dispatch. Its manifest is not this organisation\'s record of this blueprint\'s rows, so nothing was written and '
+        .'the receipt is left as it is. `kitsune:blueprint reverse fixture` clears a receipt like this one, removing it '
+        .'and nothing else, because a manifest that is not this organisation\'s record names no row a reverse may remove.'
+    ));
 });
