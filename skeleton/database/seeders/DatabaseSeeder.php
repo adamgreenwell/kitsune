@@ -589,19 +589,20 @@ class DatabaseSeeder extends Seeder
     }
 
     /**
-     * An org for the blueprints' browser tests — Blog's, and the Marketing Site's applied into it after — ~~shaped as the
-     * next slice's first-owner path will leave a fresh one~~ made by that path, where the browser suite runs it, and
-     * shaped like it everywhere else.
+     * An org for the blueprints' browser tests — Blog's, and the Marketing Site's and the DAM's applied into it after —
+     * ~~shaped as the next slice's first-owner path will leave a fresh one~~ made by that path, where the browser suite
+     * runs it, and shaped like it everywhere else.
      *
      * ⚠️ ITS OWN ORG, SO NO OTHER SPEC SEES IT. Blog applied into Golfdom would add Posts and Tags to a sidebar, a
      * dashboard and a role list that a dozen specs read. Two sites with no `base_url` and no group, as `FirstOrg` makes
-     * one; an owner; and ~~a writer~~ two writers, one per blueprint, who belong to the org and hold no role at all until
-     * `e2e/global-setup.js` assigns each its blueprint's through the audited path.
+     * one; an owner; and ~~a writer~~ ~~two writers, one per blueprint,~~ two writers, one each for Blog and the
+     * Marketing Site, and the DAM's asset contributor and viewer — all on the English site only — who belong to the org
+     * and hold no role at all until `e2e/global-setup.js` assigns each its blueprint's through the audited path.
      *
      * ⚠️ TWO WAYS IN. `e2e/global-setup.js` runs `kitsune:blueprint apply blog --org=inkwell --owner=…` on the empty
      * installation before seeding (ADR-026, as amended), so there the org, its first site and its owner exist, and this
-     * adds what the command does not: the French site, the owner's way into it, and the writers. A plain
-     * `migrate --seed` (README) has no inkwell, and gets the same shape built here.
+     * adds what the command does not: the French site, the owner's way into it, the writers and the DAM's two members.
+     * A plain `migrate --seed` (README) has no inkwell, and gets the same shape built here.
      *
      * ⚠️ NO BLUEPRINT IS APPLIED HERE. The command applies each, on every e2e build, so what the browser meets is what
      * the command wrote — not what a seeder thought it would.

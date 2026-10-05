@@ -56,7 +56,8 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * Marketing Site needs Asset viewer beside their own role to pick an asset in a relation field an owner adds.
  *
  * ⚠️ NOTHING ACTS ON A DATE. Licence expiry is recorded, and nothing hides, withdraws or warns when it passes: that would
- * need a scheduler or a worker, which the floor forbids requiring (AGENTS.md §10). Its help text says so.
+ * need background work the floor allows only as cron an installation may not run (ADR-027), or a check at every read,
+ * and v1.0 builds neither. Its help text says so.
  *
  * ⚠️ PREFIXED HANDLES, AND NO MODULE CLAIMS `asset` GLOBALLY. Roles begin `dam_`, for the blueprint, as `blog_` and
  * `marketing_` do; storage begins `asset_`, for the type, as `post_` and `page_` do — storage is shared across an org,

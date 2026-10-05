@@ -51,7 +51,8 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         // The user with one grant, whose session is what makes the permission specs mean anything.
         { name: 'setup-reader', testMatch: /auth-reader\.setup\.js/ },
-        // The blueprints' owner and writers — Blog's owner and writer, the Marketing Site's writer — in an org of their own.
+        // The blueprints' owner and members — Blog's owner and writer, the Marketing Site's writer, the DAM's contributor and
+        // viewer — in an org of their own.
         { name: 'setup-blog', testMatch: /auth-blog\.setup\.js/ },
         {
             name: 'skeleton',

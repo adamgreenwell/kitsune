@@ -102,8 +102,12 @@ final class BlueprintApplier
      * missing any other key is not a manifest any core wrote, and is refused as before. A key joins this list only in the
      * change that adds it to `TYPE_RECORD`, with the value every earlier writer could only have meant.
      *
-     * ⚠️ AND ONLY EVER COMPARED. No merge, finish or reverse reads a recorded `is_media` in order to write, so a manifest
-     * tampered with here can cause a refusal and never a write.
+     * ⚠️ AND ONLY EVER COMPARED — which is narrower than it sounds, as review found. No merge, finish or reverse writes a
+     * recorded `is_media` to any row; but like every recorded key it decides whether a merge is refused, so a manifest
+     * whose key was stripped or set to `false` on a media type lets through a version that wrongly declares the type
+     * ordinary, and the merge writes what that version adds. The live column never moves (`guardMediaFlag()`), and the
+     * manifest is a bulk-writable record the merge already trusts this far for every key (ADR-039, the merge's known
+     * limits). Absence is safe because it means exactly what every earlier writer declared.
      */
     private const ADDED_TO_TYPE_RECORD = ['is_media' => false];
 
@@ -1659,14 +1663,26 @@ final class BlueprintApplier
                  */
                 foreach ($plan['types'] as $type) {
                     /*
-                     * ⚠️ THE NOMINATED SUBJECT FIRST, THROUGH THE MODEL. `subject_field_id` names one of the type's own
-                     * fields, which cascade from it while the key nulls back onto the row being deleted — a cycle whose
-                     * handling is the engine's, measured on SQLite alone. The nomination goes with the type either way,
-                     * so it goes first and the cycle never runs (ADR-039, the DAM as built: the DAM invites one).
+                     * ⚠️ THE NOMINATED SUBJECT FIRST. `subject_field_id` names one of the type's own fields, which cascade
+                     * from it while the key nulls back onto the row being deleted — a cycle whose handling is the
+                     * engine's, measured on SQLite alone. The nomination goes with the type either way, so it goes first
+                     * and the cycle never runs (ADR-039, the DAM as built: the DAM invites one).
+                     *
+                     * ⚠️ ONE COLUMN, NOT A SAVE — review found the save. `save()` runs every `saving` guard on the whole
+                     * row, so an icon from a set since uninstalled, or formats a builder wrote, refused the reverse of a
+                     * nominated type and of no other; `delete()` asks none of them. The bulk-write guard names this
+                     * column, so the write goes through the model's own hatch, on a row this transaction already holds.
                      */
                     if ($type->subject_field_id !== null) {
-                        $type->subject_field_id = null;
-                        $type->save();
+                        $cleared = EntryType::withoutScopeBecause(
+                            'the reverse clears the nomination of a type it deletes next',
+                            static fn ($query): int => $query->whereKey($type->getKey())->where('org_id', $orgId)
+                                ->update(['subject_field_id' => null]),
+                        );
+
+                        if ($cleared !== 1) {
+                            throw new RuntimeException("entry type {$type->handle} was not there to clear its subject.");
+                        }
                     }
 
                     self::refuseVetoed($type->delete(), "entry type {$type->handle}");

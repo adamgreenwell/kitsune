@@ -265,8 +265,17 @@ test('lets the contributor upload a picture and a document and describe them, an
     expect(photo).toMatchObject({ type: 'asset', site_id: null, status: 'published', visibility: 'private', mime: 'image/png' });
     expect(stored(TERMS)).toMatchObject({ type: 'asset', site_id: null, status: 'published', visibility: 'private', mime: 'application/pdf' });
 
-    // ⚠️ NOT ON THE ROW: a contributor deletes nothing, restores nothing and deletes nothing forever.
-    await expect(page.getByRole('button', { name: /^(Delete|Delete forever|Restore)$/ })).toHaveCount(0);
+    /*
+     * ⚠️ NOT IN THE SELECTION'S ACTIONS: a contributor may make a selection public or private, and remove none of it. A
+     * live card offers nobody a removal of its own — Restore and Delete forever are a trashed row's, and Delete is the
+     * page's — so the list's one place to ask is here, with the owner below as the control.
+     */
+    await page.locator('.fi-ta-record').filter({ hasText: PHOTO }).getByRole('checkbox').check();
+    await page.getByRole('button', { name: /bulk actions/i }).click();
+    await expect(page.getByRole('button', { name: 'Make selected public', exact: true })).toBeVisible();
+    for (const label of ['Delete selected', 'Restore selected', 'Delete selected forever']) {
+        await expect(page.getByRole('button', { name: label, exact: true }), label).toHaveCount(0);
+    }
 
     const edit = await page.goto(`/admin/${SITE}/c/asset/${photo.id}/edit`);
     expect(edit?.status()).toBe(200);
@@ -289,9 +298,13 @@ test('lets the contributor upload a picture and a document and describe them, an
 
     await contributor.close();
 
-    // The control for "deletes nothing": the owner, on the same page, is offered Delete.
+    // The control for "deletes nothing": the owner, on the same list and the same page, is offered both.
     const owner = await browser.newContext({ storageState: OWNER });
     const ownerPage = await owner.newPage();
+    await ownerPage.goto(`/admin/${SITE}/c/asset`);
+    await ownerPage.locator('.fi-ta-record').filter({ hasText: PHOTO }).getByRole('checkbox').check();
+    await ownerPage.getByRole('button', { name: /bulk actions/i }).click();
+    await expect(ownerPage.getByRole('button', { name: 'Delete selected', exact: true })).toBeVisible();
     await ownerPage.goto(`/admin/${SITE}/c/asset/${photo.id}/edit`);
     await expect(ownerPage.getByRole('button', { name: 'Delete', exact: true }).first()).toBeVisible();
     await owner.close();

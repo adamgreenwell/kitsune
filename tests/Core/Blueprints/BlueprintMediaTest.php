@@ -209,8 +209,15 @@ it('refuses a version dropping the media flag, and merges one adding a media typ
         ->and(Blueprint::receiptFor('fixture')->version)->toBe('1.1.0');
 });
 
-/** F7 — a present null is what the manifest says: it is not filled, and compares as the change it is. */
-it('refuses to merge over a manifest whose media flag was forged to null', function (): void {
+/**
+ * F7 — a present null is what the manifest says: it is not filled, and compares as the change it is.
+ *
+ * ⚠️ BOTH FLAGS, AND THE ORDINARY ONE IS THE ONE THAT COUNTS — review found F7 asking only the media one. A null filled
+ * to `false` compares unequal to a declared `true` in the same words as a null left alone, so only a type declared
+ * ordinary tells `array_key_exists` from `??`: filled, the forged manifest would merge.
+ */
+it('refuses to merge over a manifest whose media flag was forged to null', function (bool $media): void {
+    FixtureBlueprint::$override = [blueprintMediaType(['isMedia' => $media])];
     BlueprintApplier::apply(new FixtureBlueprint);
     $receipt = Blueprint::receiptFor('fixture');
     $manifest = $receipt->manifest;
@@ -218,8 +225,9 @@ it('refuses to merge over a manifest whose media flag was forged to null', funct
     DB::table('blueprints')->where('id', $receipt->getKey())->update(['manifest' => json_encode($manifest)]);
     FixtureBlueprint::$version = '1.1.0';
 
-    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'entry type library changes its is_media');
-});
+    expect(fn () => BlueprintApplier::apply(new FixtureBlueprint))->toThrow(RuntimeException::class, 'entry type library changes its is_media')
+        ->and(Blueprint::receiptFor('fixture')->version)->toBe('1.0.0');
+})->with(['declared media' => true, 'declared ordinary' => false]);
 
 /** F8 — the merge sends a type a later version adds through the same adoption, so S1 holds there too. */
 it('refuses a later version adopting under Skip a type across the media line, leaving the receipt where it was', function (): void {

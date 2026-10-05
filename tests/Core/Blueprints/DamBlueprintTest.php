@@ -395,15 +395,34 @@ it('refuses to reverse while a file remains, and reverses once it is deleted for
  * D15 — the nomination the DAM invites, then the reverse. `subject_field_id` names a field that cascades from the very
  * type being deleted, a cycle each engine handles its own way; the reverse clears the nomination first, so it never runs.
  */
-it('reverses after the rights holder was nominated as the subject', function (): void {
+it('reverses after the rights holder was nominated as the subject', function (array $stored): void {
+    /* A neighbour with a nomination of its own, which clearing this one must leave exactly as it is. */
+    BlueprintApplier::apply(new BlogBlueprint);
+    $post = EntryType::query()->where('org_id', $this->org->getKey())->where('handle', 'post')->firstOrFail();
+    $postSubject = Field::query()->where('entry_type_id', $post->getKey())->whereHas('fieldStorage', fn ($q) => $q->where('handle', 'post_excerpt'))->value('id');
+    $post->update(['subject_field_id' => $postSubject]);
+
     BlueprintApplier::apply(new DamBlueprint);
     $type = damAsset();
     $type->update(['subject_field_id' => Field::query()->where('entry_type_id', $type->getKey())->orderBy('ordering')->value('id')]);
+    if ($stored !== []) {
+        DB::table('entry_types')->where('id', $type->getKey())->update($stored);
+    }
 
     expect(BlueprintApplier::reverse('dam')['outcome'])->toBe('reversed')
-        ->and(EntryType::query()->where('org_id', $this->org->getKey())->exists())->toBeFalse()
-        ->and(Field::query()->exists())->toBeFalse();
-});
+        ->and(EntryType::query()->where('org_id', $this->org->getKey())->pluck('handle')->sort()->values()->all())->toBe(['post', 'tag'])
+        ->and(Field::query()->where('entry_type_id', $type->getKey())->exists())->toBeFalse()
+        ->and($post->fresh()->subject_field_id)->toBe($postSubject);
+})->with([
+    'as applied' => [[]],
+    /*
+     * ⚠️ AND WHATEVER ELSE THE ROW HOLDS, which review found: clearing the nomination with a save ran every `saving`
+     * guard, so a row they refuse — an icon from a set since uninstalled, formats a bulk write named — could not be
+     * reversed once nominated, though it reversed without. Neither column is one a bulk write is refused.
+     */
+    'an icon no set provides' => [['icon' => 'heroicon-o-not-an-icon-at-all']],
+    'formats Kitsune does not store' => [['settings' => json_encode(['accepts' => ['exe']])]],
+]);
 
 /**
  * ⚠️ MEASURED ON EVERY ENGINE, NOT RELIED ON: an owner deleting such a type in the admin runs the cycle itself. SQLite
