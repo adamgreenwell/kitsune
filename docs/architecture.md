@@ -315,7 +315,9 @@ blueprints                                -- the manifest commits WITH the rows,
                                           -- completes (ADR-039, amended 2026-10-02); a different version is
                                           -- merged, writing version, manifest and applied_at = null with its
                                           -- rows, so a merge stopped after them is finished the same way
-                                          -- (ADR-039, the merge, as built)
+                                          -- (ADR-039, the merge, as built); a reverse deletes the row, with
+                                          -- the rows it records, in one transaction, and the next apply
+                                          -- writes a new one (ADR-039, the reverse, as built)
   id, org_id, handle, version, applied_at, manifest json
 ```
 
@@ -465,7 +467,7 @@ Honest list. None of these blocks starting; all of them should be settled before
 | Item | Risk | Why |
 |---|---|---|
 | Storage benchmark at 10k / 100k / 1M entries | High | Find the ceiling now, not in year two |
-| Blueprint rollback semantics | **Settled** | ADR-039: removal is refused while any entry or revision holds data. There is no rollback — `is_locked` never clears, so the reachable states are applied, and gone with the data destroyed. |
+| Blueprint rollback semantics | **Settled** | ADR-039: removal is refused while any entry or revision holds data. There is no rollback — `is_locked` never clears, so the reachable states are applied, and gone with the data destroyed. Built: `kitsune:blueprint reverse`. |
 | Revision storage growth | Medium | Full-JSON snapshots per revision get expensive; consider diffs |
 | Relation targets under translation | Medium | Do relations point at a translation group or one locale row (ADR-017)? It decides what `entry_relations.target_entry_id` holds |
 
