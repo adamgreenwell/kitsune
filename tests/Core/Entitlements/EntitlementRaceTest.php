@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
@@ -54,6 +55,7 @@ beforeEach(function (): void {
         $sweep = DB::connection('entitlement-rival');
         $sweep->table('entitlements')->where('org_id', $this->orgId)->delete();
         $sweep->table('audit_log')->where('org_id', $this->orgId)->delete();
+        $sweep->table('test_readers')->where('org_id', $this->orgId)->delete();
         $sweep->table('sites')->where('org_id', $this->orgId)->delete();
         $sweep->table('orgs')->where('id', $this->orgId)->delete();
         DB::purge('entitlement-rival');
@@ -175,4 +177,54 @@ it('makes an erasure wait on a rival holding the org\'s second site', function (
     }
 
     expect(Fx::writer()->forget($this->id))->toBe(0);
+});
+
+/**
+ * ⚠️ A CALLER'S SNAPSHOT IS NOT THE ANSWER (review). Inside a caller's transaction that has already read, MySQL and
+ * MariaDB at REPEATABLE READ answer a plain read from that first read, so a revoke missed a grant another connection
+ * committed since — measured on MariaDB: false, and the refunded access stayed live — and an erasure left it behind.
+ * The test's own transaction is the caller's, and it has read in `beforeEach`.
+ */
+it('revokes and erases a row another connection committed after the caller\'s first read', function (string $door): void {
+    $rival = entitlementRival();
+    $rival->table('entitlements')->insert([
+        'org_id' => $this->orgId, 'site_id' => $this->siteIds[0], 'reader_id' => (string) $this->id,
+        'entitlement' => 'course.advanced-php', 'source' => 'commerce.order:4821', 'expires_at' => null,
+        'revoked_at' => null, 'changed_at' => '2026-10-06 12:00:00',
+    ]);
+
+    if ($door === 'revoke') {
+        expect(Fx::writer()->revoke($this->id, 'course.advanced-php', 'commerce.order:4821'))->toBeTrue();
+    } else {
+        expect(Fx::writer()->forget($this->id))->toBe(1);
+    }
+})->with(['revoke', 'forget']);
+
+/**
+ * ⚠️ AND A ROW FOUND IS READ AGAIN AS IT IS NOW. The caller's snapshot held this source's row ending in January;
+ * another connection has since extended it to March. Decided on the snapshot, a grant to February would answer
+ * `Extended` and shorten the row — measured on MariaDB with the found row not read again.
+ */
+it('decides on the row as it is now, not as the caller\'s snapshot saw it', function (): void {
+    // A transaction of the caller's own, begun after the rival's rows exist, whose first read is the snapshot.
+    DB::rollBack();
+    DB::beginTransaction();
+
+    $rival = entitlementRival();
+    $rival->table('test_readers')->insert(['id' => 987001, 'org_id' => $this->orgId, 'email' => 'snapshot@example.test']);
+    $row = [
+        'org_id' => $this->orgId, 'site_id' => $this->siteIds[0], 'reader_id' => '987001',
+        'entitlement' => 'course.advanced-php', 'source' => 'commerce.order:1', 'expires_at' => '2027-01-01 00:00:00',
+        'revoked_at' => null, 'changed_at' => '2026-10-06 12:00:00',
+    ];
+    $rival->table('entitlements')->insert($row);
+
+    expect(DB::table('entitlements')->where('reader_id', '987001')->value('expires_at'))->toStartWith('2027-01-01');
+
+    $rival->table('entitlements')->where('reader_id', '987001')->update(['expires_at' => '2027-03-01 00:00:00']);
+
+    expect(Fx::writer()->grant(987001, 'course.advanced-php', 'commerce.order:1', CarbonImmutable::parse('2027-02-01', 'UTC')))
+        ->toBe(GrantOutcome::Unchanged)
+        ->and((string) DB::table('entitlements')->where('reader_id', '987001')->lockForUpdate()->value('expires_at'))
+        ->toStartWith('2027-03-01');
 });

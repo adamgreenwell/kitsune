@@ -151,7 +151,7 @@ it('refuses a declared name that is no guard, without asking Laravel for it', fu
     $refused = refusedWith(fn () => Fx::writer()->grant((int) $owner->getKey(), 'course.advanced-php', 'test.order:2', null));
 
     expect($refused->reason)->toBe(EntitlementRefusal::NoReaderGuard)
-        ->and($refused->getMessage())->toContain('the declared reader guard [nope] is not a guard with a provider in config/auth.php');
+        ->and($refused->getMessage())->toContain('the declared reader guard [nope] is not a guard with a provider and a driver Laravel can build in config/auth.php');
 });
 
 it('refuses a dotted name, though config would resolve it to a usable guard', function (): void {
@@ -170,6 +170,24 @@ it('refuses a guard that names no provider', function (): void {
 
     expect(Fx::guard()->fault())->toBe(ReaderGuardFault::UnknownGuard);
 });
+
+it('refuses a guard whose driver Laravel cannot build, answering no rather than throwing', function (Closure $driver): void {
+    $owner = ownerWithAHeldRow($this);
+    Fx::declareReaders();
+    $driver();
+    Auth::forgetGuards();
+    Fx::forget();
+
+    expect(Fx::guard()->fault())->toBe(ReaderGuardFault::UnknownGuard)
+        ->and(Fx::guard()->name())->toBeNull()
+        ->and(Fx::guard()->signedIn())->toBeFalse()
+        ->and(Fx::check()->holds('course.advanced-php'))->toBeFalse()
+        ->and(refusedWith(fn () => Fx::writer()->grant((int) $owner->getKey(), 'course.advanced-php', 'test.order:2', null))->reason)
+        ->toBe(EntitlementRefusal::NoReaderGuard);
+})->with([
+    'a driver nobody installed' => [fn () => config(['auth.guards.'.Fx::GUARD.'.driver' => 'jwt'])],
+    'no driver at all' => [fn () => config(['auth.guards.'.Fx::GUARD => ['provider' => Fx::GUARD]])],
+]);
 
 it('refuses a panel\'s guard, though the panel\'s owner holds a row under their own id', function (): void {
     ownerWithAHeldRow($this);
@@ -190,7 +208,14 @@ it('refuses a guard whose model is a panel user', function (): void {
     expect(Fx::guard()->fault())->toBe(ReaderGuardFault::PanelShaped)
         ->and(Fx::guard()->model())->toBeNull()
         ->and(Fx::check()->holds('course.advanced-php'))->toBeFalse()
+        // Whoever is on the declared guard is the request's own reader, usable model or not.
         ->and(refusedWith(fn () => Fx::writer()->grant((int) $owner->getKey(), 'course.advanced-php', 'test.order:2', null))->reason)
+        ->toBe(EntitlementRefusal::ReaderActing);
+
+    Auth::guard(Fx::GUARD)->logout();
+    Fx::forget();
+
+    expect(refusedWith(fn () => Fx::writer()->grant((int) $owner->getKey(), 'course.advanced-php', 'test.order:2', null))->reason)
         ->toBe(EntitlementRefusal::NoReaderGuard);
 });
 
@@ -334,7 +359,7 @@ it('describes each fault in its own words', function (ReaderGuardFault $fault, s
     expect($fault->sentence('readers', 'App\\Models\\Reader'))->toBe($sentence);
 })->with([
     [ReaderGuardFault::NotDeclared, 'this installation declares no reader guard (kitsune.readers.guard)'],
-    [ReaderGuardFault::UnknownGuard, 'the declared reader guard [readers] is not a guard with a provider in config/auth.php'],
+    [ReaderGuardFault::UnknownGuard, 'the declared reader guard [readers] is not a guard with a provider and a driver Laravel can build in config/auth.php'],
     [ReaderGuardFault::PanelGuard, 'the declared reader guard [readers] is a panel\'s guard, and a reader is not a panel user'],
     [ReaderGuardFault::NotEloquent, 'the declared reader guard [readers] does not load an Eloquent model'],
     [ReaderGuardFault::PanelShaped, 'the declared reader guard\'s model [App\\Models\\Reader] is scoped through membership, as a panel user is'],

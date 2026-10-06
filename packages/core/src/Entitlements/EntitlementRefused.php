@@ -47,7 +47,7 @@ final class EntitlementRefused extends RuntimeException
     /**
      * @param  self::GRANT|self::COMP|self::REVOKE|self::FORGET|self::EXPORT  $act
      * @param  string|null  $entitlement  the name asked for, repeated only when it has a name's shape
-     * @param  array{state?: string, fault?: string}  $detail
+     * @param  array{state?: string, fault?: string, commit?: bool}  $detail
      */
     public static function because(EntitlementRefusal $reason, string $act, ?string $entitlement = null, array $detail = []): self
     {
@@ -56,7 +56,7 @@ final class EntitlementRefused extends RuntimeException
         return new self(self::message($reason, $act, $named, $detail), $reason, $named);
     }
 
-    /** @param  array{state?: string, fault?: string}  $detail */
+    /** @param  array{state?: string, fault?: string, commit?: bool}  $detail */
     private static function message(EntitlementRefusal $reason, string $act, ?string $named, array $detail): string
     {
         $doing = match ($act) {
@@ -97,7 +97,9 @@ final class EntitlementRefused extends RuntimeException
             EntitlementRefusal::AlreadyEnded => "Refusing to {$doing}{$tag}: the end given is at or before this moment, so nobody would ever hold it. For access with no end, give no end. Nothing was written.",
             EntitlementRefusal::TooFar => "Refusing to {$doing}{$tag}: an end after 9999-12-31 23:59:59 UTC cannot be stored on every database Kitsune supports. For access with no end, give no end. Nothing was written.",
             EntitlementRefusal::Race => "{$subject} was not {$done}: it was changed somewhere else at the same moment. Nothing was written; try again.",
-            EntitlementRefusal::Database => "{$subject} was not {$done}: the database refused (SQLSTATE ".($detail['state'] ?? '?').'). Its message is not repeated, because it carries the reader\'s identifier. Nothing was written.',
+            EntitlementRefusal::Database => ($detail['commit'] ?? false)
+                ? "{$subject} may not have been {$done}: the database refused to commit (SQLSTATE ".($detail['state'] ?? '?').'), and whether the change applied cannot be told from here. Asking again is safe: a repeat changes nothing that already landed.'
+                : "{$subject} was not {$done}: the database refused (SQLSTATE ".($detail['state'] ?? '?').'). Its message is not repeated, because it carries the reader\'s identifier. Nothing was written.',
             EntitlementRefusal::Cancelled => "{$subject} was not {$done}: a listener cancelled the save. Nothing was written, and nothing is recorded.",
         };
     }

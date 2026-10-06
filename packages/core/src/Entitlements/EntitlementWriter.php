@@ -16,6 +16,7 @@ use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Entitlement;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 
@@ -44,8 +45,9 @@ use Kitsune\Core\Tenancy\Context;
  * ⚠️ THE CONTRACT A PRODUCER KEEPS (commerce, an import): verify first, then with nobody signed in set the site from the
  * ORDER's site; name the cause as the source, never the event (`EntitlementSource`); pass the end as an instant or
  * null, never a duration; branch on `GrantOutcome` and on `EntitlementRefused::$reason`, never on text — `Unchanged` and
- * `StillRevoked` are processed, `Race` and `Database` are retried; a refund is `revoke()` of that order's source alone.
- * Never grant from a reader's own request, and never call `comp()`.
+ * `StillRevoked` are processed, `Race` and `Database` are retried; a refund is `revoke()` of that order's source alone,
+ * and is processed only once that order's grant has been, since a revoke of a source never granted stamps nothing and
+ * the later grant would then give access. Never grant from a reader's own request, and never call `comp()`.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
@@ -148,7 +150,8 @@ final class EntitlementWriter
     /**
      * Stamp this one source revoked now, whether it is live or has lapsed: a refund that arrives after a pass ended must
      * still stop a later grant of that source extending it. False — nothing written, nothing recorded — when there is
-     * no such row or it already was revoked. The reader keeps whatever other live sources give.
+     * no such row or it already was revoked: "never granted" included, so a caller orders its refunds after their
+     * grants. The reader keeps whatever other live sources give.
      *
      * A reader the host has already deleted can still lose access: the key is used as given when nobody has it.
      *
@@ -201,12 +204,12 @@ final class EntitlementWriter
             $key = $this->authority->filedKey(EntitlementRefused::FORGET, $reader);
 
             return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($orgId, $key): int {
-                // Ascending, so two erasures never wait on each other in a cycle; a grant locks one site.
-                $siteIds = Site::query()->orderBy('id')->lockForUpdate()->pluck('id')->all();
+                $siteIds = $this->lockSites(null, EntitlementRefused::FORGET, null);
 
+                // A current read, for `lockedRow()`'s reason: a row committed since a caller's snapshot is erased too.
                 $rows = Entitlement::withoutScopeBecause(
                     'erasing one reader\'s entitlements across their organisation\'s sites (ADR-020)',
-                    fn ($query) => $query->where('org_id', $orgId)->whereIn('site_id', $siteIds)->where('reader_id', $key)->orderBy('id')->get(),
+                    fn ($query) => $query->where('org_id', $orgId)->whereIn('site_id', $siteIds)->where('reader_id', $key)->orderBy('id')->lockForUpdate()->get(),
                 );
 
                 if ($rows->isEmpty()) {
@@ -286,8 +289,15 @@ final class EntitlementWriter
      *
      * @param  EntitlementRefused::GRANT|EntitlementRefused::COMP  $act
      */
-    private function give(string $act, int $siteId, string $stored, string $entitlement, string $source, CarbonImmutable $now, ?CarbonImmutable $end): GrantOutcome
-    {
+    private function give(
+        string $act,
+        int $siteId,
+        #[\SensitiveParameter] string $stored,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+        CarbonImmutable $now,
+        ?CarbonImmutable $end,
+    ): GrantOutcome {
         return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($act, $siteId, $stored, $entitlement, $source, $now, $end): GrantOutcome {
             $row = $this->lockedRow($act, $siteId, $stored, $entitlement, $source);
 
@@ -328,26 +338,75 @@ final class EntitlementWriter
     }
 
     /**
-     * The site's row locked, then this source's row read plainly by all four key columns — or null.
+     * The org's row shared and the site's locked, then this source's row, read as it is now — or null.
      *
-     * ⚠️ THE SITE'S LOCK AND THAT LOCK ALONE. It serialises one site's writes, so two grants of one source, or of two,
-     * take it in turn. A `FOR UPDATE` on an entitlement that does not exist yet takes a gap lock on MySQL and MariaDB,
-     * and two first grants would deadlock on each other's gap. `OrgScope` applies, so only the context org's site can
-     * be locked.
+     * ⚠️ THE SITE'S LOCK SERIALISES ONE SITE'S WRITES, so two grants of one source, or of two, take it in turn.
+     * `OrgScope` applies, so only the context org's site can be locked. ⚠️ AND THE ORG'S ROW FIRST, SHARED (review):
+     * this write's own inserts need the org's row shared for their foreign keys, and a writer that holds the org's
+     * row (`CredentialWriter`) then needs the site's for its record's — so taking the site first made a cycle, measured
+     * as a deadlock on MariaDB. Org before site is the order every writer takes them in.
+     *
+     * ⚠️ READ AS IT IS NOW, NOT AS A CALLER'S SNAPSHOT SAW IT (review). Inside a caller's transaction, MySQL and
+     * MariaDB at REPEATABLE READ answer a plain read from that transaction's first read, so a revoke missed a grant
+     * committed since — measured on MariaDB: false, and the refunded access stayed live. So a row found is read again
+     * `FOR UPDATE`, which is a current read on both, and locks that row alone. A row not found: a grant inserts, and
+     * the unique index refuses one committed meanwhile (`Race`); a revoke inserts nothing, so it asks again `FOR UPDATE`.
+     * That takes a gap lock on MySQL and MariaDB, which only makes another insert wait, because a revoke never inserts
+     * — the two-first-inserters deadlock that keeps a grant's own read plain cannot form. PostgreSQL at READ COMMITTED
+     * reads each statement fresh; at REPEATABLE READ, and on SQLite in WAL mode after a caller's first read, nothing
+     * escapes the snapshot — stated in ADR-040.
      *
      * @param  EntitlementRefused::*  $act
      */
-    private function lockedRow(string $act, int $siteId, string $stored, string $entitlement, string $source): ?Entitlement
-    {
-        Site::query()->whereKey($siteId)->lockForUpdate()->value('id')
-            ?? throw EntitlementRefused::because(EntitlementRefusal::SiteGone, $act, $entitlement);
+    private function lockedRow(
+        string $act,
+        int $siteId,
+        #[\SensitiveParameter] string $stored,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+    ): ?Entitlement {
+        $this->lockSites([$siteId], $act, $entitlement);
 
-        return Entitlement::query()
+        $row = fn () => Entitlement::query()
             ->where('site_id', $siteId)
             ->where('reader_id', $stored)
             ->where('entitlement', $entitlement)
-            ->where('source', $source)
-            ->first();
+            ->where('source', $source);
+
+        $found = $row()->first();
+
+        if ($found !== null) {
+            return $row()->whereKey($found->getKey())->lockForUpdate()->first();
+        }
+
+        return $act === EntitlementRefused::REVOKE ? $row()->lockForUpdate()->first() : null;
+    }
+
+    /**
+     * The org's row shared, then these sites' rows locked in ascending order — the order every writer takes them in,
+     * so two never wait on each other in a cycle.
+     *
+     * @param  list<int>|null  $siteIds  null for every site of the org in context
+     * @param  EntitlementRefused::*  $act
+     * @return list<int> the sites locked
+     */
+    private function lockSites(?array $siteIds, string $act, ?string $entitlement): array
+    {
+        Org::query()->withoutGlobalScopes()->whereKey($this->context->orgId())->sharedLock()->value('id');
+
+        $locked = Site::query()
+            ->when($siteIds !== null, fn ($query) => $query->whereKey($siteIds))
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->pluck('id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
+
+        if ($siteIds !== null && $locked === []) {
+            throw EntitlementRefused::because(EntitlementRefusal::SiteGone, $act, $entitlement);
+        }
+
+        return $locked;
     }
 
     /** @param  EntitlementRefused::*  $act */

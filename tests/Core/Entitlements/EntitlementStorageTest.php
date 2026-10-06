@@ -157,6 +157,24 @@ describe('a site\'s delete', function (): void {
         'the builder' => [fn () => Site::query()->delete()],
     ]);
 
+    it('counts the site being deleted, whichever site is in context', function (): void {
+        $doomed = $this->site;
+        $other = Fx::site($this->org, 'other');
+        Fx::plant($other, '8', 'course.advanced-php', 'commerce.order:2');
+
+        // A live grant on the doomed site alone, deleted from the other's context: refused.
+        Fx::plant($doomed, '7', 'course.advanced-php', 'commerce.order:1');
+
+        expect(fn () => $doomed->delete())->toThrow(RuntimeException::class, 'Site [main] still gives readers 1 live entitlement grant,');
+
+        // And the other site's grant never blocks the doomed site's delete once its own is revoked.
+        DB::table('entitlements')->where('site_id', $doomed->getKey())->update(['revoked_at' => '2026-01-01 00:00:00']);
+        $doomed->delete();
+
+        expect(DB::table('sites')->where('id', $doomed->getKey())->exists())->toBeFalse()
+            ->and(DB::table('entitlements')->where('site_id', $other->getKey())->count())->toBe(1);
+    });
+
     it('says it in the singular for one grant', function (): void {
         Fx::plant($this->site, '7', 'course.advanced-php');
 

@@ -13,6 +13,9 @@ namespace Kitsune\Core\Auth;
 /**
  * Why core cannot resolve a reader on this installation — ADR-037. `ReaderGuard::fault()` asks in this order.
  *
+ * ⚠️ ONE EXCEPTION TO THAT ORDER: a guard whose driver cannot be built is `UnknownGuard`, asked once its provider is
+ * known to build, because building the guard builds the provider too.
+ *
  * ⚠️ `PanelShaped` BEFORE `NotOrgScoped`: a panel user's model registers the membership scope and no org scope, so the
  * other order would describe it as merely unscoped, and `PanelShaped` could never be reached.
  *
@@ -23,7 +26,7 @@ enum ReaderGuardFault
     /** `kitsune.readers.guard` absent, null, empty or not a string. */
     case NotDeclared;
 
-    /** Not a guard's name, or `auth.guards.{name}` is not an array naming a provider. */
+    /** Not a guard's name, `auth.guards.{name}` is not an array naming a provider, or its driver cannot be built. */
     case UnknownGuard;
 
     /** Some panel authenticates with it. */
@@ -46,7 +49,7 @@ enum ReaderGuardFault
     {
         return match ($this) {
             self::NotDeclared => 'this installation declares no reader guard (kitsune.readers.guard)',
-            self::UnknownGuard => "the declared reader guard [{$guard}] is not a guard with a provider in config/auth.php",
+            self::UnknownGuard => "the declared reader guard [{$guard}] is not a guard with a provider and a driver Laravel can build in config/auth.php",
             self::PanelGuard => "the declared reader guard [{$guard}] is a panel's guard, and a reader is not a panel user",
             self::NotEloquent => "the declared reader guard [{$guard}] does not load an Eloquent model",
             self::PanelShaped => "the declared reader guard's model [{$model}] is scoped through membership, as a panel user is",

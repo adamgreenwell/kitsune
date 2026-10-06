@@ -4213,7 +4213,8 @@ and `grant()` refuses any other `core.` source. The two grammars and `Credential
 re-shape another.
 
 **The reader.** `kitsune.readers.guard`, with no default, names the guard. `ReaderGuard` refuses to resolve a reader
-when nothing is declared, when the name is not a guard with a provider, when a panel authenticates with it, when its
+when nothing is declared, when the name is not a guard with a provider and a driver Laravel can build, when a panel
+authenticates with it, when its
 provider loads no Eloquent model, when the model registers the membership scope (a panel user's shape), or when it does
 not register `OrgScope` — the registered scope, not the attribute. It asks the declared guard alone, never
 `currentUser()`, the default guard or the `users` provider, which on a public route answer with the staff user from the
@@ -4222,10 +4223,11 @@ strips the scope. A stored key is the reader's auth identifier normalised by `Pe
 integer key — as printable ASCII of at most 255 bytes, and a write stores the host's own spelling, read back from the
 row under the context org, so another org's reader does not exist.
 
-**Authority.** An owner of the org in context may do everything. Otherwise a reader signed in to the request is refused
-(`ReaderActing`), whether the route made them the user or their session merely rides along on a route with no auth
-middleware, where `currentUser()` is the empty `web` guard and the writer would otherwise read "the system". Anyone
-else signed in is refused. With nobody signed in the caller is trusted as the system for a grant, a revoke, an export
+**Authority.** An owner of the org in context may do everything. Otherwise anyone signed in on the declared guard is
+refused (`ReaderActing`), whether the route made them the user or their session merely rides along on a route with no
+auth middleware, where `currentUser()` is the empty `web` guard and the writer would otherwise read "the system" — and
+whether or not a site is in context, so an export or an erasure run with the org alone still sees them (review), and
+whether or not core can use that guard for readers. Anyone else signed in is refused. With nobody signed in the caller is trusted as the system for a grant, a revoke, an export
 and an erasure — a public route reaches the writer by design, commerce's webhook, so such a caller proves its own
 authority first — but never for a comp: a comp is the one act that gives back access once revoked, so its warrant is a
 person deciding now.
@@ -4241,14 +4243,24 @@ refunded order's row stays revoked, and the record of the refund stays true. A r
 recording nothing, for a row already revoked or absent; it works for a reader the host has deleted. There is no `days`
 term: stacking one source's time onto another's carried a refunded order's days into the next row. A duration is the
 producer's arithmetic, passed as an instant; the end is required and nullable, so no end is always said. There is no
-`shorten`, `extend`, `reinstate` or `revokeAll`. Each write takes the site's row `FOR UPDATE` — that lock and no other,
-since a lock on an absent entitlement row is a gap lock on MySQL and MariaDB — re-reads its row by all four columns,
-saves through a window only the writer opens, and records `entitlement.granted`, `.extended`, `.reinstated` or
-`.revoked` inside the same transaction, through `TransactionRecovery`. Erasure locks the org's sites in ascending order,
-deletes every row of the reader on every site and from every source, and records `entitlement.erased` per row. The
-whole of each door runs inside one mapping: a unique-index or deadlock failure is `Race`, any other database error
+`shorten`, `extend`, `reinstate` or `revokeAll`. Each write takes the org's row shared and then the site's
+`FOR UPDATE` — org before site, the order every writer takes them in: review measured a grant that locked the site
+first deadlocking on MariaDB against the credential writer, which holds the org and then needs the site for its
+record. It re-reads its row by all four columns, saves through a window only the writer opens, and records
+`entitlement.granted`, `.extended`, `.reinstated` or `.revoked` inside the same transaction, through
+`TransactionRecovery`. **Read as the row is now, not as a caller's snapshot saw it** (review): inside a caller's
+transaction MySQL and MariaDB at REPEATABLE READ answer a plain read from that transaction's first read, and a revoke
+missed a grant committed since — measured on MariaDB, false, with the refunded access still live. So a row found is
+read again `FOR UPDATE` by its key, a current read that locks that row alone; a grant that finds none inserts, and the
+unique index refuses a row committed meanwhile as `Race`; a revoke that finds none asks again `FOR UPDATE`, whose gap
+lock only makes another insert wait, since a revoke never inserts — the gap-lock deadlock between two first inserters,
+which keeps a grant's own read plain, cannot form. Erasure locks the org's sites in ascending order, reads the reader's
+rows `FOR UPDATE`, deletes every one on every site and from every source, and records `entitlement.erased` per row.
+The whole of each door runs inside one mapping: a unique-index or deadlock failure is `Race`, any other database error
 `Database` with its SQLSTATE alone, and nothing is chained, because a database exception interpolates its bindings and
-they hold the reader and the source. `GuardedEntitlementBuilder` refuses every other write, inside
+they hold the reader and the source. A COMMIT the database refuses, which Laravel rethrows raw, is `Database` too, in
+words that do not claim nothing was written — a busy SQLite can fail a COMMIT that landed — and asking again is safe
+at every door (review). `GuardedEntitlementBuilder` refuses every other write, inside
 `withoutScopeBecause()` too, and refuses `upsert()` and `forceDelete()` even inside the window — an upsert would be the
 easiest way to clear a refund's `revoked_at` — and `delete()` outside erasure.
 
@@ -4293,7 +4305,10 @@ revoked producer's row, or its refund stops being sticky for that source. Stated
 ids without running `forget` hands the new reader the old reader's access (auto-increment ids are never re-issued on the
 four engines); core does not listen on the host's reader model's `deleted` event, which a mass delete would bypass, so
 running `forget` is the host's job; a producer that puts a reader id in a source reference breaks the contract and core
-cannot see it.
+cannot see it. Two more: inside a caller's transaction at PostgreSQL's REPEATABLE READ, or on SQLite in WAL mode after the
+caller's first read, nothing escapes the caller's snapshot, so a revoke or an erasure can miss a row committed since —
+PostgreSQL's default and Laravel's is READ COMMITTED, and SQLite has one writer; and `Site::guardCascade()`'s count is a
+plain read, under the same caveat.
 
 **The console.** `kitsune:entitlements status` prints whether the guard is declared and usable, and counts — grants,
 sites, live, lapsed, revoked — naming no org, reader, entitlement or source, since it lands in deploy logs; it exits 1
@@ -4307,7 +4322,10 @@ site from the **order's** site and grants under `commerce.order:{order id}`: **t
 event**, or one order under two sources is two rows and a refund revokes one of them, which fails open; commerce's slice
 owes the test that two events for one order give one row. It branches on the outcome and the reason, never on text:
 `Unchanged` and `StillRevoked` are processed, `Race` and `Database` retried, `UnknownReader` logged naming the order. A
-refund revokes that order's source alone, and no longer has to check the reader's other orders. A dispute won after a
+refund revokes that order's source alone, and no longer has to check the reader's other orders. ⚠️ A revoke answering
+false means there was nothing live to stamp — already revoked, **or never granted**: a refund processed before its
+payment leaves no row, and that order's later grant would answer `Granted`. Ordering is commerce's, through its
+persisted events: a refund is processed only once its order's grant has been (review). A dispute won after a
 refund is an owner's comp until commerce adds `reinstate()` with that consumer. A pass bought twice is two orders, each
 with its own end, and whether the second starts when the first ends is commerce's product decision. Imports use a
 source of their own and rerun as no-ops. A subscription, when one comes, is one source per subscription, renewed by

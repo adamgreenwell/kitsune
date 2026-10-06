@@ -17,14 +17,15 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Tenancy\Context;
+use PDOException;
 
 /**
  * The steps every door to a reader's rows takes before it reads or writes them — `EntitlementWriter` and
  * `EntitlementRecords` alike, so the rule of who may act has one encoding — ADR-040.
  *
- * ⚠️ AUTHORITY: an owner of the org in context; otherwise a reader signed in to this request is refused (`ReaderActing`),
- * whether the route made them the default guard or their session merely rides along on a route with no auth
- * middleware; otherwise anyone else signed in is refused (`NotAnOwner`); otherwise nobody is signed in, and the caller
+ * ⚠️ AUTHORITY: an owner of the org in context; otherwise anyone signed in on the declared reader guard is refused
+ * (`ReaderActing`), whether the route made them the default guard or their session merely rides along on a route with
+ * no auth middleware, and with or without a site in context; otherwise anyone else signed in is refused (`NotAnOwner`); otherwise nobody is signed in, and the caller
  * is trusted as the system — a webhook, the console, an import — except for a comp, which only a person may give.
  *
  * ⚠️ A PUBLIC ROUTE REACHES THE WRITER BY DESIGN — commerce's webhook — so every caller with nobody signed in must have
@@ -66,7 +67,28 @@ final class EntitlementAuthority
             throw EntitlementRefused::because(EntitlementRefusal::Database, $act, $entitlement, [
                 'state' => (string) ($e->errorInfo[0] ?? $e->getCode()),
             ]);
+        } catch (PDOException $e) {
+            /*
+             * ⚠️ A COMMIT THE DATABASE REFUSED, which Laravel rethrows raw rather than as a `QueryException` (review):
+             * it escaped every door as a `PDOException`, which no producer branches on. Whether it applied cannot be
+             * told from here — a busy SQLite can fail a COMMIT that landed — so the refusal says so rather than
+             * "nothing was written". Asking again is safe at every door: a repeat changes nothing already there.
+             */
+            throw EntitlementRefused::because(EntitlementRefusal::Database, $act, $entitlement, [
+                'state' => self::state($e),
+                'commit' => true,
+            ]);
         }
+    }
+
+    /** The SQLSTATE alone, never the message, which may carry bindings. */
+    private static function state(PDOException $e): string
+    {
+        if (isset($e->errorInfo[0]) && is_string($e->errorInfo[0])) {
+            return $e->errorInfo[0];
+        }
+
+        return preg_match('/SQLSTATE\[(\w{5})\]/', $e->getMessage(), $match) === 1 ? $match[1] : (string) $e->getCode();
     }
 
     /**
@@ -102,7 +124,8 @@ final class EntitlementAuthority
             return;
         }
 
-        if ($this->readers->current() !== null) {
+        // Anyone on the declared guard, with or without a site in context: an erasure or an export runs with the org alone.
+        if ($this->readers->signedIn()) {
             throw EntitlementRefused::because(EntitlementRefusal::ReaderActing, $act, $entitlement);
         }
 

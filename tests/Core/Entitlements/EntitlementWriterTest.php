@@ -13,6 +13,8 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\ReaderGuard;
+use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
 use Kitsune\Core\Entitlements\EntitlementRefused;
@@ -23,8 +25,10 @@ use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\AttributeOnlyReader;
 use Kitsune\Core\Tests\Fixtures\CaseFoldingReader;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\MissingTableReader;
 use Kitsune\Core\Tests\Fixtures\TestReader;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
@@ -223,6 +227,19 @@ describe('the reader', function (): void {
         expect(Entitlement::query()->sole()->reader_id)->toBe('abc');
     });
 
+    it('is matched as the host spells them on a revoke, an export and an erasure', function (): void {
+        Fx::declareReaders(CaseFoldingReader::class);
+        CaseFoldingReader::query()->create(['id' => 'abc', 'email' => 'abc@example.test']);
+        Fx::owner('owner2@kitsune.test');
+        Fx::writer()->grant('abc', 'course.advanced-php', 'test.order:1', null);
+        Fx::writer()->grant('abc', 'course.advanced-php', 'test.order:2', null);
+
+        expect(Fx::writer()->revoke('ABC', 'course.advanced-php', 'test.order:1'))->toBeTrue()
+            ->and(EntitlementRecords::forReader('ABC'))->toHaveCount(2)
+            ->and(Fx::writer()->forget('ABC'))->toBe(2)
+            ->and(DB::table('entitlements')->count())->toBe(0);
+    });
+
     it('must belong to this organisation for a grant or a comp', function (Closure $whose): void {
         $id = $whose($this);
 
@@ -298,6 +315,30 @@ describe('who may act', function (): void {
         expect(Entitlement::query()->count())->toBe(0)
             ->and(entitlementAudit())->toBe([]);
     })->with(['riding along' => [false], 'the route\'s user' => [true]]);
+
+    it('refuses a reader\'s own request to export or erase with the org alone in context', function (): void {
+        Fx::writer()->grant($this->id, 'course.advanced-php', 'test.order:1', null);
+        $victim = (int) Fx::reader(email: 'victim@example.test')->getKey();
+        Fx::writer()->grant($victim, 'course.advanced-php', 'test.order:2', null);
+        Fx::nobody();
+        Fx::signIn($this->reader);
+        app(Context::class)->setSite(null)->setOrg($this->org);
+
+        expect(app(Context::class)->siteId())->toBeNull()
+            ->and(refusalOf(fn () => EntitlementRecords::forReader($victim))->reason)->toBe(EntitlementRefusal::ReaderActing)
+            ->and(refusalOf(fn () => Fx::writer()->forget($victim))->reason)->toBe(EntitlementRefusal::ReaderActing)
+            ->and(DB::table('entitlements')->count())->toBe(2);
+    });
+
+    it('refuses a reader\'s own request on a guard core cannot use for readers', function (): void {
+        Fx::nobody();
+        Fx::declareReaders(AttributeOnlyReader::class);
+        Fx::signIn((new AttributeOnlyReader)->forceFill($this->reader->getAttributes()));
+
+        expect(Fx::guard()->fault())->not->toBeNull()
+            ->and(refusalOf(fn () => Fx::writer()->forget($this->id))->reason)->toBe(EntitlementRefusal::ReaderActing)
+            ->and(refusalOf(fn () => EntitlementRecords::forReader($this->id))->reason)->toBe(EntitlementRefusal::ReaderActing);
+    });
 
     it('lets an owner act while a reader\'s session rides along', function (): void {
         Fx::signIn($this->reader);
@@ -470,6 +511,29 @@ describe('a write that does not land', function (): void {
         expect(refusalOf(fn () => Fx::writer()->grant($this->id, 'course.advanced-php', 'test.order:1', null))->reason)->toBe(EntitlementRefusal::SiteGone);
     });
 
+    it('maps a failure loading a reader\'s session at every write door, with nobody on web', function (): void {
+        Fx::declareReaders(MissingTableReader::class);
+        Fx::nobody();
+        session()->put(Auth::guard(Fx::GUARD)->getName(), '81234');
+        Auth::forgetGuards();
+        Fx::forget();
+
+        foreach ([
+            'grant' => fn () => Fx::writer()->grant(81234, 'course.advanced-php', 'test.order:1', null),
+            'comp' => fn () => Fx::writer()->comp(81234, 'course.advanced-php', null),
+            'revoke' => fn () => Fx::writer()->revoke(81234, 'course.advanced-php', 'test.order:1'),
+            'forget' => fn () => Fx::writer()->forget(81234),
+            'export' => fn () => EntitlementRecords::forReader(81234),
+        ] as $door => $act) {
+            // Each in a savepoint of its own: on PostgreSQL a failed statement aborts the test's transaction.
+            $refused = refusalOf(fn () => DB::transaction($act));
+
+            expect($refused->reason)->toBe(EntitlementRefusal::Database, $door)
+                ->and($refused->getPrevious())->toBeNull()
+                ->and($refused->getMessage())->not->toContain('81234');
+        }
+    });
+
     it('refuses an erasure or an export with no organisation in context', function (): void {
         app(Context::class)->forget();
 
@@ -478,3 +542,14 @@ describe('a write that does not land', function (): void {
         }
     });
 });
+
+it('is built afresh for each request, as the request\'s site and reader are', function (string $abstract): void {
+    $first = app($abstract);
+    app()->forgetScopedInstances();
+
+    expect(app($abstract))->not->toBe($first);
+})->with([
+    ReaderGuard::class,
+    EntitlementCheck::class,
+    EntitlementWriter::class,
+]);

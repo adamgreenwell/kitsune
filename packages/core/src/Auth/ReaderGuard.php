@@ -131,6 +131,27 @@ final class ReaderGuard
     }
 
     /**
+     * Whether anyone at all is signed in on the declared guard — the question authority asks before it trusts a caller
+     * with nobody on `web` as the system.
+     *
+     * ⚠️ STRICTER THAN `current()`, ON PURPOSE. It needs no site, so an erasure or an export run with the org alone in
+     * context still sees a reader's session riding along (review); it needs no usable model, so a guard core cannot use
+     * for readers still counts; and it fences no org, so a reader of another org is still a reader. A panel's guard
+     * is left to the panel's own question, since whoever it holds is staff. May query the host's table, through the
+     * guard's own user load.
+     */
+    public function signedIn(): bool
+    {
+        [$fault, $name] = $this->inspect();
+
+        if ($name === null || in_array($fault, [ReaderGuardFault::NotDeclared, ReaderGuardFault::UnknownGuard, ReaderGuardFault::PanelGuard], true)) {
+            return false;
+        }
+
+        return Auth::guard($name)->user() !== null;
+    }
+
+    /**
      * The caller's identifier as the guard's model keys it, and as `entitlements.reader_id` would store it — or null.
      *
      * Through `Permissions::userKey()`: an integer model refuses `'007'`, `'5abc'`, an overflow and `''`. Then
@@ -183,8 +204,9 @@ final class ReaderGuard
     /**
      * The fault, the guard's name and its model, asked in the enum's order.
      *
-     * ⚠️ `Auth::guard()` IS NEVER CALLED HERE, and never on an undeclared or unknown name anywhere: it throws on one.
-     * The provider is built from its own configuration, which is what the guard would build.
+     * ⚠️ `Auth::guard()` IS NEVER CALLED ON AN UNDECLARED OR UNKNOWN NAME: it throws on one. It is asked only once the
+     * name is a guard with a provider, to prove its driver can be built. The provider is built from its own
+     * configuration, which is what the guard would build.
      *
      * @return array{0: ?ReaderGuardFault, 1: ?string, 2: ?class-string<Model&Authenticatable>}
      */
@@ -198,8 +220,9 @@ final class ReaderGuard
 
         $guard = preg_match(self::NAME, $name) === 1 ? config("auth.guards.{$name}") : null;
         $provider = is_array($guard) ? ($guard['provider'] ?? null) : null;
+        $driver = is_array($guard) ? ($guard['driver'] ?? null) : null;
 
-        if (! is_string($provider) || $provider === '') {
+        if (! is_string($provider) || $provider === '' || ! is_string($driver) || $driver === '') {
             return [ReaderGuardFault::UnknownGuard, $name, null];
         }
 
@@ -216,6 +239,18 @@ final class ReaderGuard
 
         if ($model === null) {
             return [ReaderGuardFault::NotEloquent, $name, null];
+        }
+
+        /*
+         * ⚠️ AND A DRIVER LARAVEL CAN BUILD, or every later `Auth::guard()` throws (review): a guard declared with a
+         * driver whose package is not installed read as usable, every check failed with a raw exception rather than
+         * answering no, and the console's status called it usable. Asked once the provider is known to build, since
+         * building the guard builds it too; building a session or token guard runs no query.
+         */
+        try {
+            app(AuthManager::class)->guard($name);
+        } catch (InvalidArgumentException) {
+            return [ReaderGuardFault::UnknownGuard, $name, null];
         }
 
         // Constructing one is what boots the model and registers its scopes: the REGISTERED scopes, never the attribute.

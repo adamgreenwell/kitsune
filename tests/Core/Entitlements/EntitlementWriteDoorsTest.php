@@ -227,12 +227,26 @@ it('arms each window in one private place, reached from its own doors alone, and
         ->and((new ReflectionProperty(EntitlementWriter::class, 'erasing'))->isPrivate())->toBeTrue();
 });
 
-it('locks the site\'s row in a grant, a comp and a revoke, and no other row', function (): void {
-    // ⚠️ A ROW LOCK ON AN ENTITLEMENT NOT YET WRITTEN IS A GAP LOCK on MySQL and MariaDB. No engine here shows that, so
-    // the source is asked.
-    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['forget', 'lockedRow'])
-        ->and(entitlementWriterMethodsHolding('sharedLock('))->toBe([])
-        ->and(entitlementWriterMethodsHolding('$this->lockedRow('))->toBe(['revoke', 'give']);
+it('takes the org\'s row shared and the sites\' in ascending order, and reads a grant\'s row plainly', function (): void {
+    // ⚠️ A ROW LOCK ON AN ENTITLEMENT NOT YET WRITTEN IS A GAP LOCK on MySQL and MariaDB, which two first grants would
+    // deadlock on; and the org before the site is the order every writer takes them in. No engine here shows either,
+    // so the source is asked.
+    $source = (string) file_get_contents((string) (new ReflectionClass(EntitlementWriter::class))->getFileName());
+    $lockedRow = substr($source, (int) strpos($source, 'private function lockedRow('));
+    $lockedRow = substr($lockedRow, 0, (int) strpos($lockedRow, "\n    }\n"));
+    $lockSites = substr($source, (int) strpos($source, 'private function lockSites('));
+    $lockSites = substr($lockSites, 0, (int) strpos($lockSites, "\n    }\n"));
+
+    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['forget', 'lockedRow', 'lockedRow', 'lockSites'])
+        ->and(entitlementWriterMethodsHolding('sharedLock('))->toBe(['lockSites'])
+        ->and(entitlementWriterMethodsHolding('$this->lockSites('))->toBe(['forget', 'lockedRow'])
+        ->and(entitlementWriterMethodsHolding('$this->lockedRow('))->toBe(['revoke', 'give'])
+        // The org's row shared, before the sites, which are taken exclusively in ascending order.
+        ->and(preg_match('/Org::query\(\).*->sharedLock\(\).*\n.*\n\s*\$locked = Site::query\(\)/', $lockSites))->toBe(1)
+        ->and(preg_match('/->orderBy\(\'id\'\)\s*->lockForUpdate\(\)/', $lockSites))->toBe(1)
+        // A found row is read again by its key; an absent one is asked again, locking, by a revoke alone.
+        ->and($lockedRow)->toContain('$row()->whereKey($found->getKey())->lockForUpdate()->first()')
+        ->and($lockedRow)->toContain('return $act === EntitlementRefused::REVOKE ? $row()->lockForUpdate()->first() : null;');
 });
 
 it('leaves both windows closed after a write that failed', function (): void {

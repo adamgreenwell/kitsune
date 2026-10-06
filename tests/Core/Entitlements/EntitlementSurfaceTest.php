@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Auth\ReaderGuardFault;
 use Kitsune\Core\Console\EntitlementsCommand;
@@ -16,6 +17,7 @@ use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Models\Entitlement;
+use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
 
 /*
@@ -83,6 +85,10 @@ it('keeps every reader identifier and every source out of a stack trace', functi
     'the guard\'s lookup' => [ReaderGuard::class, 'canonical', 'id'],
     'the shared key step' => [EntitlementAuthority::class, 'key', 'reader'],
     'the shared filing step' => [EntitlementAuthority::class, 'filedKey', 'reader'],
+    'the decision: the reader' => [EntitlementWriter::class, 'give', 'stored'],
+    'the decision: the source' => [EntitlementWriter::class, 'give', 'source'],
+    'the row read: the reader' => [EntitlementWriter::class, 'lockedRow', 'stored'],
+    'the row read: the source' => [EntitlementWriter::class, 'lockedRow', 'source'],
 ]);
 
 /**
@@ -109,6 +115,22 @@ it('prints neither the reader nor the source in a refusal\'s trace, under PHP\'s
             fn () => Fx::writer()->revoke('81234 ', 'course.advanced-php', 'commerce.order:93177'),
             fn () => Fx::writer()->forget('81234 '),
             fn () => EntitlementRecords::forReader('81234 '),
+            // Two refused from inside the transaction, where the private helpers are on the stack (review).
+            function () use ($org): void {
+                DB::table('test_readers')->insert(['id' => 81234, 'org_id' => $org->getKey(), 'email' => 'r@example.test']);
+                Entitlement::saving(static fn (): bool => false);
+
+                try {
+                    Fx::writer()->grant('81234', 'course.advanced-php', 'commerce.order:93177', null);
+                } finally {
+                    Entitlement::flushEventListeners();
+                    Entitlement::clearBootedModels();
+                }
+            },
+            function (): void {
+                DB::table('sites')->where('id', app(Context::class)->siteId())->delete();
+                Fx::writer()->revoke('81234', 'course.advanced-php', 'commerce.order:93177');
+            },
         ] as $door) {
             try {
                 $door();
