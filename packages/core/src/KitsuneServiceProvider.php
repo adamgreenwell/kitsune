@@ -30,12 +30,18 @@ use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
+use Kitsune\Core\Console\CredentialsCommand;
 use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\MediaReconcileCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
+use Kitsune\Core\Credentials\CredentialCipher;
+use Kitsune\Core\Credentials\CredentialReader;
+use Kitsune\Core\Credentials\CredentialSlots;
+use Kitsune\Core\Credentials\CredentialStates;
+use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
@@ -114,6 +120,20 @@ final class KitsuneServiceProvider extends ServiceProvider
          * `register()` so it exists before the kernel registers anything in `booted()`.
          */
         $this->app->singleton(AdminSurface::class, static fn (): AdminSurface => new AdminSurface);
+
+        /*
+         * The credentials enabled modules keep — ADR-040's `@internal` seam, a singleton for `AdminSurface`'s reason:
+         * the module that declares a credential in `registerModule()` and the store that checks a value against it
+         * must be looking at the same object.
+         *
+         * The store itself is `scoped`, so a worker that changes its app key, or a test, gets a fresh cipher with the
+         * next request rather than one built for the last.
+         */
+        $this->app->singleton(CredentialSlots::class, static fn (): CredentialSlots => new CredentialSlots);
+        $this->app->scoped(CredentialCipher::class);
+        $this->app->scoped(CredentialWriter::class);
+        $this->app->scoped(CredentialStates::class);
+        $this->app->scoped(CredentialReader::class);
 
         /*
          * Where blueprint definitions are collected — ADR-039's `@internal` seam, and the same shape as the
@@ -230,6 +250,7 @@ final class KitsuneServiceProvider extends ServiceProvider
             $this->commands([
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
+                CredentialsCommand::class,
                 MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,
                 MediaReconcileCommand::class,

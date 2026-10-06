@@ -163,7 +163,24 @@ sites                          -- anything with its own base URL
   is_primary      bool
   settings        json
   UNIQUE (org_id, handle)
+
+credentials                    -- ADR-040: write-only, per org; one row per (org, slot, mode)
+  id, org_id
+  slot            string       -- a module's declared name: 'commerce.stripe-secret-key'
+  mode            string       -- 'test' | 'live' | 'none' — NOT NULL, so the unique index constrains
+  ciphertext      text NULL    -- AES-256-GCM under a key derived from APP_KEY; NULL once removed
+  key_id          string NULL  -- which derived key sealed it, so a page can tell without decrypting
+  changed_at      timestamp
+  UNIQUE (org_id, slot, mode)
+
+org_credential_modes           -- ADR-040: which of an org's credentials are in force; absent = test
+  id, org_id UNIQUE, mode, changed_at
 ```
+
+**`orgs` carries no mode, by design** (ADR-040, the credential store as built): `Org` is unscoped and a save of it is
+unaudited, and the mode decides whether real money moves. Nothing derived from a credential's value is stored — no
+hash, length, prefix or last four — and a per-org export lists slot, mode, state and `changed_at`, never ciphertext or
+key id. Neither table is an entry type, and v1.1's generated REST API never exposes them.
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 
@@ -302,7 +319,8 @@ One table, one row per entry, real indexes on the fields that need them. This is
 
 ```
 modules                                   -- global; code is code. ADR-038: no `settings` column — module
-                                          -- settings belong in ADR-022's store. An ABSENT row means disabled
+                                          -- settings belong in ADR-022's store, and module secrets in
+                                          -- ADR-040's credential store. An ABSENT row means disabled
   id, handle, version, is_enabled, installed_at
 
 org_modules                               -- per-org enablement. DEFERRED by ADR-038 until a consumer asks for
@@ -333,7 +351,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 
    ```php
    #[SiteScoped]   // entries and most content — Filament's tenancy scopes these
-   #[OrgScoped]    // users, billing, settings, shared media — KITSUNE scopes these
+   #[OrgScoped]    // users, billing, settings, shared media, credentials — KITSUNE scopes these
    #[Unscoped]     // genuinely global: modules, system entry types
    ```
 
@@ -377,13 +395,16 @@ One `Entry` model means one Eloquent policy for all types — neither routing de
 
 ## 5. The kernel
 
-A module is a Composer package with a manifest. Kernel responsibilities, and nothing more:
+A module is a Composer package with a manifest. ~~Kernel responsibilities, and nothing more~~ Kernel
+responsibilities *(amended 2026-10-06 by ADR-040: the credential store joins them, because its second consumer was
+already on the roadmap)*:
 
 ```
 Module registry     discovery, enable/disable, dependency resolution, ordering
 Lifecycle           install / upgrade / uninstall, with migrations and rollback
 Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
+Credentials         write-only per-org secrets, and test/live mode (ADR-040)
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
 Blueprints          a kernel primitive, not a module (ADR-039)

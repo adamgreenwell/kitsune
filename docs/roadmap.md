@@ -490,7 +490,7 @@ rather than the estimate standing still while the work grows underneath it ([ADR
 - [ ] Caching, correctly scope-keyed (org and site)
 - [ ] **Reader accounts** ([ADR-037](decision-log.md)) — their own guard, provider and model, provided by the host; registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for every row of the one that exists
 - [ ] **Consent records, subject-access export and erasure tooling** — [ADR-020](decision-log.md) promised all three for v1.1 and this list omitted them, which is how a privacy promise quietly becomes a later one. `erasure_log` has its table and no writer
-- [ ] **`kitsune/support`** ([ADR-036](decision-log.md)) — the chat module: per-Site link, widget injection through the theme layer above, signed visitor identity, webhook receiver. Prototyped against stage, and merged only once Phase 3's registry and settings store exist, since its settings hold secrets core cannot yet store encrypted
+- [ ] **`kitsune/support`** ([ADR-036](decision-log.md)) — the chat module: per-Site link, widget injection through the theme layer above, signed visitor identity, webhook receiver. Prototyped against stage, and merged only once Phase 3's registry and settings store exist, ~~since its settings hold secrets core cannot yet store encrypted~~ *its secrets go in ADR-040's credential store (Phase 5a)*
 
 ## v1.2 — Plugin SDK and API freeze
 

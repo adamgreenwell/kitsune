@@ -26,7 +26,7 @@ use RuntimeException;
  * erased value inside the log meant to prove the erasure happened. An audit
  * log that captures diffs is a compliance liability wearing a helpful hat.
  *
- * `AuditLogShapeTest` asserts the column list exactly, so adding a `changes`
+ * `AuditLogTest` asserts the column list exactly, so adding a `changes`
  * column fails the build rather than passing review on a busy day.
  *
  * @property int $id

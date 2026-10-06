@@ -51,10 +51,12 @@
 #
 # ⚠️ NEVER: --seed or db:seed, because the skeleton's DatabaseSeeder creates accounts whose password is `password`,
 # and ADR-026 forbids a default administrator; migrate:fresh, which drops every table; key:generate, because a new key
-# invalidates every session and everything encrypted with the old one; `optimize` or `filament:optimize`, which exit 0
-# when one of their tasks fails; kitsune:benchmark-*, which are measurement spikes, not deploy steps; npm, because the
-# committed assets are what serves; kitsune:blueprint apply --owner, because a first owner is a one-off operator command
-# on an empty installation (ADR-026, as amended), and a release that ran it would need the password in its input.
+# invalidates every session and everything encrypted with the old one — since ADR-040, every org's stored credentials
+# too, so APP_KEY is backup-critical and rotates through APP_PREVIOUS_KEYS (ADR-040, the credential store as built);
+# `optimize` or `filament:optimize`, which exit 0 when one of their tasks fails; kitsune:benchmark-*, which are
+# measurement spikes, not deploy steps; npm, because the committed assets are what serves; kitsune:blueprint apply
+# --owner, because a first owner is a one-off operator command on an empty installation (ADR-026, as amended), and a
+# release that ran it would need the password in its input.
 #
 # ⚠️ NO --isolated ON migrate. Its mutex locks on the default cache store, which is `database` when CACHE_STORE is
 # unset, and that table does not exist before the first migration. Stage serialises its deploys with its own lock.

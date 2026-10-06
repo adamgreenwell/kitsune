@@ -151,7 +151,7 @@ describe('the audit trail', function (): void {
     });
 
     it('never records the value, nor the key', function (): void {
-        // ADR-020: actor, action and target only. A setting may one day be a secret, and a key is caller text.
+        // ADR-020: actor, action and target only. A key is caller text — and a secret belongs in ADR-040's credential store.
         $this->writer->set($this->site, 'analytics_secret', 'sk_live_do_not_log_me');
 
         $row = (array) DB::table('audit_log')->orderByDesc('id')->first();
