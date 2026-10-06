@@ -4095,7 +4095,16 @@ exception, and the store gains nothing. The browser suite's module, `kitsune/e2e
 which no release, package split or floor benchmark copies.
 
 **Enforced by**, for "a secret that cannot be read back through any admin path" (now both halves) and "a test-mode key
-refused against a live-mode org" (now in a browser) — ⟨MUTATIONS⟩
+refused against a live-mode org" (now in a browser) — each with a test that fails when the rule is removed: 55
+mutations of the page, the controller and the panel's wiring, 54 caught, and 13 of the browser build, 10 caught there.
+The PHP survivor is equivalent: the writer handed the client's name rather than the declared one, which `find()` has
+just matched exactly. Of the browser three, two are equivalent — the submit button left enabled, because Chromium sends
+one POST for a double click once the first has navigated; and `wire:ignore` on the form, because Filament rebuilds the
+modal on every mount — and the third, the POST moved to `tenantRoutes()`, outside the authenticated group, still works
+for an owner on Filament 5.9 and still refuses everyone else (the token check, `IdentifyTenant` and the controller's own
+owner check), so a browser cannot tell; `CredentialPageTest`'s wiring test kills it. Review added two, each killed by a
+test of its own: a `var_dump(` in the controller, which the surface scan's word boundary had let pass, and the sidebar
+link left ungated, now asked of the sidebar the panel builds:
 - `CredentialPageTest`: an owner only, nobody signed in and another org's owner refused; the link with a declaration
   only; the page and its POST registered where a signed-in site serves them; each line's own state at its own mode, and
   the one in use; previous-key and unreadable lines; a fixed count of queries; a damaged value read as set, nothing
