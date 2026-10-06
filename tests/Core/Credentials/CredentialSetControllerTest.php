@@ -31,9 +31,9 @@ use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 /*
  * The one path a credential's value takes into the admin — ADR-040, its admin half.
  *
- * ⚠️ EVERY CASE ENDS WITH THE SAME CHECK: the value is in no request bag, no superglobal, no session key, no response
- * header and no response body, and nothing was flashed. The superglobals are filled first, as PHP-FPM fills them, so
- * the controller's own unset is what empties them.
+ * ⚠️ EVERY CASE THAT CARRIES A VALUE ENDS WITH THE SAME CHECK: the value is in no request bag, no superglobal, no
+ * session key, no response header and no response body, and nothing was flashed. The superglobals are filled first, as
+ * PHP-FPM fills them, so the controller's own unset is what empties them.
  *
  * ⚠️ AND THE TOKEN IS THE CONTROLLER'S CHECK HERE: the host's middleware is skipped under unit tests, which is one of
  * the reasons the controller compares it itself.
@@ -188,6 +188,7 @@ it('refuses an owner of another org with this org in context', function (): void
 
     $response->assertStatus(403);
     expect(credentialRows())->toBe(0);
+    credentialClean($response, $value);
 });
 
 it('answers 404 to an undeclared credential or a mode that does not fit, naming neither', function (array $form): void {
@@ -213,7 +214,7 @@ it('answers 404 to an undeclared credential or a mode that does not fit, naming 
     'an array for a name' => [['slot' => [Fx::SHARED]]],
 ]);
 
-it('refuses a value that arrived in the address and calls it exposed, before asking anything else', function (string $slot): void {
+it('refuses a value that arrived in the address and calls it exposed, before looking up the credential', function (string $slot): void {
     $value = Fx::value('', 40);
     $response = ($this->post)(['slot' => $slot], '?password='.$value);
 
@@ -229,6 +230,18 @@ it('refuses a value that arrived in the address and calls it exposed, before ask
     'an undeclared one' => ['fx.nowhere'],
 ]);
 
+it('refuses a value in the address with no valid token as any tokenless request, saying nothing and keeping nothing', function (): void {
+    $value = Fx::value('', 40);
+    $_GET = $_REQUEST = ['password' => $value];
+
+    $response = $this->withSession(['_token' => $this->token])->post('/test-credentials/acme-main/set?password='.$value, ['slot' => Fx::SHARED]);
+
+    $response->assertStatus(419);
+    expect(credentialRows())->toBe(0)
+        ->and(credentialSetNotices())->toBe([]);
+    credentialClean($response, $value);
+});
+
 it('trims surrounding ASCII whitespace, and leaves the rest to the store', function (): void {
     $value = Fx::value('', 40);
 
@@ -236,19 +249,26 @@ it('trims surrounding ASCII whitespace, and leaves the rest to the store', funct
 
     expect(Fx::reader()->secret(Fx::SHARED)->reveal())->toBe($value);
 
-    $inner = substr($value, 0, 20)."\u{00A0}".substr($value, 20);
-    $response = ($this->post)(['slot' => Fx::SHARED, 'password' => $inner]);
+    // A no-break space, inside or at an end: not ASCII, so not trimmed, and the store refuses it.
+    foreach ([substr($value, 0, 20)."\u{00A0}".substr($value, 20), Fx::value('', 40)."\u{00A0}", "\u{00A0}".Fx::value('', 40)] as $spaced) {
+        $response = ($this->post)(['slot' => Fx::SHARED, 'password' => $spaced]);
 
-    expect((string) collect(credentialSetNotices())->last()['body'])->toContain('was not saved')
-        ->and(Fx::reader()->secret(Fx::SHARED)->reveal())->toBe($value);
+        expect((string) collect(credentialSetNotices())->last()['body'])->toContain('was not saved')
+            ->and(Fx::reader()->secret(Fx::SHARED)->reveal())->toBe($value);
 
-    credentialClean($response, $inner);
+        credentialClean($response, $spaced);
+    }
 });
 
 it('shows an empty, absent or array value as the store\'s empty refusal', function (array $form): void {
     $response = ($this->post)(['slot' => Fx::SHARED, ...$form]);
 
     $response->assertStatus(303);
+
+    // An array is no value — and still leaves every bag before anything else runs.
+    if (is_array($form['password'] ?? null)) {
+        credentialClean($response, $form['password'][0]);
+    }
 
     expect(credentialRows())->toBe(0)
         ->and(credentialSetNotices()[0]['title'])->toBe('Not saved: Fixture shared secret')
@@ -295,10 +315,11 @@ it('escapes what a module declares in every notice it sends', function (): void 
 it('takes the line the owner pasted into, where nothing in the value says which', function (): void {
     $value = Fx::value('fxhook_', 30);
 
-    ($this->post)(['slot' => Fx::HOOK, 'mode' => 'live', 'password' => $value]);
+    $response = ($this->post)(['slot' => Fx::HOOK, 'mode' => 'live', 'password' => $value]);
 
     expect(Fx::states()->of(Fx::HOOK, CredentialMode::Live)->status)->toBe(CredentialStatus::Set)
         ->and(Fx::states()->of(Fx::HOOK, CredentialMode::Test)->status)->toBe(CredentialStatus::NotSet);
+    credentialClean($response, $value);
 });
 
 it('has emptied the request before anything else can throw', function (): void {

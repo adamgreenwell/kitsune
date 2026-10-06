@@ -77,9 +77,10 @@ it('logs and reports nothing', function (): void {
     foreach ([...credentialSourceFiles('Credentials'), $core.'Console/CredentialsCommand.php', $core.'Filament/Pages/Credentials.php', $core.'Http/Controllers/CredentialSetController.php'] as $file) {
         $source = (string) file_get_contents($file);
 
-        // Whole names only: `AuditLog::` is not `Log::`, and `->add(` is not `dd(` (PR B's page reads the audit log).
+        // Not after a letter or digit: `AuditLog::` is not `Log::` and `->add(` is not `dd(` (the admin page reads the
+        // audit log) — but after an underscore it is, so `var_dump(` is still `dump(` (review).
         foreach (['Log::', 'logger(', 'report(', 'dump(', 'dd('] as $needle) {
-            expect(preg_match('/(?<![A-Za-z0-9_])'.preg_quote($needle, '/').'/', $source))->toBe(0, basename($file)." calls {$needle}");
+            expect(preg_match('/(?<![A-Za-z0-9])'.preg_quote($needle, '/').'/', $source))->toBe(0, basename($file)." calls {$needle}");
         }
     }
 });

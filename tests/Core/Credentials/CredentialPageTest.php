@@ -9,6 +9,9 @@
 declare(strict_types=1);
 
 use Filament\Actions\Action;
+use Filament\Navigation\NavigationBuilder;
+use Filament\Navigation\NavigationGroup;
+use Filament\Navigation\NavigationItem;
 use Filament\Panel;
 use Filament\Schemas\Schema;
 use Illuminate\Contracts\Events\Dispatcher;
@@ -126,16 +129,32 @@ it('opens to an owner of the org in context and to nobody else', function (): vo
         ->and($member->getKey())->not->toBe($rival->getKey());
 });
 
-/* 2. The link. */
+/** The labels of the panel's own sidebar, as `KitsunePanel` builds it for the signed-in user. @return list<string> */
+function credentialSidebar(): array
+{
+    $builder = Closure::bind(static fn (): NavigationBuilder => self::navigation(new NavigationBuilder), null, KitsunePanel::class)();
+
+    return collect($builder->getNavigation())
+        ->flatMap(static fn (NavigationGroup $group): array => $group->getItems())
+        ->map(static fn (NavigationItem $item): string => (string) $item->getLabel())
+        ->values()
+        ->all();
+}
+
+/* 2. The link — asked of the sidebar the panel builds, not of the helper alone (review). */
 it('puts the link in an owner\'s sidebar once a module declares a credential, and in nobody else\'s', function (): void {
-    expect(Credentials::belongsInNavigation())->toBeTrue();
+    expect(Credentials::belongsInNavigation())->toBeTrue()
+        ->and(credentialSidebar())->toContain('Credentials');
 
     app(CredentialSlots::class)->flush();
-    expect(Credentials::belongsInNavigation())->toBeFalse();
+    expect(Credentials::belongsInNavigation())->toBeFalse()
+        ->and(credentialSidebar())->not->toContain('Credentials')
+        ->and(credentialSidebar())->toContain('Roles');
 
     Fx::boot();
     credentialMember();
-    expect(Credentials::belongsInNavigation())->toBeFalse();
+    expect(Credentials::belongsInNavigation())->toBeFalse()
+        ->and(credentialSidebar())->not->toContain('Credentials');
 });
 
 /* 3. Wiring. */
@@ -338,6 +357,9 @@ it('renders a form that posts, names its field password, and carries no value or
         ->toContain('<p id="credential-value-fx__payment-key-live-format"')
         ->not->toContain('wire:model')
         ->not->toContain('wire:ignore')
+        ->toContain('x-on:submit="$el.querySelector(\'[type=submit]\').disabled = true"')
+        ->and(preg_match('/<button type="submit"[^>]*>/', $html, $button))->toBe(1)
+        ->and($button[0])->not->toContain('name=')
         ->and($input)->toContain('name="password"')
         ->toContain('autocomplete="off"')
         ->not->toContain('value=')
@@ -354,18 +376,41 @@ it('renders a form that posts, names its field password, and carries no value or
         ->and($lookAlike)->not->toBe(Credentials::keyOf($slot, CredentialMode::Live));
 });
 
-it('escapes what a module declares, in the form and in every notice', function (): void {
-    app(CredentialSlots::class)->register(new CredentialSlot('fx.marked-up', '<script>x</script>', '<b>y</b>', false, minLength: 32));
+it('escapes what a module declares in every notice: nothing removed, removed, and refused', function (): void {
+    app(CredentialSlots::class)->register(new CredentialSlot('fx.marked-up', '<b>Marked</b>', 'Help', false, minLength: 32));
     $slot = app(CredentialSlots::class)->find('fx.marked-up');
-
-    $html = (string) Credentials::valueForm('/x/set', 'tok', $slot, null);
-
-    expect($html)->not->toContain('<script>')->not->toContain('<b>');
 
     Credentials::removeLine($slot, null);
 
-    $notice = credentialNotices()[0];
-    expect((string) $notice['title'])->toContain('&lt;script&gt;x&lt;/script&gt;')->not->toContain('<script>');
+    Fx::writer()->set('fx.marked-up', null, Fx::value('', 40));
+    Credential::saving(static fn (): bool => false);
+
+    try {
+        Credentials::removeLine($slot, null);
+    } finally {
+        Credential::flushEventListeners();
+        Credential::clearBootedModels();
+    }
+
+    Credentials::removeLine($slot, null);
+
+    $notices = credentialNotices();
+    expect($notices)->toHaveCount(3)
+        ->and(array_map(static fn (array $notice): string => (string) $notice['title'], $notices))->toBe([
+            '&lt;b&gt;Marked&lt;/b&gt; was not set, so nothing was removed.',
+            'Not removed: &lt;b&gt;Marked&lt;/b&gt;',
+            'Removed: &lt;b&gt;Marked&lt;/b&gt;',
+        ])
+        ->and((string) $notices[1]['body'])->toContain('&lt;b&gt;Marked&lt;/b&gt; was not removed')->not->toContain('<b>');
+});
+
+it('escapes every value it interpolates into the form', function (): void {
+    $html = (string) Credentials::valueForm('/x/set?a="b"&c=<d>', 'to"k<en>', app(CredentialSlots::class)->find(Fx::SHARED), null);
+
+    expect($html)->toContain('action="/x/set?a=&quot;b&quot;&amp;c=&lt;d&gt;"')
+        ->toContain('name="_token" value="to&quot;k&lt;en&gt;"')
+        ->not->toContain('<d>')
+        ->not->toContain('<en>');
 });
 
 /* 10. Remove. */
@@ -468,6 +513,14 @@ it('lists, before going live, what has no usable live value', function (): void 
     Fx::writer()->set(Fx::HOOK, CredentialMode::Live, Fx::value('fxhook_', 30));
 
     expect(Credentials::missingLive())->toBe('');
+
+    // Removed counts as missing; and so does a value no key this installation has can open.
+    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live);
+    expect(Credentials::missingLive())->toBe('These have no usable live value yet, and will refuse to work until one is set: Fixture payment key.');
+
+    config(['app.key' => Fx::appKey(), 'app.previous_keys' => []]);
+    Fx::forget();
+    expect(Credentials::missingLive())->toBe('These have no usable live value yet, and will refuse to work until one is set: Fixture payment key, Fixture webhook secret.');
 });
 
 it('offers no switch where nothing is kept per mode', function (): void {

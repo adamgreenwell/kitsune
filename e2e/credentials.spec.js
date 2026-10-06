@@ -90,11 +90,15 @@ async function expectClean(page, seen, v) {
         }
     }
 
+    // ⚠️ PIECES IN REQUESTS TOO, not the whole value alone (review): a Livewire update carrying sixteen characters of a
+    // typed value is the regression this guards, and only the request side would carry it.
     for (const request of seen.requests) {
-        expect(request.url.includes(v), `a request URL holds the value: ${request.method} ${request.url}`).toBe(false);
+        for (const piece of windows(v)) {
+            expect(request.url.includes(piece), `a request URL holds a piece of the value: ${request.method} ${request.url}`).toBe(false);
 
-        if (LIVEWIRE.test(request.url)) {
-            expect(request.body.includes(v), 'a Livewire request holds the value').toBe(false);
+            if (LIVEWIRE.test(request.url)) {
+                expect(request.body.includes(piece), 'a Livewire request holds a piece of the value').toBe(false);
+            }
         }
     }
 
@@ -110,9 +114,11 @@ async function expectClean(page, seen, v) {
     }
 }
 
-/** The bodies that carried the value: the claim is that there is exactly one, and it is the set POST. */
+/** The bodies that carried any piece of the value: the claim is that there is exactly one, and it is the set POST. */
 function carriers(seen, v) {
-    return seen.requests.filter((request) => request.body.includes(v)).map((request) => `${request.method} ${new URL(request.url).pathname}`);
+    return seen.requests
+        .filter((request) => windows(v).some((piece) => request.body.includes(piece)))
+        .map((request) => `${request.method} ${new URL(request.url).pathname}`);
 }
 
 /** One line of the page: a credential's section, and its mode's fieldset where it keeps one per mode. */

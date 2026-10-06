@@ -438,7 +438,7 @@ final class Credentials extends Page
     /**
      * The form, and the one place a value is typed.
      *
-     * ⚠️ RULES, EACH ASSERTED BY `CredentialPageTest`:
+     * ⚠️ RULES, EACH ASSERTED BY `CredentialPageTest` (and the double submit in a browser, by `credentials.spec.js`):
      * - the password input never carries a `value`, and has no `maxlength` or `minlength` — a browser silently truncates
      *   a paste, where the server refuses instead;
      * - the field is named `password` on purpose: Laravel's `$dontFlash` and `TrimStrings` skip that name, and many error
@@ -512,8 +512,10 @@ final class Credentials extends Page
     /**
      * Remove one line's value.
      *
-     * ⚠️ THE STATE IS READ FIRST, because the writer is silent when nothing is stored: a removal another tab got to
-     * first says "nothing was removed" rather than claim one.
+     * ⚠️ THE STATE IS READ FIRST, because the writer is silent when nothing is stored: a removal that lands between the
+     * page's build and this handler says "nothing was removed" rather than claim one. A page left open after another tab
+     * removed the value no longer offers Remove at all — the action is hidden in the schema rebuilt on the next request —
+     * so the click resolves nothing, and the reload shows the line as it is.
      */
     public static function removeLine(CredentialSlot $slot, ?CredentialMode $mode): void
     {

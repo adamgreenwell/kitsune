@@ -37,7 +37,8 @@ use Kitsune\Core\Filament\Pages\Credentials;
  * ⚠️ THEN THE OWNER, AND A MISSING USER IS REFUSED HERE. The writer trusts its caller when nobody is signed in; this is
  * the guard that keeps "no web path reaches it without a signed-in owner" true.
  *
- * ⚠️ NOTHING IS ECHOED. A value in the address is refused and called exposed, whatever else the request says. An
+ * ⚠️ NOTHING IS ECHOED. A value in the address, from a signed-in owner with a valid token, is refused and called exposed,
+ * whatever credential or mode it names (from anyone else, the 419 or 403 comes first, and stores nothing either). An
  * undeclared credential or a mode that does not fit is a 404 that names nothing. The store's refusal is shown in its
  * own sentence, which holds no value. The answer is a 303 to the page, so a reload is a GET; nothing is flashed, and
  * no old input is kept.

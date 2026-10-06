@@ -4057,14 +4057,16 @@ because the host's check passes a same-origin POST with none and is skipped unde
 not an owner — nobody signed in included, because the writer trusts its caller then, so the first amendment's "no web
 path reaches it that way" is now asserted rather than stated; answers 404 to an undeclared credential or a mode that
 does not fit, naming neither; trims ASCII whitespace; writes; and answers **303** to the page, flashing nothing. A
-value that arrived in the address is refused and called exposed, whatever else the request says. The store's refusal
+value that arrived in the address, from a signed-in owner with a valid token, is refused and called exposed, whatever
+credential or mode it names. The store's refusal
 is shown in its own words, escaped, and left on screen. "The line the owner pasted into" is named in the modal's
 heading and carried in the POST: the browser test pastes a value whose prefix fits both modes into the live line and
 finds it there. Measured: Laravel asks who is signed in before it compares tokens, so an anonymous POST is sent to the
 login page rather than answered 419 — nothing is written either way.
 
 **Remove and the switch.** Both are confirmed actions carrying no value, each refusing a missing owner itself. Remove
-reads the line first and says "nothing was removed" rather than claim one. The switch is two actions with fixed
+reads the line first and says "nothing was removed" rather than claim one when a removal lands between the page's build
+and the click; a page left open after another tab removed the value no longer offers Remove at all. The switch is two actions with fixed
 targets, so a page left open after another tab switched cannot switch back by accident; going live lists every
 credential with no usable live value. No password re-entry yet: still owed by payments, and
 `it('goes live on a confirmation alone …')` is the test that slice flips.
