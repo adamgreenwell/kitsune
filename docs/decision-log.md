@@ -3891,15 +3891,15 @@ row, its ciphertext and key id null, so its record always names a target; nothin
 delete. Nothing derived from a value is stored — no hash, length, prefix or last four. `architecture.md` publishes
 both, and says why `orgs` carries no mode.
 
-**Encryption.** `CredentialCipher` — the only code in core that encrypts or decrypts, asserted — seals with
-AES-256-GCM under `hash_hkdf('sha256', APP_KEY, 32, 'kitsune/credentials/v1')`. Measured: that key cannot open an
-`APP_KEY` payload, nor `APP_KEY` one of its own, so no cookie, session or package `Crypt::decrypt()` path opens a
-credential. `APP_PREVIOUS_KEYS` are derived the same way and still open what they sealed. What is sealed is an envelope
-naming the org, the credential and the mode beside the value, and a ciphertext moved below Eloquent into another row is
-refused as *misfiled* rather than read. Each row carries a 64-bit tag of the key that sealed it, so the admin and the
-console tell the current key, a previous one and a lost one apart without decrypting. Measured on the host this slice
-was built on: a 32-character value seals to 264 characters, a 255-character one to 664 and the longest a credential
-may declare, 1,024, to 2,032 — so the column is `text`.
+**Encryption.** `CredentialCipher` — the only code in core that encrypts or decrypts, asserted — seals with AES-256-GCM
+under `hash_hkdf('sha256', APP_KEY, 32, 'kitsune/credentials/v1')`. Measured, under the same cipher: that key cannot
+open an `APP_KEY` payload, nor `APP_KEY` one of its own, so no cookie, session or package `Crypt::decrypt()` path opens
+a credential. `APP_PREVIOUS_KEYS` are derived the same way and still open what they sealed. What is sealed is an
+envelope naming the org, the credential and the mode beside the value, and a ciphertext moved below Eloquent into
+another row is refused as *misfiled* rather than read. Each row carries a 64-bit tag of the key that sealed it, so the
+admin and the console tell the current key, a previous one and a lost one apart without decrypting. Measured on the host
+this slice was built on: a 32-character value seals to 264 characters, a 255-character one to 664 and the longest a
+credential may declare, 1,024, to 2,032 — so the column is `text`.
 
 **One door in.** `CredentialWriter` writes for the org in context — it takes no org — and only an owner of that org
 (ADR-033), re-checked there whatever page called it; with nobody signed in it trusts its caller, as
@@ -3907,11 +3907,16 @@ may declare, 1,024, to 2,032 — so the column is `text`.
 runs before the first query and the value is sealed before the transaction opens, so no binding, query log or database
 error holds it in plaintext. It takes the org's row as a mutex, re-reads the credential under it, saves, and records
 `credential.set`, `credential.replaced`, `credential.removed`, `credential.mode_live` or `credential.mode_test` inside
-the same transaction — the action and the row, never the value or the credential's name. A replace always records,
-even of the same value: telling would mean reading it. `GuardedCredentialBuilder` refuses every write to either table
-that is not the writer's, **inside `withoutScopeBecause()` too** — where `ScopedBuilder::upsert()` writes, which
-`role_permissions` measured — and refuses `upsert()`, `delete()` and `forceDelete()` even then. The window is a private
-static armed around one save and cleared in a `finally`; nothing outside the writer can open it.
+the same transaction — the action and the row, never the value or the credential's name. **That row lock and no other**:
+a `FOR UPDATE` on a credential not yet stored is a gap lock on MySQL and MariaDB at REPEATABLE READ, and review measured
+two orgs' first credentials deadlocking on MariaDB. **And through `TransactionRecovery`** (ADR-042 decision 5): inside a
+caller's transaction Laravel turns a lock-wait timeout into a `DeadlockException` with no `ROLLBACK TO`, which review
+found leaving a credential saved and unrecorded in the caller's transaction; the call's own savepoint is rolled back
+now, so "nothing was written" is true. A replace always records, even of the same value: telling would mean reading it.
+`GuardedCredentialBuilder` refuses every write to either table that is not the writer's, **inside
+`withoutScopeBecause()` too** — where `ScopedBuilder::upsert()` writes, which `role_permissions` measured — and refuses
+`upsert()`, `delete()` and `forceDelete()` even then. The window is a private static armed around one save and cleared
+in a `finally`; nothing outside the writer can open it.
 
 **One door out.** `CredentialReader::secret()` — the only caller of the cipher's `open()`, and nothing under
 `Filament/` or `Http/` may reach either (asserted) — returns the value for the org's **current** mode and has no
@@ -3944,9 +3949,10 @@ generated REST API never exposes them.
 redeploy. Reads keep working; new writes use the new key; `kitsune:credentials status` counts what is still under the
 previous key; owners replace those credentials, which re-encrypts them; drop the previous key when that count reads 0,
 remembering that sessions and cookies use it too. A lost or wrong key leaves every credential *unreadable*, without a
-decryption attempt; a read refuses in those words, never with a raw `DecryptException`, and every consumer fails
-closed. The recovery is re-entry from each provider's dashboard — which is why only operator-entered, re-enterable
-secrets belong here, and why ADR-036's generated `K_subject` does not.
+decryption attempt; a read refuses in those words, never with a raw `DecryptException`, and every consumer fails closed.
+A value damaged under the current key reads as set — its key id is current — until a read refuses it as unreadable, in
+words that name both causes. The recovery is re-entry from each provider's dashboard — which is why only
+operator-entered, re-enterable secrets belong here, and why ADR-036's generated `K_subject` does not.
 
 **The console.** `kitsune:credentials status [--strict]` prints four counts — stored, under the current key, under a
 previous one, under none this installation has — and names no org, credential or value, because its output lands in
@@ -3967,8 +3973,55 @@ fill: in `Kitsune\Core\Credentials\`, `CredentialSlot`, `CredentialSlots`, `Cred
 refusal of a webhook whose `livemode` disagrees with the org's mode; a console command that sets a credential, one that
 re-encrypts after a rotation, and wiring `status --strict` into the release (answer 3).
 
-**Enforced by**, for "a test-mode key refused against a live-mode org" — the other lines of *When it lands* above are
-still owed: ⟨MUTATIONS⟩
+**Enforced by**, for "a test-mode key refused against a live-mode org" and for the store beneath "a secret that cannot
+be read back through any admin path", whose admin half is the second pull request's browser test — the other lines of
+*When it lands* above are commerce's, and still owed. Each rule has a test that fails when it is removed: 63 mutations
+of the store, 62 caught. The survivor is equivalent: the record written with `record()` rather than `recordOrFail()`,
+which differ only with no org in context, and the writer refuses that first. The first run's other two survivors are
+killed now: the envelope's credential name unchecked, by a moved ciphertext that differs from its row in the name
+alone; and the org's row left unlocked, by `CredentialRaceTest` on PostgreSQL, MySQL and MariaDB — whose rival now
+takes a shared lock, because the foreign key's own lock waited on an exclusive one and, measured on PostgreSQL, the
+test passed with the org lock removed — and by a check of the writer's source on every engine. Review added eleven,
+each killed by a test of its own: the row lock put back; the transaction without `TransactionRecovery`; the previous
+keys mapped, a trace holding them; a key id of digits alone left an integer; the old *unreadable* message; `mode`
+nullable; a removal and a switch each recorded after the commit; `save()` reached from a fourth place; a second cipher;
+and the org's lock taken shared. No browser mutation: this half adds no route, page or URL.
+- `CredentialEncryptionTest`: no eight characters of a value in the column; the app key itself refused under the same
+  cipher; the envelope opened under the derived key; a fresh ciphertext each time; the key's tag depending on the key
+  alone;
+- `CredentialIsolationTest`: another org's value neither read, listed nor changed; no org context seeing, writing and
+  reading nothing; a row filed under another org refused, the scope set aside or not; a ciphertext moved to another
+  org, another credential or the other mode refused as misfiled; one value for every site of the org;
+- `CredentialModeTest`: a new org in test mode, switched once each way and recorded; `mode` NOT NULL at the database;
+  a test-mode key against a live-mode org refused at write, at read and moved below the model; the reverse, in its own
+  words; a value with neither mode's prefix refused as the wrong shape; a mode-neutral value taken for its line; each
+  mode served only its own; live with values missing failing closed; a stored value its declaration no longer takes
+  refused on read; no way to ask for the other mode's value;
+- `CredentialWriterTest`: a value read back exactly; one record per set, replace, removal and set again; the tombstone;
+  nothing removed, nothing recorded; no record holding the value, its ends, the credential's name or its ciphertext;
+  each refusal writing and recording nothing; a member who is not an owner refused; the system writing unattributed;
+  a cancelled save; an enclosing rollback; a replace of the same value recorded;
+- `CredentialWriteDoorsTest`: every write to either table refused, outside the escape hatch and inside it; the
+  builder's write methods enumerated against the parent's; the window armed in one private method reached from `set()`,
+  `remove()` and `switchTo()` alone and closed in a `finally`; the org's row the only one locked; no listener of core's;
+- `CredentialLeakTest`: no ciphertext through `toArray()`, JSON or a string; no value in a refusal's message or trace,
+  arguments on; every parameter that carries plaintext or a key sensitive; a database error, a nested deadlock and a
+  nested lock-wait timeout each a refusal chaining nothing, the last leaving nothing written; a malformed previous key
+  leaving the others out of the trace; no value in a binding; a `Secret` no dumper, cast or serialiser shows;
+- `CredentialKeyTest`: a previous key's value read and reported; a replace re-encrypting; a lost key's values
+  unreadable, and a damaged one under the current key refused in the same words; no app key, nothing stored; set,
+  removed and never set told apart without decrypting;
+- `CredentialSlotsTest`: each dishonest declaration refused in its own words; a shared prefix deciding nothing; a second
+  declaration of one name refused; a value in the name's place not repeated;
+- `CredentialStatusCommandTest`: counts by key across orgs, naming nothing; a key id of digits alone counted under its
+  key; no table read as none; any other action refused without repeating it;
+- `CredentialSurfaceTest`: every symbol `@internal`; one file that encrypts or decrypts, one caller of `open()`, and
+  nothing in the admin or HTTP near either; nothing logged or reported;
+- `CredentialRaceTest`, on PostgreSQL, MySQL and MariaDB: a write waiting on a rival holding the org, refused with
+  nothing written when the wait runs out, and going through once it lets go;
+- `CredentialWriteLevelZeroTest`, at transaction level 0 on a file another process reads: a replace, a removal and a
+  switch whose record cannot be written each leaving the committed state as it was; a rival holding the database
+  refused, writing nothing, in both journal modes.
 
 ---
 

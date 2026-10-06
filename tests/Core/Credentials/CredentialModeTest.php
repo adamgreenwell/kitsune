@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -68,6 +69,19 @@ it('puts a new org in test mode, and switches it once each way, recording each s
         ->and(AuditLog::query()->where('action', 'like', 'credential.%')->orderBy('id')->pluck('action')->all())
         ->toBe([CredentialWriter::MODE_LIVE, CredentialWriter::MODE_TEST])
         ->and(DB::table('org_credential_modes')->count())->toBe(1);
+});
+
+it('keeps a mode on every stored value at the database, where a credential kept once files under none', function (): void {
+    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+
+    // ⚠️ NOT NULL, because the unique index counts NULLs as distinct: two "unmoded" rows for one slot could sit side by
+    // side, and which one a read found would be the engine's choice. In a savepoint, so PostgreSQL's transaction lives.
+    $row = (array) DB::table('credentials')->first();
+    unset($row['id']);
+
+    expect(DB::table('credentials')->value('mode'))->toBe('none')
+        ->and(fn () => DB::transaction(fn () => DB::table('credentials')->insert([...$row, 'mode' => null])))->toThrow(QueryException::class)
+        ->and(DB::table('credentials')->count())->toBe(1);
 });
 
 /** ⚠️ ADR-040's own sentence, three ways. */

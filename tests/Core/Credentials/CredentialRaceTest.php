@@ -26,6 +26,12 @@ use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
  * timeout, be refused with nothing written. A writer that took no lock would sail past and write: that is the mutation
  * this pins. The org is committed by the rival, because this connection's own rows sit in `RefreshDatabase`'s
  * transaction where no other connection can see, or lock, them.
+ *
+ * ⚠️ THE RIVAL'S LOCK IS SHARED, and that is the point (review). Inserting a row that refers to the org takes a shared
+ * lock on it for the foreign key — InnoDB's S, PostgreSQL's FOR KEY SHARE — and that waits on a rival's exclusive
+ * lock too, so a rival holding FOR UPDATE stalled a writer that took no lock of its own, and the test passed with the
+ * org lock removed — measured on PostgreSQL. A shared lock lets the foreign key's check through, so only the writer's
+ * own FOR UPDATE waits.
  */
 
 beforeEach(function (): void {
@@ -74,7 +80,7 @@ function credentialRival(): Connection
 it('waits on a rival holding the org, and is refused with nothing written when the wait runs out', function (): void {
     $rival = credentialRival();
     $rival->beginTransaction();
-    $rival->table('orgs')->where('id', $this->orgId)->lockForUpdate()->value('id');
+    $rival->table('orgs')->where('id', $this->orgId)->sharedLock()->value('id');
 
     match (DB::connection()->getDriverName()) {
         'pgsql' => DB::statement("set lock_timeout = '500ms'"),

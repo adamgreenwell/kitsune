@@ -114,7 +114,13 @@ final class CredentialCipher
     /** @return list<string> the ids of the keys derived from `APP_PREVIOUS_KEYS`, which still open what they sealed */
     public function previousKeyIds(): array
     {
-        return array_map(self::keyIdOf(...), $this->previousKeys());
+        $ids = [];
+
+        foreach ($this->previousKeys() as $key) {
+            $ids[] = self::keyIdOf($key);
+        }
+
+        return $ids;
     }
 
     /** Built for each use, from the configuration as it is now: it costs microseconds, and a memo could go stale. */
@@ -132,15 +138,25 @@ final class CredentialCipher
         return is_string($configured) && $configured !== '' ? self::derive($configured) : null;
     }
 
-    /** @return list<string> */
+    /**
+     * ⚠️ IN A PLAIN LOOP, NOT `array_map()` — review found the internal function's frame holding every previous key
+     * verbatim in a trace when `derive()` refused one malformed entry. This method takes no arguments, and a loop's
+     * locals never appear in a trace.
+     *
+     * @return list<string>
+     */
     private function previousKeys(): array
     {
         $configured = config('app.previous_keys', []);
+        $derived = [];
 
-        return array_values(array_map(
-            self::derive(...),
-            array_filter(is_array($configured) ? $configured : [], static fn (mixed $key): bool => is_string($key) && $key !== ''),
-        ));
+        foreach (is_array($configured) ? $configured : [] as $key) {
+            if (is_string($key) && $key !== '') {
+                $derived[] = self::derive($key);
+            }
+        }
+
+        return $derived;
     }
 
     /**

@@ -65,8 +65,28 @@ it('reads as unreadable once its key is gone, refusing in its own words and chai
     } catch (CredentialUnavailable $unavailable) {
         expect($unavailable->reason)->toBe(CredentialUnavailability::Unreadable)
             ->and($unavailable->getPrevious())->toBeNull()
-            ->and($unavailable->getMessage())->toBe("Credential [fx.shared-secret] for organisation acme cannot be decrypted with this installation's APP_KEY or APP_PREVIOUS_KEYS: it was stored under a key this installation no longer has. An owner must set it again.")
+            ->and($unavailable->getMessage())->toBe("Credential [fx.shared-secret] for organisation acme cannot be decrypted with this installation's APP_KEY or APP_PREVIOUS_KEYS: it was stored under a key this installation no longer has, or what is stored there is damaged. An owner must set it again.")
             ->and(str_contains($unavailable->getMessage(), substr($ciphertext, 0, 16)))->toBeFalse();
+    }
+});
+
+it('refuses a value damaged under the current key as unreadable, though its tag still reads as set', function (): void {
+    // One bit of the sealed bytes flipped, below Eloquent: the key id is untouched, so only opening it can tell.
+    $payload = json_decode((string) base64_decode((string) DB::table('credentials')->value('ciphertext'), true), true);
+    $bytes = (string) base64_decode($payload['value'], true);
+    $bytes[0] = chr(ord($bytes[0]) ^ 1);
+    $payload['value'] = base64_encode($bytes);
+    DB::table('credentials')->update(['ciphertext' => base64_encode((string) json_encode($payload))]);
+
+    expect(Fx::states()->of(Fx::SHARED)->status)->toBe(CredentialStatus::Set);
+
+    try {
+        Fx::reader()->secret(Fx::SHARED);
+        $this->fail('a damaged value was read');
+    } catch (CredentialUnavailable $unavailable) {
+        expect($unavailable->reason)->toBe(CredentialUnavailability::Unreadable)
+            ->and($unavailable->getPrevious())->toBeNull()
+            ->and($unavailable->getMessage())->toContain('or what is stored there is damaged');
     }
 });
 

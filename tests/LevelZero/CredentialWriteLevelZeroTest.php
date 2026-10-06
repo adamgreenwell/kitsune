@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialRefusal;
 use Kitsune\Core\Credentials\CredentialRefused;
 use Kitsune\Core\Credentials\CredentialSlot;
@@ -72,6 +73,42 @@ it('keeps the old value when the record of a replace cannot be written, and chai
 
     expect(credentialZeroSeen($this->custodyFile))->toBe($before)
         ->and($before['audit'])->toBe(1)
+        ->and(DB::connection()->transactionLevel())->toBe(0);
+});
+
+it('keeps the value when the record of its removal cannot be written', function (): void {
+    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    $before = credentialZeroSeen($this->custodyFile);
+    DB::table('sites')->where('id', $this->site->getKey())->delete();
+
+    try {
+        Fx::writer()->remove(Fx::SHARED, null);
+        $this->fail('a removal that could not be recorded was kept');
+    } catch (CredentialRefused $refused) {
+        expect($refused->reason)->toBe(CredentialRefusal::Database)
+            ->and($refused->getPrevious())->toBeNull();
+    }
+
+    expect(credentialZeroSeen($this->custodyFile))->toBe($before)
+        ->and($before['ciphertext'])->not->toBeNull()
+        ->and(DB::connection()->transactionLevel())->toBe(0);
+});
+
+it('stays in test mode when the record of a switch cannot be written', function (): void {
+    DB::table('sites')->where('id', $this->site->getKey())->delete();
+
+    try {
+        Fx::writer()->switchTo(CredentialMode::Live);
+        $this->fail('a switch that could not be recorded was kept');
+    } catch (CredentialRefused $refused) {
+        expect($refused->reason)->toBe(CredentialRefusal::Database)
+            ->and($refused->getPrevious())->toBeNull();
+    }
+
+    $pdo = new PDO('sqlite:'.$this->custodyFile);
+
+    expect($pdo->query('select count(*) from org_credential_modes')->fetchColumn())->toBe(0)
+        ->and(credentialZeroSeen($this->custodyFile)['audit'])->toBe(0)
         ->and(DB::connection()->transactionLevel())->toBe(0);
 });
 

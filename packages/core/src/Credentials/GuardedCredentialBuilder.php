@@ -19,7 +19,7 @@ use RuntimeException;
  * `credentials` and `org_credential_modes` have one door in: `CredentialWriter` — ADR-040.
  *
  * ⚠️ THE WINDOW IS THE DISCRIMINATOR, as on `role_permissions` (`GuardedGrantBuilder`): a private static the writer arms
- * inline around each save and clears in a `finally`, with a reader exposed and no opener. Every write that is not the
+ * around each save and clears in a `finally`, with a reader exposed and no opener. Every write that is not the
  * writer's is refused — the scoped reads stay as they are.
  *
  * ⚠️ AND NOT STOOD DOWN BY THE ESCAPE HATCH. `withoutScopeBecause()` suspends `ScopeWrites`, and inside it

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
@@ -67,6 +68,21 @@ it('counts what is stored by key, across orgs, naming nothing', function (): voi
     Fx::forget();
 
     expect(Artisan::call('kitsune:credentials', ['action' => 'status', '--strict' => true]))->toBe(0);
+});
+
+it('counts a key whose id is digits alone under that key', function (): void {
+    // ⚠️ A KEY SEARCHED FOR ITS ID, 5040178341571476 — digits alone, which PHP turns into an integer array key, and the
+    // count's strict comparison then filed every value under no key (review). A test key, guarding nothing.
+    config(['app.key' => 'base64:Fsgp4tvDjruhwSQecdrJyM3y5wQZ+O/fGhTPOkTb8Yk=']);
+    Fx::forget();
+    Fx::org('alpha');
+    Fx::member();
+    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    app(Context::class)->forget();
+
+    expect(app(CredentialCipher::class)->currentKeyId())->toBe('5040178341571476')
+        ->and(Artisan::call('kitsune:credentials', ['action' => 'status', '--strict' => true]))->toBe(0)
+        ->and(Artisan::output())->toContain('  1 under the current app key.');
 });
 
 it('reads an installation with no credentials table as holding none', function (): void {

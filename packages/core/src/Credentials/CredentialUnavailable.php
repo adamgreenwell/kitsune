@@ -50,7 +50,7 @@ final class CredentialUnavailable extends RuntimeException
             CredentialUnavailability::NotSet => $mode !== null
                 ? "Credential [{$slot}] is not set for organisation {$org} in {$mode->value} mode."
                 : "Credential [{$slot}] is not set for organisation {$org}.",
-            CredentialUnavailability::Unreadable => "Credential [{$slot}] for organisation {$org}{$in} cannot be decrypted with this installation's APP_KEY or APP_PREVIOUS_KEYS: it was stored under a key this installation no longer has. An owner must set it again.",
+            CredentialUnavailability::Unreadable => "Credential [{$slot}] for organisation {$org}{$in} cannot be decrypted with this installation's APP_KEY or APP_PREVIOUS_KEYS: it was stored under a key this installation no longer has, or what is stored there is damaged. An owner must set it again.",
             CredentialUnavailability::Misfiled => "Credential [{$slot}] for organisation {$org}{$in} is refused: what is stored there was sealed for another organisation, credential or mode. An owner must set it again.",
             CredentialUnavailability::WrongMode => "Credential [{$slot}] for organisation {$org} is refused: the organisation is in {$mode?->value} mode and the stored value is a {$mode?->other()->value}-mode key (it begins {$detail['prefix']}) (ADR-040). An owner must set it again.",
             CredentialUnavailability::WrongShape => "Credential [{$slot}] for organisation {$org}{$in} is refused: what is stored no longer fits what the module declares for it. An owner must set it again.",

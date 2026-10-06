@@ -16,6 +16,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\OrgCredentialMode;
@@ -52,8 +53,9 @@ final class CredentialWriter
     public const MODE_TEST = 'credential.mode_test';
 
     /**
-     * The window `GuardedCredentialBuilder` reads. Armed only inline in `set()`, `remove()` and `switchTo()`, around one
-     * save each, and cleared in a `finally` — there is no opener, so nothing outside this class can hold it open.
+     * The window `GuardedCredentialBuilder` reads. Armed only in the private `save()`, around one save, and cleared in a
+     * `finally`; `save()` is called from `set()`, `remove()` and `switchTo()` alone (asserted) — there is no opener, so
+     * nothing outside this class can hold it open.
      */
     private static bool $writing = false;
 
@@ -150,7 +152,7 @@ final class CredentialWriter
         return $this->transaction(CredentialRefused::SWITCH, null, null, null, function () use ($mode): bool {
             $this->lockOrg();
 
-            $row = OrgCredentialMode::query()->lockForUpdate()->first() ?? new OrgCredentialMode;
+            $row = OrgCredentialMode::query()->first() ?? new OrgCredentialMode;
 
             if (($row->exists ? $row->mode : CredentialMode::Test->value) === $mode->value) {
                 return false;
@@ -198,7 +200,14 @@ final class CredentialWriter
         return $declared;
     }
 
-    /** The org's row, locked: one org's credential writes and mode switches take it in turn, as `Role` does. */
+    /**
+     * The org's row, locked: one org's credential writes and mode switches take it in turn, as `Role` does.
+     *
+     * ⚠️ AND THAT LOCK ALONE — the rows read after it are read plainly. A `FOR UPDATE` on a credential that does not
+     * exist yet takes a gap lock on MySQL and MariaDB at REPEATABLE READ, and two orgs' first credentials then
+     * deadlock on each other's gap: measured on MariaDB, a valid first save refused as a database error (review). The
+     * org's lock already serialises every write this class makes for that org, so a row lock would guard nothing more.
+     */
     private function lockOrg(): void
     {
         Org::query()->withoutGlobalScopes()->whereKey($this->context->orgId())->lockForUpdate()->value('id');
@@ -208,7 +217,7 @@ final class CredentialWriter
     {
         $this->lockOrg();
 
-        return Credential::query()->where('slot', $slot)->where('mode', $mode)->lockForUpdate()->first() ?? new Credential;
+        return Credential::query()->where('slot', $slot)->where('mode', $mode)->first() ?? new Credential;
     }
 
     /** @param  CredentialRefused::*  $act */
@@ -231,6 +240,11 @@ final class CredentialWriter
      * The write in a transaction on the models' connection, its database failures turned into refusals that chain
      * nothing: a database exception's message interpolates its bindings.
      *
+     * ⚠️ THROUGH `TransactionRecovery`, which review found missing: inside a caller's transaction a lock-wait timeout on
+     * MySQL or MariaDB becomes a `DeadlockException` with no `ROLLBACK TO`, so the credential saved before the audit
+     * insert timed out stayed in the caller's transaction — committed, unrecorded, if the caller caught the refusal.
+     * The helper rolls the call's own savepoint back, so "nothing was written" is true.
+     *
      * @template T
      *
      * @param  CredentialRefused::*  $act
@@ -240,7 +254,7 @@ final class CredentialWriter
     private function transaction(string $act, ?string $slot, ?CredentialSlot $declared, ?CredentialMode $mode, Closure $write): mixed
     {
         try {
-            return (new Credential)->getConnection()->transaction($write);
+            return TransactionRecovery::run((new Credential)->getConnection(), static fn (): mixed => $write());
         } catch (UniqueConstraintViolationException) {
             throw CredentialRefused::because(CredentialRefusal::Race, $act, $slot, $declared, $mode);
         } catch (DeadlockException) {

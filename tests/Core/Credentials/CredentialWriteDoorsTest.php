@@ -167,30 +167,53 @@ it('knows about every write method the builder actually has', function (): void 
     expect($unknown)->toBe([], 'the builder has write methods this file does not cover: '.implode(', ', $unknown));
 });
 
-it('arms the window in one private place, which only the writer\'s three acts reach, and closes it in a finally', function (): void {
-    $source = (string) file_get_contents((string) (new ReflectionClass(CredentialWriter::class))->getFileName());
-    $lines = explode("\n", $source);
-    $openers = [];
+/**
+ * The named method each line holding the needle sits in, a closure's line counted to the method that defines it.
+ *
+ * @return list<string>
+ */
+function credentialWriterMethodsHolding(string $needle): array
+{
+    $lines = explode("\n", (string) file_get_contents((string) (new ReflectionClass(CredentialWriter::class))->getFileName()));
+    $methods = [];
 
     foreach ($lines as $number => $line) {
-        if (! str_contains($line, 'self::$writing = true')) {
+        if (! str_contains($line, $needle)) {
             continue;
         }
 
         for ($back = $number; $back >= 0; $back--) {
             if (preg_match('/function (\w+)\(/', $lines[$back], $match) === 1) {
-                $openers[] = $match[1];
+                $methods[] = $match[1];
 
                 break;
             }
         }
     }
 
-    expect($openers)->toBe(['save'])
+    return $methods;
+}
+
+it('arms the window in one private place, which only the writer\'s three acts reach, and closes it in a finally', function (): void {
+    $source = (string) file_get_contents((string) (new ReflectionClass(CredentialWriter::class))->getFileName());
+
+    // ⚠️ EVERY CALL TO `save()` RESOLVED TO ITS METHOD (review): counting `$this->save($row` missed a fourth caller
+    // that passed anything else.
+    expect(credentialWriterMethodsHolding('self::$writing = true'))->toBe(['save'])
         ->and((new ReflectionMethod(CredentialWriter::class, 'save'))->isPrivate())->toBeTrue()
         ->and(preg_match('/self::\$writing = true;\s*try \{\s*\$saved = \$row->save\(\);\s*\} finally \{\s*self::\$writing = false;\s*\}/', $source))->toBe(1)
-        ->and(substr_count($source, '$this->save($row'))->toBe(3)
+        ->and(credentialWriterMethodsHolding('$this->save('))->toBe(['set', 'remove', 'switchTo'])
+        // And no other way in: those three calls, the one model save inside, and no callable naming it.
+        ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(4)
         ->and((new ReflectionProperty(CredentialWriter::class, 'writing'))->isPrivate())->toBeTrue();
+});
+
+it('locks the org\'s row and no other', function (): void {
+    // ⚠️ A ROW LOCK ON A CREDENTIAL NOT YET STORED IS A GAP LOCK on MySQL and MariaDB, and two orgs' first credentials
+    // deadlocked on each other's gap (review). No engine here shows that, so the source is asked.
+    expect(credentialWriterMethodsHolding('lockForUpdate('))->toBe(['lockOrg'])
+        ->and(credentialWriterMethodsHolding('sharedLock('))->toBe([])
+        ->and(credentialWriterMethodsHolding('$this->lockOrg()'))->toBe(['switchTo', 'lockedRow']);
 });
 
 it('leaves the window closed after a write that failed', function (): void {

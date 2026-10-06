@@ -72,13 +72,23 @@ function credentialTraceStrings(array $trace): array
  * The frames of core's own code. The test's closures take the value as an argument too, and say nothing about whether
  * the store keeps it out of a trace.
  *
+ * ⚠️ AND THE CLASSLESS FRAMES CORE'S FILES CALL — an internal function such as `array_map()` — which review found
+ * holding every previous app key when one of them was refused: they carry no class to filter on, only a file.
+ *
  * @param  array<int, array<string, mixed>>  $trace
  * @return list<array<string, mixed>>
  */
 function credentialProductionFrames(array $trace): array
 {
-    return array_values(array_filter($trace, static fn (array $frame): bool => str_starts_with((string) ($frame['class'] ?? ''), 'Kitsune\\Core\\')
-        && ! str_starts_with((string) ($frame['class'] ?? ''), 'Kitsune\\Core\\Tests\\')));
+    return array_values(array_filter($trace, static function (array $frame): bool {
+        $class = (string) ($frame['class'] ?? '');
+
+        if ($class === '') {
+            return preg_match('#/(packages|kitsune)/core/src/#', (string) ($frame['file'] ?? '')) === 1;
+        }
+
+        return str_starts_with($class, 'Kitsune\\Core\\') && ! str_starts_with($class, 'Kitsune\\Core\\Tests\\');
+    }));
 }
 
 /** The same, from the trace as a string: the lines that call into core's own code. */
@@ -199,7 +209,8 @@ it('turns a deadlock inside a caller\'s transaction into a refusal that chains n
     expect(DB::transactionLevel())->toBeGreaterThan(0);
 
     DB::listen(static function (QueryExecuted $query): void {
-        if (str_starts_with(strtolower($query->sql), 'insert into "credentials"')) {
+        // Quoted as each grammar quotes it: MySQL and MariaDB with backticks (review).
+        if (preg_match('/^insert into [`"]?credentials[`"]?/i', $query->sql) === 1) {
             throw new QueryException($query->connectionName, $query->sql, $query->bindings, new PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found when trying to get lock'));
         }
     });
@@ -210,6 +221,59 @@ it('turns a deadlock inside a caller\'s transaction into a refusal that chains n
     } catch (CredentialRefused $refused) {
         expect($refused->reason)->toBe(CredentialRefusal::Race)
             ->and($refused->getPrevious())->toBeNull();
+    }
+});
+
+it('rolls its own writes back when the record of them times out inside a caller\'s transaction', function (): void {
+    // The case `TransactionRecovery` is for: nested, Laravel turns a lock-wait timeout into a `DeadlockException`
+    // without `ROLLBACK TO`, and the credential saved a moment before would stay in the caller's transaction —
+    // committed, and never recorded, if the caller went on.
+    expect(DB::transactionLevel())->toBeGreaterThan(0);
+
+    DB::listen(static function (QueryExecuted $query): void {
+        if (preg_match('/^insert into [`"]?audit_log[`"]?/i', $query->sql) === 1) {
+            throw new QueryException($query->connectionName, $query->sql, $query->bindings, new PDOException('SQLSTATE[HY000]: General error: 1205 Lock wait timeout exceeded; try restarting transaction'));
+        }
+    });
+
+    try {
+        Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+        $this->fail('the timeout was not refused');
+    } catch (CredentialRefused $refused) {
+        expect($refused->reason)->toBe(CredentialRefusal::Race)
+            ->and($refused->getPrevious())->toBeNull();
+    }
+
+    expect(DB::table('credentials')->count())->toBe(0)
+        ->and(DB::table('audit_log')->where('action', 'like', 'credential.%')->count())->toBe(0);
+});
+
+it('keeps every previous app key out of a trace when one of them is malformed', function (): void {
+    $kept = Fx::appKey();
+    config(['app.previous_keys' => [$kept, 'base64:']]);
+    Fx::forget();
+
+    $before = ini_get('zend.exception_ignore_args');
+    ini_set('zend.exception_ignore_args', '0');
+
+    try {
+        Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+        $this->fail('a previous key that decodes to nothing was taken');
+    } catch (LogicException $refused) {
+        expect($refused->getMessage())->toBe('An application key that decodes to nothing cannot derive a credentials key.')
+            ->and(credentialTraceHasArguments($refused))->toBeTrue();
+
+        $strings = implode("\n", credentialTraceStrings($refused->getTrace()));
+        $printed = $refused->getTraceAsString();
+
+        foreach ([$kept, substr($kept, 7, 12), (string) base64_decode(substr($kept, 7), true)] as $piece) {
+            expect(str_contains($strings, $piece))->toBeFalse('a frame holds the previous key');
+        }
+
+        // A printed trace cuts each string to its first fifteen bytes: "base64:" and eight of the key.
+        expect(str_contains($printed, substr($kept, 0, 15)))->toBeFalse('the printed trace holds the previous key');
+    } finally {
+        ini_set('zend.exception_ignore_args', (string) $before);
     }
 });
 

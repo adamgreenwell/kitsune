@@ -48,12 +48,15 @@ it('marks every symbol it adds @internal', function (): void {
     expect($public)->toBe([], 'these are not marked @internal: '.implode(', ', $public));
 });
 
-it('decrypts in one file, opens through one caller, and lets nothing in the admin or HTTP near either', function (): void {
+it('encrypts and decrypts in one file, opens through one caller, and lets nothing in the admin or HTTP near either', function (): void {
     $everything = credentialSourceFiles('');
     $read = static fn (string $file): string => (string) file_get_contents($file);
     $relative = static fn (string $file): string => substr($file, strlen(dirname(__DIR__, 3).'/packages/core/src/'));
 
-    $decrypting = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'decryptString'))));
+    // ⚠️ EVERY SPELLING OF A CIPHER, not `decryptString` alone (review): `decrypt()`, the facade, an `Encrypter` built
+    // anywhere else, and the extensions beneath them — a second door to a value, or a second key, would be any of them.
+    $crypto = '/crypt\(|cryptString\(|Crypt::|Encrypter|openssl_|sodium_|hash_hkdf/';
+    $decrypting = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => preg_match($crypto, $read($f)) === 1)));
     $opening = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'cipher->open('))));
 
     expect($decrypting)->toBe(['Credentials/CredentialCipher.php'])

@@ -44,8 +44,15 @@ it('stores no piece of the value in the column', function (): void {
 
 it('cannot be opened with the application key itself, which is a different key', function (): void {
     Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    $stored = (string) DB::table('credentials')->value('ciphertext');
 
-    expect(fn () => Crypt::decryptString((string) DB::table('credentials')->value('ciphertext')))->toThrow(DecryptException::class);
+    // ⚠️ UNDER THE SAME CIPHER, so it is the key that fails (review): `Crypt` is AES-256-CBC, and refused a GCM payload
+    // whatever key had sealed it.
+    $raw = (string) config('app.key');
+    $appKey = new Encrypter((string) base64_decode(substr($raw, 7), true), 'aes-256-gcm');
+
+    expect(fn () => $appKey->decryptString($stored))->toThrow(DecryptException::class, 'Could not decrypt the data.')
+        ->and(fn () => Crypt::decryptString($stored))->toThrow(DecryptException::class);
 });
 
 it('opens to the envelope naming its org, credential and mode under the derived key', function (): void {

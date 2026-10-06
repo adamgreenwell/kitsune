@@ -51,6 +51,9 @@ final class CredentialsCommand extends Command
         $underCurrent = $underPrevious = $underNone = 0;
 
         foreach ($byKey as $keyId => $count) {
+            // ⚠️ A key id of decimal digits alone became an integer array key, and then matched nothing (review).
+            $keyId = (string) $keyId;
+
             match (true) {
                 $current !== null && $keyId === $current => $underCurrent += $count,
                 in_array($keyId, $previous, true) => $underPrevious += $count,
