@@ -100,6 +100,7 @@ it('refuses a ciphertext moved to another org, another credential or the other m
     app(Context::class)->setOrg($this->b);
     Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
+    Fx::writer()->set(Fx::HOOK, CredentialMode::Test, Fx::value('fxhook_', 40));
 
     // Below Eloquent, where nothing but the envelope stands.
     $rows = [
@@ -108,6 +109,7 @@ it('refuses a ciphertext moved to another org, another credential or the other m
         'alpha live' => ['org_id' => $this->a->getKey(), 'slot' => Fx::PAYMENT, 'mode' => 'live'],
         'beta shared' => ['org_id' => $this->b->getKey(), 'slot' => Fx::SHARED, 'mode' => 'none'],
         'beta test' => ['org_id' => $this->b->getKey(), 'slot' => Fx::PAYMENT, 'mode' => 'test'],
+        'beta hook test' => ['org_id' => $this->b->getKey(), 'slot' => Fx::HOOK, 'mode' => 'test'],
     ];
     $sealed = DB::table('credentials')->where($rows[$from])->first(['ciphertext', 'key_id']);
     DB::table('credentials')->where($rows[$to])->update(['ciphertext' => $sealed->ciphertext, 'key_id' => $sealed->key_id]);
@@ -122,7 +124,9 @@ it('refuses a ciphertext moved to another org, another credential or the other m
     expect(credentialUnavailability(fn () => Fx::reader()->secret($rows[$to]['slot'])))->toBe(CredentialUnavailability::Misfiled);
 })->with([
     'another org' => ['alpha shared', 'beta shared'],
-    'another credential' => ['beta test', 'beta shared'],
+    // ⚠️ The same org and the same mode, so the credential's name is the only thing that differs — review of the
+    // mutations found the first version crossing modes too, where the mode check refused it first.
+    'another credential' => ['beta test', 'beta hook test'],
     'the other mode' => ['alpha test', 'alpha live'],
 ]);
 
