@@ -1905,6 +1905,11 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 ⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
 
+⚠️ **Amended 2026-10-06 (ADR-040's admin):** owner-only in v1.0 now also covers setting, replacing and removing an
+org's credentials and switching it between test and live mode. Still no subject: `credential.manage` would be refused
+by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
+#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
+
 ### A policy is not a query scope
 
 `EntryPolicy` answers about a record somebody already holds. Eloquent never consults a policy while **building** a query, so every place that LISTS entries has to apply the grant itself — review found three: the relation picker's search and label resolvers, the related-records table, and the attach dialog, each of which named titles of a type the same user is refused at the URL.
@@ -3696,7 +3701,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, no admin page yet; see the end of this entry
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -3974,7 +3979,8 @@ refusal of a webhook whose `livemode` disagrees with the org's mode; a console c
 re-encrypts after a rotation, and wiring `status --strict` into the release (answer 3).
 
 **Enforced by**, for "a test-mode key refused against a live-mode org" and for the store beneath "a secret that cannot
-be read back through any admin path", whose admin half is the second pull request's browser test — the other lines of
+be read back through any admin path", whose admin half is the second pull request's browser test *— `e2e/credentials.spec.js`,
+recorded in the second amendment below* — the other lines of
 *When it lands* above are commerce's, and still owed. Each rule has a test that fails when it is removed: 63 mutations
 of the store, 62 caught. The survivor is equivalent: the record written with `record()` rather than `recordOrFail()`,
 which differ only with no org in context, and the writer refuses that first. The first run's other two survivors are
@@ -3985,7 +3991,8 @@ test passed with the org lock removed — and by a check of the writer's source 
 each killed by a test of its own: the row lock put back; the transaction without `TransactionRecovery`; the previous
 keys mapped, a trace holding them; a key id of digits alone left an integer; the old *unreadable* message; `mode`
 nullable; a removal and a switch each recorded after the commit; `save()` reached from a fourth place; a second cipher;
-and the org's lock taken shared. No browser mutation: this half adds no route, page or URL.
+and the org's lock taken shared. No browser mutation: this half adds no route, page or URL. *(True of that half. The
+second adds a page and a route, and its browser mutations are below.)*
 - `CredentialEncryptionTest`: no eight characters of a value in the column; the app key itself refused under the same
   cipher; the envelope opened under the derived key; a fresh ciphertext each time; the key's tag depending on the key
   alone;
@@ -4022,6 +4029,90 @@ and the org's lock taken shared. No browser mutation: this half adds no route, p
 - `CredentialWriteLevelZeroTest`, at transaction level 0 on a file another process reads: a replace, a removal and a
   switch whose record cannot be written each leaving the committed state as it was; a rival holding the database
   refused, writing nothing, in both journal modes.
+
+⚠️ **Amended 2026-10-06 — the credential store's admin, as built (Phase 5a), its second half.** The decision and the
+first amendment stay as they were. With it, the roadmap box is ticked. Adam answered the four questions it raised
+(2026-10-06): the live switch ships now, with the password check still owed by payments; `composer skeleton:install`
+puts the browser suite's test module in every local skeleton, switched off; the sidebar link waits until a module
+declares a credential; and a switched-off module's stored values are not listed.
+
+**The page.** `/admin/{site}/credentials`, owner-only (ADR-033, amended beside its owner-only paragraph): 403 at the
+URL, the link hidden by the same rule and until a module declares a credential, and 404 across orgs from Filament's own
+tenancy. One section per declared credential, a line per mode, *In use* on the org's mode. Each line says not set,
+set, removed, set under a previous app key, or unreadable — told apart from the key id, without decrypting, so a
+damaged value reads "set" until something opens it, and the intro says "set" is not a verdict. It says when, in the
+site's timezone, and by whom: the latest set, replace or removal in the audit log, named only through the org's own
+members, so a departed member is "someone no longer in this organisation", an actor of another kind is named as one,
+and no class a row names is ever built. Nothing of a value is shown (answer 1). A render costs a fixed count of
+queries: the mode, one per line, two for the audit log and one for its actors. Every change ends on a fresh GET of the
+page — measured in a browser, Filament otherwise re-renders from the content it built before the change.
+
+**One path in, outside Livewire.** Set and Replace open a modal holding a plain HTML form, with `formWrapper(false)` so
+it is not nested in Filament's own, which posts to `POST /admin/{site}/credentials/set` — the second route core
+registers, in `authenticatedTenantRoutes()` beside the media route. Not a Livewire field, because a refused save
+returns a field's value in the response snapshot. The field is named `password`, which Laravel's `$dontFlash` and
+`TrimStrings` skip and many reporters scrub. `CredentialSetController` takes the value out of every bag the request
+parsed it into, PHP's superglobals included, before anything that can throw; compares the body's session token itself,
+because the host's check passes a same-origin POST with none and is skipped under unit tests; refuses anyone who is
+not an owner — nobody signed in included, because the writer trusts its caller then, so the first amendment's "no web
+path reaches it that way" is now asserted rather than stated; answers 404 to an undeclared credential or a mode that
+does not fit, naming neither; trims ASCII whitespace; writes; and answers **303** to the page, flashing nothing. A
+value that arrived in the address is refused and called exposed, whatever else the request says. The store's refusal
+is shown in its own words, escaped, and left on screen. "The line the owner pasted into" is named in the modal's
+heading and carried in the POST: the browser test pastes a value whose prefix fits both modes into the live line and
+finds it there. Measured: Laravel asks who is signed in before it compares tokens, so an anonymous POST is sent to the
+login page rather than answered 419 — nothing is written either way.
+
+**Remove and the switch.** Both are confirmed actions carrying no value, each refusing a missing owner itself. Remove
+reads the line first and says "nothing was removed" rather than claim one. The switch is two actions with fixed
+targets, so a page left open after another tab switched cannot switch back by accident; going live lists every
+credential with no usable live value. No password re-entry yet: still owed by payments, and
+`it('goes live on a confirmation alone …')` is the test that slice flips.
+
+**Undeclared rows.** A switched-off module's stored values are not listed, and cannot be removed from the admin — the
+writer refuses an undeclared name — until the module is enabled again or payments' console tools come (answer 4).
+
+**"Any admin path", residuals, extending the first amendment's paragraph.**
+- R1: a non-HTTP exception before the controller's first statement, with `APP_DEBUG` on, prints the body to the person
+  who typed it; the release refuses debug.
+- R2: a host's error reporter or dev tool that keeps raw request bodies sees the POST. Hosts exclude
+  `…/credentials/set` bodies from such tools; the field's name is one many already scrub.
+- R3: the browser's own password manager and back/forward cache, local to the person who typed the value.
+- R4: CI traces of throwaway values on a retried browser test.
+- One exit closed by a test rather than by code, measured: Laravel ships no 405 view, so a value posted to a GET-only
+  admin URL is printed back by the debug page. The browser test fails if any response carries a piece of a value.
+
+**Not built, and named.** Telling the other owners when a live key is replaced or the org goes live: core has no channel
+to them, the page's "by whom" and the audit log are the record, and the payments slice decides whether re-entry needs a
+notice beside it. A mode "since … by …" line.
+
+**The surface, all `@internal`, appended to the first amendment's list:** `Filament\Pages\Credentials`;
+`Http\Controllers\CredentialSetController`; the page route `{panel}/{site}/credentials` and
+`POST {panel}/{site}/credentials/set`; the translation namespace `kitsune::credentials`. CONTRIBUTING still gains no
+exception, and the store gains nothing. The browser suite's module, `kitsune/e2e-credential-slots`, lives under `e2e/`,
+which no release, package split or floor benchmark copies.
+
+**Enforced by**, for "a secret that cannot be read back through any admin path" (now both halves) and "a test-mode key
+refused against a live-mode org" (now in a browser) — ⟨MUTATIONS⟩
+- `CredentialPageTest`: an owner only, nobody signed in and another org's owner refused; the link with a declaration
+  only; the page and its POST registered where a signed-in site serves them; each line's own state at its own mode, and
+  the one in use; previous-key and unreadable lines; a fixed count of queries; a damaged value read as set, nothing
+  opened; who changed it, through the org's members alone; no public property and no public instance method a browser
+  could call; Set as a modal holding a form, no field, no handler, no argument read; the form's markup rules; escaping;
+  Remove, a removal of nothing, a refused one, and one with nobody signed in; the switch both ways, already-there, the
+  missing list, none without a credential kept per mode, and none with nobody signed in; and the pinned gap;
+- `CredentialSetControllerTest`: a set and a replace, 303; a missing, wrong, header-only or query-only token refused;
+  a member, nobody and another org's owner refused; six undeclared or ill-fitting requests answered 404; a value in the
+  address refused and called exposed; trimming; empty, absent and array values; a test key for a live org's live line
+  refused, the live value kept; the line deciding; and the request emptied before a listener throws — each ending with
+  the value in no bag, superglobal, session key, header or body;
+- `CredentialSurfaceTest` and `CredentialLeakTest`, extended to the page and the controller;
+- `e2e/credentials.spec.js`: exactly one request body holds a value, the set POST, and no response, Livewire request,
+  snapshot, redirect or page afterwards holds twelve characters of it — set, replaced, removed, and typed then
+  cancelled; a test key refused for a live org; both scope boundaries, from the side of the one crossing; nobody signed
+  in; the line deciding; the keyboard path; and axe with the modal open and in live mode;
+- `permissions.spec.js`: 403 at the URL and at the POST with the member's own token, and no link; the accessibility,
+  RTL and off-host page lists, and the blueprints' writers' absent links.
 
 ---
 

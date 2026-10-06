@@ -66,7 +66,7 @@ Measured on a clean clone, not written from memory — four commands, under a mi
 
 ```bash
 composer install                       # the monorepo: core, the skeleton's dev tooling, the test suite
-composer skeleton:install              # the skeleton's own dependencies, .env, app key and SQLite file
+composer skeleton:install              # the skeleton's own dependencies, the browser suite's test module (switched off), .env, app key and SQLite file
 php skeleton/artisan migrate --seed    # schema and a small demo organisation
 php skeleton/artisan serve             # http://127.0.0.1:8000/admin
 ```

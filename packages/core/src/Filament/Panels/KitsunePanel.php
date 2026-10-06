@@ -21,11 +21,13 @@ use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Avatars\InitialsAvatarProvider;
 use Kitsune\Core\Filament\Icons;
+use Kitsune\Core\Filament\Pages\Credentials;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Filament\Widgets\EntryCountsWidget;
 use Kitsune\Core\Filament\Widgets\RecentEntriesWidget;
+use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
@@ -89,7 +91,8 @@ final class KitsunePanel
                 IdentifyEntryType::class,
             ], isPersistent: true)
             /*
-             * ⚠️ THE ONE ROUTE CORE REGISTERS, AND IT IS NOT AN EXCEPTION TO THE RULE — it is inside it.
+             * ⚠️ THE ROUTES CORE REGISTERS (one until ADR-040's admin added the credential POST), AND NEITHER IS AN
+             * EXCEPTION TO THE RULE — both are inside it.
              * `skeleton/routes/web.php` records why core registers no routes: a host application's URL space
              * is its own, and a package that claimed `/{site}` would collide with whatever it already serves.
              * The panel is the space the host handed over by calling `KitsunePanel::apply()`, which is where
@@ -110,9 +113,15 @@ final class KitsunePanel
              * is anonymous, and the signed-in owner gets "not found" for his own file. `e2e/media-delivery.spec.js`
              * is what caught it, which is AGENTS.md §9 earning its place again.
              */
-            ->authenticatedTenantRoutes(fn () => Route::get('media/{media}', MediaDownloadController::class)
-                ->where('media', '[0-9]+')
-                ->name(MediaDelivery::ROUTE))
+            ->authenticatedTenantRoutes(function (): void {
+                Route::get('media/{media}', MediaDownloadController::class)
+                    ->where('media', '[0-9]+')
+                    ->name(MediaDelivery::ROUTE);
+
+                // ADR-040: a credential's value is POSTed here rather than to Livewire, because a Livewire field's
+                // value returns in the response snapshot when its save is refused.
+                Route::post('credentials/set', CredentialSetController::class)->name(CredentialSetController::ROUTE);
+            })
             /*
              * ⚠️ CORE'S THREE, THEN WHATEVER ENABLED MODULES ADDED — ADR-038 decision H. A disabled module's
              * provider is never registered, so it never fills the surface and contributes nothing here: the
@@ -128,7 +137,7 @@ final class KitsunePanel
                 RoleResource::class,
                 ...app(AdminSurface::class)->resources(),
             ])
-            ->pages([Dashboard::class])
+            ->pages([Dashboard::class, Credentials::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...))
             // Drawn here rather than fetched. Filament's default sends every signed-in user's initials and the site's
@@ -245,6 +254,16 @@ final class KitsunePanel
                     ->icon('heroicon-o-key')
                     ->url(fn (): string => RoleResource::getUrl('index'))
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.roles.*')),
+            ] : []),
+
+            // Credentials sit with the owner's other screens, hidden by the rule that gates the URL — and until a
+            // module declares something to keep, because a blog has nothing to put there (ADR-040, Adam's answer 3).
+            ...(Credentials::belongsInNavigation() ? [
+                NavigationItem::make(__('kitsune::credentials.navigation'))
+                    ->group('Structure')
+                    ->icon('heroicon-o-lock-closed')
+                    ->url(fn (): string => Credentials::getUrl())
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.credentials')),
             ] : []),
 
             /*

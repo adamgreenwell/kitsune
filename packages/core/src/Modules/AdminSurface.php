@@ -38,6 +38,9 @@ use Filament\Navigation\NavigationItem;
  * booted, and therefore after the kernel's `booted()` callback has registered every enabled module. Measured
  * on Filament v5.7.8: `panel()` had not run after `app()->register()` and the provider's `boot()`, and had run
  * after `app(PanelRegistry::class)`.
+ *
+ * ⚠️ AND A SLUG CORE ALREADY HOLDS IS NOT A MODULE'S. A module resource or page slugged `credentials` collides with core's
+ * credentials page (ADR-040): pages register before resources, so the module's would be shadowed.
  */
 final class AdminSurface
 {

@@ -70,6 +70,15 @@ module.exports = async () => {
     run(['kitsune:module', 'enable', 'kitsune/person', '--no-interaction']);
 
     /*
+     * ⚠️ THE BROWSER SUITE'S TEST MODULE, ENABLED HERE AND NOWHERE ELSE — ADR-040's admin half. `composer
+     * skeleton:install` puts it in vendor switched off; it declares three credentials so the credentials page has
+     * something to set, and it is never published. Enabled for the whole run, so every owner's sidebar carries the
+     * *Credentials* link on every page of every spec — AGENTS.md §9's failure class, exercised by the whole suite.
+     */
+    run(['kitsune:module', 'install', 'kitsune/e2e-credential-slots', '--no-interaction']);
+    run(['kitsune:module', 'enable', 'kitsune/e2e-credential-slots', '--no-interaction']);
+
+    /*
      * ⚠️ THE BLOG BLUEPRINT, APPLIED BY ITS COMMAND — Phase 5, ADR-039. Not by the seeder: what `blog-blueprint.spec.js`
      * meets is then what the command wrote, through core's own registration under package discovery, on every build.
      * Applied above, with its owner; applied again here, because a second apply at the same version is a no-op and the

@@ -9,6 +9,8 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Console\CredentialsCommand;
+use Kitsune\Core\Filament\Pages\Credentials;
+use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\OrgCredentialMode;
 
@@ -34,7 +36,7 @@ function credentialSourceFiles(string $under): array
 }
 
 it('marks every symbol it adds @internal', function (): void {
-    $symbols = [Credential::class, OrgCredentialMode::class, CredentialsCommand::class];
+    $symbols = [Credential::class, OrgCredentialMode::class, CredentialsCommand::class, Credentials::class, CredentialSetController::class];
 
     foreach (credentialSourceFiles('Credentials') as $file) {
         $symbols[] = 'Kitsune\\Core\\Credentials\\'.basename($file, '.php');
@@ -70,11 +72,14 @@ it('encrypts and decrypts in one file, opens through one caller, and lets nothin
 });
 
 it('logs and reports nothing', function (): void {
-    foreach ([...credentialSourceFiles('Credentials'), dirname(__DIR__, 3).'/packages/core/src/Console/CredentialsCommand.php'] as $file) {
+    $core = dirname(__DIR__, 3).'/packages/core/src/';
+
+    foreach ([...credentialSourceFiles('Credentials'), $core.'Console/CredentialsCommand.php', $core.'Filament/Pages/Credentials.php', $core.'Http/Controllers/CredentialSetController.php'] as $file) {
         $source = (string) file_get_contents($file);
 
+        // Whole names only: `AuditLog::` is not `Log::`, and `->add(` is not `dd(` (PR B's page reads the audit log).
         foreach (['Log::', 'logger(', 'report(', 'dump(', 'dd('] as $needle) {
-            expect(str_contains($source, $needle))->toBeFalse(basename($file)." calls {$needle}");
+            expect(preg_match('/(?<![A-Za-z0-9_])'.preg_quote($needle, '/').'/', $source))->toBe(0, basename($file)." calls {$needle}");
         }
     }
 });
