@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Collection;
@@ -1420,18 +1421,41 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             fn ($query) => $query->withTrashed()->where('site_id', $this->getKey())->count(),
         );
 
-        if ($entries === 0) {
-            return;
+        if ($entries > 0) {
+            throw new RuntimeException(sprintf(
+                'Site [%s] still holds %d entr%s, and the database would delete them by cascade — '
+                .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+                .'the entries first, which is audited.',
+                $this->handle,
+                $entries,
+                $entries === 1 ? 'y' : 'ies',
+            ));
         }
 
-        throw new RuntimeException(sprintf(
-            'Site [%s] still holds %d entr%s, and the database would delete them by cascade — '
-            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
-            .'the entries first, which is audited.',
-            $this->handle,
-            $entries,
-            $entries === 1 ? 'y' : 'ies',
-        ));
+        /*
+         * ⚠️ LIVE GRANTS ONLY, counted per row — a reader holding through two sources counts twice, and the remedy,
+         * revoking each, is per row. Lapsed and revoked rows can never answer yes, so they go with the site by cascade;
+         * their audit rows survive with `site_id` nulled. Cascade plus this guard, not `restrictOnDelete()`: the org's
+         * hard delete cascades into both `sites` and `entitlements`, and a RESTRICT on one path would make the outcome
+         * hang on the order each engine fires its cascades in (ADR-040).
+         */
+        $live = Entitlement::withoutScopeBecause(
+            'counting live entitlement grants before their site is deleted, to refuse rather than cascade',
+            fn ($query) => $query->where('site_id', $this->getKey())->liveAt(CarbonImmutable::now('UTC')->startOfSecond())->count(),
+        );
+
+        if ($live > 0) {
+            throw new RuntimeException(sprintf(
+                'Site [%s] still gives readers %d live entitlement grant%s, and the database would delete %s by cascade — '
+                .'access somebody may have paid for, removed with nothing in the audit trail saying so (ADR-040). Revoke %s '
+                .'first, which is audited.',
+                $this->handle,
+                $live,
+                $live === 1 ? '' : 's',
+                $live === 1 ? 'it' : 'them',
+                $live === 1 ? 'it' : 'them',
+            ));
+        }
     }
 
     public function getRouteKeyName(): string

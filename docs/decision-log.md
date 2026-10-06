@@ -295,7 +295,7 @@ All user-defined entity types share **one Eloquent model** (`Entry`) with a type
 
 ## ADR-011 — v1.0 scope cut
 
-**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate** · **Amended 2026-09-22 by ADR-040** — v1.0 now contains a transactions substrate; the estimate moves with it
+**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate** · **Amended 2026-09-22 by ADR-040** — v1.0 now contains a transactions substrate; the estimate moves with it · **Amended 2026-10-?? — reader accounts (ADR-037) move into v1.0, ahead of commerce**; the estimate moves again
 
 The original roadmap claimed 12–18 months part-time for tenancy kernel + module system + schema engine + blueprints + REST API + theming + importer + plugin SDK. **That was wrong by roughly 3–4x.**
 
@@ -320,6 +320,11 @@ a shop, a subscription site, gated content and a paid course — are one substra
 and the thing they share is an entitlement. Deferring it would mean shipping a v1.0 whose four named use cases
 are the ones it cannot serve. This is a scope increase with a cost, recorded here rather than absorbed
 quietly, and the estimate this entry exists to correct is now wrong again in the other direction.
+
+⚠️ **Amended 2026-10-?? — reader accounts move into v1.0 (ADR-037's amendment; Adam, 2026-10-06).** v1.0 grows
+again, by registration, sign-in and recovery for readers, built as Phase 5a's slice between entitlements and
+commerce. The reason is the one above: ADR-040 brought the four scenarios into v1.0 so that v1.0 could serve them,
+and three of the four need a reader who can sign in. The REST API, theming and the privacy tooling stay in v1.1.
 
 ---
 
@@ -2908,7 +2913,10 @@ product that does not ship.
 
 ## ADR-037 — A reader is not a panel user, and gets a guard of their own
 
-**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it**
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in
+and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-?? — the reader-guard declaration landed in
+v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)**; see
+the end of this entry
 
 Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
 for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
@@ -2974,6 +2982,33 @@ decided when that tooling is built rather than asserted here.
 When it lands: a reader cannot reach any panel route, asserted from the reader's side rather than the panel's; core
 refuses to resolve a reader when no guard is declared; a profile cannot be written without a consent record; `Sec-GPC`
 declines one; and erasing a reader removes the profile and calls the support fan-out.
+
+⚠️ **Amended 2026-10-?? — the reader guard's declaration landed in v1.0 with ADR-040's entitlements (Phase 5a), and
+reader accounts move into v1.0 ahead of commerce.**
+
+**The declaration, as built.** The host names its reader guard in `kitsune.readers.guard`, which has no default. Core
+refuses to resolve a reader when none is declared, when the name is not a guard, when it is a panel's guard, or when its
+model is not `OrgScope`d or is scoped through membership. "Core refuses to resolve a reader when no guard is declared"
+is now enforced, from the side where nothing is declared, by `ReaderGuardTest`. Core still owns no guard, provider or
+model.
+
+**Reader accounts move into v1.0 — Adam, 2026-10-06.** This entry put registration, sign-in and recovery in v1.1
+("Enlarges v1.1", above). But gated content, a paid course and a subscription site — three of ADR-040's four
+scenarios — need a reader who can sign in. On the stock skeleton nobody could before v1.1, so a v1.0 shop would have
+had nobody to give a course to unless the host built its own login. Reader accounts are therefore Phase 5a's slice
+**after entitlements and before commerce**: their own guard, provider and model, provided by the host (the
+skeleton's, for a stock install), with registration, sign-in and recovery. The decision above is unchanged: core owns
+none of them, the host declares the guard, and a reader cannot reach a panel.
+
+**What stays in v1.1:** consent records, the per-reader profile and `Sec-GPC`, the support fan-out, and single sign-on
+across unrelated domains.
+
+**What the moved slice decides for itself:** how its few pages render while ADR-011's theme layer is still v1.1; and
+how one reader's account is exported and erased before v1.1's tooling exists — ADR-020's reason, which ADR-040's
+entitlements answered with `export` and `forget`. The estimate moves with it (ADR-011, amended).
+
+*When it lands*, above, is otherwise unchanged; "a reader cannot reach any panel route, asserted from the reader's
+side" becomes that slice's to enforce.
 
 ---
 
@@ -3701,7 +3736,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-?? — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -3736,7 +3771,7 @@ installation.** Orders have state machines, outbound calls and money. They are u
 | **Money as a schema-engine field** | A decimal in a JSON `values` column, converted through a field type, guarded per row, on the hot purchase path. `NumberType`'s decimal is for content; a ledger amount is not content. |
 | **API keys in ADR-022's settings store** | `orgs.settings`, `site_groups.settings` and `sites.settings` are plain JSON columns, readable by anything that can read the row. Right for a timezone, catastrophic for a secret key. (They are not admin-editable *today* — core registers no Org, SiteGroup or Site resource — but that gap is a roadmap item, not a protection.) |
 | **API keys in `.env` only** | One Stripe account per installation, so a host could not let two orgs sell under their own accounts. ⚠️ Not because per-org is this log's universal axis — ADR-038 chose per-**install** for module enablement on purpose, and deferred `org_modules` — but because selling is where the axis is forced: the money lands in an account, and an account belongs to somebody. |
-| **An append-only entitlement log as the only record** | Perfect provenance, and it makes every gated page view an aggregate over a reader's history at the 1 vCPU floor. The audit trail already records how a grant came about. |
+| **An append-only entitlement log as the only record** | Perfect provenance, and it makes every gated page view an aggregate over a reader's history at the 1 vCPU floor. The audit trail already records how a grant came about. *(The source key, amended 2026-10-06, is not that log: a source's renewals extend its row and a revocation stamps it, so the check reads one row per source — one indexed read, measured at the end of this entry.)* |
 
 ### Decision
 
@@ -3750,22 +3785,36 @@ handing out a comp. Commerce becomes one producer of entitlements rather than th
 Core stores it, checks its shape and answers whether a reader holds it; what it *means* belongs to whoever
 asks. This is `Permissions::validated()`'s design reused for a second population: shape checked, existence
 deliberately not, so an entitlement can be granted before the thing it names exists — which is what lets a
-blueprint seed offers and a course arrive in either order.
+blueprint seed offers and a course arrive in either order. *(As built: the design — one encoding, loud at write,
+false at check, existence unchecked. Not the regex, which refuses this entry's own examples and lacks `/D`; see the
+amendment at the end of this entry.)*
 
-**One row per (reader, site, entitlement), carrying `expires_at` and `revoked_at`.** Granting upserts; revoking
-stamps; lapsing is a timestamp in the past. The check is one indexed lookup because it runs on every gated
-request, and ADR-027's floor is least forgiving on a hot path. How an entitlement came about is the audit
-trail's job, not this table's.
+**One row per ~~(reader, site, entitlement)~~ *(reader, site, entitlement, source)*, carrying `expires_at` and
+`revoked_at`.** Granting upserts; revoking stamps; lapsing is a timestamp in the past. The check is one indexed lookup
+because it runs on every gated request, and ADR-027's floor is least forgiving on a hot path. How an entitlement came
+about is the audit trail's job, not this table's.
+
+⚠️ **Amended 2026-10-06 by Adam — a grant remembers where it came from.** The key above lost the one fact a refund
+needs. With one row per (reader, site, entitlement), a refund's revoke took away a comp, or a second order's access,
+along with its own. A paid event replayed after the refund then gave it all back. Once written, neither could be told
+apart. So the row is keyed by its **source** as well — `commerce.order:4821`, an owner's `core.comp` — and granting
+upserts *per source*, revoking stamps *one source*, and a revoked source stays revoked until an owner comps. The
+check is still one indexed lookup: a prefix of the unique index, true when any source is live. *When* and *at whose
+hand* stay the audit trail's job; *from what* is now the row's. The rules are in "entitlements in core, as built" at
+the end of this entry.
 
 ⚠️ **PER SITE, BECAUSE ADR-037 ALREADY DECIDED IT** — *"One identity per org, and everything else per site. A
 reader is one row that belongs to exactly one org … while consent, subscriptions, entitlements and profiles
 hang off it per site."* One identity, many site-scoped attachments: a reader may hold a different profile on
 each site of their org, and an entitlement sits beside that profile rather than beside the identity. A
-subscriber to one brand is therefore not a subscriber to its sibling, which is how a multi-brand publisher
-actually sells. An earlier draft of this entry keyed the row `(reader, entitlement)` and would have
+subscriber to one brand is therefore not a subscriber to its sibling *(its sibling **site**, as built — including the
+same brand's other-language site, because the key is the site; ADR-037 is unchanged)*, which is how a multi-brand
+publisher actually sells. An earlier draft of this entry keyed the row `(reader, entitlement)` and would have
 contradicted an ADR it claims to build on; nothing amends ADR-037 here.
 
-**The reader is referenced by a loose id with no foreign key, as `audit_log` already references an actor.**
+**The reader is referenced by a loose id with no foreign key, as `audit_log` already references an actor.** *(The no-FK
+string half only, as built: no type is stored, because ADR-037 declares one reader guard per installation and a stored
+class name would orphan every row when a host renames its model.)*
 `audit_log.actor_type` and `actor_id` are nullable strings carrying no constraint, because core cannot
 constrain a table it did not create and whose key type it does not control — a host whose users carry UUIDs, or
 an SSO subject, would otherwise be unrepresentable. ADR-037 settles that core owns no user model and must not
@@ -3981,7 +4030,9 @@ re-encrypts after a rotation, and wiring `status --strict` into the release (ans
 **Enforced by**, for "a test-mode key refused against a live-mode org" and for the store beneath "a secret that cannot
 be read back through any admin path", whose admin half is the second pull request's browser test *— `e2e/credentials.spec.js`,
 recorded in the second amendment below* — the other lines of
-*When it lands* above are commerce's, and still owed. Each rule has a test that fails when it is removed: 63 mutations
+*When it lands* above are commerce's, and still owed. *(Two of them were core's, and are enforced now by the entitlements
+amendment below; the replay-by-count line is enforced at core's level too — one row and one record however often a
+source is granted, and none after its revocation — and stays commerce's to exercise end to end.)* Each rule has a test that fails when it is removed: 63 mutations
 of the store, 62 caught. The survivor is equivalent: the record written with `record()` rather than `recordOrFail()`,
 which differ only with no org in context, and the writer refuses that first. The first run's other two survivors are
 killed now: the envelope's credential name unchecked, by a moved ciphertext that differs from its row in the name
@@ -4125,6 +4176,186 @@ link left ungated, now asked of the sidebar the panel builds:
 - `permissions.spec.js`: 403 at the URL and at the POST with the member's own token, and no link; the accessibility,
   RTL and off-host page lists, and the blueprints' writers' absent links.
 
+⚠️ **Amended 2026-10-?? — entitlements in core, as built (Phase 5a), first half.** The table, the reader guard, the one
+door in, the read door, and a reader's export and erasure, with no page; the owner's page, where comps come from, is
+the second half and its own pull request, and the roadmap box waits for it, as the credential store's did. The decision
+above stays as it was, except the key, amended in place where it is stated.
+
+**Adam's answers (2026-10-06).**
+1. **Refunds: track each source.** A grant remembers where it came from — `commerce.order:4821`, an owner's comp, later
+   a subscription — and a refund removes only what that source granted; access stays while any other live source holds
+   it. This was not the recommendation he was given, and it amends the key above.
+2. **The owner's page: yes, as a second pull request,** right after this one, with the roadmap box ticked after it.
+3. **Privacy: yes, ship export and forget now,** as the primitives v1.1's privacy tooling will call.
+4. **Reader login: yes.** Reader accounts — sign-up, sign-in and recovery, on ADR-037's own guard — become Phase 5a's
+   slice right after entitlements and before commerce. This slice's build is unchanged by it; ADR-037, ADR-011 and the
+   roadmap record the move.
+
+**The table.** `entitlements`, one row per (site, reader, entitlement, source), carrying `expires_at`, `revoked_at` and
+`changed_at`, all `dateTime` in UTC whole seconds — never `timestamp`, which ends on MySQL in 2038, and `expires_at` is
+the first core column holding a future instant. Every key column is NOT NULL: NULLs compare distinct, so a nullable
+`source` would let the unique index admit duplicates, and a null `site_id` would read as org-shared to `EnforcesScope`
+and show one grant on every site of the org. `org_id` is carried because `SiteScope` names it, and it is the check's
+second fence, since `SiteScope`'s site branch compares no org. `reader_id` and `source` are `varbinary` on MySQL and
+MariaDB, for `MySqlDriver`'s reason: under the default collation `Ab`, `ab` and `ab ` are one value, which in an access
+check is one reader answering for another, and two orders whose references differ in case would share a row, so
+refunding one revoked both. No `granted_at`, order id or granter: the source says from what; when and at whose hand are
+the audit log's. One unique index, `(site_id, reader_id, entitlement, source)`, serves every lookup there is, as
+measured below. Rows are deleted only by the org's hard delete, a site's delete once nothing live remains on it, and
+erasure.
+
+**Two grammars, one encoding each.** A name is two lower-case kebab words joined by a dot, at most 100 bytes, `/D`
+anchored — `course.advanced-php`, `issue.2026-10`; `EntitlementName::isName()` is loud on a write and quiet on a check,
+and existence is never checked. A source is the producer, two lower-case kebab words, optionally followed by a colon
+and a case-sensitive reference of up to 64 of `[A-Za-z0-9_-]`, at most 100 bytes — `commerce.order:4821`,
+`import.legacy:batch-7`. `core.` is reserved: there is exactly one core source, `core.comp`, written only by `comp()`,
+and `grant()` refuses any other `core.` source. The two grammars and `CredentialSlot`'s are kept apart, so none can
+re-shape another.
+
+**The reader.** `kitsune.readers.guard`, with no default, names the guard. `ReaderGuard` refuses to resolve a reader
+when nothing is declared, when the name is not a guard with a provider, when a panel authenticates with it, when its
+provider loads no Eloquent model, when the model registers the membership scope (a panel user's shape), or when it does
+not register `OrgScope` — the registered scope, not the attribute. It asks the declared guard alone, never
+`currentUser()`, the default guard or the `users` provider, which on a public route answer with the staff user from the
+shared session; a second fence compares the loaded reader's own `org_id` with the context's, for a host provider that
+strips the scope. A stored key is the reader's auth identifier normalised by `Permissions::userKey()` — `'007'` is no
+integer key — as printable ASCII of at most 255 bytes, and a write stores the host's own spelling, read back from the
+row under the context org, so another org's reader does not exist.
+
+**Authority.** An owner of the org in context may do everything. Otherwise a reader signed in to the request is refused
+(`ReaderActing`), whether the route made them the user or their session merely rides along on a route with no auth
+middleware, where `currentUser()` is the empty `web` guard and the writer would otherwise read "the system". Anyone
+else signed in is refused. With nobody signed in the caller is trusted as the system for a grant, a revoke, an export
+and an erasure — a public route reaches the writer by design, commerce's webhook, so such a caller proves its own
+authority first — but never for a comp: a comp is the one act that gives back access once revoked, so its warrant is a
+person deciding now.
+
+**Grant, comp, revoke and forget, per source.** Each decision reads its own source's row and no other. A grant writes a
+row where there was none (`Granted`), moves a later end or no end onto its row (`Extended`, a lapsed row of that source
+included), and otherwise writes nothing (`Unchanged`): a grant never shortens. A revoked source **stays revoked**: a
+grant of it answers `StillRevoked`, however late its end, so a refunded order's replayed payment gives nothing back, by
+count — zero rows and zero records. Only `comp()` gives access back, and only through the comp's own row
+(`Reinstated`, with the end given now, exactly — the one place an end moves earlier, after a recorded revoke); a
+refunded order's row stays revoked, and the record of the refund stays true. A revoke stamps one source, live or lapsed
+— a refund that arrives after a pass ended must still stop a later grant extending it — and answers false, writing and
+recording nothing, for a row already revoked or absent; it works for a reader the host has deleted. There is no `days`
+term: stacking one source's time onto another's carried a refunded order's days into the next row. A duration is the
+producer's arithmetic, passed as an instant; the end is required and nullable, so no end is always said. There is no
+`shorten`, `extend`, `reinstate` or `revokeAll`. Each write takes the site's row `FOR UPDATE` — that lock and no other,
+since a lock on an absent entitlement row is a gap lock on MySQL and MariaDB — re-reads its row by all four columns,
+saves through a window only the writer opens, and records `entitlement.granted`, `.extended`, `.reinstated` or
+`.revoked` inside the same transaction, through `TransactionRecovery`. Erasure locks the org's sites in ascending order,
+deletes every row of the reader on every site and from every source, and records `entitlement.erased` per row. The
+whole of each door runs inside one mapping: a unique-index or deadlock failure is `Race`, any other database error
+`Database` with its SQLSTATE alone, and nothing is chained, because a database exception interpolates its bindings and
+they hold the reader and the source. `GuardedEntitlementBuilder` refuses every other write, inside
+`withoutScopeBecause()` too, and refuses `upsert()` and `forceDelete()` even inside the window — an upsert would be the
+easiest way to clear a refund's `revoked_at` — and `delete()` outside erasure.
+
+**The read door.** `EntitlementCheck::holds($name)` answers for the reader signed in to this request, on the site in
+context, now, and takes no reader, site, org or source: a consumer cannot ask about somebody else or somewhere else. It
+is true while any of the reader's rows for the name is live — not revoked, and no end or an end after now — so it names
+no source and stops at the first live row of the unique index's three-column prefix. A malformed name, no site and no
+reader each answer false before any query on `entitlements`. "Now" is PHP's clock, never the database's, which follows
+MySQL's session zone and PostgreSQL's transaction start; the interval is half-open at whole seconds; a SQL and a PHP
+reading of "live" are pinned to agree. No memo, so a grant or revoke earlier in the request is seen at once; no staff
+bypass. A database error is `EntitlementUnavailable`, never an answer — false would show a paywall during an outage and
+invite a paying reader to pay again — and the reader's load sits inside the same mapping, since on a route with no auth
+middleware it is the request's first query on the readers' table.
+
+**Time.** No scheduler, sweeper or worker: lapse is derived at read time. Storage is UTC whatever `app.timezone` is,
+through a cast that writes only an instant — a string is refused, so SQLite's text comparison only ever meets
+`Y-m-d H:i:s` — and a Paris-zoned end is stored as the right UTC instant. Ends are floored to the second; an end at or
+before now is refused, and so is one after 9999-12-31 23:59:59, which MySQL's `DATETIME` cannot hold. Display is PR B's,
+through `SiteTime`. Clock skew between servers moves a boundary by seconds, accepted.
+
+**The site cascade.** `Site::guardCascade()` refuses to delete a site that still gives a reader a live grant, through the
+model and the builder, naming the count — per row, since a reader holding through two sources counts twice — because the
+cascade would remove access somebody may have paid for with nothing audited. Revoked and lapsed rows go with the site;
+their audit rows survive with `site_id` nulled. Cascade plus guard rather than `restrictOnDelete()`, because the org's
+hard delete cascades into both tables and a RESTRICT would make the outcome hang on the order each engine fires its
+cascades in.
+
+**Privacy.** A row is personal data outside `pii_class`, the source included: joined to commerce's orders, a reference
+names a purchase, and `course.addiction-recovery` can imply special-category data. No refusal, `EntitlementUnavailable`
+or console line carries a reader id or a source, and `EntitlementRefused` holds neither as a property; a refusal
+repeats a well-formed name, which identifies nobody. Every parameter carrying either is `#[\SensitiveParameter]`,
+measured: under PHP's engine default a refusal's trace — which Laravel's log formatter writes — otherwise prints them,
+and this project's own container hid that only because its `php.ini` hides arguments. Audit rows hold the action and the
+row, never the reader, the name or the source. **Export**, `EntitlementRecords::forReader()` and
+`kitsune:entitlements export`, lists every row on every site of the org, from every source, `core.comp` included, in a
+stable order with ISO UTC instants and no `reader_id`. **Erasure**, `EntitlementWriter::forget()` and
+`kitsune:entitlements forget --force`, works after the host has deleted the reader, with no usable guard (the id taken as
+given), and for a soft-deleted org, whose rows wait for its restore. It does not write `erasure_log`, which is entry- and
+field-shaped: replaying erasures after a restore is v1.1's replayable log, and until then the operator re-runs `forget`
+for each request on record. ⚠️ A retention purge — v1.1's, enforcing whatever period the operator states — must keep a
+revoked producer's row, or its refund stops being sticky for that source. Stated residuals: a host that re-issues reader
+ids without running `forget` hands the new reader the old reader's access (auto-increment ids are never re-issued on the
+four engines); core does not listen on the host's reader model's `deleted` event, which a mass delete would bypass, so
+running `forget` is the host's job; a producer that puts a reader id in a source reference breaks the contract and core
+cannot see it.
+
+**The console.** `kitsune:entitlements status` prints whether the guard is declared and usable, and counts — grants,
+sites, live, lapsed, revoked — naming no org, reader, entitlement or source, since it lands in deploy logs; it exits 1
+while a guard is declared but unusable, because the check itself can only answer no. `export` and `forget` take
+`--org=<slug>` (found with its soft-deleted, named when unknown, since a slug is configuration) and `--reader=<id>`,
+never echoed. No grant and no comp action.
+
+**The contracts for producers and consumers**, in the writer's and the check's docblocks. Commerce verifies the
+signature and persists the event first — replay protection is that, not core — then, with nobody signed in, sets the
+site from the **order's** site and grants under `commerce.order:{order id}`: **the source names the order, never the
+event**, or one order under two sources is two rows and a refund revokes one of them, which fails open; commerce's slice
+owes the test that two events for one order give one row. It branches on the outcome and the reason, never on text:
+`Unchanged` and `StillRevoked` are processed, `Race` and `Database` retried, `UnknownReader` logged naming the order. A
+refund revokes that order's source alone, and no longer has to check the reader's other orders. A dispute won after a
+refund is an owner's comp until commerce adds `reinstate()` with that consumer. A pass bought twice is two orders, each
+with its own end, and whether the second starts when the first ends is commerce's product decision. Imports use a
+source of their own and rerun as no-ops. A subscription, when one comes, is one source per subscription, renewed by
+grants with each period's end. A gated route runs `ResolveSiteFromRequest`, then the reader guard's `auth` middleware
+if it has one, then `holds()`, and shows an error page on `EntitlementUnavailable`, never a paywall.
+
+**The surface, all `@internal`,** listed so the v1.2 freeze inherits it: `Models\Entitlement`; in
+`Kitsune\Core\Entitlements\`, `EntitlementName`, `EntitlementSource`, `EntitlementCheck`, `EntitlementWriter`,
+`EntitlementAuthority`, `GrantOutcome`, `EntitlementRecords`, `EntitlementRefused`, `EntitlementRefusal`,
+`EntitlementUnavailable`, `GuardedEntitlementBuilder` and `UtcInstant`; `Auth\ReaderGuard` and `Auth\ReaderGuardFault`;
+`Console\EntitlementsCommand`; the table `entitlements`; the source `core.comp` and the reserved prefix `core.`; the five
+audit actions; and `kitsune:entitlements status|export|forget`. **One host-facing thing is not internal, and is named:**
+`kitsune.readers.guard` obliges the host's code — a reader model `#[OrgScoped]` with `EnforcesScope` and its own
+`org_id`, never membership-scoped, with printable keys of at most 255 bytes never re-issued — so CONTRIBUTING names it
+as a third exception, on ADR-038's footing.
+
+**Measured (step 0)**, on this slice's own container: SQLite 3.45.1, PostgreSQL 16.13 and MariaDB 10.11.14 run locally;
+MySQL 8.4 on the CI leg only.
+- **M1, bytes.** On PostgreSQL and MariaDB, `abc`, `ABC` and `abc ` are three readers and `commerce.order:AbC` and
+  `…:abc` two sources, and revoking one leaves the other live (`EntitlementStorageTest`, every engine leg); the four-column
+  index is created. @@M1VARCHAR@@
+- **M2, range.** 2040-01-01 and 9999-12-31 23:59:59 round-trip on PostgreSQL and MariaDB.
+- **M3, the plan**, at 50,201 rows — about 25,000 keys over two sites with one to three sources each, plus one key of 200
+  sources, 199 revoked and the live one last. With the explicit site and org conjuncts every engine reads the unique
+  index's three-column prefix: SQLite `SEARCH … (site_id=? AND reader_id=? AND entitlement=?)`; PostgreSQL an index scan
+  with that condition, 4 buffers and 0.018 ms at one source, 9 buffers and 0.071 ms at 200 (199 rows filtered); MariaDB
+  `ref` on three constants. **Without them**, on `SiteScope`'s OR alone, SQLite **scans the whole table** and PostgreSQL
+  ORs two bitmap index scans; MariaDB plans the same either way. End to end through Eloquent, per call, a query listener
+  attached: 285 and 424 µs on SQLite at one and 200 sources, 631 and 782 µs on PostgreSQL, 788 and 1,239 µs on MariaDB —
+  host figures, not the floor's.
+- **M4, the lock.** While a rival holds a site's row `FOR UPDATE`, an insert naming that site in a foreign key waits —
+  refused at the lock timeout, 308 ms on PostgreSQL and 1,002 ms on MariaDB — and one naming its sibling goes through in
+  1 ms. A grant holds its site for its whole call: a median of 4.10 ms on PostgreSQL, 2.77 ms on MariaDB and 2.23 ms on
+  SQLite over 50 first grants. Accepted, as the credential store's org lock is.
+
+**Owed, and named:** the reader's download route (ADR-041, inside v1.0); a batch form of the check, with its first
+consumer, a catalogue; `reinstate()` for a producer's source, with commerce's dispute path; the `erasure_log` replay;
+naming readers rather than ids on the owner's page, with reader accounts; and a staff preview path, if a consumer wants
+one. Two sources granted at the same moment on two connections are not driven concurrently by a test — one process
+cannot block twice — and rest on each decision reading only its own row, which a test of the writer's source and the
+two-sources tests pin.
+
+**Enforced by**, for "an entitlement check that fails closed with no reader guard declared, asserted from the side where
+nothing is declared", "an entitlement string refused for shape exactly as a permission is, with existence deliberately
+unchecked", and, at core's level, "a webhook replayed twice that grants one entitlement, asserted by count" — one row and
+one record however often a source is granted, and none after its revocation; commerce still exercises it end to end.
+@@ENFORCED@@
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
@@ -4185,7 +4416,8 @@ authorises first.
 
 ⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
 entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
-expressible, and they do not exist yet. So the first media slice authorises a **staff** question, and the
+expressible, and they do not exist yet. *(As of ADR-040's entitlements, as built: the reader question is expressible,
+`EntitlementCheck::holds()`; the reader's download route is still owed, inside v1.0.)* So the first media slice authorises a **staff** question, and the
 reader question becomes expressible when Phase 5a's entitlements land — **inside v1.0, not after it**, because
 ADR-040 amended ADR-011 to put them there. Gated delivery is therefore unfinished *within* this release rather
 than deferred beyond it, and this entry ships the half that does not depend on the other.

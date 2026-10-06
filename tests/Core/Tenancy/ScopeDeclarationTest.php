@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Models\Credential;
+use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -114,6 +115,7 @@ it('resolves the declared scope for each core model', function (string $model, s
     'EntryTypeAvailability is resolved explicitly' => [EntryTypeAvailability::class, Unscoped::class],
     'Credential belongs to an org' => [Credential::class, OrgScoped::class],
     'OrgCredentialMode belongs to an org' => [OrgCredentialMode::class, OrgScoped::class],
+    'Entitlement belongs to a site' => [Entitlement::class, SiteScoped::class],
 ]);
 
 it('leaves no model in the package without a declaration', function (): void {

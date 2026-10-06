@@ -31,7 +31,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * ⚠️ THE QUESTION IT ASKS IS THE STAFF ONE, AND THAT IS ADR-041's DELIBERATE GAP MADE VISIBLE. `EntryPolicy`
  * resolves `entry.{type_handle}.view` against grants that are keyed per ORG (`Permissions::held()` keys on
  * `[$userId, $orgId]`, and even ownership is an `is_owner` role row inside one org). "This reader paid for
- * this download" is not expressible yet; ADR-040's entitlements make it so, inside v1.0.
+ * this download" was not expressible when this was written; ADR-040's entitlements now make it so —
+ * `EntitlementCheck::holds()` — and the reader's download route that asks it is still owed, inside v1.0.
  *
  * ⚠️ NO ROUTE-MODEL BINDING, AND THE ORDER OF THE PIPELINE IS WHY. `SubstituteBindings` sits in the panel's
  * OUTER middleware group and `SetKitsuneContext` in the tenant group nested inside it, so bindings resolve

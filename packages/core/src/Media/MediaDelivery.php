@@ -32,10 +32,10 @@ use Kitsune\Core\Models\Site;
  *
  * ⚠️ THE PRIVATE URL IS A PANEL URL, AND THAT IS THE HONEST SHAPE RATHER THAN A SHORTCUT. ADR-041 leaves
  * *what* is authorised deliberately open: today the only question core can answer is the entry's own
- * permissions — a STAFF question — because ADR-040's entitlements do not exist yet. `/admin/{site}/media/{id}`
- * is a place a reader can never be, so the staff path never pretends to be the reader path. When entitlements
- * land (inside v1.0, not after it), the reader path is a SECOND route with its own context source and its own
- * question, and this one does not have to change to make room for it.
+ * permissions — a STAFF question. `/admin/{site}/media/{id}` is a place a reader can never be, so the staff path
+ * never pretends to be the reader path. ADR-040's entitlements have landed and make the reader's question
+ * expressible (`EntitlementCheck::holds()`); the reader path is a SECOND route with its own context source and that
+ * question, still owed inside v1.0, and this one does not have to change to make room for it.
  *
  * ⚠️ AND IT IS REGISTERED THROUGH `KitsunePanel`, NOT THROUGH A ROUTE FILE. `skeleton/routes/web.php` records
  * the rule — core registers no routes, because a host application's URL space is its own. The panel is the
