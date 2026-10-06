@@ -1104,7 +1104,7 @@ Phase 3's settings store, with `timezone` as the first setting production code r
 **What is built.**
 
 - **Bound, per request.** `SettingsResolver` is bound `scoped`, like `Context`, so a long-lived worker cannot carry one request's memo into the next job. Its defaults are `config('kitsune.settings')`, from `packages/core/config/kitsune.php`, merged *beneath* a host's own `config/kitsune.php` — shallowly, as Laravel's `mergeConfigFrom()` does, so a host that declares `settings` replaces the map rather than one key of it. The defaults are held to the same rules as a stored override when the resolver is built. With no site — an org-level page, a console command, a queued job — resolution returns the defaults, marked as defaults, rather than failing.
-- **Written, and audited once.** `SettingsWriter::set()` overrides a key at an org, site group or site; `revert()` **removes** it, because absent means inherit and there is no unset sentinel. Each change records one audit row — `settings.set` or `settings.reverted`, the level as the target, and neither the key nor the value (ADR-020; a setting may one day be a secret). **A change, recorded from the write's effect:** the writer compares what the column will hold with what it holds, a map without regard to its keys' order, so a repeat the stored JSON cannot tell from the value already there — `1.0` against `1`, an object against a map, a map MySQL hands back in its own key order — records nothing; a save a listener cancels is refused rather than recorded; and a save a listener empties of the change records nothing. Each was measured recording a row for a change that did not happen. The row's `site_id` is the site the actor acted from, as for every `Auditor` record, so an org or site group change is filed under whichever site was in context. Measured first: an org, site group or site write — through the model or in bulk — recorded nothing, because `AuditedBuilder` is bound to `Entry` alone, so the writer's record is the only one and a direct model write is validated and invalidated but **not audited**, like every other column on those three tables. The writer merges into the row re-read under `lockForUpdate()` rather than into the caller's copy, refuses a level outside the current org — the audit row is filed under the current org — and refuses with no org context, since the change could not be recorded.
+- **Written, and audited once.** `SettingsWriter::set()` overrides a key at an org, site group or site; `revert()` **removes** it, because absent means inherit and there is no unset sentinel. Each change records one audit row — `settings.set` or `settings.reverted`, the level as the target, and neither the key nor the value (ADR-020; ~~a setting may one day be a secret~~ *a key is caller-supplied text — and a secret is never a setting, since ADR-040's credential store holds those*). **A change, recorded from the write's effect:** the writer compares what the column will hold with what it holds, a map without regard to its keys' order, so a repeat the stored JSON cannot tell from the value already there — `1.0` against `1`, an object against a map, a map MySQL hands back in its own key order — records nothing; a save a listener cancels is refused rather than recorded; and a save a listener empties of the change records nothing. Each was measured recording a row for a change that did not happen. The row's `site_id` is the site the actor acted from, as for every `Auditor` record, so an org or site group change is filed under whichever site was in context. Measured first: an org, site group or site write — through the model or in bulk — recorded nothing, because `AuditedBuilder` is bound to `Entry` alone, so the writer's record is the only one and a direct model write is validated and invalidated but **not audited**, like every other column on those three tables. The writer merges into the row re-read under `lockForUpdate()` rather than into the caller's copy, refuses a level outside the current org — the audit row is filed under the current org — and refuses with no org context, since the change could not be recorded.
 - **Validated at every door Eloquent has.** A `timezone` must be one of the identifiers PHP lists — `DateTimeZone::listIdentifiers()`, the canonical IANA names, and the list Laravel's `timezone` rule checks — so an offset (`+05:00`, which has no daylight-saving rules), an abbreviation (`EST`), a mis-cased name and the IANA database's own aliases (`Etc/UTC`, `GMT`, `US/Eastern`) are refused, and so is `null`. The check runs on `saving` for all three levels, `FieldStorage::guardShape()`'s pattern — and **again in `ScopedBuilder`, on the value it is handed to write**, because listeners run in registration order and a host's `saving` listener registered after the model boots runs after the first check and before the write: one that set a refused timezone was stored (Codex, #127). The listener stays, since it also checks the whole map on a save that does not write `settings`, which the builder never sees. `settings` is listed in `columnsRequiringModelSave()` on all three, so `ScopedBuilder` refuses the bulk update, the JSON-path update, the arithmetic extras, the hand-rolled insert and the quiet save that would skip the hook — under any spelling the database accepts. Review found two it did not: the builder compared column names exactly while SQLite, MySQL and MariaDB compare them without regard to case, so `update(['SETTINGS' => …])` stored an unchecked timezone (and, the same comparison guarding scope keys, `update(['ORG_ID' => $other])` moved a row into another org — an ADR-021 hole older than this amendment, closed at the same place); and it found the table qualifier by the last dot before removing the JSON path, so `settings->a.b` read as the column `b` — measured, allowed on MySQL and MariaDB, where SQLite and PostgreSQL happened to reject the SQL themselves. A model save that sets `Settings` beside `settings` is refused too, because the hook checks the one attribute and the engine writes the other. **The cost is real and belongs here:** `Org` and `SiteGroup` had no per-row column before, and as `RequiresModelSave` models a bulk `insert()` of either is now refused outright, as it already was for sites, entry types and fields. **Where it stops:** below Eloquent — `toBase()`, `DB::table()`, raw SQL — as every guard in `ScopedBuilder` states, and a **JSON-path** write inside `withoutScopeBecause()`, which stands the builder's per-row refusals down for every guarded column and leaves no whole map to judge until the database has merged the path in. A whole map written there is still checked: the escape hatch decides which path may write a column, not what the column may hold. That holds for every Eloquent write that can carry one — `update()`, the insert family, `insertGetId()`, the `$extra` of `increment()`, `decrement()`, `incrementEach()` and `decrementEach()`, and `upsert()`'s rows and explicit `$update` assignments — and the other builder writes are refused outright wherever they run (`updateOrInsert()`, `updateFrom()`, and the subquery inserts, whose values no model-layer guard can read). Codex found the arithmetic extras unchecked after the claim was first made, and `upsert()` was found by listing every write the builder takes; each has its own test. A value one of those writes, or one stored before the check existed, is not silently used: the whole map is checked on every save — read from the row when the instance was loaded without the column, since a `select()` that leaves `settings` out used to read as null and let a rename pass (Codex, #127) — so the row refuses every later save, a rename included, until the value is replaced or reverted, and `SiteTimezone::current()` refuses to format a date with it, naming the level that holds it. Before that it reached Carbon, which threw from every cell, when it was a string, and was read as UTC — hiding a valid value above it — when it was not.
 
 **Invalidation is automatic for every write through Eloquent, and this is how.** The consequence above says a setting write invalidates "that scope and everything beneath it", and `forget()` now takes an org, a site group, a site or nothing, and drops exactly that: each memoised site records the org and site group its resolution read, so forgetting org A cannot drop a site of org B, and forgetting one brand keeps its sibling's sites. A write through Eloquent does not have to call it: `ScopedBuilder` does, after every update, delete, arithmetic write and upsert to an org, site group or site, events or not — every write that can change an existing row, which an audit of all of them for both properties (checks the value, drops the memo, or refuses outright) confirmed; `upsert()` was the one missing, found by Codex on #127. When the write is that model's own save — evented or quiet, which `isPerformingModelSave()` answers and no caller can arrange — it drops that level and the sites beneath it, so `$site->update(['settings' => …])` invalidates exactly as the writer does. Any other write — a bulk or relation update, every delete, a write inside `withoutScopeBecause()` — could have touched any row its predicate matched, and the builder cannot name them without reading them, so it drops the whole memo. Any change to the row counts, not only to `settings`: resolution also reads a site's `site_group_id` and the names the provenance label quotes. This first hung on the models' `saved` and `deleted` events, which fire for an evented save or delete of one instance and for nothing else, and review measured eight writes left stale: a bulk move to another group, a relation update detaching a site, a quiet move, a bulk and a quiet delete of a group (whose sites the database detaches), an org's bulk soft delete, a bulk rename and a bulk settings write inside the escape hatch. A `TransactionRolledBack` drops the whole memo too, as it already dropped the permission memo, so a value memoised from an uncommitted write does not outlive its rollback. Both drop what every resolver alive in the process holds and build none: they first asked the container's `resolved()`, which stays true after a queue worker's scope reset, so every later job's write built a resolver only to empty it — and failed if the defaults had become invalid since. **Where it stops:** below Eloquent, again — a caller writing through `DB::table()`, `toBase()` or raw SQL calls `forget()` itself. Two defects in the reads were fixed on the way, each measured on the old code: the resolver read `$site->org` and `$site->siteGroup`, relations that load once per instance, so a level written through a different instance stayed stale through the same `$site` even after the memo was dropped; and with no org context the `siteGroup` relation matched nothing under `OrgScope`, so the brand level silently vanished. It now reads the three rows, the group pinned to the site's own org and every one on the site's own connection — `withoutScopeBecause()` is a static call that makes a fresh model on the default connection, so a site loaded from another one had its rows re-read in the default database, where the same id can be another org's row (Codex, #127); the reads are built from the site's connection instead, as `Site::rivalClaimsOnThisConnection()` already is, and the saving check reads its own row from the instance for the same reason — and a saved site whose row has since been deleted contributes no overrides of its own, where it used to fall back to the caller's stale instance and go on applying them (Codex, #127); only a site never saved, which has no row to read, is resolved from the instance.
@@ -1115,7 +1115,7 @@ Phase 3's settings store, with `timezone` as the first setting production code r
 
 **One connection per process — decided 2026-09-19.** Kitsune's tenancy models — orgs, site groups, sites and what hangs off them — live on one database connection in a process. A second handle to that same database is supported, and the host-claim concurrency tests open one; so is a connection carrying a table prefix, which is a host's single connection named differently. Models split across *databases* are not supported, and the settings store makes no promise there. Two review rounds on #127 showed why this needed deciding rather than patching: each fix Codex prompted on a non-default connection exposed the next layer — the reads, then the audit row, which `Auditor` writes on the default connection and so outside a scope connection's transaction, and next the resolver's memo, keyed by site id alone. The reads are built on the model's own connection all the same, as cheap defence already paid for; the audit row and the memo key are left as they are, because making every layer connection-aware is a design this project has not chosen, and a store that claimed it without doing it would be worse than one that states the boundary.
 
-**Still open.** The provenance UI this entry makes a first-class requirement — every resolved setting showing its origin, with a one-click revert — is **not built**: the panel has no org, site group or site resources to put it on. `Resolved` carries the provenance and `SettingsWriter::revert()` is the revert, so what remains is the screen. The picker holds a wall-clock time and no offset, and two consequences are measured and undecided: in the hour a zone repeats, one wall-clock time names two instants, and the second is saved back as the first — an entry holding 06:30 UTC on 2026-11-01 in New York moves to 05:30 when saved, even untouched — and in the hour a zone skips, 02:30 is stored as 07:30 UTC and shown as 03:30, with no message. Whether to refuse such a time, disambiguate it, or show the offset is open; so is fixing the zone for the life of an open form, which today reads its untouched instants in whatever zone the site has when it is saved. ⚠️ **Both are unreachable today and must be fixed before they become reachable.** Every site resolves to the default, UTC, which repeats and skips no hour, and nothing in the admin calls `SettingsWriter` — only code can set another zone. The first admin screen that lets an operator choose a timezone is therefore the change that exposes an untouched save rewriting a stored instant, and it may not ship until that save stores what it read. `SiteTimezoneTest` pins the repeated-hour case as a known defect, so the fix fails that assertion on purpose. Whether an org or site group change should be filed under the level's `site_id` rather than the actor's is open, and the audit migration's comment on that column disagrees with what every `Auditor` record does. `locked_keys` is still this entry's open question; encrypted setting values wait on ADR-036's secrets; and entry type availability still resolves through `EntryTypeAvailability::enabledMapFor()` rather than through the settings resolver, so "the same mechanism" above describes the inheritance rule, not shared code.
+**Still open.** The provenance UI this entry makes a first-class requirement — every resolved setting showing its origin, with a one-click revert — is **not built**: the panel has no org, site group or site resources to put it on. `Resolved` carries the provenance and `SettingsWriter::revert()` is the revert, so what remains is the screen. The picker holds a wall-clock time and no offset, and two consequences are measured and undecided: in the hour a zone repeats, one wall-clock time names two instants, and the second is saved back as the first — an entry holding 06:30 UTC on 2026-11-01 in New York moves to 05:30 when saved, even untouched — and in the hour a zone skips, 02:30 is stored as 07:30 UTC and shown as 03:30, with no message. Whether to refuse such a time, disambiguate it, or show the offset is open; so is fixing the zone for the life of an open form, which today reads its untouched instants in whatever zone the site has when it is saved. ⚠️ **Both are unreachable today and must be fixed before they become reachable.** Every site resolves to the default, UTC, which repeats and skips no hour, and nothing in the admin calls `SettingsWriter` — only code can set another zone. The first admin screen that lets an operator choose a timezone is therefore the change that exposes an untouched save rewriting a stored instant, and it may not ship until that save stores what it read. `SiteTimezoneTest` pins the repeated-hour case as a known defect, so the fix fails that assertion on purpose. Whether an org or site group change should be filed under the level's `site_id` rather than the actor's is open, and the audit migration's comment on that column disagrees with what every `Auditor` record does. `locked_keys` is still this entry's open question; ~~encrypted setting values wait on ADR-036's secrets~~ *secrets are ADR-040's credential store, not settings*; and entry type availability still resolves through `EntryTypeAvailability::enabledMapFor()` rather than through the settings resolver, so "the same mechanism" above describes the inheritance rule, not shared code.
 
 ---
 
@@ -2688,8 +2688,9 @@ job.
   carry no sha, so they deploy nothing.
 - **Nothing a public deploy must not do.** No `--seed` or `db:seed`: the skeleton's `DatabaseSeeder` creates accounts
   whose password is `password`, and ADR-026 forbids a default administrator. No `migrate:fresh`, which drops every
-  table. No `key:generate`: a new key invalidates every session and everything encrypted with the old one. The operator
-  writes the shared `.env`, and the script never creates one.
+  table. No `key:generate`: a new key invalidates every session and everything encrypted with the old one *— since
+  ADR-040, every org's stored credentials too; `APP_KEY` is backup-critical, and rotation goes through
+  `APP_PREVIOUS_KEYS`*. The operator writes the shared `.env`, and the script never creates one.
 - **The environment is judged by what Laravel loads,** not by the text of `.env`: `APP_ENV=production`, debug off, an
   https `APP_URL`, secure session cookies, `pgsql`, a working `APP_KEY`, and no `LARAVEL_CLOUD` in any form, because
   nothing on these servers has a reason to set it. On `1` Laravel runs its Cloud bootstrappers and changes how scheduled
@@ -2818,7 +2819,10 @@ a service Kitsune's users reach over a network.
 **`kitsune/support` will be the only Kitsune-side code**: a first-party module that links a Site to a Wayfindr site,
 puts the widget on that Site's public pages, mints the visitor identity, receives webhooks, and fans erasure and export
 out to every mapped site. None of it exists, and two things it needs do not exist either — the v1.1 theme layer it would
-inject through, and encrypted module settings for the secrets it would hold.
+inject through, and ~~encrypted module settings for the secrets it would hold~~ *ADR-040's credential store (Phase 5a)
+for the secrets it re-enters; per-Site credentials and `K_subject` are not settled by it — `K_subject` is generated and
+must never be replaced from the admin, so the module chooses its home, and a per-Site credential is the module's own
+amendment to ADR-040*.
 
 **Kitsune never stores a transcript.** It stores references: the Wayfindr site id, support codes, and a per-site subject
 key, `HMAC(K_subject, <the Site's stable identifier> ":" <the reader's stable identifier>)`, with `K_subject` held only
@@ -3692,7 +3696,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line)
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, no admin page yet; see the end of this entry
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -3834,7 +3838,8 @@ says is a blueprint rather than a subsystem. *(It did, once the format could dec
 as built. The Storefront's product images are the expected first consumer of a format `accepts`.)*
 
 **Two things core has never done, and one that is not the first of its kind.** Measured on this branch: there
-is no encryption, `Crypt::`, cipher or `sodium_` anywhere in `packages/core/src`, and no first-party code in
+is no encryption, `Crypt::`, cipher or `sodium_` anywhere in `packages/core/src` *(true when written; since Phase 5a,
+`CredentialCipher` encrypts and decrypts, and nothing else in core does — asserted)*, and no first-party code in
 `packages/`, `skeleton/` or `bin/` makes an outbound HTTP call. Those two are genuine firsts, and firsts are
 where the unmeasured risk sits.
 
@@ -3860,6 +3865,110 @@ deliberately unchecked; a money column that no code path can write a float into;
 grants one entitlement, asserted by count; a signature check that refuses an unsigned POST; stock that cannot
 go negative under two concurrent confirmations, measured with two real connections rather than reasoned about;
 a secret that cannot be read back through any admin path; and a test-mode key refused against a live-mode org.
+
+⚠️ **Amended 2026-10-06 — the credential store, as built (Phase 5a), its first half.** The store, with no admin page;
+the page an owner sets a key on, and the browser test that proves no admin path carries one, are the second half and
+their own pull request. The roadmap box waits for that half, because this entry's promise is "replaced through the
+admin". Adam answered the four questions it raised. The decision above stays as it was.
+
+**Adam's answers (2026-10-05).**
+1. **Nothing of a stored value is shown, not even its last four.** The page says a key is set, when and by whom; if an
+   owner is unsure which key is in there, pasting the right one again is the fix. So "never read back" holds exactly.
+2. **The lock is a key derived from `APP_KEY`**, not a second operator secret — nothing new to create, back up or
+   check on deploy. The cost, stated: `.env` and a database backup together open every org's credentials, so
+   `APP_KEY` is now as backup-critical as the database.
+3. **The console tools come with payments.** Today nothing can store a credential, so a command to set one, one to
+   re-encrypt after a rotation, and a deploy gate would guard an empty table. This slice ships a read-only count.
+4. **Re-entering a password before a live key changes, or before an org goes live, is owed by the payments slice,**
+   before the first live payment — written here as a promise that slice must keep. Today there is no live money, no
+   password reset, and a host signing in through single sign-on has no Kitsune password to retype.
+
+**Two tables.** `credentials`, one row per (org, credential, mode), holding the ciphertext, the id of the key that
+sealed it and when it last changed; and `org_credential_modes`, one row per org saying whether it is in `test` or
+`live` mode, absent meaning test. `mode` is NOT NULL, with `'none'` for a credential kept once whatever the mode,
+because NULLs compare distinct and a nullable column would let the unique index admit two rows. A removal keeps the
+row, its ciphertext and key id null, so its record always names a target; nothing deletes a row but the org's own hard
+delete. Nothing derived from a value is stored — no hash, length, prefix or last four. `architecture.md` publishes
+both, and says why `orgs` carries no mode.
+
+**Encryption.** `CredentialCipher` — the only code in core that encrypts or decrypts, asserted — seals with
+AES-256-GCM under `hash_hkdf('sha256', APP_KEY, 32, 'kitsune/credentials/v1')`. Measured: that key cannot open an
+`APP_KEY` payload, nor `APP_KEY` one of its own, so no cookie, session or package `Crypt::decrypt()` path opens a
+credential. `APP_PREVIOUS_KEYS` are derived the same way and still open what they sealed. What is sealed is an envelope
+naming the org, the credential and the mode beside the value, and a ciphertext moved below Eloquent into another row is
+refused as *misfiled* rather than read. Each row carries a 64-bit tag of the key that sealed it, so the admin and the
+console tell the current key, a previous one and a lost one apart without decrypting. Measured on the host this slice
+was built on: a 32-character value seals to 264 characters, a 255-character one to 664 and the longest a credential
+may declare, 1,024, to 2,032 — so the column is `text`.
+
+**One door in.** `CredentialWriter` writes for the org in context — it takes no org — and only an owner of that org
+(ADR-033), re-checked there whatever page called it; with nobody signed in it trusts its caller, as
+`Entry::refuseUnpermittedRepublication()` does, and no path reaches it that way in this slice. Every check on the value
+runs before the first query and the value is sealed before the transaction opens, so no binding, query log or database
+error holds it in plaintext. It takes the org's row as a mutex, re-reads the credential under it, saves, and records
+`credential.set`, `credential.replaced`, `credential.removed`, `credential.mode_live` or `credential.mode_test` inside
+the same transaction — the action and the row, never the value or the credential's name. A replace always records,
+even of the same value: telling would mean reading it. `GuardedCredentialBuilder` refuses every write to either table
+that is not the writer's, **inside `withoutScopeBecause()` too** — where `ScopedBuilder::upsert()` writes, which
+`role_permissions` measured — and refuses `upsert()`, `delete()` and `forceDelete()` even then. The window is a private
+static armed around one save and cleared in a `finally`; nothing outside the writer can open it.
+
+**One door out.** `CredentialReader::secret()` — the only caller of the cipher's `open()`, and nothing under
+`Filament/` or `Http/` may reach either (asserted) — returns the value for the org's **current** mode and has no
+parameter for another: a live org with only a test key stored gets *not set*, never the test key. It checks the value
+against the declaration again after decrypting, so a tampered row or a module whose prefixes tightened refuses rather
+than serves. It hands back a `Secret`, whose value no dumper, cast or serialiser can show, which refuses to serialise or
+clone, and which has no `__toString()`. No user check — a webhook has nobody to ask, and sets the context from its
+site first, a missing context being its own refusal — and no memo or cache, which would keep plaintext.
+
+**Credentials are declared by modules.** A `CredentialSlot`, registered in `registerModule()` on the
+`CredentialSlots` singleton, names the credential (`commerce.stripe-secret-key`), its label and help, whether it keeps a
+test and a live value or one, the prefixes each mode's values begin with, and length bounds. Core knows nothing about
+any provider. A prefix that belongs to one mode decides the mode a value is for, so a test key pasted for live is
+refused — and the reverse. Where a prefix is the same for both modes, or there is none, **the mode is the line the
+owner pasted into**: the store cannot tell a test webhook secret from a live one, and commerce closes that half by
+refusing an event whose own `livemode` disagrees with the org's mode, in its slice. A disabled module's credentials are
+not declared, so they stay encrypted and unread, and return when it is enabled again.
+
+**Test and live mode, in this slice.** ADR-009 puts enforcement in the kernel, and a reader that took a mode argument
+would let a consumer ask for test keys against a live org. A new org is in test mode — a real card declined by a
+provider is loud, and the silent failure this entry fears is a live org served a test key, which the reader makes
+impossible. Switching to live with live values missing is allowed: each consumer then fails closed.
+
+**"Any admin path" excludes a shell.** Whoever has a shell, `APP_KEY` and the database can decrypt — tinker ships with
+the skeleton. And module code calling `secret()->reveal()` server-side is the store's purpose. A per-org export (SP#8)
+lists slot, mode, state and `changed_at`, never ciphertext or key id; neither table is an entry type, and v1.1's
+generated REST API never exposes them.
+
+**`APP_KEY`, rotated or lost.** Rotation: move the old key into `APP_PREVIOUS_KEYS`, put the new one in `APP_KEY`, and
+redeploy. Reads keep working; new writes use the new key; `kitsune:credentials status` counts what is still under the
+previous key; owners replace those credentials, which re-encrypts them; drop the previous key when that count reads 0,
+remembering that sessions and cookies use it too. A lost or wrong key leaves every credential *unreadable*, without a
+decryption attempt; a read refuses in those words, never with a raw `DecryptException`, and every consumer fails
+closed. The recovery is re-entry from each provider's dashboard — which is why only operator-entered, re-enterable
+secrets belong here, and why ADR-036's generated `K_subject` does not.
+
+**The console.** `kitsune:credentials status [--strict]` prints four counts — stored, under the current key, under a
+previous one, under none this installation has — and names no org, credential or value, because its output lands in
+deploy logs. `--strict` exits 1 while anything is unreadable; it is not wired into `deploy/release.sh` (answer 3).
+There is no write command; when one comes it reads a value from a hidden prompt or standard input only (ADR-026's
+rule), and the window it opens for a write with nobody signed in is its own, never `runningInConsole()`, which is true
+in a queue worker, a CLI-served HTTP worker and every test.
+
+**The surface, all `@internal`,** so the v1.2 freeze inherits a list rather than a phrase, and CONTRIBUTING gains no
+exception — it refuses new *public* surface, and `BlueprintRegistry` is the precedent for an `@internal` seam modules
+fill: in `Kitsune\Core\Credentials\`, `CredentialSlot`, `CredentialSlots`, `CredentialMode`, `CredentialWriter`,
+`CredentialReader`, `CredentialStates`, `CredentialState`, `CredentialStatus`, `CredentialCipher`, `SealedCredential`,
+`Secret`, `CredentialRefused`, `CredentialRefusal`, `CredentialUnavailable`, `CredentialUnavailability` and
+`GuardedCredentialBuilder`; the models `Credential` and `OrgCredentialMode`; `Console\CredentialsCommand`; the tables
+`credentials` and `org_credential_modes`; the five audit actions; and `kitsune:credentials status` with its four lines.
+
+**Owed by the payments slice:** re-entering a password before a live key changes or an org goes live (answer 4); the
+refusal of a webhook whose `livemode` disagrees with the org's mode; a console command that sets a credential, one that
+re-encrypts after a rotation, and wiring `status --strict` into the release (answer 3).
+
+**Enforced by**, for "a test-mode key refused against a live-mode org" — the other lines of *When it lands* above are
+still owed: ⟨MUTATIONS⟩
 
 ---
 

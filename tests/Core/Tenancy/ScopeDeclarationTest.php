@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -16,6 +17,7 @@ use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\OrgCredentialMode;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -110,6 +112,8 @@ it('resolves the declared scope for each core model', function (string $model, s
     'Field is per-type presentation' => [Field::class, Unscoped::class],
     'EntryRevision is reached through its entry' => [EntryRevision::class, Unscoped::class],
     'EntryTypeAvailability is resolved explicitly' => [EntryTypeAvailability::class, Unscoped::class],
+    'Credential belongs to an org' => [Credential::class, OrgScoped::class],
+    'OrgCredentialMode belongs to an org' => [OrgCredentialMode::class, OrgScoped::class],
 ]);
 
 it('leaves no model in the package without a declaration', function (): void {

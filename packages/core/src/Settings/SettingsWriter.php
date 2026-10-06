@@ -38,7 +38,8 @@ use RuntimeException;
  * the test asserting exactly one row fails.
  *
  * ⚠️ THE ACTION AND THE LEVEL, NEVER THE VALUE (ADR-020). `Auditor` has no parameter for one, and the action names
- * neither the key nor the value: a setting may one day be a secret (ADR-036), and a key is caller-supplied text.
+ * neither the key nor the value: a key is caller-supplied text — and a secret is never a setting, since ADR-040's
+ * credential store holds those.
  * The row says who changed a setting on which org, site group or site, and when.
  */
 final class SettingsWriter
