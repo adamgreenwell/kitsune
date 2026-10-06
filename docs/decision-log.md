@@ -295,7 +295,7 @@ All user-defined entity types share **one Eloquent model** (`Entry`) with a type
 
 ## ADR-011 — v1.0 scope cut
 
-**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate** · **Amended 2026-09-22 by ADR-040** — v1.0 now contains a transactions substrate; the estimate moves with it · **Amended 2026-10-?? — reader accounts (ADR-037) move into v1.0, ahead of commerce**; the estimate moves again
+**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate** · **Amended 2026-09-22 by ADR-040** — v1.0 now contains a transactions substrate; the estimate moves with it · **Amended 2026-10-06 — reader accounts (ADR-037) move into v1.0, ahead of commerce**; the estimate moves again
 
 The original roadmap claimed 12–18 months part-time for tenancy kernel + module system + schema engine + blueprints + REST API + theming + importer + plugin SDK. **That was wrong by roughly 3–4x.**
 
@@ -321,7 +321,7 @@ and the thing they share is an entitlement. Deferring it would mean shipping a v
 are the ones it cannot serve. This is a scope increase with a cost, recorded here rather than absorbed
 quietly, and the estimate this entry exists to correct is now wrong again in the other direction.
 
-⚠️ **Amended 2026-10-?? — reader accounts move into v1.0 (ADR-037's amendment; Adam, 2026-10-06).** v1.0 grows
+⚠️ **Amended 2026-10-06 — reader accounts move into v1.0 (ADR-037's amendment; Adam, 2026-10-06).** v1.0 grows
 again, by registration, sign-in and recovery for readers, built as Phase 5a's slice between entitlements and
 commerce. The reason is the one above: ADR-040 brought the four scenarios into v1.0 so that v1.0 could serve them,
 and three of the four need a reader who can sign in. The REST API, theming and the privacy tooling stay in v1.1.
@@ -2913,10 +2913,7 @@ product that does not ship.
 
 ## ADR-037 — A reader is not a panel user, and gets a guard of their own
 
-**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in
-and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-?? — the reader-guard declaration landed in
-v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)**; see
-the end of this entry
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)**; see the end of this entry
 
 Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
 for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
@@ -2983,7 +2980,7 @@ When it lands: a reader cannot reach any panel route, asserted from the reader's
 refuses to resolve a reader when no guard is declared; a profile cannot be written without a consent record; `Sec-GPC`
 declines one; and erasing a reader removes the profile and calls the support fan-out.
 
-⚠️ **Amended 2026-10-?? — the reader guard's declaration landed in v1.0 with ADR-040's entitlements (Phase 5a), and
+⚠️ **Amended 2026-10-06 — the reader guard's declaration landed in v1.0 with ADR-040's entitlements (Phase 5a), and
 reader accounts move into v1.0 ahead of commerce.**
 
 **The declaration, as built.** The host names its reader guard in `kitsune.readers.guard`, which has no default. Core
@@ -3736,7 +3733,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-?? — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -4176,7 +4173,7 @@ link left ungated, now asked of the sidebar the panel builds:
 - `permissions.spec.js`: 403 at the URL and at the POST with the member's own token, and no link; the accessibility,
   RTL and off-host page lists, and the blueprints' writers' absent links.
 
-⚠️ **Amended 2026-10-?? — entitlements in core, as built (Phase 5a), first half.** The table, the reader guard, the one
+⚠️ **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half.** The table, the reader guard, the one
 door in, the read door, and a reader's export and erasure, with no page; the owner's page, where comps come from, is
 the second half and its own pull request, and the roadmap box waits for it, as the credential store's did. The decision
 above stays as it was, except the key, amended in place where it is stated.
@@ -4346,7 +4343,8 @@ as a third exception, on ADR-038's footing.
 MySQL 8.4 on the CI leg only.
 - **M1, bytes.** On PostgreSQL and MariaDB, `abc`, `ABC` and `abc ` are three readers and `commerce.order:AbC` and
   `…:abc` two sources, and revoking one leaves the other live (`EntitlementStorageTest`, every engine leg); the four-column
-  index is created. @@M1VARCHAR@@
+  index is created. With either column declared `varchar`, MariaDB fails that test — `abc` held for
+  `ABC` — which is how the mutation pass below catches it.
 - **M2, range.** 2040-01-01 and 9999-12-31 23:59:59 round-trip on PostgreSQL and MariaDB.
 - **M3, the plan**, at 50,201 rows — about 25,000 keys over two sites with one to three sources each, plus one key of 200
   sources, 199 revoked and the live one last. With the explicit site and org conjuncts every engine reads the unique
@@ -4359,7 +4357,8 @@ MySQL 8.4 on the CI leg only.
 - **M4, the lock.** While a rival holds a site's row `FOR UPDATE`, an insert naming that site in a foreign key waits —
   refused at the lock timeout, 308 ms on PostgreSQL and 1,002 ms on MariaDB — and one naming its sibling goes through in
   1 ms. A grant holds its site for its whole call: a median of 4.10 ms on PostgreSQL, 2.77 ms on MariaDB and 2.23 ms on
-  SQLite over 50 first grants. Accepted, as the credential store's org lock is.
+  SQLite over 50 first grants — measured before review put the org's shared lock in front of it, one statement more.
+  Accepted, as the credential store's org lock is.
 
 **Owed, and named:** the reader's download route (ADR-041, inside v1.0); a batch form of the check, with its first
 consumer, a catalogue; `reinstate()` for a producer's source, with commerce's dispute path; the `erasure_log` replay;
@@ -4372,7 +4371,69 @@ two-sources tests pin.
 nothing is declared", "an entitlement string refused for shape exactly as a permission is, with existence deliberately
 unchecked", and, at core's level, "a webhook replayed twice that grants one entitlement, asserted by count" — one row and
 one record however often a source is granted, and none after its revocation; commerce still exercises it end to end.
-@@ENFORCED@@
+Each rule has a test that fails when it is removed: 150 mutations of the table, the guard, the doors, the console
+and their wiring — those the engines decide run on PostgreSQL and MariaDB here — 145 caught. The five survivors are
+equivalent, each a second fence behind a first: the reader lookup without its explicit `org_id`, which the reader
+model's own `OrgScope` already applies and the guard refuses a model without; the check's no-site early return,
+which `ReaderGuard::current()` repeats; the check taking "now" in the application's zone, which the cast converts to
+UTC; erasure without its `org_id` conjunct, whose sites are the org's own; and the record written with `record()`
+rather than `recordOrFail()`, which differ only with no org in context, and the site in context implies one. Review
+added fourteen, each killed by a test of its own: the private helpers' reader and source unmarked; a revoke's absent
+row, a found row and erasure's rows each read plainly (MariaDB); the org not taken before the site; a refused COMMIT
+escaping, or claiming nothing was written; authority asking `current()` again; a guard's driver never built, or its
+`driver` key not asked; the session load hoisted out of the mapping; the doors bound as singletons; revoke, export and
+erasure without the host's spelling; and the cascade guard counting through `SiteScope` or across every site.
+- `ReaderGuardTest`: from the side where nothing is declared — absent, null, empty and non-string declarations, a
+  name that is no guard, a dotted name config would resolve, a guard with no provider or no buildable driver, a
+  panel's guard, a panel-shaped model, a model declaring the org scope without registering it, a provider that loads
+  no Eloquent model — each answering no, with an owner whose id holds a row signed in on `web`, and the same row
+  answering yes once a guard is declared and no again once it is not; nobody on the reader guard; no site; a reader's
+  session on another org's site, through the ordinary provider and through one that strips the scope; keys normalised
+  to the model's type as printable ASCII of at most 255 bytes; each fault in its own words; and a sweep for every
+  fallback to another guard;
+- `EntitlementNameTest` and `EntitlementSourceTest`: both grammars, accepted and refused, through the doors, with no
+  query; `core.` reserved; a name nobody declared granted and held; the refund that keeps the comp, compared byte for
+  byte; two orders; holding through any live source in either insertion order; a refunded source replayed, by count;
+  a lapsed source revoked and then granted; a comp reinstating exactly, never touching an order, refused with nobody
+  signed in, and revoked as any source is; each decision on its own row; each source lapsing at its own end;
+- `EntitlementWriterTest`: the grant and comp table row by row, the revoke table, a repeat recorded once, a lapsed row
+  extended, the end's bounds, no default for it; the reader stored as one string and as the host spells them, on
+  every door; another org's reader unknown; an owner, the system, a member and a reader's own request — at every door,
+  with the org alone in context, and on a guard core cannot use; no reader, name or source in any audit column or
+  refusal; a cancelled save; a race on the unique index; a nested deadlock and a nested lock-wait timeout chaining
+  nothing, the second leaving nothing written; an enclosing rollback; no site, a site gone and no org; a failed
+  session load at every write door; the doors built afresh per request;
+- `EntitlementCheckTest`: held, absent, revoked and lapsed; a grant and a revoke seen in the same request; one
+  statement with the site and org as plain equalities and no source; SQLite's plan; a failed query and a failed
+  reader load each `EntitlementUnavailable` or `Database`, chaining nothing; no parameter but the name; no bypass;
+- `EntitlementExpiryTest`: the boundary at whole seconds, no end, a revocation in the past and one stamped in the
+  future, flooring, a Paris end under a New York application, two sources lapsing apart, and the SQL and PHP readings
+  of "live" agreeing at every instant in two zones;
+- `EntitlementIsolationTest`: a sibling site, the same brand's other language included; a row filed under another org;
+  another org's context seeing, counting and changing nothing — a revoke naming the exact source included; no context;
+- `EntitlementStorageTest`: NOT NULL key columns; the four-column index, and a second source beside the first; UTC
+  wall clock in whole seconds; only an instant through the cast; 2040 and 9999 round-tripped; readers and sources told
+  apart by bytes on every engine; the site cascade refused through the model and the builder, from another site's
+  context, in the singular and the plural, letting revoked and lapsed rows go and an org's hard delete take everything;
+- `EntitlementWriteDoorsTest`: every write refused, outside the escape hatch and inside it; an upsert that would undo a
+  refund; an upsert, a force delete and a delete from inside the save window; the builder's write methods enumerated;
+  each window armed in one private method, reached from its own doors alone and closed in a `finally`; the org's row
+  shared before the sites', which are taken in ascending order, and a grant's row read plainly; no listener of core's;
+- `EntitlementRaceTest`, on PostgreSQL, MySQL and MariaDB: a grant waiting on a rival holding the site and going
+  through once it lets go, nothing saved by a nested call whose wait ran out, an erasure waiting on the org's second
+  site, a revoke and an erasure seeing a row committed after the caller's first read, and a grant deciding on the row
+  as it is now;
+- `EntitlementErasureTest` and `EntitlementsCommandTest`: the export's shape, order and states; every row of the reader
+  erased and recorded, and nothing else; a deleted reader, and no guard declared; status lines for each guard state,
+  counts naming nothing, and exit codes; JSON alone with no reader id; `--force`; a soft-deleted org; unknown org, a
+  missing option and an unknown action refused, the reader never printed;
+- `EntitlementSurfaceTest`: every symbol `@internal`; every parameter that carries a reader or a source sensitive, and,
+  under PHP's engine default, no refusal's trace — those raised inside the transaction included — holding either;
+  nothing logged, reported or dispatched; the writer's doors and no more; nothing in the admin or HTTP reaching them;
+- `EntitlementWriteLevelZeroTest`, at transaction level 0 on a file another process reads: a grant, an extension, a
+  comp's reinstatement, a revoke and an erasure whose record cannot be written each leaving the committed state as it
+  was; a rival holding the database refused, writing nothing, in both journal modes; a refused COMMIT, before and after
+  it applied, refused in words that claim nothing, and asking again safe.
 
 ---
 

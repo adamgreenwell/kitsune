@@ -125,10 +125,13 @@ it('agrees with itself: the SQL and the PHP reading of "live", row by row and in
         Fx::plant($this->site, $this->id, 'course.advanced-php', 'test.order:'.md5($label), $expires, $revoked);
     }
 
-    foreach ([$t->subDay(), $t->subSecond(), $t, $t->addSecond(), $t->addYears(2)] as $now) {
-        $sql = Entitlement::query()->liveAt($now)->pluck('id')->sort()->values()->all();
-        $php = Entitlement::query()->get()->filter(fn (Entitlement $row): bool => $row->isLiveAt($now))->pluck('id')->sort()->values()->all();
+    // Each instant in UTC and in a zone five hours behind it: "live" is a property of the instant, not of its spelling.
+    foreach ([$t->subDay(), $t->subSecond(), $t, $t->addSecond(), $t->addYears(2)] as $instant) {
+        foreach ([$instant, $instant->setTimezone('America/New_York')] as $now) {
+            $sql = Entitlement::query()->liveAt($now)->pluck('id')->sort()->values()->all();
+            $php = Entitlement::query()->get()->filter(fn (Entitlement $row): bool => $row->isLiveAt($now))->pluck('id')->sort()->values()->all();
 
-        expect($php)->toBe($sql, 'at '.$now->toDateTimeString());
+            expect($php)->toBe($sql, 'at '.$now->toIso8601String());
+        }
     }
 });

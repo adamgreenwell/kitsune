@@ -37,6 +37,8 @@ beforeEach(function (): void {
     Fx::writer()->grant($this->id, 'course.advanced-php', 'commerce.order:93178', CarbonImmutable::parse('2026-10-07', 'UTC'));
     Fx::writer()->grant($this->id, 'course.other', 'commerce.order:93179', null);
     Fx::writer()->revoke($this->id, 'course.other', 'commerce.order:93179');
+    Fx::writer()->grant($this->id, 'course.third', 'commerce.order:93181', null);
+    Fx::writer()->revoke($this->id, 'course.third', 'commerce.order:93181');
     Fx::site($this->org, 'second');
     Fx::writer()->grant($this->id, 'course.advanced-php', 'commerce.order:93180', null);
 
@@ -57,7 +59,7 @@ it('reports a usable guard and counts that name nothing', function (): void {
     [$code, $out] = entitlementsCommand(['action' => 'status']);
 
     expect($code)->toBe(0)
-        ->and($out)->toBe("Reader guard: declared and usable [test_readers].\nEntitlements: 4 grants on 2 sites — 2 live, 1 lapsed, 1 revoked.\n");
+        ->and($out)->toBe("Reader guard: declared and usable [test_readers].\nEntitlements: 5 grants on 2 sites — 2 live, 1 lapsed, 2 revoked.\n");
 });
 
 it('reports no guard declared without failing, and an unusable one by failing', function (): void {
@@ -89,8 +91,8 @@ it('exports one reader as JSON alone, with sources and no reader id', function (
     $records = json_decode($out, true, flags: JSON_THROW_ON_ERROR);
 
     expect($code)->toBe(0)
-        ->and($records)->toHaveCount(4)
-        ->and(array_column($records, 'source'))->toBe(['commerce.order:93177', 'commerce.order:93178', 'commerce.order:93179', 'commerce.order:93180'])
+        ->and($records)->toHaveCount(5)
+        ->and(array_column($records, 'source'))->toBe(['commerce.order:93177', 'commerce.order:93178', 'commerce.order:93179', 'commerce.order:93181', 'commerce.order:93180'])
         ->and(array_keys($records[0]))->toBe(['site', 'entitlement', 'source', 'state', 'expires_at', 'revoked_at', 'changed_at'])
         ->and($out)->not->toContain('81234')
         ->and(app(Context::class)->orgId())->toBeNull();
@@ -101,14 +103,14 @@ it('erases only with --force, and says how many', function (): void {
 
     expect($code)->toBe(1)
         ->and($out)->toBe("Refusing: forget deletes a reader's entitlements, from every source, on every site of the organisation. Run it again with --force.\n")
-        ->and(DB::table('entitlements')->count())->toBe(4);
+        ->and(DB::table('entitlements')->count())->toBe(5);
 
     [$code, $out] = entitlementsCommand(['action' => 'forget', '--org' => 'acme', '--reader' => '81234', '--force' => true]);
 
     expect($code)->toBe(0)
-        ->and($out)->toBe("Erased 4 entitlement grants.\n")
+        ->and($out)->toBe("Erased 5 entitlement grants.\n")
         ->and(DB::table('entitlements')->count())->toBe(0)
-        ->and(DB::table('audit_log')->where('action', EntitlementWriter::ERASED)->whereNull('actor_id')->count())->toBe(4);
+        ->and(DB::table('audit_log')->where('action', EntitlementWriter::ERASED)->whereNull('actor_id')->count())->toBe(5);
 });
 
 it('exports and erases the readers of a soft-deleted org', function (): void {
@@ -117,12 +119,12 @@ it('exports and erases the readers of a soft-deleted org', function (): void {
     [$code, $out] = entitlementsCommand(['action' => 'export', '--org' => 'acme', '--reader' => '81234']);
 
     expect($code)->toBe(0)
-        ->and(json_decode($out, true))->toHaveCount(4);
+        ->and(json_decode($out, true))->toHaveCount(5);
 
     [$code, $out] = entitlementsCommand(['action' => 'forget', '--org' => 'acme', '--reader' => '81234', '--force' => true]);
 
     expect($code)->toBe(0)
-        ->and($out)->toBe("Erased 4 entitlement grants.\n");
+        ->and($out)->toBe("Erased 5 entitlement grants.\n");
 });
 
 it('refuses an unknown org by its slug, a missing option, and an unknown action without echoing it', function (): void {

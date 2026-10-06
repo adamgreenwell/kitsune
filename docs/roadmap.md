@@ -552,7 +552,7 @@ The control plane — not the license — is the moat.
 
 **v1.0: roughly 13–19 months part-time**, front-loaded with a 1–2 week spike that could still invalidate parts of the design cheaply. Full original scope lands in **year 3**.
 
-⚠️ *Amended 2026-10-??: "13–19 months" was last set on 2026-09-14, before ADR-040 added Phase 5a and before reader
+⚠️ *Amended 2026-10-06: "13–19 months" was last set on 2026-09-14, before ADR-040 added Phase 5a and before reader
 accounts moved into v1.0 (ADR-037, amended 2026-10-06). Both enlarge v1.0. Per the rule below, the estimate moves: it
 is re-stated when the reader-accounts slice is sized, rather than guessed here.*
 

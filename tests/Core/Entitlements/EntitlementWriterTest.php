@@ -532,6 +532,13 @@ describe('a write that does not land', function (): void {
                 ->and($refused->getPrevious())->toBeNull()
                 ->and($refused->getMessage())->not->toContain('81234');
         }
+
+        // Refused before the name is checked: a malformed one is neither repeated nor kept.
+        $refused = refusalOf(fn () => DB::transaction(fn () => Fx::writer()->grant(81234, "course.x\n<b>", 'test.order:1', null)));
+
+        expect($refused->reason)->toBe(EntitlementRefusal::Database)
+            ->and($refused->entitlement)->toBeNull()
+            ->and($refused->getMessage())->toStartWith('The entitlement was not granted: the database refused (SQLSTATE ');
     });
 
     it('refuses an erasure or an export with no organisation in context', function (): void {
