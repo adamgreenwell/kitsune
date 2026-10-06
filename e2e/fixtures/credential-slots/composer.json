@@ -1,0 +1,23 @@
+{
+    "name": "kitsune/e2e-credential-slots",
+    "description": "Test-only: declares credentials so the browser suite has something to set. Never published.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\E2e\\CredentialSlots\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\E2e\\CredentialSlots\\CredentialSlotsServiceProvider",
+            "scoping": []
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

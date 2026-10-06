@@ -18,12 +18,13 @@ use Kitsune\Core\Credentials\CredentialRefused;
 use Kitsune\Core\Credentials\CredentialSlot;
 use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Credentials\Secret;
+use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
 
 /*
  * Write-only, asked of every exit a value could take from inside the process — ADR-040: "a secret that cannot be read
- * back through any admin path". The admin's own exits are PR B's browser test.
+ * back through any admin path". The admin's own exits are `CredentialSetControllerTest`'s and `e2e/credentials.spec.js`'s.
  */
 
 beforeEach(function (): void {
@@ -180,6 +181,7 @@ it('marks every parameter that carries plaintext, or a key, as sensitive', funct
     'the app key derived' => [CredentialCipher::class, 'derive', 'configured'],
     'the key tagged' => [CredentialCipher::class, 'keyIdOf', 'key'],
     'the value wrapped' => [Secret::class, '__construct', 'value'],
+    'the request taken apart' => [CredentialSetController::class, 'take', 'request'],
 ]);
 
 it('chains nothing and quotes no ciphertext when the database refuses the write', function (): void {

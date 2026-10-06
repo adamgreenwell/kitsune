@@ -156,6 +156,29 @@ test.describe('a user holds only what was granted', () => {
         await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Roles' })).toHaveCount(0);
     });
 
+    test('is refused credentials, at the URL, at the POST and in the sidebar', async ({ page }) => {
+        /*
+         * ⚠️ OWNER-ONLY, AS ROLES ARE — ADR-040's admin half. A key set here routes an org's money, so a member who
+         * could replace one could take it; and the POST is asked as well as the page, because the form is the half a
+         * member never sees and the request is the half they can still send — with their own valid token.
+         */
+        const refused = await page.goto(`/admin/${SITE}/credentials`);
+        expect(refused?.status()).toBe(403);
+
+        await page.goto(`/admin/${SITE}/c/article`);
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Credentials' })).toHaveCount(0);
+
+        const token = String(await page.locator('meta[name="csrf-token"]').getAttribute('content'));
+        const value = `fx_test_${require('node:crypto').randomBytes(30).toString('hex')}`;
+        const posted = await page.request.post(`/admin/${SITE}/credentials/set`, {
+            form: { _token: token, slot: 'e2e.payment-key', mode: 'test', password: value },
+            maxRedirects: 0,
+        });
+
+        expect(posted.status()).toBe(403);
+        expect((await posted.text()).includes(value)).toBe(false);
+    });
+
     test('is offered no published status on a draft, because publishing is its own permission', async ({ page }) => {
         /*
          * ⚠️ THE OPTIONS ARE THE VISIBLE HALF ONLY. `EntryResource` also validates the value against the
@@ -286,6 +309,11 @@ test.describe('the history of an entry somebody may only view', () => {
         await page.mouse.wheel(0, 1200);
         await expect(page.getByText('History')).toBeVisible();
     }
+
+    test('is refused credentials too, holding one grant', async ({ page }) => {
+        const refused = await page.goto(`/admin/${SITE}/credentials`);
+        expect(refused?.status()).toBe(403);
+    });
 
     test('shows the history and offers no restore', async ({ page }) => {
         await openHistory(page);

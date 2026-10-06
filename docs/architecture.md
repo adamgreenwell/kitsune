@@ -180,7 +180,9 @@ org_credential_modes           -- ADR-040: which of an org's credentials are in 
 **`orgs` carries no mode, by design** (ADR-040, the credential store as built): `Org` is unscoped and a save of it is
 unaudited, and the mode decides whether real money moves. Nothing derived from a credential's value is stored — no
 hash, length, prefix or last four — and a per-org export lists slot, mode, state and `changed_at`, never ciphertext or
-key id. Neither table is an entry type, and v1.1's generated REST API never exposes them.
+key id. Neither table is an entry type, and v1.1's generated REST API never exposes them. An owner sets, replaces and
+removes credentials on one page, `/admin/{site}/credentials`, whose value travels in a plain POST outside Livewire and
+is never shown back (ADR-040, the admin half).
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 

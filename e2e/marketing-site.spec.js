@@ -223,7 +223,7 @@ test.describe.serial('the Marketing Site blueprint, applied by its command', () 
         const sidebar = page.locator('.fi-sidebar');
         await expect(sidebar.getByRole('link', { name: 'Pages' })).toBeVisible();
 
-        for (const name of ['Posts', 'Tags', 'Entry types', 'Roles']) {
+        for (const name of ['Posts', 'Tags', 'Entry types', 'Roles', 'Credentials']) {
             await expect(sidebar.getByRole('link', { name })).toHaveCount(0);
         }
 

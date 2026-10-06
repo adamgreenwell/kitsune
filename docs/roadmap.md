@@ -417,8 +417,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       string is validated for shape and not existence, as a permission is. Per site because [ADR-037](decision-log.md)
       already decided it — one identity per org, everything else per site. The reader is a loose id with no foreign
       key, as `audit_log` references an actor
-- [ ] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
-      ADR-036's chat service is the second consumer
+- [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
+      ADR-036's chat service is the second consumer *— done: the store (#177) and its admin,
+      [ADR-040, amended 2026-10-06 twice](decision-log.md)*
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
       sellable record referencing it; money is integer minor units, one currency per org
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

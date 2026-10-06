@@ -34,8 +34,9 @@ use Kitsune\Core\Tenancy\Context;
  * that cannot be recorded is not kept (ADR-020), and a refused write records nothing.
  *
  * ⚠️ AUTHORITY: an owner of the org in context (ADR-033). With nobody signed in the writer trusts its caller, as
- * `Entry::refuseUnpermittedRepublication()` reads a null actor as the system acting; in this slice no web path reaches
- * it without a signed-in owner, and there is no console write path. One that comes must open an explicit window of its
+ * `Entry::refuseUnpermittedRepublication()` reads a null actor as the system acting; no web path reaches it without a
+ * signed-in owner — the credentials page, its actions and `CredentialSetController` each refuse first, the controller's
+ * refusal asserted with nobody signed in — and there is no console write path. One that comes must open an explicit window of its
  * own for that — never `runningInConsole()`, which is true in a queue worker, a CLI-served HTTP worker and every test.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.

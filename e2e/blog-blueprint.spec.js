@@ -230,6 +230,7 @@ test.describe.serial('the Blog blueprint, applied by its command', () => {
         await expect(sidebar.getByRole('link', { name: 'Tags' })).toBeVisible();
         await expect(sidebar.getByRole('link', { name: 'Entry types' })).toHaveCount(0);
         await expect(sidebar.getByRole('link', { name: 'Roles' })).toHaveCount(0);
+        await expect(sidebar.getByRole('link', { name: 'Credentials' })).toHaveCount(0);
 
         // A new post: Draft and Archived, and no Published — publishing is the editor's.
         await page.goto(`/admin/${SITE}/c/post/create`);

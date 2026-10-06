@@ -36,6 +36,12 @@ find packages/core/src skeleton/app skeleton/resources \( -name "*.css" -o -name
 
 Kitsune authors **one** Blade view and **zero** lines of CSS or JavaScript. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
 
+*Amended 2026-10-06 (ADR-040):* core also builds one form in PHP, the credential form, hand-built because its value must
+not be a Livewire field — Filament's own field and button classes, one inline Alpine attribute that disables its button
+on submit, and no stylesheet. It earns its own conformance: axe with the modal open and in live mode, a keyboard-only
+path, and the page in the accessibility and RTL scans (`credentials.spec.js`, `accessibility.spec.js`, `rtl.spec.js`).
+Inherited and recorded: Filament's action modals do not restore focus when they close.
+
 That will change. Every custom Filament component, every published view and every line of project CSS moves surface from the first column to the second, and each one has to carry its own conformance rather than inheriting it.
 
 ---
