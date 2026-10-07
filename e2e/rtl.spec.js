@@ -56,6 +56,7 @@ const PAGES = [
     ['related records', `/admin/${SITE}/c/article/1/related`],
     // ADR-040's admin half: core's one hand-built form sits in its Set modal, scanned there by `credentials.spec.js`.
     ['credentials', `/admin/${SITE}/credentials`],
+    ['entitlements', `/admin/${SITE}/entitlements`],
 ];
 
 /** Layout landmarks, and every one of them is direction-sensitive. */

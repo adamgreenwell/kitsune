@@ -46,11 +46,6 @@ return [
         'previous_key' => 'It still works. Replacing it (pasting the same key again is enough) moves it to the current app key.',
         'unreadable' => 'It was stored under an app key this installation no longer has, or what is stored is damaged, so nothing can use it. Paste it again from where it was issued. If the app key was changed by mistake, whoever runs this installation can put it back, which brings back every credential at once.',
     ],
-    'who' => [
-        'system' => 'the system',
-        'former' => 'someone no longer in this organisation',
-        'other' => 'an account of another kind',
-    ],
     'format' => [
         'begins' => 'Begins :prefixes.',
         'or' => ' or ',

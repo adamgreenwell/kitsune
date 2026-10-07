@@ -1915,6 +1915,11 @@ org's credentials and switching it between test and live mode. Still no subject:
 by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
 #1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
 
+⚠️ **Amended 2026-10-07 (ADR-040's entitlements page):** owner-only in v1.0 also covers listing who holds what on a
+site, giving a comp, revoking one source and reading a row's history. Still no subject: `entitlement.manage` would be
+refused by the vocabulary even for an owner, and delegating a comp — the one act that gives back access a refund took —
+waits for v1.2's subjects.
+
 ### A policy is not a query scope
 
 `EntryPolicy` answers about a record somebody already holds. Eloquent never consults a policy while **building** a query, so every place that LISTS entries has to apply the grant itself — review found three: the relation picker's search and label resolvers, the related-records table, and the attach dialog, each of which named titles of a type the same user is refused at the URL.
@@ -3733,7 +3738,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -4174,8 +4179,9 @@ link left ungated, now asked of the sidebar the panel builds:
   RTL and off-host page lists, and the blueprints' writers' absent links.
 
 ⚠️ **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half.** The table, the reader guard, the one
-door in, the read door, and a reader's export and erasure, with no page; the owner's page, where comps come from, is
-the second half and its own pull request, and the roadmap box waits for it, as the credential store's did. The decision
+door in, the read door, and a reader's export and erasure, with no page; ~~the owner's page, where comps come from, is
+the second half and its own pull request, and the roadmap box waits for it~~ *(true of that half: the page is built,
+and the box ticked, in the next amendment)*, as the credential store's did. The decision
 above stays as it was, except the key, amended in place where it is stated.
 
 **Adam's answers (2026-10-06).**
@@ -4276,7 +4282,7 @@ middleware it is the request's first query on the readers' table.
 through a cast that writes only an instant — a string is refused, so SQLite's text comparison only ever meets
 `Y-m-d H:i:s` — and a Paris-zoned end is stored as the right UTC instant. Ends are floored to the second; an end at or
 before now is refused, and so is one after 9999-12-31 23:59:59, which MySQL's `DATETIME` cannot hold. Display is PR B's,
-through `SiteTime`. Clock skew between servers moves a boundary by seconds, accepted.
+through `SiteTime` *(as built: every instant on the owner's page, in the site's timezone; see the next amendment)*. Clock skew between servers moves a boundary by seconds, accepted.
 
 **The site cascade.** `Site::guardCascade()` refuses to delete a site that still gives a reader a live grant, through the
 model and the builder, naming the count — per row, since a reader holding through two sources counts twice — because the
@@ -4429,11 +4435,137 @@ erasure without the host's spelling; and the cascade guard counting through `Sit
   missing option and an unknown action refused, the reader never printed;
 - `EntitlementSurfaceTest`: every symbol `@internal`; every parameter that carries a reader or a source sensitive, and,
   under PHP's engine default, no refusal's trace — those raised inside the transaction included — holding either;
-  nothing logged, reported or dispatched; the writer's doors and no more; nothing in the admin or HTTP reaching them;
+  nothing logged, reported or dispatched; the writer's doors and no more; ~~nothing in the admin or HTTP reaching them~~ *(true of that half: the
+  owner's page now reaches the writer, and nothing else in the admin or over HTTP does)*;
 - `EntitlementWriteLevelZeroTest`, at transaction level 0 on a file another process reads: a grant, an extension, a
   comp's reinstatement, a revoke and an erasure whose record cannot be written each leaving the committed state as it
   was; a rival holding the database refused, writing nothing, in both journal modes; a refused COMMIT, before and after
   it applied, refused in words that claim nothing, and asking again safe.
+
+⚠️ **Amended 2026-10-07 — entitlements' second half, the owner's page, as built (Phase 5a).** The decision and the
+first half stay as they were; with this, the roadmap box is ticked. Adam answered the four questions it raised
+(2026-10-07): with no usable reader guard the page shows the guard's fault and no rows; *Ends* starts unselected; a
+refused comp keeps its form open; and "who" has one set of words, shared with the credentials page.
+
+**The page.** `/admin/{site}/entitlements`, owner-only (ADR-033, amended beside its owner-only paragraph): 403 at the
+URL to a member and to a demoted owner on their next request, 404 across orgs, and its sidebar link hidden by the same
+rule and while the installation has no usable reader guard. One row per source, as stored — reader, entitlement,
+source (a comp shown as *Comp*), a state badge that says its word (*Live*, *Lapsed*, *Revoked*, from the model's own
+`isLiveAt()`), when it ends and when it last changed, both in the site's timezone. The newest change first. A reader is
+shown by identifier until reader accounts name them. **With no usable reader guard (answer 1)** it shows the guard's
+own sentence and nothing else — no table, no Comp — because every check answers no while the fault lasts, so a row
+badged *Live* would contradict the door, and a revoke would be refused; `kitsune:entitlements export` still reads the
+rows. ⚠️ The table's query names the site and the org itself: Filament's tenancy scope is registered per resource, never
+on a page, and `SiteScope`'s site branch compares no org — so a row filed under another org with this site's id is not
+listed and cannot be named to an action.
+
+**Filters.** Reader, entitlement and source match exactly, binding only what the one encoding accepts — the reader
+through `ReaderGuard::key()`, so `007` is not reader 7 — and otherwise `0 = 1`, binding nothing but the site and the
+org. *Comps only* is a toggle, and the state filter is composed from `scopeLiveAt`, pinned to agree with the badge at an
+end exactly. Filters are applied with a button, persist nowhere — no `#[Url]`, and `persistFiltersInSession(false)`
+said rather than left to a host's `Table::configureUsing()` (review) — so a reader's identifier reaches no address,
+`Referer`, access log or session. An empty filtered table says no row matches, never that nothing has been given on
+the site (review).
+
+**Comp.** A header action: a reader, a name and *Ends* — *No end* or a date — with no default (answer 2), so no end is
+always chosen, never the reading of a forgotten date; a date chosen and left blank is refused by the form. The only rules
+are *required* and the picker's date: the writer is the validation, and its refusal is shown in its own words, escaped,
+left on screen, **over the form, which stays open with what was typed** (answer 3). The picker reads the site's
+timezone and hands back the application's, and the handler parses it in the application's — never UTC by assumption.
+It says *Given.*, *Extended.*, *Given again — this comp had been revoked.* or *Already comped for as long or longer —
+nothing changed.*; the audit actor is the owner. No source field: a comp's source is `core.comp`.
+
+**Revoke.** On every row not yet revoked — a lapsed one included, so a later grant of that source cannot extend it —
+with a confirmation that differs for a comp ("You can comp again later") and a producer's source ("It stays revoked:
+if it is granted again — a replayed payment, a re-run import — nothing changes"). The handler passes the resolved row's
+own reader, name and source, never anything the browser sent, and catches every refusal: under a guard fault, or for a
+row whose reader no longer fits the guard's key, the writer refuses, and the page says so. ⚠️ **The 403 at both handlers
+is load-bearing:** with nobody signed in the writer trusts its caller as the system, so the page refuses a missing user
+itself. A refusal whose COMMIT the database refused — the change may have applied — is titled *Perhaps given, perhaps
+not* or *Perhaps revoked, perhaps not*, never "not" (review: `EntitlementRefused::$mayHaveApplied`). The table re-renders
+in the same response, filters kept: measured in a browser, with no navigation.
+
+**History.** Per row, opened on demand: every audit record of that row, oldest first — *Granted*, *Extended*, *Given
+again*, *Revoked*, *Erased*, anything else as stored — with when, in the site's timezone, and by whom, as a table with
+column headers. "Who" is `Filament\AuditActors`, moved out of the credentials page and shared (answer 4): a member of
+the org by name, "the system", "someone no longer in this organisation", or "an account of another kind", named only
+through the panel's own membership-scoped user model, building no class a row names; its words are
+`kitsune::audit.who.*`, moved from `kitsune::credentials` unchanged.
+
+**What reaches the browser, and what never leaves the server.**
+- ⚠️ **No stored value in an attribute or in markup.** A reader's identifier is any printable ASCII, `"` and `<`
+  included; Filament merges an action's extra attributes unescaped, and `__()` escapes none of its parameters. So the
+  page puts no stored value in an attribute — no `extra…Attributes`, tooltip, `HtmlString` or markdown — names row
+  actions by their visible label, and shows the reader's identifier only in its column. A stored `e2e"onfocus=…` renders
+  as text in the browser, with nothing injected, in the table and in both of its modals.
+- ⚠️ **Every read that binds a filter's value carries its SQLSTATE alone**, as the writer's doors do: the count and the
+  page a render makes, the row an action resolves, and four selection and count reads that nothing on the page calls
+  and a browser can call by name (review) — a `QueryException` or a `DeadlockException` interpolates its bindings into
+  the message the exception handler logs. Each is a trait alias the page overrides, and the reflection test pins the
+  list.
+- Every public method the page adds is static; its instance methods are Filament's own.
+- `giveComp()`'s reader is `#[\SensitiveParameter]`; the other handlers take the row.
+
+**The cost.** A render is two queries — the count and the page — whatever is stored, and one over `0 = 1` for a filter
+nothing could match; History is one query, and one more when it names a person. The count is fixed and the cost is not:
+the newest-first sort reads the site's rows through the unique index's prefix. Measured through the page's own reads at
+25,000 rows on the site and as many on a sibling, the median of seven: 14.6 ms unfiltered and 1.4 ms filtered by
+reader on SQLite 3.45, 16.0 and 3.5 ms on PostgreSQL 16, 61.2 and 2.7 ms on MariaDB 10.11 — host figures, not the
+floor's. Accepted for v1.0; a `(site_id, changed_at)` index is the fix if a site ever holds hundreds of thousands.
+
+**Residuals, named.** R1: a link — `?tableAction=revoke&tableActionRecord=…` — opens Revoke's confirmation for a row of
+this site, as for every confirmed table action in the admin; the owner must still confirm, and a link to Comp opens an
+empty form. R2: `tableRecordsPerPage` is a public property Filament does not clamp, shared by every admin table; it is
+owner-only here, and one page clamping alone would be a second rule. R3: the cost above. R4: the picker's repeated and
+skipped hour, `SiteTime`'s, already stated. And Filament's own table placeholder is drawn below WCAG AA's contrast, so
+an absent end is ordinary text through `SiteTime::columnOr()` instead (measured by axe).
+
+**The surface, all `@internal`, appended to the first half's list:** `Filament\Pages\Entitlements`;
+`Filament\AuditActors`; `SiteTime::columnOr()`; `EntitlementRefused::$mayHaveApplied`; the page route
+`{panel}/{site}/entitlements`; the translation namespaces `kitsune::entitlements` and `kitsune::audit`. CONTRIBUTING
+gains no exception. The browser suite's reader guard is `kitsune/e2e-reader-guard`, under `e2e/` — a reader model, its
+table, the guard and a seed — which no release, package split or floor benchmark copies, and which the skeleton's own
+reader model replaces when reader accounts arrive.
+
+**Enforced by**, for the decision's "an operator handing out a comp" — now an owner, on this page — and for the first
+half's fail-closed check as an owner sees it:
+each rule has a test that fails when it is removed: 87 mutations of the page, `AuditActors`, `SiteTime::columnOr()`,
+the refusal's new flag and the panel's wiring, 85 caught, and 15 of the browser build, 14 caught there. The two PHP
+survivors are equivalent: "now" left unfloored, and taken in the application's zone — every stored end is whole seconds
+and the comparison is of instants, so neither can change an answer, as the first half's own survivor of that shape
+could not. The browser survivor is the fault state listing rows anyway: the browser suite runs with a reader guard
+declared throughout, and `EntitlementPageTest`'s fault test kills it. Two more were caught only once a test was added:
+the site conjunct dropped while `SiteScope` still applies — isolation holds, but the planner loses its equality, so the
+cost test now pins both conjuncts in each query — and a forged `actor_type` naming a class that exists, built, where
+the test had named only one that does not. Review added sixteen, each killed by a test of its own: the four inherited
+reads unmapped; persistence left to a host's default; the empty state ignoring every filter, or an exact value; a
+COMMIT the database refused titled "not", at either door, and the flag set too widely, two ways; the source filter's
+help; a blank date allowed; and History's time unconverted, its "by" taken from another row, and an extension read as
+a grant:
+- `EntitlementPageTest`: an owner only — a member, nobody and a reader's own session refused; the link in the sidebar
+  the panel builds, and not without a usable guard (undeclared, the panel's, an unscoped model) or for a member, at no
+  query once warm; the fault alone, with no table, no Comp and no query on `entitlements`; one row per source with its
+  badge, colour, source and ends, in the site's timezone; this site's rows and no other, a sibling site's and one filed
+  under another org included, by any key; exact filters binding nothing they refuse; the state filter agreeing with the
+  badge before, at and after an end; nothing in an address or the session, under a host-wide persistence default too;
+  Comp's fields and rules, an end always said and a blank date refused; each outcome; the picker's end through the
+  application's zone; a refusal in the writer's words, escaped, over a form kept open; 403 for nobody and a member, at
+  every handler, writing nothing; Revoke's offer and words; one source revoked and nothing else, twice, refused with
+  nobody signed in, under a guard fault and for an unfitting identifier; a COMMIT the database refused titled as
+  uncertain; History's changes, times and people, through the org's members alone; the filtered empty state and the
+  source filter's help; a fixed count of queries; every mapped read failing with its SQLSTATE alone; no browser endpoint
+  of its own; and no stored value in an attribute;
+- `EntitlementSurfaceTest`: the page and `AuditActors` `@internal`, swept for logs and dispatches, the comp's reader
+  sensitive, and the writer reached from this page alone, the export from nowhere in the admin or over HTTP;
+- `CredentialPageTest`, unchanged, guarding the move of "who": its names and its nine queries;
+- `e2e/entitlements.spec.js`: the link and a producer's row the page did not make; its history by the system, as a
+  table axe passes; a comp beside it; the order's source revoked alone, with no navigation; a revoked comp given back;
+  a comp that changes nothing; the comp's history by the owner; "does reader 1 hold it?" answered by filtering, with the
+  reader in no request; another org's reader refused in the writer's words over a form kept open; per site; this org's
+  alone; nobody signed in; the keyboard path and axe in the Comp modal; a stored identifier with a quote kept as text;
+  and a link that opens and never acts;
+- `permissions.spec.js`: the copy-editor refused at the URL and given no link, the viewer refused; the accessibility,
+  RTL and off-host page lists.
 
 ---
 

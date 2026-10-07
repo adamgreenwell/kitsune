@@ -199,7 +199,9 @@ one source, so a refund removes only what its order gave. The reader is whoever 
 (`kitsune.readers.guard`, ADR-037) signs in — never a panel user — and with nothing declared every check answers no.
 Rows are deleted only by the org's hard delete, a site's delete once nothing live remains on it, and a reader's erasure
 (`kitsune:entitlements forget`). A row is personal data outside `pii_class`, the source included, and `kitsune:entitlements
-export` hands a reader's back. It is never an entry type, and v1.1's generated REST API never exposes it.
+export` hands a reader's back. It is never an entry type, and v1.1's generated REST API never exposes it. An owner sees
+a site's rows, gives a comp and revokes one source on one page, `/admin/{site}/entitlements`, which lists nothing while
+no usable reader guard is declared and puts no reader's identifier in an address or the session (ADR-040, the page).
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 

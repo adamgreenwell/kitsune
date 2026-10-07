@@ -13,6 +13,7 @@ namespace Kitsune\Core\Filament\Schemas;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Tables\Columns\TextColumn;
+use Illuminate\Support\Carbon;
 use Kitsune\Core\Settings\SiteTimezone;
 
 /**
@@ -41,6 +42,25 @@ final class SiteTime
     public static function column(string $name): TextColumn
     {
         return TextColumn::make($name)->dateTime()->timezone(SiteTimezone::current(...));
+    }
+
+    /**
+     * A table column listing an instant that may be absent, and saying what its absence means in ordinary text.
+     *
+     * ⚠️ NOT FILAMENT'S PLACEHOLDER, which is drawn in grey below WCAG AA's contrast (2.62:1, measured by axe in
+     * `e2e/entitlements.spec.js`) — and "no end" is what the row says, not a gap in it. An instant is formatted exactly
+     * as `dateTime()` formats one, in the site's timezone.
+     */
+    public static function columnOr(string $name, string $absent): TextColumn
+    {
+        return TextColumn::make($name)
+            ->timezone(SiteTimezone::current(...))
+            ->default($absent)
+            ->formatStateUsing(static fn (TextColumn $column, mixed $state): string => $state === $absent || blank($state)
+                ? $absent
+                : Carbon::parse($state)
+                    ->setTimezone($column->getTimezone())
+                    ->translatedFormat($column->getTable()->getDefaultDateTimeDisplayFormat()));
     }
 
     /** A read-only entry showing an instant, formatted in the site's timezone. */

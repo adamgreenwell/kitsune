@@ -16,6 +16,8 @@ use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Entitlements\EntitlementWriter;
+use Kitsune\Core\Filament\AuditActors;
+use Kitsune\Core\Filament\Pages\Entitlements;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
@@ -43,7 +45,7 @@ function entitlementSourceFiles(string $under): array
 }
 
 it('marks every symbol it adds @internal', function (): void {
-    $symbols = [Entitlement::class, ReaderGuard::class, ReaderGuardFault::class, EntitlementsCommand::class];
+    $symbols = [Entitlement::class, ReaderGuard::class, ReaderGuardFault::class, EntitlementsCommand::class, Entitlements::class, AuditActors::class];
 
     foreach (entitlementSourceFiles('Entitlements') as $file) {
         $symbols[] = 'Kitsune\\Core\\Entitlements\\'.basename($file, '.php');
@@ -89,6 +91,7 @@ it('keeps every reader identifier and every source out of a stack trace', functi
     'the decision: the source' => [EntitlementWriter::class, 'give', 'source'],
     'the row read: the reader' => [EntitlementWriter::class, 'lockedRow', 'stored'],
     'the row read: the source' => [EntitlementWriter::class, 'lockedRow', 'source'],
+    'the page\'s comp: the reader' => [Entitlements::class, 'giveComp', 'reader'],
 ]);
 
 /**
@@ -158,7 +161,7 @@ it('prints neither the reader nor the source in a refusal\'s trace, under PHP\'s
 it('logs, reports and dispatches nothing', function (): void {
     $core = dirname(__DIR__, 3).'/packages/core/src/';
 
-    foreach ([...entitlementSourceFiles('Entitlements'), $core.'Auth/ReaderGuard.php', $core.'Auth/ReaderGuardFault.php', $core.'Console/EntitlementsCommand.php', $core.'Models/Entitlement.php'] as $file) {
+    foreach ([...entitlementSourceFiles('Entitlements'), $core.'Auth/ReaderGuard.php', $core.'Auth/ReaderGuardFault.php', $core.'Console/EntitlementsCommand.php', $core.'Models/Entitlement.php', $core.'Filament/Pages/Entitlements.php', $core.'Filament/AuditActors.php'] as $file) {
         $source = (string) file_get_contents($file);
 
         foreach (['Log::', 'logger(', 'report(', 'dump(', 'dd(', 'event(', 'dispatch(', 'Event::'] as $needle) {
@@ -177,10 +180,21 @@ it('offers the writer\'s doors and nothing more: no duration, no shortening, no 
     expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'isErasing', 'isWriting', 'revoke']);
 });
 
-it('is reached by nothing in the admin or over HTTP in this half', function (): void {
-    foreach ([...entitlementSourceFiles('Filament'), ...entitlementSourceFiles('Http')] as $file) {
-        foreach (['EntitlementWriter', 'EntitlementRecords'] as $needle) {
-            expect(str_contains((string) file_get_contents($file), $needle))->toBeFalse(basename($file)." reaches {$needle}");
+it('reaches the writer from the owner\'s page alone, and the export from nowhere in the admin or over HTTP', function (): void {
+    $page = dirname(__DIR__, 3).'/packages/core/src/Filament/Pages/Entitlements.php';
+    $files = [...entitlementSourceFiles('Filament'), ...entitlementSourceFiles('Http')];
+
+    // Not vacuous: the page is among the files swept, and it does reach the writer.
+    expect($files)->toContain($page)
+        ->and(str_contains((string) file_get_contents($page), 'EntitlementWriter'))->toBeTrue();
+
+    foreach ($files as $file) {
+        $source = (string) file_get_contents($file);
+
+        expect(str_contains($source, 'EntitlementRecords'))->toBeFalse(basename($file).' reaches EntitlementRecords');
+
+        if ($file !== $page) {
+            expect(str_contains($source, 'EntitlementWriter'))->toBeFalse(basename($file).' reaches EntitlementWriter');
         }
     }
 });

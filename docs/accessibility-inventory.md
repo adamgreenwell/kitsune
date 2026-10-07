@@ -42,6 +42,14 @@ on submit, and no stylesheet. It earns its own conformance: axe with the modal o
 path, and the page in the accessibility and RTL scans (`credentials.spec.js`, `accessibility.spec.js`, `rtl.spec.js`).
 Inherited and recorded: Filament's action modals do not restore focus when they close.
 
+*Amended 2026-10-07 (ADR-040, entitlements):* the owner's entitlements page is Filament's own table, filters, badges and
+modals, and adds no view. Two choices of its own: an absent end reads as ordinary text (`SiteTime::columnOr()`),
+because Filament's table placeholder is grey at 2.62:1, below AA's 4.5:1, measured by axe; and a row's history is a
+table with column headers, whose cells repeat the header to a screen reader as Filament renders an entry. Every state
+badge says its word, so colour is never the only cue. Scanned with the Comp modal open and with History open, walked by
+keyboard alone, and in the accessibility and RTL scans (`entitlements.spec.js`, `accessibility.spec.js`,
+`rtl.spec.js`). Inherited and recorded: the same grey placeholder elsewhere in the admin, where Filament draws it.
+
 That will change. Every custom Filament component, every published view and every line of project CSS moves surface from the first column to the second, and each one has to carry its own conformance rather than inheriting it.
 
 ---

@@ -22,6 +22,7 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Avatars\InitialsAvatarProvider;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Pages\Credentials;
+use Kitsune\Core\Filament\Pages\Entitlements;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
@@ -137,7 +138,7 @@ final class KitsunePanel
                 RoleResource::class,
                 ...app(AdminSurface::class)->resources(),
             ])
-            ->pages([Dashboard::class, Credentials::class])
+            ->pages([Dashboard::class, Credentials::class, Entitlements::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...))
             // Drawn here rather than fetched. Filament's default sends every signed-in user's initials and the site's
@@ -264,6 +265,16 @@ final class KitsunePanel
                     ->icon('heroicon-o-lock-closed')
                     ->url(fn (): string => Credentials::getUrl())
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.credentials')),
+            ] : []),
+
+            // Entitlements sit with them, hidden by the rule that gates the URL — and until the installation declares a
+            // usable reader guard, because nothing can be listed or given without one (ADR-040, Adam's answer 1).
+            ...(Entitlements::belongsInNavigation() ? [
+                NavigationItem::make(__('kitsune::entitlements.navigation'))
+                    ->group('Structure')
+                    ->icon('heroicon-o-ticket')
+                    ->url(fn (): string => Entitlements::getUrl())
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.entitlements')),
             ] : []),
 
             /*

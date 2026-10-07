@@ -55,7 +55,7 @@
             "@php -r \"copy('skeleton/composer.json','skeleton/composer.json.orig');\"",
             "composer config repositories.kitsune-packages '{\"type\":\"path\",\"url\":\"../packages/*\"}' -d skeleton",
             "composer config repositories.kitsune-e2e '{\"type\":\"path\",\"url\":\"../e2e/fixtures/*\"}' -d skeleton",
-            "composer require kitsune/e2e-credential-slots:@dev -d skeleton --no-interaction",
+            "composer require kitsune/e2e-credential-slots:@dev kitsune/e2e-reader-guard:@dev -d skeleton --no-interaction",
             "composer install -d skeleton --no-interaction",
             "@php -r \"rename('skeleton/composer.json.orig','skeleton/composer.json');\"",
             "@php -r \"file_exists('skeleton/.env') || copy('skeleton/.env.example','skeleton/.env');\"",

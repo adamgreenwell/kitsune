@@ -79,6 +79,16 @@ module.exports = async () => {
     run(['kitsune:module', 'enable', 'kitsune/e2e-credential-slots', '--no-interaction']);
 
     /*
+     * ⚠️ THE BROWSER SUITE'S READER GUARD, ENABLED HERE AND NOWHERE ELSE — ADR-040's entitlements page. `composer
+     * skeleton:install` puts it in vendor switched off. It declares `kitsune.readers.guard`, so every owner's sidebar
+     * carries the *Entitlements* link on every page of every spec, and it seeds Golfdom's first public reader a
+     * producer's grant the page did not make. The seed refuses, and the run stops, if the guard did not take effect.
+     */
+    run(['kitsune:module', 'install', 'kitsune/e2e-reader-guard', '--no-interaction']);
+    run(['kitsune:module', 'enable', 'kitsune/e2e-reader-guard', '--no-interaction']);
+    run(['e2e:public-readers-seed', '--no-interaction']);
+
+    /*
      * ⚠️ THE BLOG BLUEPRINT, APPLIED BY ITS COMMAND — Phase 5, ADR-039. Not by the seeder: what `blog-blueprint.spec.js`
      * meets is then what the command wrote, through core's own registration under package discovery, on every build.
      * Applied above, with its owner; applied again here, because a second apply at the same version is a no-op and the

@@ -36,10 +36,15 @@ final class EntitlementRefused extends RuntimeException
 
     public const EXPORT = 'export';
 
+    /**
+     * @param  bool  $mayHaveApplied  a COMMIT the database refused, whose change cannot be told from here to have
+     *                                applied or not — so a caller's own words never say "not given" over it
+     */
     private function __construct(
         string $message,
         public readonly EntitlementRefusal $reason,
         public readonly ?string $entitlement,
+        public readonly bool $mayHaveApplied = false,
     ) {
         parent::__construct($message);
     }
@@ -53,7 +58,7 @@ final class EntitlementRefused extends RuntimeException
     {
         $named = $entitlement !== null && EntitlementName::isName($entitlement) ? $entitlement : null;
 
-        return new self(self::message($reason, $act, $named, $detail), $reason, $named);
+        return new self(self::message($reason, $act, $named, $detail), $reason, $named, $reason === EntitlementRefusal::Database && ($detail['commit'] ?? false));
     }
 
     /** @param  array{state?: string, fault?: string, commit?: bool}  $detail */

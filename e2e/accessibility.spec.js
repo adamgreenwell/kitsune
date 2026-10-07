@@ -34,6 +34,8 @@ const PAGES = [
     ['related records', `/admin/${SITE}/c/article/1/related`],
     // ADR-040's admin half: core's one hand-built form sits in its Set modal, scanned there by `credentials.spec.js`.
     ['credentials', `/admin/${SITE}/credentials`],
+    // ADR-040's entitlements page: its seeded rows put badges, filters and row actions in the scan.
+    ['entitlements', `/admin/${SITE}/entitlements`],
 ];
 
 test.describe('accessibility (automated half of #12)', () => {
