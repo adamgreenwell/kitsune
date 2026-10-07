@@ -796,13 +796,15 @@ it('tells a row\'s history, naming people only through the org\'s own members', 
 
     // A row naming a class of its own: named as one, and the class never built.
     $forged = 'Kitsune\\Nowhere\\ForgedActor';
-    AuditLog::query()->for($left)->toBase()->update(['actor_type' => $forged]);
+    // `created_at` set to itself: MariaDB before 10.10 gives a table's first TIMESTAMP column ON UPDATE CURRENT_TIMESTAMP,
+    // which would move the record to the real clock (CI's 10.6).
+    AuditLog::query()->for($left)->toBase()->update(['actor_type' => $forged, 'created_at' => DB::raw('created_at')]);
 
     expect(pageEntitlementHistory($left))->toBe([['Granted', 'Oct 7, 2026 08:05:00', 'an account of another kind']])
         ->and(class_exists($forged, false))->toBeFalse();
 
     // And one naming a class that exists, which counts its constructions: named the same way, and never built.
-    AuditLog::query()->for($left)->toBase()->update(['actor_type' => EntitlementPageForgedActor::class, 'actor_id' => '1']);
+    AuditLog::query()->for($left)->toBase()->update(['actor_type' => EntitlementPageForgedActor::class, 'actor_id' => '1', 'created_at' => DB::raw('created_at')]);
 
     expect(pageEntitlementHistory($left))->toBe([['Granted', 'Oct 7, 2026 08:05:00', 'an account of another kind']])
         ->and(EntitlementPageForgedActor::$built)->toBe(0);
