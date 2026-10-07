@@ -17,8 +17,8 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 /**
  * A reader as a host declares one — ADR-037: its own guard and table, `#[OrgScoped]` on its own `org_id`, integer keys.
  *
- * ⚠️ "READER", NEVER "USER": a user is staff, and a reader is never a panel user. Named `TestReader` because the e2e
- * suite's `reader@kitsune.test` is a staff copy-editor.
+ * ⚠️ "READER", NEVER "USER": a user is staff, and a reader is never a panel user. Named `TestReader` rather than
+ * `Reader`, which is the skeleton's own (`App\Models\Reader`).
  */
 #[OrgScoped]
 class TestReader extends Authenticatable

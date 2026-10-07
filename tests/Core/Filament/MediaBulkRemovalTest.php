@@ -273,13 +273,13 @@ describe('the actions', function (): void {
             expect(bulkRmActions()[$name]->isAuthorized())->toBeTrue($name);
         }
 
-        // A reader: another user, whose role grants view alone.
-        $reader = TestUser::create(['email' => 'reader@kitsune.test']);
-        DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $reader->getKey()]);
-        $role = Role::create(['handle' => 'reader', 'name' => 'Reader']);
-        DB::table('role_user')->insert(['role_id' => $role->getKey(), 'user_id' => $reader->getKey()]);
+        // A viewer: another member of staff, whose role grants view alone.
+        $viewer = TestUser::create(['email' => 'viewer@kitsune.test']);
+        DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $viewer->getKey()]);
+        $role = Role::create(['handle' => 'viewer', 'name' => 'Viewer']);
+        DB::table('role_user')->insert(['role_id' => $role->getKey(), 'user_id' => $viewer->getKey()]);
         $role->grant(Permissions::forEntryType('image', 'view'));
-        $this->actingAs($reader);
+        $this->actingAs($viewer);
 
         foreach (['delete', 'restore', 'forceDelete'] as $name) {
             expect(bulkRmActions()[$name]->isAuthorized())->toBeFalse($name);

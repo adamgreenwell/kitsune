@@ -12,7 +12,7 @@ const { test, expect } = require('@playwright/test');
  * the policy directly rather than asking the application. ADR-024 makes the browser layer mandatory for
  * exactly this class.
  *
- * The session here belongs to `reader@kitsune.test`, a copy-editor: `entry.article.view` and
+ * The session here belongs to `copyeditor@kitsune.test`, a copy-editor: `entry.article.view` and
  * `entry.article.update`, and deliberately nothing else. An owner cannot measure a permission system, and a
  * user with only `view` cannot reach the form on which `publish` is enforced.
  *

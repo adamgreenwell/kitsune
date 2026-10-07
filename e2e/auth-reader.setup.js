@@ -6,7 +6,7 @@ const path = require('node:path');
  * Signs in the sessions that are not owners — ADR-033.
  *
  * ⚠️ NOT OWNERS, because the two sessions that existed first both are, and an owner cannot measure a permission
- * system. The seeded `reader@kitsune.test` is a copy-editor holding `entry.article.view` and
+ * system. The seeded `copyeditor@kitsune.test` is a copy-editor holding `entry.article.view` and
  * `entry.article.update`: the fixture that can tell "the sidebar hid the link" apart from "the URL refused the
  * request", and that can reach the form on which `publish` is enforced.
  *
@@ -31,8 +31,8 @@ async function signIn(page, email, file) {
     await page.context().storageState({ path: path.join(__dirname, '..', '.playwright', file) });
 }
 
-setup('authenticate as the reader', async ({ page }) => {
-    await signIn(page, 'reader@kitsune.test', 'admin-reader-auth.json');
+setup('authenticate as the copy-editor', async ({ page }) => {
+    await signIn(page, 'copyeditor@kitsune.test', 'admin-reader-auth.json');
 });
 
 setup('authenticate as the viewer', async ({ page }) => {

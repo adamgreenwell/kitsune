@@ -305,9 +305,9 @@ class DatabaseSeeder extends Seeder
          * `publish`. A fixture that cannot reach the page it is meant to measure is a fixture that proves
          * the refusal before it.
          */
-        $reader = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
-        $reader->grant(Permissions::forEntryType('article', 'view'));
-        $reader->grant(Permissions::forEntryType('article', 'update'));
+        $copyEditor = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
+        $copyEditor->grant(Permissions::forEntryType('article', 'view'));
+        $copyEditor->grant(Permissions::forEntryType('article', 'update'));
 
         /*
          * ⚠️ A GRANT ON A TYPE THAT IS DISABLED FOR THE PRIMARY SITE, which is the only fixture that can show
@@ -317,16 +317,17 @@ class DatabaseSeeder extends Seeder
          * another site needed. `e2e/roles.spec.js` saves from `golfdom` and then reads the grant back from
          * `golfdom-fr`, where the section does appear.
          */
-        $reader->grant(Permissions::forEntryType('podcast', 'view'));
+        $copyEditor->grant(Permissions::forEntryType('podcast', 'view'));
 
-        $readerUser = User::create([
-            'name' => 'Reader User',
-            'email' => 'reader@kitsune.test',
+        // ⚠️ STAFF, NOT A READER: "reader" means a reader account (ADR-037), so this address says what the person is.
+        $copyEditorUser = User::create([
+            'name' => 'Copy Editor',
+            'email' => 'copyeditor@kitsune.test',
             'password' => Hash::make('password'),
         ]);
-        $readerUser->sites()->attach([$en->id, $fr->id, $ar->id]);
-        $readerUser->orgs()->attach($orgA->id);
-        $reader->assignTo($readerUser->id);
+        $copyEditorUser->sites()->attach([$en->id, $fr->id, $ar->id]);
+        $copyEditorUser->orgs()->attach($orgA->id);
+        $copyEditor->assignTo($copyEditorUser->id);
 
         /*
          * ⚠️ A VIEWER, and the copy-editor cannot stand in for one. Restoring a version is an EDIT, and the view
