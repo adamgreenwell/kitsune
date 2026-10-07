@@ -4453,9 +4453,9 @@ rule and while the installation has no usable reader guard. One row per source, 
 source (a comp shown as *Comp*), a state badge that says its word (*Live*, *Lapsed*, *Revoked*, from the model's own
 `isLiveAt()`), when it ends and when it last changed, both in the site's timezone. The newest change first. A reader is
 shown by identifier until reader accounts name them. **With no usable reader guard (answer 1)** it shows the guard's
-own sentence and nothing else — no table, no Comp — because every check answers no while the fault lasts, so a row
-badged *Live* would contradict the door, and a revoke would be refused; `kitsune:entitlements export` still reads the
-rows. ⚠️ The table's query names the site and the org itself: Filament's tenancy scope is registered per resource, never
+own sentence and nothing else — no table, no Comp, and no row from a read a browser calls by name, which Livewire
+would hand back (review) — because every check answers no while the fault lasts, so a row badged *Live* would
+contradict the door, and a revoke would be refused; `kitsune:entitlements export` still reads the rows. ⚠️ The table's query names the site and the org itself: Filament's tenancy scope is registered per resource, never
 on a page, and `SiteScope`'s site branch compares no org — so a row filed under another org with this site's id is not
 listed and cannot be named to an action.
 
@@ -4529,8 +4529,8 @@ reader model replaces when reader accounts arrive.
 
 **Enforced by**, for the decision's "an operator handing out a comp" — now an owner, on this page — and for the first
 half's fail-closed check as an owner sees it:
-each rule has a test that fails when it is removed: 87 mutations of the page, `AuditActors`, `SiteTime::columnOr()`,
-the refusal's new flag and the panel's wiring, 85 caught, and 15 of the browser build, 14 caught there. The two PHP
+each rule has a test that fails when it is removed: 88 mutations of the page, `AuditActors`, `SiteTime::columnOr()`,
+the refusal's new flag and the panel's wiring, 86 caught, and 15 of the browser build, 14 caught there. The two PHP
 survivors are equivalent: "now" left unfloored, and taken in the application's zone — every stored end is whole seconds
 and the comparison is of instants, so neither can change an answer, as the first half's own survivor of that shape
 could not. The browser survivor is the fault state listing rows anyway: the browser suite runs with a reader guard
@@ -4541,7 +4541,8 @@ the test had named only one that does not. Review added sixteen, each killed by 
 reads unmapped; persistence left to a host's default; the empty state ignoring every filter, or an exact value; a
 COMMIT the database refused titled "not", at either door, and the flag set too widely, two ways; the source filter's
 help; a blank date allowed; and History's time unconverted, its "by" taken from another row, and an extension read as
-a grant:
+a grant. The pull request's own review added one more: under a guard fault, the table's rows read by a method a
+browser calls by name, which Livewire hands back — the query now lists nothing while the guard is unusable:
 - `EntitlementPageTest`: an owner only — a member, nobody and a reader's own session refused; the link in the sidebar
   the panel builds, and not without a usable guard (undeclared, the panel's, an unscoped model) or for a member, at no
   query once warm; the fault alone, with no table, no Comp and no query on `entitlements`; one row per source with its

@@ -172,7 +172,10 @@ final class Entitlements extends Page implements HasTable
                 // ⚠️ EXPLICIT: Filament's tenancy scope is a Resource's, never a page's. The site is the equality the
                 // planner leads with, and the org the fence `SiteScope`'s site branch lacks.
                 ->where('entitlements.site_id', app(Context::class)->siteId())
-                ->where('entitlements.org_id', app(Context::class)->orgId()))
+                ->where('entitlements.org_id', app(Context::class)->orgId())
+                // ⚠️ NOTHING AT ALL WITHOUT A USABLE READER GUARD. The page embeds no table then, and a read a browser
+                // calls by name — Livewire returns its value — must list nothing either (review).
+                ->when(app(ReaderGuard::class)->fault() !== null, static fn (Builder $query): Builder => $query->whereRaw('0 = 1')))
             ->columns([
                 TextColumn::make('reader_id')->label(__('kitsune::entitlements.column.reader')),
                 TextColumn::make('entitlement')->label(__('kitsune::entitlements.column.entitlement')),

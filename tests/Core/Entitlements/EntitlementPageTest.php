@@ -318,6 +318,14 @@ it('says why, and lists and offers nothing, without a usable reader guard', func
         ->and(array_filter($components, static fn ($component): bool => $component instanceof EmbeddedTable))->toBe([])
         ->and(array_filter($queries, static fn (array $query): bool => str_contains($query['query'], 'entitlements')))->toBe([]);
 
+    // And a read a browser calls by name lists nothing either: Livewire hands its value back.
+    $page = entitlementsPage();
+    $id = (string) Entitlement::query()->value('id');
+
+    expect(pageEntitlementRows($page))->toBe([])
+        ->and($page->getAllTableRecordsCount())->toBe(0)
+        ->and($page->getTableRecord($id))->toBeNull();
+
     // With a guard: the table, and Comp.
     Fx::declareReaders();
     $page = entitlementsPage();
