@@ -179,6 +179,15 @@ test.describe('a user holds only what was granted', () => {
         expect((await posted.text()).includes(value)).toBe(false);
     });
 
+    test('is refused entitlements, at the URL and in the sidebar', async ({ page }) => {
+        // ⚠️ OWNER-ONLY, AS CREDENTIALS ARE — ADR-040: a comp gives back access a refund took, so it is an owner's call.
+        const refused = await page.goto(`/admin/${SITE}/entitlements`);
+        expect(refused?.status()).toBe(403);
+
+        await page.goto(`/admin/${SITE}/c/article`);
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Entitlements' })).toHaveCount(0);
+    });
+
     test('is offered no published status on a draft, because publishing is its own permission', async ({ page }) => {
         /*
          * ⚠️ THE OPTIONS ARE THE VISIBLE HALF ONLY. `EntryResource` also validates the value against the
@@ -312,6 +321,11 @@ test.describe('the history of an entry somebody may only view', () => {
 
     test('is refused credentials too, holding one grant', async ({ page }) => {
         const refused = await page.goto(`/admin/${SITE}/credentials`);
+        expect(refused?.status()).toBe(403);
+    });
+
+    test('is refused entitlements too, holding one grant', async ({ page }) => {
+        const refused = await page.goto(`/admin/${SITE}/entitlements`);
         expect(refused?.status()).toBe(403);
     });
 

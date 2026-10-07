@@ -407,7 +407,8 @@ describe('what it never writes down', function (): void {
             expect($refused->getMessage())->not->toContain('81234')
                 ->and($refused->getMessage())->not->toContain('93177')
                 ->and($refused->getPrevious())->toBeNull()
-                ->and(array_keys(get_object_vars($refused)))->toBe(['reason', 'entitlement']);
+                // The reason, a well-formed name, and whether a refused COMMIT may have applied: never a reader or a source.
+                ->and(array_keys(get_object_vars($refused)))->toBe(['reason', 'entitlement', 'mayHaveApplied']);
         }
     });
 });

@@ -13,7 +13,6 @@ namespace Kitsune\Core\Filament\Pages;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Infolists\Components\TextEntry;
-use Filament\Models\Contracts\HasName;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\Actions;
@@ -29,7 +28,6 @@ use Filament\Schemas\Schema;
 use Filament\Support\Facades\FilamentColor;
 use Filament\Support\Icons\Heroicon;
 use Filament\Support\View\Components\ButtonComponent;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\HtmlString;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Credentials\CredentialMode;
@@ -40,6 +38,7 @@ use Kitsune\Core\Credentials\CredentialState;
 use Kitsune\Core\Credentials\CredentialStates;
 use Kitsune\Core\Credentials\CredentialStatus;
 use Kitsune\Core\Credentials\CredentialWriter;
+use Kitsune\Core\Filament\AuditActors;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Http\Controllers\CredentialSetController;
@@ -210,8 +209,7 @@ final class Credentials extends Page
     }
 
     /**
-     * Who last changed each row, by row id: the latest set, replace or removal in the audit log, named only through the
-     * panel's own user model, so a departed member is not found and a class a row names is never built.
+     * Who last changed each row, by row id: the latest set, replace or removal in the audit log, in `AuditActors`' words.
      *
      * @param  list<int>  $rowIds
      * @return array<int, string>
@@ -232,53 +230,14 @@ final class Credentials extends Page
             ->all();
 
         $records = AuditLog::query()->whereKey($latest)->get(['id', 'target_id', 'actor_type', 'actor_id']);
-        $model = Permissions::userModel();
-        $morph = $model !== null ? (new $model)->getMorphClass() : null;
-
-        $ids = $records
-            ->filter(static fn (AuditLog $record): bool => $morph !== null && $record->actor_type === $morph && $record->actor_id !== null)
-            ->map(static fn (AuditLog $record): string => (string) $record->actor_id)
-            ->unique()
-            ->values()
-            ->all();
-
-        $users = [];
-
-        if ($model !== null && $ids !== []) {
-            foreach ($model::query()->whereKey(Permissions::userKeys($ids, $model))->get() as $user) {
-                $users[(string) $user->getKey()] = $user;
-            }
-        }
-
+        $names = AuditActors::of($records);
         $by = [];
 
         foreach ($records as $record) {
-            $by[(int) $record->target_id] = match (true) {
-                $record->actor_type === null => __('kitsune::credentials.who.system'),
-                $record->actor_type !== $morph => __('kitsune::credentials.who.other'),
-                isset($users[(string) $record->actor_id]) => self::nameOf($users[(string) $record->actor_id]),
-                default => __('kitsune::credentials.who.former'),
-            };
+            $by[(int) $record->target_id] = $names[$record->id];
         }
 
         return $by;
-    }
-
-    private static function nameOf(Model $user): string
-    {
-        if ($user instanceof HasName) {
-            return $user->getFilamentName();
-        }
-
-        foreach (['name', 'email'] as $attribute) {
-            $value = $user->getAttributeValue($attribute);
-
-            if (is_string($value) && $value !== '') {
-                return $value;
-            }
-        }
-
-        return '#'.$user->getKey();
     }
 
     // ---- Content -----------------------------------------------------------------------------------------------------

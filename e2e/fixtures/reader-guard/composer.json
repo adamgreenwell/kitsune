@@ -1,0 +1,23 @@
+{
+    "name": "kitsune/e2e-reader-guard",
+    "description": "Test-only: declares a reader guard so the browser suite's entitlements page has readers to list. Never published.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\E2e\\ReaderGuard\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\E2e\\ReaderGuard\\ReaderGuardServiceProvider",
+            "scoping": ["org"]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

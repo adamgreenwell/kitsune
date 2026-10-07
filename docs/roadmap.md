@@ -413,13 +413,14 @@ Four scenarios — a shop, a subscription site *(a fixed-term pass in v1.0: `exp
 features, and what they share is an **entitlement**: *this reader may reach this thing, because they paid, until
 this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases are the ones it cannot serve.
 
-- [ ] **Entitlements in core.** One row per ~~`(reader, site, entitlement)`~~ `(reader, site, entitlement,
+- [x] **Entitlements in core.** One row per ~~`(reader, site, entitlement)`~~ `(reader, site, entitlement,
       source)` *(amended 2026-10-06: a grant remembers where it came from, so a refund removes only what its order
       gave)* with `expires_at` and `revoked_at`; the
       string is validated for shape and not existence, as a permission is. Per site because [ADR-037](decision-log.md)
       already decided it — one identity per org, everything else per site. The reader is a loose id with no foreign
       key, as `audit_log` references an actor *— the table, the guard, the doors and export and erasure are built
-      ([ADR-040, amended](decision-log.md)); the owner's page is the second half*
+      ([ADR-040, amended](decision-log.md)); ~~the owner's page is the second half~~ and the owner's page,
+      `/admin/{site}/entitlements`, where comps are given and a source revoked (amended 2026-10-07)*
 - [ ] **Reader accounts** ([ADR-037](decision-log.md)) *— moved from v1.1 on 2026-10-06, ahead of commerce* —
       their own guard, provider and model, provided by the host (the skeleton's, for a stock install);
       registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for

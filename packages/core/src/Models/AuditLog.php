@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 use Kitsune\Core\Audit\AppendOnlyBuilder;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -37,6 +38,7 @@ use RuntimeException;
  * @property string $action
  * @property string $target_type
  * @property string|null $target_id
+ * @property Carbon $created_at
  */
 #[OrgScoped]
 class AuditLog extends Model

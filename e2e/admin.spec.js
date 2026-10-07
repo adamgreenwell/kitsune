@@ -35,7 +35,7 @@ test.describe('admin', () => {
         const requested = [];
         page.on('request', (request) => requested.push(request.url()));
 
-        for (const path of [`/admin/${SITE}`, `/admin/${SITE}/c/article`, `/admin/${SITE}/c/article/1/edit`, `/admin/${SITE}/credentials`]) {
+        for (const path of [`/admin/${SITE}`, `/admin/${SITE}/c/article`, `/admin/${SITE}/c/article/1/edit`, `/admin/${SITE}/credentials`, `/admin/${SITE}/entitlements`]) {
             await page.goto(path);
             await page.waitForLoadState('networkidle');
         }
