@@ -21,7 +21,7 @@ Say `Org` or `Site` explicitly. Reserve "tenant" for the Filament API boundary o
 
 ```php
 #[SiteScoped]              // entries and most content — Filament's tenancy scopes these
-#[OrgScoped]               // billing, settings, shared media — KITSUNE scopes these
+#[OrgScoped]               // billing, settings, shared media, readers (the host's) — KITSUNE scopes these
 #[OrgScopedThroughPivot]   // users: membership is many-to-many, so there is no org_id
 #[Unscoped]                // genuinely global: modules, system entry types
 ```

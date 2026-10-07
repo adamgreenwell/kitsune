@@ -80,18 +80,27 @@ it('adds the trait beside the attribute on every core model', function (): void 
      */
     $models = [];
 
-    foreach (glob(dirname(__DIR__, 3).'/packages/core/src/Models/*.php') ?: [] as $file) {
-        $class = 'Kitsune\\Core\\Models\\'.basename($file, '.php');
+    /*
+     * ⚠️ AND THE SKELETON'S, which this sweep missed while its sibling below covered them: a host's `Reader` with the
+     * attribute and no trait would be a reader table every org can read (ADR-037).
+     */
+    foreach ([
+        dirname(__DIR__, 3).'/packages/core/src/Models' => 'Kitsune\\Core\\Models\\',
+        dirname(__DIR__, 3).'/skeleton/app/Models' => 'App\\Models\\',
+    ] as $dir => $namespace) {
+        foreach (glob($dir.'/*.php') ?: [] as $file) {
+            $class = $namespace.basename($file, '.php');
 
-        if (! class_exists($class) || ! is_subclass_of($class, Model::class)) {
-            continue;
+            if (! class_exists($class) || ! is_subclass_of($class, Model::class)) {
+                continue;
+            }
+
+            $models[] = $class;
         }
-
-        $models[] = $class;
     }
 
     // Not vacuous: an empty sweep would pass over nothing at all.
-    expect($models)->toContain(Entry::class)->toContain(Org::class);
+    expect($models)->toContain(Entry::class)->toContain(Org::class)->toContain('App\\Models\\Reader')->toContain('App\\Models\\User');
 
     $unenforced = array_values(array_filter(
         $models,

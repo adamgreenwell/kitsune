@@ -38,6 +38,7 @@ use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\MediaReconcileCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
+use Kitsune\Core\Console\ReadersCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -49,12 +50,14 @@ use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
+use Kitsune\Core\Http\MiddlewarePriority;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaStaging;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleKernel;
+use Kitsune\Core\Readers\ReaderSessions;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
@@ -197,6 +200,18 @@ final class KitsuneServiceProvider extends ServiceProvider
         $this->loadTranslationsFrom(__DIR__.'/../lang', 'kitsune');
 
         /*
+         * `kitsune::readers.*` — a reader's pages (ADR-037, as built), core's first views. A host may override one through
+         * `resources/views/vendor/kitsune/`, with no promise in 0.x.
+         */
+        $this->loadViewsFrom(__DIR__.'/../resources/views', 'kitsune');
+
+        /*
+         * A reader's session is bound to their password (ADR-037, as built): written at sign-in, checked whenever the
+         * reader guard loads them. Only a model implementing `ReaderAccount` is touched — `ReaderSessions` says why.
+         */
+        ReaderSessions::listen($this->app->make('events'));
+
+        /*
          * ⚠️ A ROLLBACK UNDOES THE GRANT AND NOT THE MEMO, which review found. `Role::grant()` flushes the
          * permission memo when its own transaction commits — but inside a CALLER's transaction that commit
          * is a savepoint release, and the outer transaction can still roll back. A check made in between
@@ -248,6 +263,9 @@ final class KitsuneServiceProvider extends ServiceProvider
             if (method_exists($kernel, 'prependMiddleware')) {
                 $kernel->prependMiddleware(HoldMediaStaging::class);
             }
+
+            // The site before anyone asks who is signed in (ADR-037, as built) — `MiddlewarePriority` says why.
+            MiddlewarePriority::placeSiteBeforeAuthentication($kernel, app('router'));
         });
 
         if ($this->app->runningInConsole()) {
@@ -273,6 +291,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,
                 ModuleCommand::class,
+                ReadersCommand::class,
                 SchemaSyncCommand::class,
             ]);
         }

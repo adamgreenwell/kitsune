@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Settings;
 
 use DateTimeZone;
+use Kitsune\Core\Readers\ReaderMode;
 use RuntimeException;
 
 /**
@@ -31,8 +32,14 @@ use RuntimeException;
  */
 final class SettingsGuard
 {
-    /** The one key the platform itself reads today. */
+    /** A key the platform itself reads: the zone the admin shows and takes instants in. */
     public const TIMEZONE = 'timezone';
+
+    /**
+     * A key the platform itself reads: which reader-account pages a site serves (ADR-037, as built) — `off`, `sign-in`
+     * or `open`. Identity is per org; this switch is per site, and decides only which pages a site serves.
+     */
+    public const READER_ACCOUNTS = 'reader_accounts';
 
     /**
      * Why a bulk write may not name `settings` — the sentence `ScopedBuilder` quotes when it refuses one, through
@@ -74,6 +81,17 @@ final class SettingsGuard
 
         if (array_key_exists(self::TIMEZONE, $settings)) {
             self::checkTimezone($settings[self::TIMEZONE], $holder);
+        }
+
+        // `ReaderMode`'s values, the one list of them.
+        if (array_key_exists(self::READER_ACCOUNTS, $settings)
+            && (! is_string($settings[self::READER_ACCOUNTS]) || ReaderMode::tryFrom($settings[self::READER_ACCOUNTS]) === null)) {
+            throw new RuntimeException(sprintf(
+                'Refusing [reader_accounts] on %s: it is off, sign-in or open, and %s is none of them. To inherit '
+                .'instead, revert the key rather than storing an empty one.',
+                $holder,
+                is_string($settings[self::READER_ACCOUNTS]) ? '"'.$settings[self::READER_ACCOUNTS].'"' : get_debug_type($settings[self::READER_ACCOUNTS]),
+            ));
         }
     }
 

@@ -37,6 +37,9 @@ abstract class TestCase extends Orchestra
      */
     use RefreshDatabase;
 
+    /** The skeleton's migration for its `readers` table (ADR-037). */
+    public const READERS_MIGRATION = __DIR__.'/../../skeleton/database/migrations/0001_01_01_000020_create_readers_table.php';
+
     /** The fixture migrations the database was last built with in this process. */
     private static ?string $migratedFixtures = null;
 
@@ -203,6 +206,11 @@ abstract class TestCase extends Orchestra
         load_migration_paths(laravel_or_fail($this->app), [
             __DIR__.'/../../packages/core/database/migrations',
             static::fixtureMigrations(),
+            /*
+             * The skeleton's own `readers` table, the real file: a migrator path may name one file. Every host here
+             * gets it, since nothing reads it until a test declares the skeleton's reader guard (`ReaderTestCase`).
+             */
+            self::READERS_MIGRATION,
         ]);
     }
 

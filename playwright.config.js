@@ -56,7 +56,8 @@ module.exports = defineConfig({
         { name: 'setup-blog', testMatch: /auth-blog\.setup\.js/ },
         {
             name: 'skeleton',
-            testMatch: /(skeleton|public-site-locale)\.spec\.js/,
+            // Readers sign in with no storage state: every reader spec starts as a stranger, and signs its owner in itself.
+            testMatch: /(skeleton|public-site-locale|readers|reader-sessions)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {

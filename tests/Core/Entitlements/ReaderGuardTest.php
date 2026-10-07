@@ -151,7 +151,7 @@ it('refuses a declared name that is no guard, without asking Laravel for it', fu
     $refused = refusedWith(fn () => Fx::writer()->grant((int) $owner->getKey(), 'course.advanced-php', 'test.order:2', null));
 
     expect($refused->reason)->toBe(EntitlementRefusal::NoReaderGuard)
-        ->and($refused->getMessage())->toContain('the declared reader guard [nope] is not a guard with a provider and a driver Laravel can build in config/auth.php');
+        ->and($refused->getMessage())->toContain('the declared reader guard [nope] is not a guard with a provider and a driver Laravel can build in its auth configuration');
 });
 
 it('refuses a dotted name, though config would resolve it to a usable guard', function (): void {
@@ -359,7 +359,7 @@ it('describes each fault in its own words', function (ReaderGuardFault $fault, s
     expect($fault->sentence('readers', 'App\\Models\\Reader'))->toBe($sentence);
 })->with([
     [ReaderGuardFault::NotDeclared, 'this installation declares no reader guard (kitsune.readers.guard)'],
-    [ReaderGuardFault::UnknownGuard, 'the declared reader guard [readers] is not a guard with a provider and a driver Laravel can build in config/auth.php'],
+    [ReaderGuardFault::UnknownGuard, 'the declared reader guard [readers] is not a guard with a provider and a driver Laravel can build in its auth configuration'],
     [ReaderGuardFault::PanelGuard, 'the declared reader guard [readers] is a panel\'s guard, and a reader is not a panel user'],
     [ReaderGuardFault::NotEloquent, 'the declared reader guard [readers] does not load an Eloquent model'],
     [ReaderGuardFault::PanelShaped, 'the declared reader guard\'s model [App\\Models\\Reader] is scoped through membership, as a panel user is'],

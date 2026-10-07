@@ -83,7 +83,7 @@ it('reports no guard declared without failing, and an unusable one by failing', 
     [$code, $out] = entitlementsCommand(['action' => 'status']);
 
     expect($code)->toBe(1)
-        ->and($out)->toStartWith('Reader guard: declared and NOT usable — the declared reader guard [test_readers] is not a guard with a provider and a driver Laravel can build in config/auth.php.');
+        ->and($out)->toStartWith('Reader guard: declared and NOT usable — the declared reader guard [test_readers] is not a guard with a provider and a driver Laravel can build in its auth configuration.');
 });
 
 it('exports one reader as JSON alone, with sources and no reader id', function (): void {
