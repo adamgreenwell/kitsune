@@ -409,14 +409,24 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 
 *Sizeable. Added 2026-09-22 by [ADR-040](decision-log.md), which amends [ADR-011](decision-log.md)'s v1.0 scope cut.*
 
-Four scenarios — a shop, a subscription site, gated content, a paid course — are one substrate rather than four
+Four scenarios — a shop, a subscription site *(a fixed-term pass in v1.0: `expires_at`, no renewal)*, gated content, a paid course — are one substrate rather than four
 features, and what they share is an **entitlement**: *this reader may reach this thing, because they paid, until
 this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases are the ones it cannot serve.
 
-- [ ] **Entitlements in core.** One row per `(reader, site, entitlement)` with `expires_at` and `revoked_at`; the
+- [ ] **Entitlements in core.** One row per ~~`(reader, site, entitlement)`~~ `(reader, site, entitlement,
+      source)` *(amended 2026-10-06: a grant remembers where it came from, so a refund removes only what its order
+      gave)* with `expires_at` and `revoked_at`; the
       string is validated for shape and not existence, as a permission is. Per site because [ADR-037](decision-log.md)
       already decided it — one identity per org, everything else per site. The reader is a loose id with no foreign
-      key, as `audit_log` references an actor
+      key, as `audit_log` references an actor *— the table, the guard, the doors and export and erasure are built
+      ([ADR-040, amended](decision-log.md)); the owner's page is the second half*
+- [ ] **Reader accounts** ([ADR-037](decision-log.md)) *— moved from v1.1 on 2026-10-06, ahead of commerce* —
+      their own guard, provider and model, provided by the host (the skeleton's, for a stock install);
+      registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for
+      every row of the one that exists. Before commerce, because gated content, a paid course and a subscription
+      site all need a reader who can sign in
+- [ ] **The reader's download route** ([ADR-041](decision-log.md)): a second, public route that asks
+      `EntitlementCheck::holds()`
 - [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
       ADR-036's chat service is the second consumer *— done: the store (#177) and its admin,
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
@@ -476,12 +486,14 @@ Run it once Phase 4 lands, and let what you learn inform the real adapter framew
 
 # Post-1.0
 
-## v1.1 — API and theming, reader accounts and the privacy tooling
+## v1.1 — API and theming, ~~reader accounts~~ and the privacy tooling
 
 *4–6 months, grown from 2–3.* [ADR-036](decision-log.md) and [ADR-037](decision-log.md) added the chat module and
 reader accounts, and the three [ADR-020](decision-log.md) deliverables below were promised for v1.1 and missing from
 this list. Per **Honest timeline** at the end of this file, the phase absorbs the work and the estimate moves with it,
 rather than the estimate standing still while the work grows underneath it ([ADR-011](decision-log.md)).
+*(Reader accounts moved into v1.0's Phase 5a on 2026-10-06 — ADR-037, amended. Consent records and the privacy
+tooling stay here. The 4–6 months is re-estimated once the v1.0 slice has sized what it took.)*
 
 - [ ] REST API generated from schema, site-scoped, per-entity permissions
 - [ ] Token auth + scopes (Sanctum); consider Laravel 13's first-party JSON:API resources
@@ -489,8 +501,8 @@ rather than the estimate standing still while the work grows underneath it ([ADR
 - [ ] Menus, routing, slugs, redirects
 - [ ] Remote disks through Flysystem (S3 and similar), with the per-driver signed delivery ADR-041 left out. *The media library moved into v1.0 with [ADR-040](decision-log.md); [ADR-041](decision-log.md) and [ADR-042](decision-log.md) decide it.*
 - [ ] Caching, correctly scope-keyed (org and site)
-- [ ] **Reader accounts** ([ADR-037](decision-log.md)) — their own guard, provider and model, provided by the host; registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for every row of the one that exists
-- [ ] **Consent records, subject-access export and erasure tooling** — [ADR-020](decision-log.md) promised all three for v1.1 and this list omitted them, which is how a privacy promise quietly becomes a later one. `erasure_log` has its table and no writer
+- [ ] ~~**Reader accounts** ([ADR-037](decision-log.md)) — their own guard, provider and model, provided by the host; registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for every row of the one that exists~~ *Moved into v1.0, Phase 5a, ahead of commerce (ADR-037, amended 2026-10-06). Consent records stay in v1.1, in the item below.*
+- [ ] **Consent records, subject-access export and erasure tooling** — [ADR-020](decision-log.md) promised all three for v1.1 and this list omitted them, which is how a privacy promise quietly becomes a later one. `erasure_log` has its table and no writer — and `entitlements` ([ADR-040](decision-log.md)), which export and erasure read by reader, every source included; the v1.0 primitives exist
 - [ ] **`kitsune/support`** ([ADR-036](decision-log.md)) — the chat module: per-Site link, widget injection through the theme layer above, signed visitor identity, webhook receiver. Prototyped against stage, and merged only once Phase 3's registry and settings store exist, ~~since its settings hold secrets core cannot yet store encrypted~~ *its secrets go in ADR-040's credential store (Phase 5a)*
 
 ## v1.2 — Plugin SDK and API freeze
@@ -539,6 +551,10 @@ The control plane — not the license — is the moat.
 ## Honest timeline
 
 **v1.0: roughly 13–19 months part-time**, front-loaded with a 1–2 week spike that could still invalidate parts of the design cheaply. Full original scope lands in **year 3**.
+
+⚠️ *Amended 2026-10-06: "13–19 months" was last set on 2026-09-14, before ADR-040 added Phase 5a and before reader
+accounts moved into v1.0 (ADR-037, amended 2026-10-06). Both enlarge v1.0. Per the rule below, the estimate moves: it
+is re-stated when the reader-accounts slice is sized, rather than guessed here.*
 
 Not discouraging — it's what the comparables actually cost, and Filament is a head start none of them had.
 

@@ -137,10 +137,29 @@ return new class extends Migration
             $table->unsignedBigInteger('entry_id')->unique();
             $table->string('path');
         });
+
+        /*
+         * Readers, as a host declares them for ADR-040's entitlements — ADR-037: their own table, each row belonging to
+         * one org by its own `org_id`. Core owns no reader model, so the reader guard's tests need one; never named
+         * "users", which are staff. One with integer keys, one with string keys.
+         */
+        Schema::create('test_readers', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id')->constrained()->cascadeOnDelete();
+            $table->string('email');
+        });
+
+        Schema::create('test_ulid_readers', function (Blueprint $table): void {
+            $table->string('id', 64)->primary();
+            $table->foreignId('org_id')->constrained()->cascadeOnDelete();
+            $table->string('email');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('test_ulid_readers');
+        Schema::dropIfExists('test_readers');
         Schema::dropIfExists('media_path_fixtures');
         Schema::dropIfExists('role_user');
         Schema::dropIfExists('site_user');

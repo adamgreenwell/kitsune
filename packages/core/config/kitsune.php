@@ -50,4 +50,23 @@ return [
         // Where nothing overrides it, the zone the admin shows and takes instants in. Storage is UTC regardless.
         'timezone' => 'UTC',
     ],
+
+    /*
+     * The guard a reader signs in with — ADR-037, as ADR-040's entitlements built it.
+     *
+     * ⚠️ NO DEFAULT, deliberately: with nothing declared there is no reader, every entitlement check answers no and
+     * every grant is refused. Never a panel's guard: a reader is not a panel user. Its model is `#[OrgScoped]` with
+     * `EnforcesScope` and its own `org_id` — never `#[OrgScopedThroughPivot]` — and its keys are printable ASCII of at
+     * most 255 bytes, never re-issued to another reader: a re-issued key inherits the old reader's access unless
+     * `kitsune:entitlements forget` ran first. A route that asks runs `ResolveSiteFromRequest` before anything asks
+     * the guard, its `auth` middleware included, or the reader's org scope has no org and loads nobody.
+     *
+     * Named in CONTRIBUTING as an exception to the v1.2 surface rule: it obliges the host's code, not just its config.
+     *
+     * ⚠️ `mergeConfigFrom()` MERGES THE TOP LEVEL ONLY, as the notes above record: a host declaring `readers` restates
+     * the whole map.
+     */
+    'readers' => [
+        'guard' => null,
+    ],
 ];

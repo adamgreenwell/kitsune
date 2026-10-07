@@ -175,6 +175,16 @@ credentials                    -- ADR-040: write-only, per org; one row per (org
 
 org_credential_modes           -- ADR-040: which of an org's credentials are in force; absent = test
   id, org_id UNIQUE, mode, changed_at
+
+entitlements                     -- ADR-040: may this reader reach this? one row per (site, reader, entitlement, source)
+  id, org_id, site_id NOT NULL
+  reader_id       string(255)    -- the declared reader guard's key; no FK; varbinary on MySQL/MariaDB
+  entitlement     string(100)    -- 'course.advanced-php'; shape checked, existence never
+  source          string(100)    -- why: 'commerce.order:4821', 'core.comp'; varbinary on MySQL/MariaDB
+  expires_at      datetime NULL  -- UTC; NULL = no end; this source counts while now < expires_at
+  revoked_at      datetime NULL  -- UTC; a revoked source stays revoked until an owner comps
+  changed_at      datetime       -- UTC
+  UNIQUE (site_id, reader_id, entitlement, source)
 ```
 
 **`orgs` carries no mode, by design** (ADR-040, the credential store as built): `Org` is unscoped and a save of it is
@@ -183,6 +193,13 @@ hash, length, prefix or last four — and a per-org export lists slot, mode, sta
 key id. Neither table is an entry type, and v1.1's generated REST API never exposes them. An owner sets, replaces and
 removes credentials on one page, `/admin/{site}/credentials`, whose value travels in a plain POST outside Livewire and
 is never shown back (ADR-040, the admin half).
+
+**A reader holds an entitlement while any of its sources is live** (ADR-040, entitlements as built), and a revoke stamps
+one source, so a refund removes only what its order gave. The reader is whoever the host's declared reader guard
+(`kitsune.readers.guard`, ADR-037) signs in — never a panel user — and with nothing declared every check answers no.
+Rows are deleted only by the org's hard delete, a site's delete once nothing live remains on it, and a reader's erasure
+(`kitsune:entitlements forget`). A row is personal data outside `pii_class`, the source included, and `kitsune:entitlements
+export` hands a reader's back. It is never an entry type, and v1.1's generated REST API never exposes it.
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 
@@ -352,7 +369,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 1. **Every model declares its scope. Fail closed** — undeclared means exception in dev, refuse-to-serve in prod.
 
    ```php
-   #[SiteScoped]   // entries and most content — Filament's tenancy scopes these
+   #[SiteScoped]   // entries and most content, entitlements — Filament's tenancy scopes these
    #[OrgScoped]    // users, billing, settings, shared media, credentials — KITSUNE scopes these
    #[Unscoped]     // genuinely global: modules, system entry types
    ```
@@ -399,7 +416,7 @@ One `Entry` model means one Eloquent policy for all types — neither routing de
 
 A module is a Composer package with a manifest. ~~Kernel responsibilities, and nothing more~~ Kernel
 responsibilities *(amended 2026-10-06 by ADR-040: the credential store joins them, because its second consumer was
-already on the roadmap)*:
+already on the roadmap; and entitlements, the kernel guard ADR-040 decided, as built in Phase 5a)*:
 
 ```
 Module registry     discovery, enable/disable, dependency resolution, ordering
@@ -407,6 +424,7 @@ Lifecycle           install / upgrade / uninstall, with migrations and rollback
 Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
 Credentials         write-only per-org secrets, and test/live mode (ADR-040)
+Entitlements        the fail-closed guard "may this reader reach this?", per site (ADR-040)
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
 Blueprints          a kernel primitive, not a module (ADR-039)

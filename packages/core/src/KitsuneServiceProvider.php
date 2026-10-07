@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
 use Kitsune\Core\Blueprints\FirstParty\DamBlueprint;
@@ -31,6 +32,7 @@ use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
 use Kitsune\Core\Console\CredentialsCommand;
+use Kitsune\Core\Console\EntitlementsCommand;
 use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\MediaReconcileCommand;
@@ -42,6 +44,8 @@ use Kitsune\Core\Credentials\CredentialReader;
 use Kitsune\Core\Credentials\CredentialSlots;
 use Kitsune\Core\Credentials\CredentialStates;
 use Kitsune\Core\Credentials\CredentialWriter;
+use Kitsune\Core\Entitlements\EntitlementCheck;
+use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
@@ -134,6 +138,15 @@ final class KitsuneServiceProvider extends ServiceProvider
         $this->app->scoped(CredentialWriter::class);
         $this->app->scoped(CredentialStates::class);
         $this->app->scoped(CredentialReader::class);
+
+        /*
+         * Entitlements — ADR-040's `@internal` doors, and the reader guard they ask (ADR-037). Scoped for `Context`'s
+         * reason: each reads the request's site and signed-in reader, and a long-lived worker must not carry one
+         * request's into the next job. None holds a memo.
+         */
+        $this->app->scoped(ReaderGuard::class);
+        $this->app->scoped(EntitlementCheck::class);
+        $this->app->scoped(EntitlementWriter::class);
 
         /*
          * Where blueprint definitions are collected — ADR-039's `@internal` seam, and the same shape as the
@@ -251,6 +264,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
                 CredentialsCommand::class,
+                EntitlementsCommand::class,
                 MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,
                 MediaReconcileCommand::class,
