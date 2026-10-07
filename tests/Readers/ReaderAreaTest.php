@@ -211,6 +211,14 @@ it('answers 404 inside a panel whose path has two segments', function (): void {
     $this->readerGet('/golfdom/account/sign-in')->assertOk();
 });
 
+it('answers 404 inside a panel on its own domains only', function (): void {
+    PanelTenancy::enter($this->world['sites']['golfdom'])->path('admin')->domain('admin.example.test');
+    ReaderFixture::site($this->world['golfdom'], 'admin-site', 'Admin Site', '/admin');
+
+    $this->readerGet('/admin/account/sign-in')->assertOk()->assertSee('<title>Sign in — Admin Site</title>', false);
+    $this->readerGet('https://admin.example.test/admin/account/sign-in')->assertNotFound();
+});
+
 it('answers 404 everywhere a panel at the root owns, and nowhere else', function (): void {
     $panel = PanelTenancy::enter($this->world['sites']['golfdom']);
 

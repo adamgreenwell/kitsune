@@ -3080,7 +3080,7 @@ one line the host's `routes/web.php` calls, above its catch-all. Everything else
 route is a fallback**: the host's web routes register before Filament's, so an ordinary `{readerSite}/account` route
 answered `/admin/golfdom/c/account` — an entry type may be called `account` — and broke that admin page (probed);
 marked as fallbacks, a panel or host route always wins, cached or not. `ReaderArea` then answers 404, naming nothing,
-for no site, a `{readerSite}` that is not exactly the site's prefix, a panel's path, a guard or model accounts cannot
+for no site, a `{readerSite}` that is not exactly the site's prefix, a panel's path on that panel's hosts, a guard or model accounts cannot
 use, and a site whose `reader_accounts` mode is `off` (ADR-022, amended) — and calls `Auth::shouldUse()` on the reader
 guard, so `auth()->user()` on a reader page is the reader or nobody, never staff riding the same session. The pages
 send no script and load nothing from anywhere (`default-src 'none'`), and are never cached, framed or indexed. They

@@ -97,7 +97,10 @@ final class ReaderArea
      * Whether the path is inside any panel's URL space — only when Filament is installed.
      *
      * ⚠️ THE PANEL'S WHOLE PATH, however many segments (review): `cp/admin` is matched by `/cp/admin/…`, not by its
-     * first segment alone. A panel at the root owns every path on its domains, or on every host when it declares none.
+     * first segment alone. A panel at the root owns every path.
+     *
+     * ⚠️ ON ITS OWN HOSTS ONLY: a panel that declares domains owns its path on those and nowhere else, at the root or not,
+     * so `admin.example.test/admin` leaves a site's `/admin` on `www` alone. A panel declaring none owns it on every host.
      */
     private static function underPanel(Request $request): bool
     {
@@ -108,19 +111,15 @@ final class ReaderArea
         $path = strtolower(trim($request->getPathInfo(), '/'));
 
         foreach (Filament::getPanels() as $panel) {
-            $panelPath = strtolower(trim($panel->getPath(), '/'));
+            $domains = $panel->getDomains();
 
-            if ($panelPath === '') {
-                $domains = $panel->getDomains();
-
-                if ($domains === [] || in_array(strtolower($request->getHost()), array_map('strtolower', $domains), true)) {
-                    return true;
-                }
-
+            if ($domains !== [] && ! in_array(strtolower($request->getHost()), array_map('strtolower', $domains), true)) {
                 continue;
             }
 
-            if ($path === $panelPath || str_starts_with($path, $panelPath.'/')) {
+            $panelPath = strtolower(trim($panel->getPath(), '/'));
+
+            if ($panelPath === '' || $path === $panelPath || str_starts_with($path, $panelPath.'/')) {
                 return true;
             }
         }
