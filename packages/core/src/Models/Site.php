@@ -640,7 +640,8 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             ->where('canonical_host', $site->canonical_host)
             ->when($site->exists, fn ($query) => $query->whereKeyNot($site->getKey()))
             ->lockForUpdate()
-            ->get(['id', 'org_id', 'base_url', 'path_prefix']));
+            // Not `base_url`: another org's stored string is never needed here, so it is never loaded.
+            ->get(['id', 'org_id', 'path_prefix']));
     }
 
     /**
@@ -736,13 +737,21 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 continue;
             }
 
+            /*
+             * ⚠️ THE RIVAL'S CLAIM, NEVER ITS STORED `base_url`, which is another org's own string and is
+             * kept as it was typed — a user name and password included, which the derivation ignores.
+             * Printing it handed one org's credentials to whoever tried to claim an address near them.
+             * Found by review of `kitsune:site address`, which passes this message to the console.
+             */
+            $held = (string) $site->canonical_host.(string) $rival->path_prefix;
+
             throw new RuntimeException(sprintf(
                 'Refusing [%s]: another org already holds [%s] on the same host, and the two '
                 .'overlap. Site resolution prefers the longest matching prefix, so one of them '
                 .'would silently serve requests addressed to the other (ADR-021). A public URL '
                 .'is claimed once across every org.',
                 (string) $site->base_url,
-                (string) $rival->base_url,
+                $held === '' ? '/' : $held,
             ));
         }
     }

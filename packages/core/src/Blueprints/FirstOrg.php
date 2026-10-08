@@ -57,7 +57,8 @@ use Throwable;
  *
  * ⚠️ THE SITE CLAIMS NO HOST. `base_url` is left null, which is the admin-only site ADR-021 describes, so
  * none of the host-claim machinery runs: no canonical host, no overlap check, no mutex. A fresh install does
- * not know its own public URL yet, and guessing one would take a claim the operator has not made.
+ * not know its own public URL yet, and guessing one would take a claim the operator has not made —
+ * `kitsune:site address` is how the operator makes it.
  */
 final class FirstOrg
 {

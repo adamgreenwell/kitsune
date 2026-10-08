@@ -834,7 +834,7 @@ at a time.
 
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison, and a written key as the id the database stores; see *a column is the one the database writes* · **Amended 2026-09-23 by ADR-042** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison, and a written key as the id the database stores; see *a column is the one the database writes* · **Amended 2026-09-23 by ADR-042** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amended 2026-10-08** — a site's address from the console, `kitsune:site address`; see *a site's address from the console*
 **Revises** ADR-009 (two scoping levels, not one) and ADR-017 (locale is derived from site, not stored on the entry).
 
 ### The gap this closes
@@ -1034,6 +1034,25 @@ The kernel enforces isolation at the write, and at the builder rather than in a 
 
 **What it does not claim.** A builder guards the columns it names. A model hook that reads some *other* attribute by name is covered only where a builder refuses that column under another spelling — this amendment makes the comparisons the builders make agree with the database, not every attribute read in every model. One such read is known and left: `Entry::convertFieldValuesForWrite()` finds a promoted column such as `slug` by that name, so a save of `SLUG` stores the value unslugified — measured — as a bulk write of `slug` spelled correctly already does, since a bulk write has no entry type to convert against. That conversion normalises; no guard rests on it. And below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at this layer can stand, as every guard in the kernel already states.
 
+### Amendment — a site's address from the console, 2026-10-08
+
+**Status:** Amended
+
+A blueprint's first site has no `base_url` — the admin-only site this entry describes (`FirstOrg`) — and core registers no admin page for sites, so until now an operator gave it a public address through `tinker`. Reader accounts (ADR-037) made that a real gap: a reader's pages live under a site's address, and part two mails links to them. **Adam chose a small command, as its own pull request before part two** (2026-10-08), over `--base-url=` on `kitsune:blueprint apply`, which covers install time and leaves every later move to `tinker`, and over waiting for an admin page for sites, which nothing has planned yet.
+
+```
+php artisan kitsune:site address https://acme.example --org=acme --site=acme [--force]
+```
+
+- **An absolute `http://` or `https://` address with a host, and nothing else.** A bare `acme.example` is a *path* under the `path` strategy every first site has — the prefix `/acme.example` on every host — and a host-less address gives a mailed link no host to stand on, because a reader link is never built from the request's `Host` (`ReaderLinks`). The host-less forms stay with the seeder and `tinker`. A user name, password, query or fragment is refused and not repeated: `base_url` is stored as typed, so a password in it would be stored, echoed and later mailed. The command's own refusals of the address — its form, and the model's derivation — are made before anything is read, so none of them says what exists; the model's refusals at save come after the read, and name what holds the address.
+- **It writes `base_url` alone, through `Site::save()`.** So the derivation, the host-claim mutex, the overlap and stale-origin refusals and the isolation check all apply as they do to any save, and their messages reach the operator in words. It never writes `url_strategy`, because an explicit scheme outranks the strategy (*a bare `base_url` needs the strategy*, above). One site per run, so issue #71's batching deadlock cannot arise. The site is found by handle inside `--org`, with the org in context, because a handle is unique only within one; a deleted organisation is refused by name, since its sites answer no request and an address there would only keep it from another.
+- **Moving a live address needs `--force`** (Adam, 2026-10-08). Every link to the old address breaks, and another organisation may then claim it, unless another of this organisation's sites still overlaps it on that host — its `site_host_claims` row stays, by design, and fences nothing. A first address acts at once, and so does a respelling of the same claim: case, a trailing slash, a port, or `http` to `https` change what is stored but not where the site answers, which is what the guard compares. **The decision is checked again under the save's own locks**, in a `saving` listener for that one instance: `Site::save()` does not police a lost update — its stale-origin check guards the lock discipline and passes a row another run moved to the very host this one locks — so without it, two runs that both read a site as admin-only each skipped `--force`, and the second moved the address the first had just made live, audited as set. A row moved or deleted since the read is refused, and running again is safe. Found by review, measured.
+- **Each real change is audited** (Adam, 2026-10-08): `site.address_set` when an admin-only site gains an address, `site.address_replaced` when one is respelt or moved. One row, with the site as target, the system as actor and no site in context — the console acts from none — and, as ADR-020 requires, no URL. It is recorded from the write's effect, inside the save's transaction, so the same address again writes nothing and records nothing. A site's address written any other way, through the model directly, stays unaudited, as a setting written that way does.
+- **What it prints.** `Site [acme] now has the address [https://acme.example], and answers at [acme.example]. Before: no address.` — where it answers is the derived claim, not the string typed, and "before" is the old claim, never the old `base_url`, which an earlier write could have given a password. **For the same reason, `Site`'s overlap refusal now names the other org's claim, not its stored `base_url`**, and no longer loads that column: it printed another org's string verbatim, a password included, to whoever tried an address near it — every way in, not only this one. Found by review. A database failure, the organisation's lookup included, prints its SQLSTATE alone, because the exception's message inlines its bindings and the address is one of them. Everything printed is escaped, since the model's refusals repeat what was typed.
+- **`SiteCommand` is `@internal`.** The command's name, its one action and its two audit actions are recorded here as built.
+
+**Left as they are, and stated.** Taking an address away, so a site is admin-only again, still needs `tinker` (Adam, 2026-10-08: not in this pull request). A prefix under a panel's path, or ending in `account`, still saves and fails closed with a 404 (ADR-019's 2026-10-07 amendment); a fix for that belongs in `Site`, for every way in. A reader signed in on a site's old host signs in again on its new one. `kitsune:readers status` names a site with no address and points at this command.
+
 ### Naming rule
 
 **"Tenant" is now ambiguous and is banned from Kitsune's own code.** Filament calls its segment a tenant; Kitsune means a Site. Use **Org** and **Site** explicitly everywhere, and the word "tenant" only at the Filament API boundary. This is a small rule that prevents a large category of confusion, in code and in support threads.
@@ -1148,7 +1167,7 @@ org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR me
 only, and sign-in on both.
 
 - **Default `off`**, in core's `config/kitsune.php` `settings`: a fresh install serves no reader page until an
-  operator runs `kitsune:readers mode`.
+  operator runs `kitsune:readers mode` and its site has an address (`kitsune:site address`).
 - **Written** through `SettingsWriter`, audited `settings.set` / `settings.reverted` as every key is; `inherit` is a
   revert, because absent means inherit.
 - **Refused on write** by `SettingsGuard` at every door `timezone` is: any value but those three words — another
@@ -3138,7 +3157,8 @@ with reader 1's address and a password of its own; Rival's site gains `/rival`; 
 Golfdom FR `sign-in`. They replace the browser suite's `kitsune/e2e-reader-guard`, which is deleted, and the staff
 copy-editor `reader@kitsune.test` became `copyeditor@kitsune.test`. On every **new** install, every owner's sidebar
 gains *Entitlements* and `kitsune:entitlements status` says the guard is usable; reader pages stay 404 until an operator
-sets a mode and the site has a public address.
+sets a mode (`kitsune:readers mode`) and gives the site a public address (`kitsune:site address`, ADR-021's 2026-10-08
+amendment).
 
 **Upgrades.** Core's half arrives with `composer update` and is inert: the views, the `off` default and the priority
 entry. The host's half is frozen, so an existing install gets no `Reader`, migration, declaration or route line; the
