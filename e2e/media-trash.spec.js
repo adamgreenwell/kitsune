@@ -2,6 +2,7 @@
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { menuItem } = require('./menu');
 
 /*
  * The trash — ADR-042 decision 31: an entry list's trashed entries, restored or deleted forever, in the admin.
@@ -148,7 +149,7 @@ test('deletes forever from the trash, saying first what it takes, and leaves wha
     }
 
     await page.getByRole('button', { name: /bulk actions/i }).click();
-    await page.getByRole('button', { name: 'Delete selected forever' }).click();
+    await menuItem(page, 'Delete selected forever').click();
     // An article list's own warning, never a file's (decision 36).
     const dialog = await confirm(page, 'Delete forever');
     await expect(dialog).toContainText('This cannot be undone. The entry and its history are deleted for good, and any link to it from another entry is removed.');

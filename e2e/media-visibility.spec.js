@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { menuItem } = require('./menu');
 
 /*
  * A stored file made public or private — Adam, ADR-042 decision 32 — from its own page, as an editor does it.
@@ -114,7 +115,7 @@ const card = (page, title) => page.locator('.fi-ta-record').filter({ hasText: ti
 async function bulkAction(page, label) {
     await page.getByRole('button', { name: /bulk actions/i }).click();
 
-    return page.getByRole('button', { name: label, exact: true });
+    return menuItem(page, label);
 }
 
 /** Show the list's trash, as Filament's filter shows it: '' not in the trash, '1' everything, '0' only the trash. */
@@ -401,9 +402,9 @@ test('does not offer the selection switches while the list shows only the trash'
     await card(page, `${PROBE} bulk trashed`).getByRole('checkbox').check();
     await page.getByRole('button', { name: /bulk actions/i }).click();
 
-    await expect(page.getByRole('button', { name: 'Restore selected', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Make selected public', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Make selected private', exact: true })).toHaveCount(0);
+    await expect(menuItem(page, 'Restore selected')).toBeVisible();
+    await expect(menuItem(page, 'Make selected public')).toHaveCount(0);
+    await expect(menuItem(page, 'Make selected private')).toHaveCount(0);
 });
 
 /*

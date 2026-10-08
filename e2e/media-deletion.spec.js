@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { test, expect } = require('@playwright/test');
+const { menuItem } = require('./menu');
 
 /*
  * Deleting a public file takes it off the web, and a delete that cannot is refused in words — ADR-042 decision 5,
@@ -75,7 +76,7 @@ test('names every entry a bulk delete could not take off the web', async ({ page
         }
 
         await page.getByRole('button', { name: /bulk actions/i }).click();
-        await page.getByRole('button', { name: 'Delete selected' }).click();
+        await menuItem(page, 'Delete selected').click();
         await confirmDelete(page);
 
         await expect(page.getByText('2 entries were not deleted')).toBeVisible();
