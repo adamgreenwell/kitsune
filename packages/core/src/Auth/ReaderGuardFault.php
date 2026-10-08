@@ -49,7 +49,7 @@ enum ReaderGuardFault
     {
         return match ($this) {
             self::NotDeclared => 'this installation declares no reader guard (kitsune.readers.guard)',
-            self::UnknownGuard => "the declared reader guard [{$guard}] is not a guard with a provider and a driver Laravel can build in config/auth.php",
+            self::UnknownGuard => "the declared reader guard [{$guard}] is not a guard with a provider and a driver Laravel can build in its auth configuration",
             self::PanelGuard => "the declared reader guard [{$guard}] is a panel's guard, and a reader is not a panel user",
             self::NotEloquent => "the declared reader guard [{$guard}] does not load an Eloquent model",
             self::PanelShaped => "the declared reader guard's model [{$model}] is scoped through membership, as a panel user is",

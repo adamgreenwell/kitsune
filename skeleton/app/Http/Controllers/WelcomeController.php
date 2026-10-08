@@ -19,7 +19,8 @@ use Kitsune\Core\Tenancy\Context;
  * The public placeholder, for `/` and for any path that resolves a site.
  *
  * Kitsune's first release is the admin. A public site that renders entries is theming, which ADR-011 moved to
- * v1.1 — so both routes render one page that says so and links to the admin.
+ * v1.1 — so both routes render one page that says so and links to the admin. Nothing public renders an entry yet; a
+ * reader's account pages (`ReaderRoutes`, ADR-037) are the only other public pages.
  *
  * ⚠️ ONE PLACE BUILDS IT, BECAUSE TWO DID AND BOTH WENT STALE THE SAME WAY. Each route closure typed
  * `'phase' => 'Phase 0 — foundations'`, and the page went on telling a visitor "there is no admin panel yet"

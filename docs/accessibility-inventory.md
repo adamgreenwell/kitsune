@@ -34,7 +34,7 @@ find packages/core/src skeleton/app skeleton/resources \( -name "*.css" -o -name
 
 ⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1. Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
 
-Kitsune authors **one** Blade view and **zero** lines of CSS or JavaScript. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
+Kitsune authors ~~**one** Blade view~~ *the welcome page and a reader's pages (ADR-037, as built, 2026-10-07)* and **zero** lines of JavaScript; the only CSS is those pages' own inline styles. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
 
 *Amended 2026-10-06 (ADR-040):* core also builds one form in PHP, the credential form, hand-built because its value must
 not be a Livewire field — Filament's own field and button classes, one inline Alpine attribute that disables its button
@@ -84,6 +84,21 @@ That is a real result and it is a *narrow* one. Axe evaluates machine-detectable
 | **Error messaging on runtime schema** | Field labels are org data (ADR-018), so validation messages are assembled from operator-authored strings. A message that reads correctly in English and nonsensically in translation is a conformance problem no checker sees |
 | **Every future custom component** | Anything not inherited from Filament arrives with zero conformance and has to earn it |
 | **Any published Filament view** | Publishing a view forks it: upstream accessibility fixes stop arriving |
+
+### Built — a reader's pages (ADR-037, as built, 2026-10-07)
+
+Core's own Blade views, so nothing is inherited: sign-in, the account page and a notice, at `{prefix}/account` under
+each site. What they do, and what checks it:
+
+| | Evidence |
+|---|---|
+| Every input has a visible `<label for>`; `autocomplete` names each field (`email`, `current-password`) | `ReaderPagesTest`; axe in `readers.spec.js` |
+| A refusal: `Error:` in the `<title>`, a summary with `role="alert"` that takes focus, one link per problem to its field, the field `aria-invalid` and described by its visible message | `ReaderPagesTest`; `readers.spec.js` drives it from the keyboard alone — the summary is focused, its link reaches the field |
+| One `<main>`, one `<h1>`; `:focus-visible` outlines; targets at least 44 × 44 px; light and dark through `prefers-color-scheme` | the stylesheet; axe on every page in `readers.spec.js` |
+| The site's language and direction on `<html>`, the copy's on `<main>` | `ReaderPagesTest`; `readers.spec.js` on `/golfdom-ar` and `/news/fr` |
+| No script, no stylesheet or font from anywhere, nothing off-host | `ReaderPagesTest`; the request log in `readers.spec.js` |
+
+Still owed here, as for the admin: a screen-reader pass (§5), and reflow at 320 px and 200 % zoom, which no spec measures yet.
 
 ---
 

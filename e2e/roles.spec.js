@@ -101,7 +101,7 @@ test.describe('a role can be defined in the admin', () => {
         const holders = sectionFor(page, 'Held by');
 
         // The seeded copy-editor is already held by somebody, which is the hydration working.
-        await expect(holders).toContainText('Reader User');
+        await expect(holders).toContainText('Copy Editor');
 
         await holders.getByRole('combobox').first().click();
 

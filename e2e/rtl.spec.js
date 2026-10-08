@@ -241,16 +241,17 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
  *
  * It asserted that `/` carries `dir="rtl"` and `lang="ar"` — gap G1, Kitsune's own
  * output having no direction at all. That was reachable only through `APP_LOCALE=ar`
- * on a dedicated server, because the public side has NO site-scoped routes and
- * therefore nothing that resolves a locale per request (roadmap Phase 6, and recorded
- * against issue #38). Keeping a whole second web server for one assertion about a
- * Blade template would be paying a lot to test very little.
+ * on a dedicated server, because the public side had no site-scoped routes then. Keeping
+ * a whole second web server for one assertion about a Blade template would be paying a
+ * lot to test very little.
  *
  * It is now `tests/Core/PublicDirectionTest.php`, which sets the app locale and
  * renders the view directly. Nothing about that assertion needs a browser: there is no
  * JavaScript in it, and the claim is simply that the template emits what
  * `Kitsune::textDirection()` returns.
  *
- * When public routing lands, the browser-level version comes back — and then it will be
- * testing site-based resolution rather than an environment variable.
+ * The browser-level version came back with site-scoped public pages, resolving the
+ * locale from the site rather than an environment variable: `public-site-locale.spec.js`
+ * for the placeholder, and `readers.spec.js` for a reader's pages (ADR-037), whose
+ * document is the site's language and whose words are the copy's.
  */

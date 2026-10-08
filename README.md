@@ -66,7 +66,7 @@ Measured on a clean clone, not written from memory — four commands, under a mi
 
 ```bash
 composer install                       # the monorepo: core, the skeleton's dev tooling, the test suite
-composer skeleton:install              # the skeleton's own dependencies, the browser suite's test modules (switched off), .env, app key and SQLite file
+composer skeleton:install              # the skeleton's own dependencies, the browser suite's test module (switched off), .env, app key and SQLite file
 php skeleton/artisan migrate --seed    # schema and a small demo organisation
 php skeleton/artisan serve             # http://127.0.0.1:8000/admin
 ```
@@ -74,6 +74,38 @@ php skeleton/artisan serve             # http://127.0.0.1:8000/admin
 Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, with a
 second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
 the scoping kernel is only visible when there are two orgs to keep apart.
+
+Readers — the people a site's paid or members-only content is for — are not staff and never reach the admin
+([ADR-037](docs/decision-log.md)). The seeded reader `subscriber@kitsune.test` signs in at
+`http://127.0.0.1:8000/golfdom/account/sign-in` with the password `correct-horse-battery-staple`; Rival has a reader
+with the same address and a password of its own, `rival-horse-battery-staple`, at `/rival/account/sign-in`, because
+one address in two organisations is two readers.
+
+### Reader accounts
+
+A reader's sign-in pages are core's, placed by one line in the skeleton's `routes/web.php`; the reader's model,
+table and guard are the skeleton's (`App\Models\Reader`). They answer 404 until an operator switches them on for an
+organisation or a site, and they live under a site's public address — which a site `kitsune:blueprint apply` creates
+does not have until its `base_url` is set (today, through `php skeleton/artisan tinker`):
+
+```bash
+php skeleton/artisan kitsune:readers status --org=myblog          # is the guard usable, and what each site serves
+php skeleton/artisan kitsune:readers mode sign-in --org=myblog    # off, sign-in or open; --site=<handle> for one site
+```
+
+`find`, `export` and `erase` act on one reader — for an access or erasure request — and read the reader's address at
+a prompt, or from the first line of standard input, never from an option, which other users on the machine can read;
+`--reader=<id>` names one by number instead. `erase --force` deletes the reader's account and every entitlement they
+hold, in one transaction. After restoring a backup, run each `erase` again: the restore brings the reader back.
+
+The pages' views and words are core's (`kitsune::readers`), and a site may override them under
+`resources/views/vendor/kitsune/readers/` and `lang/vendor/kitsune/`, with no promise they keep their shape before
+v1.1's theme layer.
+
+**An installation made before reader accounts** gets core's half with `composer update` and nothing else — the skeleton
+is copied at `create-project`, so its half is four edits to make by hand: `app/Models/Reader.php`, the
+`0001_01_01_000020_create_readers_table.php` migration, the three settings in `AppServiceProvider::readerConfig()`
+(called from `register()`), and the `ReaderRoutes::register();` line in `routes/web.php`, above the catch-all.
 
 ### Starting from nothing
 
@@ -136,8 +168,8 @@ way and writing nothing ([ADR-039](docs/decision-log.md)).
 
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
-an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011
-in the [decision log](docs/decision-log.md) moved to v1.1.
+an entry yet; a reader's account pages are the only other public pages. Kitsune's first release is the admin; a
+public site that renders entries is theming, which ADR-011 in the [decision log](docs/decision-log.md) moved to v1.1.
 
 ⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
 is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves

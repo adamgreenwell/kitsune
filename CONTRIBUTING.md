@@ -143,7 +143,7 @@ So the kernel enforces it instead of trusting anyone to remember:
 
 ```php
 #[SiteScoped]              // entries and most content — Filament's tenancy scopes these
-#[OrgScoped]               // billing, settings, shared media — KITSUNE scopes these
+#[OrgScoped]               // billing, settings, shared media, readers (the host's) — KITSUNE scopes these
 #[OrgScopedThroughPivot]   // users: many orgs through a pivot, so there is no org_id to compare
 #[Unscoped]                // genuinely global: modules, system entry types
 ```
@@ -257,6 +257,8 @@ Not to be discouraging — just so nobody wastes an afternoon:
   ⚠️ **Amended 2026-10-02 by [ADR-039](docs/decision-log.md): one more named exception** — `Kitsune\Core\Auth\Contracts\ProvisionsMembership`, the interface the host's user model implements so core can create the first owner without naming the host's columns or pivots. Three methods; first-party only before v1.2, on ADR-038's footing; 0.x carries no stability promise
 
   ⚠️ **Amended 2026-10-06 by [ADR-040](docs/decision-log.md)'s entitlements: a third named exception** — one config key, `kitsune.readers.guard`, and the reader-model shape it requires: the guard is not a panel's, and its model is `#[OrgScoped]` with `EnforcesScope` and its own `org_id`, never membership-scoped, with printable-ASCII keys of at most 255 bytes that are never re-issued. It obliges a host's code, not just its configuration, which is why it is named rather than left `@internal` (Standing Principle **#2**'s v1.2 freeze). First-party only before v1.2, on ADR-038's footing; 0.x carries no stability promise
+
+  ⚠️ **Amended 2026-10-07 by [ADR-037](docs/decision-log.md), as built: the third exception widens by two symbols** — `Kitsune\Core\Readers\Contracts\ReaderAccount`, the five methods a host's reader model implements so core's sign-in can find, create, export and erase a reader without naming the host's columns (`ProvisionsMembership`'s move), and `Kitsune\Core\Readers\ReaderRoutes::register()`, the one line a host's `routes/web.php` calls to place the reader pages. ⚠️ **The contract never grows**: a host's model is frozen at `create-project`, so a method added later would be a fatal error on every installed site; a later capability arrives as a new interface core asks for with `instanceof`. Everything else reader accounts add is `@internal`, and the `kitsune::readers` views and words carry no promise in 0.x
 - **Raw SQL in field types.** Postgres, MySQL and SQLite all differ; that's what the driver abstraction is for
 - **Marketplace or plugin-directory infrastructure.** Standing Principle #5 — Winter CMS still hasn't shipped one 5.5 years after forking. Composer and Packagist do this job
 

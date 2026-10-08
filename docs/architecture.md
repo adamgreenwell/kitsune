@@ -185,6 +185,13 @@ entitlements                     -- ADR-040: may this reader reach this? one row
   revoked_at      datetime NULL  -- UTC; a revoked source stays revoked until an owner comps
   changed_at      datetime       -- UTC
   UNIQUE (site_id, reader_id, entitlement, source)
+
+readers                          -- ADR-037, as built: the HOST's table (the skeleton's), beside org_user; one org each
+  id                             -- never re-issued, so an erased reader's sessions and rows name nobody new
+  org_id                         -- FK, cascade; #[OrgScoped] with EnforcesScope, never through a pivot
+  email           string(255)    -- lower-case ASCII (the HTML type=email grammar), so every engine compares alike
+  password NULL, email_verified_at NULL, remember_token NULL, timestamps
+  UNIQUE (org_id, email)         -- one address in two orgs is two readers
 ```
 
 **`orgs` carries no mode, by design** (ADR-040, the credential store as built): `Org` is unscoped and a save of it is
@@ -202,6 +209,12 @@ Rows are deleted only by the org's hard delete, a site's delete once nothing liv
 export` hands a reader's back. It is never an entry type, and v1.1's generated REST API never exposes it. An owner sees
 a site's rows, gives a comp and revokes one source on one page, `/admin/{site}/entitlements`, which lists nothing while
 no usable reader guard is declared and puts no reader's identifier in an address or the session (ADR-040, the page).
+
+**A reader's identity is the host's and their front door is core's** (ADR-037, as built). The skeleton ships the
+`readers` table, `App\Models\Reader` and the `readers` guard; core reaches the row only through
+`ReaderAccount`'s five methods, and serves the sign-in pages at `{prefix}/account` under each site's prefix, placed by
+`ReaderRoutes::register()` in the host's `routes/web.php`. A site serves them while its `reader_accounts` setting is
+`sign-in` or `open` (`off` by default). No reader account event is audited, and nothing logs an address.
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 
@@ -372,7 +385,8 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 
    ```php
    #[SiteScoped]   // entries and most content, entitlements — Filament's tenancy scopes these
-   #[OrgScoped]    // users, billing, settings, shared media, credentials — KITSUNE scopes these
+   #[OrgScoped]    // billing, settings, shared media, credentials, readers (the host's) — KITSUNE scopes these
+   #[OrgScopedThroughPivot]   // users: many orgs through org_user, so there is no org_id to compare
    #[Unscoped]     // genuinely global: modules, system entry types
    ```
 
@@ -383,6 +397,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 5. **No query before site identification touches org- or site-scoped data.** The route table is scope-independent by design (§2), so this is now structurally true rather than a rule to remember.
 6. **Every composite index leads with its scope key** — `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively: narrower index, same guarantee.
 7. **Two deliberately hostile tests live in core** — cross-**site** isolation within one org, and cross-**org** isolation. The second is the one with no framework safety net. The most valuable tests in the codebase.
+8. **A reader never reaches a panel, and a reader page never takes staff for a reader** (ADR-037, as built). A reader's guard is no panel's and their model no `FilamentUser`; a reader route answers 404 under a panel's path and calls `Auth::shouldUse()` on the reader guard, so `auth()->user()` there is the reader or nobody. Links and redirects on reader pages are paths built from the site, never from the `Host` header.
 
 ### Per-type authorization
 

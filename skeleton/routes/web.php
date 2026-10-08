@@ -12,6 +12,7 @@ use App\Http\Controllers\WelcomeController;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
+use Kitsune\Core\Readers\ReaderRoutes;
 
 /*
  * The public placeholder. The admin is Kitsune's first release and lives under the panel's
@@ -37,6 +38,17 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
     ->name('home');
 
 /*
+ * A reader's pages — `/account`, `/account/sign-in` and `/account/sign-out` under each site's prefix (ADR-037). The
+ * routes, their controllers and their checks are core's, so a fix reaches this site with `composer update`; this line
+ * says where they go. They answer 404 until a site's reader accounts are switched on: `php artisan kitsune:readers mode
+ * sign-in --org=<slug>`.
+ *
+ * ⚠️ BEFORE THE CATCH-ALL BELOW: both are fallbacks, and among fallbacks the one declared first wins. After it, every
+ * reader page would render the placeholder instead.
+ */
+ReaderRoutes::register();
+
+/*
  * A SITE-SCOPED public route, which is what `sites.locale` needed in order to mean
  * anything (issue #38, gap G2).
  *
@@ -46,10 +58,11 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
  * serves there. So core supplies the mechanism and the application says where it
  * applies, which is the same division the panel uses for `SetKitsuneContext`.
  *
- * ⚠️ The panel is the one space where that is reversed, and it is reversed by the HOST.
- * Calling `KitsunePanel::apply()` hands core `/admin` to shape, which is where
+ * ⚠️ The panel and a reader's pages are the two spaces where that is reversed, and the HOST
+ * reverses each. Calling `KitsunePanel::apply()` hands core `/admin` to shape, which is where
  * `EntryResource` puts `/{type}/{record}/edit` and where ADR-041's media download route
- * lives. The rule is about whose URL space it is, not about the word "route" — a
+ * lives; calling `ReaderRoutes::register()` above hands it `/account` under each site's prefix
+ * (ADR-037). The rule is about whose URL space it is, not about the word "route" — a
  * security-critical path does not belong in the file an operator is invited to edit.
  *
  * ⚠️ REGISTERED LAST, because `{site}` matches one segment of anything. Laravel resolves
@@ -63,7 +76,7 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
  * as the key is what the first version did, and it exposed every site at `/{slug}` on every
  * host while leaving a properly configured site unreachable.
  *
- * ⚠️ This is NOT the front end. Phase 6 owns menus, routing, slugs and redirects; this
+ * ⚠️ This is NOT the front end. Menus, routing, slugs and redirects are v1.1's (ADR-011); this
  * route renders the same placeholder as `/` and exists to prove one thing that could not
  * be proved before — that a public request resolves a Site and is served in that site's
  * locale, per request, without touching APP_LOCALE.

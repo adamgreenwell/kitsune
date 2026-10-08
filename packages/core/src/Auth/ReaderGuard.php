@@ -41,7 +41,9 @@ use Kitsune\Core\Tenancy\Scopes\OrgScope;
  * message interpolates its bindings — never leaves core.
  *
  * ⚠️ THE HOST'S CONTRACT: a route that asks runs `ResolveSiteFromRequest` before anything asks this guard, its `auth`
- * middleware included. Otherwise the reader model's org scope has no org and loads nobody: closed, but wrong.
+ * middleware included. Otherwise the reader model's org scope has no org and loads nobody: closed, but wrong. Laravel
+ * sorts route middleware by its priority list, which core arranges (ADR-037, as built): the resolver is placed ahead of
+ * `AuthenticatesRequests`, so `[ResolveSiteFromRequest::class, 'auth:readers']` runs in that order.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */

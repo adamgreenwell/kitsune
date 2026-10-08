@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Database\Seeders;
 
+use App\Models\Reader;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
@@ -39,8 +40,9 @@ class DatabaseSeeder extends Seeder
     {
         $context = app(Context::class);
 
-        $orgA = Org::create(['name' => 'Golfdom Media', 'slug' => 'golfdom-media', 'settings' => ['timezone' => 'UTC']]);
-        $orgB = Org::create(['name' => 'Rival Publishing', 'slug' => 'rival']);
+        // Reader accounts `open` on both orgs (ADR-037): `off` is the platform default, so a fresh install serves no reader page.
+        $orgA = Org::create(['name' => 'Golfdom Media', 'slug' => 'golfdom-media', 'settings' => ['timezone' => 'UTC', 'reader_accounts' => 'open']]);
+        $orgB = Org::create(['name' => 'Rival Publishing', 'slug' => 'rival', 'settings' => ['reader_accounts' => 'open']]);
 
         $context->setOrg($orgA);
         $group = SiteGroup::create(['org_id' => $orgA->id, 'handle' => 'golfdom', 'name' => 'Golfdom', 'settings' => ['logo' => 'golfdom.svg']]);
@@ -49,7 +51,8 @@ class DatabaseSeeder extends Seeder
             // http://localhost while the browser suite serves 127.0.0.1:8125, and a
             // fully-qualified base_url could never match both (ADR-021 amendment).
             'base_url' => '/golfdom']);
-        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr', 'base_url' => '/golfdom-fr']);
+        // Readers sign in here but may not sign up: the per-site switch under an org that is `open`.
+        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr', 'base_url' => '/golfdom-fr', 'settings' => ['reader_accounts' => 'sign-in']]);
 
         $context->setOrg($orgB);
         // Deliberately the SAME handle as Golfdom's site. UNIQUE is
@@ -58,7 +61,10 @@ class DatabaseSeeder extends Seeder
         // first, so one customer's admin became unreachable depending on row
         // order. Every admin spec navigates to /admin/golfdom, which means
         // the whole browser suite is the regression test for it.
-        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'slug' => 'rival-golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
+        //
+        // ⚠️ AT `/rival`, so another org's reader pages exist for the cross-org specs to try (ADR-037). Host-less, as
+        // Golfdom's are; its admin slug `rival-golfdom` is unchanged.
+        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'slug' => 'rival-golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en', 'base_url' => '/rival']);
 
         // ⚠️ An RTL site, so the PUBLIC side has something to serve right-to-left without
         // anyone editing APP_LOCALE (issue #38). `golfdom` is `en` and `golfdom-fr` is
@@ -84,6 +90,24 @@ class DatabaseSeeder extends Seeder
             'slug' => 'golfdom-nested', 'name' => 'Golfdom Nested', 'locale' => 'he',
             'base_url' => '/news/fr',
         ]);
+        /*
+         * ⚠️ READERS, NOT STAFF (ADR-037) — signed in at `/golfdom/account/sign-in` with `correct-horse-battery-staple`,
+         * and at `/rival/account/sign-in` with `rival-horse-battery-staple`. Ids are fixed on the fresh table and the
+         * browser suite names them: Golfdom Media's are 1 and 2, Rival's 3 and 4. Reader 3 has reader 1's address ON
+         * PURPOSE: one address in two orgs is two readers with two passwords, and the cross-org specs try each at both.
+         */
+        $readers = [
+            [$orgA, 'subscriber@kitsune.test', 'correct-horse-battery-staple'],
+            [$orgA, 'subscriber2@kitsune.test', 'correct-horse-battery-staple'],
+            [$orgB, 'subscriber@kitsune.test', 'rival-horse-battery-staple'],
+            [$orgB, 'rival-subscriber@kitsune.test', 'rival-horse-battery-staple'],
+        ];
+
+        foreach ($readers as [$org, $email, $password]) {
+            $context->setOrg($org);
+            Reader::createReader($email, Hash::make($password), now());
+        }
+
         $context->setOrg($orgB);
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
@@ -305,9 +329,9 @@ class DatabaseSeeder extends Seeder
          * `publish`. A fixture that cannot reach the page it is meant to measure is a fixture that proves
          * the refusal before it.
          */
-        $reader = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
-        $reader->grant(Permissions::forEntryType('article', 'view'));
-        $reader->grant(Permissions::forEntryType('article', 'update'));
+        $copyEditor = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
+        $copyEditor->grant(Permissions::forEntryType('article', 'view'));
+        $copyEditor->grant(Permissions::forEntryType('article', 'update'));
 
         /*
          * ⚠️ A GRANT ON A TYPE THAT IS DISABLED FOR THE PRIMARY SITE, which is the only fixture that can show
@@ -317,16 +341,17 @@ class DatabaseSeeder extends Seeder
          * another site needed. `e2e/roles.spec.js` saves from `golfdom` and then reads the grant back from
          * `golfdom-fr`, where the section does appear.
          */
-        $reader->grant(Permissions::forEntryType('podcast', 'view'));
+        $copyEditor->grant(Permissions::forEntryType('podcast', 'view'));
 
-        $readerUser = User::create([
-            'name' => 'Reader User',
-            'email' => 'reader@kitsune.test',
+        // ⚠️ STAFF, NOT A READER: "reader" means a reader account (ADR-037), so this address says what the person is.
+        $copyEditorUser = User::create([
+            'name' => 'Copy Editor',
+            'email' => 'copyeditor@kitsune.test',
             'password' => Hash::make('password'),
         ]);
-        $readerUser->sites()->attach([$en->id, $fr->id, $ar->id]);
-        $readerUser->orgs()->attach($orgA->id);
-        $reader->assignTo($readerUser->id);
+        $copyEditorUser->sites()->attach([$en->id, $fr->id, $ar->id]);
+        $copyEditorUser->orgs()->attach($orgA->id);
+        $copyEditor->assignTo($copyEditorUser->id);
 
         /*
          * ⚠️ A VIEWER, and the copy-editor cannot stand in for one. Restoring a version is an EDIT, and the view

@@ -552,7 +552,7 @@ entries
 
 ## ADR-018 — Product internationalization is a requirement, not a nice-to-have
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry.
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry · **Amended 2026-10-07** — a reader's pages are core's first public copy; see the end of this entry
 
 Kitsune's own interface, errors and eventually docs are translatable from the first commit. *Open source means open to everyone, not open to everyone who reads English.*
 
@@ -602,12 +602,20 @@ Measured against Filament **v5.7.8**. Full inventory in [`accessibility-inventor
 
 **Pluralization is untouched by this spike** and stays open exactly as written above.
 
+⚠️ **Amended 2026-10-07 — a reader's pages are the first public copy in the `kitsune` namespace (ADR-037, as built).**
+Their words are `kitsune::readers`, in English only for now, and a page carries two languages, as the welcome page
+does: `<html lang dir>` is the **site's** locale, and `<main lang dir>` is the locale the copy was **found** in — the
+site's when `kitsune::readers` exists in it, the application's fallback otherwise. So an Arabic site renders
+`<html lang="ar" dir="rtl">` around English copy marked `<main lang="en" dir="ltr">`, and follows by itself once a
+host adds `lang/vendor/kitsune/ar/readers.php`. Counted sentences use Laravel's choice syntax (`trans_choice`), the
+first in core — not the pluralization rules this entry leaves open.
+
 
 ---
 
 ## ADR-019 — Path segments encode resource identity; everything else is state
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-07** — `account` is reserved under every site's prefix; see the end of this entry
 
 A URL path segment identifies *which thing you are looking at*. Viewer preferences — UI locale, theme, view mode, density, timezone — are never path segments. They are query parameters or persisted user state.
 
@@ -650,6 +658,15 @@ All three must be supported — publishers use all three, and the choice is usua
 This is a real commercial consequence, not a purist point: getting it wrong tanks organic search for every multilingual site on the platform, and on KaaS that is every tenant at once.
 
 **Requirement for the v1.1 theming layer:** locale in the public path (or subdomain, or domain), per-locale slugs, and automatic `hreflang` + canonical tags. Not retrofittable without breaking every published URL.
+
+### Amendment — `account` is reserved under every site's prefix, 2026-10-07
+
+A reader's pages live at `{prefix}/account`, `/account/sign-in` and `/account/sign-out` under each site's own prefix
+(ADR-037, as built), so `account` names the reader's own resource — their account — on every public URL a site has.
+**The v1.1 theming layer's slugs refuse `account` as a first segment.** Until then nothing public claims one: the
+reader routes are fallbacks, so a panel or host route always wins, and a page answers at exactly one address per site
+— a deeper path under the prefix (`/golfdom/x/account`) is no site's. A site whose own prefix ends in `account` under a
+sibling's (`/golfdom/account`) would make that sibling's reader pages 404: closed, never crossed.
 
 ---
 
@@ -1041,7 +1058,7 @@ The kernel enforces isolation at the write, and at the builder rather than in a 
 
 ## ADR-022 — Scoped configuration: sparse overrides resolved org → site group → site
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-18** — the settings store landed with timezone as its first consumer; invalidation is automatic for every write through Eloquent, and the per-site cache is deferred · **2026-09-19** — the store holds to one database connection per process. See the amendment after the consequences
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-18** — the settings store landed with timezone as its first consumer; invalidation is automatic for every write through Eloquent, and the per-site cache is deferred · **2026-09-19** — the store holds to one database connection per process. See the amendment after the consequences · **Amended 2026-10-07** — a second platform key, `reader_accounts`
 
 Settings and entry type availability both resolve through the same three-level hierarchy, with **only overrides stored** at each level.
 
@@ -1121,6 +1138,27 @@ Phase 3's settings store, with `timezone` as the first setting production code r
 **One connection per process — decided 2026-09-19.** Kitsune's tenancy models — orgs, site groups, sites and what hangs off them — live on one database connection in a process. A second handle to that same database is supported, and the host-claim concurrency tests open one; so is a connection carrying a table prefix, which is a host's single connection named differently. Models split across *databases* are not supported, and the settings store makes no promise there. Two review rounds on #127 showed why this needed deciding rather than patching: each fix Codex prompted on a non-default connection exposed the next layer — the reads, then the audit row, which `Auditor` writes on the default connection and so outside a scope connection's transaction, and next the resolver's memo, keyed by site id alone. The reads are built on the model's own connection all the same, as cheap defence already paid for; the audit row and the memo key are left as they are, because making every layer connection-aware is a design this project has not chosen, and a store that claimed it without doing it would be worse than one that states the boundary.
 
 **Still open.** The provenance UI this entry makes a first-class requirement — every resolved setting showing its origin, with a one-click revert — is **not built**: the panel has no org, site group or site resources to put it on. `Resolved` carries the provenance and `SettingsWriter::revert()` is the revert, so what remains is the screen. The picker holds a wall-clock time and no offset, and two consequences are measured and undecided: in the hour a zone repeats, one wall-clock time names two instants, and the second is saved back as the first — an entry holding 06:30 UTC on 2026-11-01 in New York moves to 05:30 when saved, even untouched — and in the hour a zone skips, 02:30 is stored as 07:30 UTC and shown as 03:30, with no message. Whether to refuse such a time, disambiguate it, or show the offset is open; so is fixing the zone for the life of an open form, which today reads its untouched instants in whatever zone the site has when it is saved. ⚠️ **Both are unreachable today and must be fixed before they become reachable.** Every site resolves to the default, UTC, which repeats and skips no hour, and nothing in the admin calls `SettingsWriter` — only code can set another zone. The first admin screen that lets an operator choose a timezone is therefore the change that exposes an untouched save rewriting a stored instant, and it may not ship until that save stores what it read. `SiteTimezoneTest` pins the repeated-hour case as a known defect, so the fix fails that assertion on purpose. Whether an org or site group change should be filed under the level's `site_id` rather than the actor's is open, and the audit migration's comment on that column disagrees with what every `Auditor` record does. `locked_keys` is still this entry's open question; ~~encrypted setting values wait on ADR-036's secrets~~ *secrets are ADR-040's credential store, not settings*; and entry type availability still resolves through `EntryTypeAvailability::enabledMapFor()` rather than through the settings resolver, so "the same mechanism" above describes the inheritance rule, not shared code.
+
+### Amendment — a second platform key, `reader_accounts`, 2026-10-07
+
+**Status:** Amended · ADR-037, as built
+
+`reader_accounts` decides which of a reader's pages a site serves: `off`, `sign-in` or `open` (ADR-037). Identity is per
+org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR means sign-up — when it lands — on Golfdom
+only, and sign-in on both.
+
+- **Default `off`**, in core's `config/kitsune.php` `settings`: a fresh install serves no reader page until an
+  operator runs `kitsune:readers mode`.
+- **Written** through `SettingsWriter`, audited `settings.set` / `settings.reverted` as every key is; `inherit` is a
+  revert, because absent means inherit.
+- **Refused on write** by `SettingsGuard` at every door `timezone` is: any value but those three words — another
+  word, another case, an empty string, `true`, `null`, a list — with *"Refusing [reader_accounts] on {holder}: it is
+  off, sign-in or open, and {value} is none of them. To inherit instead, revert the key rather than storing an empty
+  one."* The list is `ReaderMode`'s values, one copy of them.
+- **Read as `off`** whenever it is anything else — a value written below Eloquent, or a host `settings` map that
+  replaced core's and dropped the key — so reader pages fail closed.
+
+`locked_keys`, this entry's open question, is still open; nothing in this key needs it.
 
 ---
 
@@ -1308,7 +1346,7 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 | `--owner-password=<value>` *(2026-10-02)* | Visible to other users in `ps` and `/proc`, kept in shell history, and carried by Laravel's command events. |
 | `KITSUNE_OWNER_PASSWORD` *(2026-10-02)* | Readable in `/proc/<pid>/environ`, inherited by every child process, shown by `docker inspect`, and echoed by CI. |
 | A generated password, printed once *(2026-10-02)* | It lands in scrollback and CI logs, and it is a credential the operator did not choose. |
-| An emailed set-password link *(2026-10-02)* | Mail is `log` at the floor, and there is no reset flow for the link to land in. |
+| An emailed set-password link *(2026-10-02)* | Mail is `log` at the floor, and there is no reset flow ~~for the link to land in~~ *for staff for the link to land in (readers' recovery is ADR-037's, 2026-10-07)*. |
 | `--owner` on an installation that already has an org or an account *(2026-10-02)* | An administrator created beside an identity process someone else runs, or a takeover of an account that exists. |
 
 **Cost, stated.** An installer is a permanent support surface that grows with every distro release, and it will generate support load disproportionate to its size — the ~3x multiplier in ADR-011 applies to it directly. Budget for it as an ongoing obligation, not a Phase 6 task that closes.
@@ -2918,7 +2956,7 @@ product that does not ship.
 
 ## ADR-037 — A reader is not a panel user, and gets a guard of their own
 
-**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)**; see the end of this entry
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)** · **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity and core owns the front door**; see the end of this entry
 
 Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
 for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
@@ -2979,7 +3017,11 @@ decided when that tooling is built rather than asserted here.
 
 ### Enforced by
 
-**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.
+~~**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.~~ *As built
+(2026-10-07): a reader cannot reach any panel route, asserted from the reader's side — `readers.spec.js` signs reader
+1 in and finds `/admin`, `/admin/golfdom` and `/admin/golfdom/entitlements` at the staff sign-in, where the reader's
+credentials fail; `ReaderGuardTest`, unchanged; `SkeletonReaderTest`, the skeleton's model and declaration; and the
+cross-org cases of `ReaderSessionsTest` and `readers.spec.js`. The rest of the paragraph below stays "when it lands".*
 
 When it lands: a reader cannot reach any panel route, asserted from the reader's side rather than the panel's; core
 refuses to resolve a reader when no guard is declared; a profile cannot be written without a consent record; `Sec-GPC`
@@ -3011,6 +3053,103 @@ entitlements answered with `export` and `forget`. The estimate moves with it (AD
 
 *When it lands*, above, is otherwise unchanged; "a reader cannot reach any panel route, asserted from the reader's
 side" becomes that slice's to enforce.
+
+⚠️ **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity, and core owns the
+front door (Adam, 2026-10-07).**
+
+**Where it lives — Adam's answer.** The decision above says core owns no guard, provider or model, and that stands: the
+skeleton declares the `readers` guard with Laravel's own `session` driver and `eloquent` provider
+(`AppServiceProvider::readerConfig()`), and owns `App\Models\Reader` and its `readers` table. What core owns is the
+mechanism in front of them — the routes, controllers, views and words, the throttles and the session binding — because
+**sign-in and recovery are where account takeovers happen, and skeleton code is frozen at `create-project`**: a fix in a
+frozen copy reaches no installed site, and a fix in core reaches every one with `composer update`. "Exactly as the panel
+user is" (above) supports it: the panel user's identity is the host's, and its sign-in pages come from a package wired
+by the host with one call. The rejected alternative — everything in the skeleton — added no public surface and was the
+most literal reading of this entry, at the cost of a permanent per-install copy of the auth code and a second copy of
+`FirstOwnerCredentials`' rules, which the skeleton may not call.
+
+**Two public symbols, under CONTRIBUTING's third exception.** `ReaderAccount` is five methods — `findByEmail`,
+`createReader`, `readerEmail`, `exportAccount`, `eraseAccount` — through which core reads and writes the host's row
+without naming its columns, as ADR-039's `ProvisionsMembership` lets core create the first owner. ⚠️ **It never
+grows**: a host's model is frozen at `create-project`, so a method added later would be a fatal error on every installed
+site; a later capability arrives as a new interface core asks for with `instanceof`. `ReaderRoutes::register()` is the
+one line the host's `routes/web.php` calls, above its catch-all. Everything else is `@internal`, listed by
+`ReaderSurfaceTest`.
+
+**The pages.** `{prefix}/account`, `/account/sign-in` and `/account/sign-out` under each site's prefix. ⚠️ **Every
+route is a fallback**: the host's web routes register before Filament's, so an ordinary `{readerSite}/account` route
+answered `/admin/golfdom/c/account` — an entry type may be called `account` — and broke that admin page (probed);
+marked as fallbacks, a panel or host route always wins, cached or not. `ReaderArea` then answers 404, naming nothing,
+for no site, a `{readerSite}` that is not exactly the site's prefix, a panel's path on that panel's hosts, a guard or model accounts cannot
+use, and a site whose `reader_accounts` mode is `off` (ADR-022, amended) — and calls `Auth::shouldUse()` on the reader
+guard, so `auth()->user()` on a reader page is the reader or nobody, never staff riding the same session. The pages
+send no script and load nothing from anywhere (`default-src 'none'`), and are never cached, framed or indexed. They
+render in core's own Blade views with the welcome page's palette, which a host may override under
+`resources/views/vendor/kitsune/` with no promise before v1.1's theme layer — the first half of "how its few pages
+render", above.
+
+**Signing in, with one answer.** An unknown address, a wrong password and a reader with no password get the same
+status, body and headers, and **exactly one hash check** each: against the reader's hash or against a real hash made at
+the configured cost and cached — not a constant, which would answer faster or slower at any other cost. Laravel's
+`attempt()` is not used, because it skips the hash for an unknown address. A refusal is rendered in place, so no
+typed address is flashed into the session. Throttles on the default cache store, keyed by HMACs so no address or
+connection is in a cache key: five POSTs a minute per connection (an IPv6 address by its /64, an IPv4-mapped one as its
+IPv4 address), every POST counted, before anything is checked; ten failures in fifteen minutes per org and address,
+counted for addresses that have no account too. Each attempt is counted **before** its hash is checked and refused on
+the count that comes back — counting after let every attempt that arrived during one check through (review). Every
+POST compares the body's token itself, because Laravel's check passes any POST marked same-origin. **Named residuals:**
+the floor's `file` cache store increments without a lock, so attempts that land at the same instant can be counted
+once (`database` and `redis` stores are atomic); after the operator raises the hashing cost, a reader who has not signed
+in since answers a wrong password faster than an unknown address does, until their next sign-in rehashes it — a hash
+another driver made is refused with the generic answer, at the cost of one hash, rather than an error; and an
+exception reported during a reader's request carries Laravel's own `userId` context — the reader's key, an opaque
+number, as a staff user's is on the admin — which core cannot remove from the host's handler.
+
+**Sessions, bound to the password.** At sign-in the session gets an HMAC of the reader's password hash and remember
+token; whenever the guard loads the reader, a missing or different value signs that session out — so a password
+changed anywhere ends every other session, every entitlement check included, without a custom guard driver, and
+`setUser()` alone signs nobody in. Only a model with the contract is touched, so a host with its own login keeps it.
+Sign-out never invalidates the session and never regenerates its CSRF token: a staff session in the same browser, and
+its open admin tab, keep working. **Named residuals**, each asserted by a test: a reader's sign-in rotates the CSRF
+token — which a browser does not notice, because Laravel lets a request the browser marks same-origin through before it
+compares tokens, but a client that sends no Fetch Metadata is refused once; Filament's logout invalidates the whole
+session, the reader's too; one browser holds one reader at a time, so signing in at org B replaces org A's; and a
+rehash at sign-in — after the operator changes the hashing cost or driver — changes the binding, so that reader's
+other sessions end too.
+
+**The site before the guard.** `ReaderGuard`'s host contract — `ResolveSiteFromRequest` runs before anything asks the
+reader guard — was false for `auth:`, which Laravel's priority list sorted ahead of the resolver. Core now places the
+resolver before `AuthenticatesRequests` in that list, so a host's `[ResolveSiteFromRequest::class, 'auth:readers']`
+route sees its reader; on the skeleton's own `/` and catch-all, the resolver also moves ahead of `SubstituteBindings`,
+which binds nothing there. Core's reader routes do not use `auth:`. ⚠️ Only the priority list changes: the kernel's own
+method copies every middleware group and alias it knows back onto the router, which undid what an earlier provider had
+set there directly (review), so core puts the router's groups and aliases back as they were.
+
+**One reader's export and erasure** — the second half of what this slice decided for itself. `kitsune:readers export`
+prints the host's `exportAccount()` — the model's own classification of what is personal, until v1.1's tooling — with
+core's entitlement rows; `erase --force` runs `EntitlementWriter::forget()` and then `eraseAccount()` in one
+transaction, so a reader is never half-erased, and works after the host deleted the row. An address is read at a prompt
+or from standard input, never an option. **No reader account event is audited** — not sign-in, sign-out or erasure's
+account half — as ADR-040 kept readers out of audit rows; the erasure's entitlement rows are audited as `forget` always
+was.
+
+**The skeleton's readers.** `DatabaseSeeder` makes four, ids fixed: Golfdom Media's 1 and 2, Rival's 3 and 4, reader 3
+with reader 1's address and a password of its own; Rival's site gains `/rival`; Golfdom Media and Rival are `open`,
+Golfdom FR `sign-in`. They replace the browser suite's `kitsune/e2e-reader-guard`, which is deleted, and the staff
+copy-editor `reader@kitsune.test` became `copyeditor@kitsune.test`. On every **new** install, every owner's sidebar
+gains *Entitlements* and `kitsune:entitlements status` says the guard is usable; reader pages stay 404 until an operator
+sets a mode and the site has a public address.
+
+**Upgrades.** Core's half arrives with `composer update` and is inert: the views, the `off` default and the priority
+entry. The host's half is frozen, so an existing install gets no `Reader`, migration, declaration or route line; the
+README lists the four edits.
+
+**What this first part does not do, and the second part does:** sign-up, which waits for the email link (Adam,
+2026-10-07: an account is made only when a link mailed to the address is used and a password chosen), and recovery,
+with core's link tokens and the floor's mail rule. No release is tagged between the two parts, because the first alone
+gives a production reader no way to come into being. **Deferred, named:** remember-me ("not yet" — Adam, 2026-10-07; it
+comes with "sign out everywhere"), self-service (address, password, your data, delete your account), an owner's
+Readers page and invitations, a breached-password list and a second factor.
 
 ---
 
@@ -4523,9 +4662,11 @@ an absent end is ordinary text through `SiteTime::columnOr()` instead (measured 
 **The surface, all `@internal`, appended to the first half's list:** `Filament\Pages\Entitlements`;
 `Filament\AuditActors`; `SiteTime::columnOr()`; `EntitlementRefused::$mayHaveApplied`; the page route
 `{panel}/{site}/entitlements`; the translation namespaces `kitsune::entitlements` and `kitsune::audit`. CONTRIBUTING
-gains no exception. The browser suite's reader guard is `kitsune/e2e-reader-guard`, under `e2e/` — a reader model, its
+gains no exception. ~~The browser suite's reader guard is `kitsune/e2e-reader-guard`, under `e2e/` — a reader model, its
 table, the guard and a seed — which no release, package split or floor benchmark copies, and which the skeleton's own
-reader model replaces when reader accounts arrive.
+reader model replaces when reader accounts arrive.~~ *The browser suite's readers are the skeleton's own
+`App\Models\Reader` (ADR-037, as built, 2026-10-07): `DatabaseSeeder` makes readers 1–4 and `e2e/accounts.js`
+`seedReaderGrant()` gives reader 1 the producer's row; `kitsune/e2e-reader-guard` is deleted.*
 
 **Enforced by**, for the decision's "an operator handing out a comp" — now an owner, on this page — and for the first
 half's fail-closed check as an owner sees it:

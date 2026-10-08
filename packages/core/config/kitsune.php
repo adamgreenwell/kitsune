@@ -49,6 +49,10 @@ return [
     'settings' => [
         // Where nothing overrides it, the zone the admin shows and takes instants in. Storage is UTC regardless.
         'timezone' => 'UTC',
+        // Which reader-account pages a site serves (ADR-037): `off`, `sign-in` or `open`. ⚠️ `off` UNTIL AN OPERATOR
+        // SAYS OTHERWISE, per org or per site (`kitsune:readers mode`): a stock install serves no reader page, and a
+        // host map that drops the key reads as `off` too.
+        'reader_accounts' => 'off',
     ],
 
     /*
@@ -59,7 +63,9 @@ return [
      * `EnforcesScope` and its own `org_id` — never `#[OrgScopedThroughPivot]` — and its keys are printable ASCII of at
      * most 255 bytes, never re-issued to another reader: a re-issued key inherits the old reader's access unless
      * `kitsune:entitlements forget` ran first. A route that asks runs `ResolveSiteFromRequest` before anything asks
-     * the guard, its `auth` middleware included, or the reader's org scope has no org and loads nobody.
+     * the guard, its `auth` middleware included, or the reader's org scope has no org and loads nobody — in the
+     * priority list, which core arranges (ADR-037, as built). The skeleton declares `readers`, in its
+     * `AppServiceProvider::readerConfig()`, and core's sign-in pages use it once a model implements `ReaderAccount`.
      *
      * Named in CONTRIBUTING as an exception to the v1.2 surface rule: it obliges the host's code, not just its config.
      *

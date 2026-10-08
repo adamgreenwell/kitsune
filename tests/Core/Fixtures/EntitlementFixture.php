@@ -80,7 +80,7 @@ final class EntitlementFixture
     }
 
     /**
-     * Declare the reader guard — the host's `config/auth.php` and `config/kitsune.php`, as a host writes them.
+     * Declare the reader guard — the host's auth configuration and `kitsune.readers.guard`, as a host writes them.
      *
      * @param  class-string  $model
      */

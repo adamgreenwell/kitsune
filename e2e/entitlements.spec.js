@@ -3,6 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
+const { READERS, seedReaderGrant } = require('./accounts');
 
 /*
  * The entitlements page — ADR-040, entitlements' second half: who holds what on a site, from which source, until when
@@ -10,19 +11,18 @@ const AxeBuilder = require('@axe-core/playwright').default;
  * handler; only a browser says the table re-renders without a navigation, that the reader's id reaches no address, that a
  * stored `"` stays text, and that a refused comp keeps its modal open with what was typed.
  *
- * ⚠️ THE READERS ARE THE TEST MODULE'S, `kitsune/e2e-reader-guard`, which `global-setup.js` enables and seeds: Golfdom
- * Media's public readers are 1 and 2, Rival's 3 and 4, and reader 1 holds `course.advanced-php` from `e2e.order:1`,
- * granted by the system. A CI retry re-runs this group against what the first attempt left, and a revoked source stays
- * revoked by design — so `beforeAll` erases both Golfdom readers' rows through the console's own door, and the seed
- * grants again.
+ * ⚠️ THE READERS ARE THE SKELETON'S OWN (`e2e/accounts.js`): Golfdom Media's are 1 and 2, Rival's 3 and 4, and reader 1
+ * holds `course.advanced-php` from `e2e.order:1`, granted by the system. A CI retry re-runs this group against what the
+ * first attempt left, and a revoked source stays revoked by design — so `beforeAll` erases both Golfdom readers' rows
+ * through the console's own door, and `seedReaderGrant()` grants again.
  *
  * This session is Golfdom's owner. The refusal for a member who is not one is `permissions.spec.js`'s.
  */
 
 const SITE = 'golfdom';
 const PAGE = `/admin/${SITE}/entitlements`;
-const READER = '1';
-const RIVAL_READER = '3';
+const READER = READERS.golfdom.id;
+const RIVAL_READER = READERS.rival.id;
 // Printable ASCII with no space: an id the guard's grammar admits, and one that would close an unescaped attribute.
 const HOSTILE = 'e2e"onfocus=window.__kp=1//';
 const HOSTILE_NAME = 'e2e.hostile-id';
@@ -146,11 +146,11 @@ async function filter(page, fields) {
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(() => {
-    for (const reader of [READER, '2']) {
+    for (const reader of [READER, READERS.golfdom2.id]) {
         artisan('kitsune:entitlements', 'forget', '--org=golfdom-media', `--reader=${reader}`, '--force');
     }
 
-    artisan('e2e:public-readers-seed', '--no-interaction');
+    seedReaderGrant();
     removeHostile();
     plantHostile();
 });

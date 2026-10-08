@@ -33,7 +33,8 @@ use Kitsune\Core\Tenancy\Context;
  *
  * ⚠️ NO STAFF BYPASS. An owner holds nothing unless granted: a bypass here would repeat ADR-033's `Gate::before` mistake.
  *
- * A gated route runs `ResolveSiteFromRequest`, then the reader guard's `auth` middleware if it has one, then this.
+ * A gated route runs `ResolveSiteFromRequest`, then the reader guard's `auth` middleware if it has one, then this — in
+ * the priority list, which core arranges (ADR-037, as built).
  * False means refuse; `EntitlementUnavailable` means an error page, never a paywall.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
