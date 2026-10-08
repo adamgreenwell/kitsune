@@ -40,6 +40,7 @@ use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\ReadersCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
+use Kitsune\Core\Console\SiteCommand;
 use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialReader;
 use Kitsune\Core\Credentials\CredentialSlots;
@@ -293,6 +294,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ModuleCommand::class,
                 ReadersCommand::class,
                 SchemaSyncCommand::class,
+                SiteCommand::class,
             ]);
         }
 

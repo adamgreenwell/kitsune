@@ -122,7 +122,7 @@ it('lists each site\'s mode and where it comes from', function (): void {
 
     expect($status)->toBe(0)
         ->and(array_slice(explode("\n", $output), 2))->toBe([
-            'Site [admin-only]: open (inherited from the organisation) — it has no public address (base_url) yet, so no reader page can be reached.',
+            'Site [admin-only]: open (inherited from the organisation) — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one.',
             'Site [golfdom]: open (inherited from the organisation).',
             'Site [golfdom-fr]: sign-in (set on this site).',
         ]);

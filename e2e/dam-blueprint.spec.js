@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { menuItem } = require('./menu');
 
 /*
  * The DAM blueprint, as `kitsune:blueprint apply dam` left it — Phase 5, ADR-039, the DAM as built: AGENTS.md §9
@@ -272,9 +273,9 @@ test('lets the contributor upload a picture and a document and describe them, an
      */
     await page.locator('.fi-ta-record').filter({ hasText: PHOTO }).getByRole('checkbox').check();
     await page.getByRole('button', { name: /bulk actions/i }).click();
-    await expect(page.getByRole('button', { name: 'Make selected public', exact: true })).toBeVisible();
+    await expect(menuItem(page, 'Make selected public')).toBeVisible();
     for (const label of ['Delete selected', 'Restore selected', 'Delete selected forever']) {
-        await expect(page.getByRole('button', { name: label, exact: true }), label).toHaveCount(0);
+        await expect(menuItem(page, label), label).toHaveCount(0);
     }
 
     const edit = await page.goto(`/admin/${SITE}/c/asset/${photo.id}/edit`);
@@ -304,7 +305,7 @@ test('lets the contributor upload a picture and a document and describe them, an
     await ownerPage.goto(`/admin/${SITE}/c/asset`);
     await ownerPage.locator('.fi-ta-record').filter({ hasText: PHOTO }).getByRole('checkbox').check();
     await ownerPage.getByRole('button', { name: /bulk actions/i }).click();
-    await expect(ownerPage.getByRole('button', { name: 'Delete selected', exact: true })).toBeVisible();
+    await expect(menuItem(ownerPage, 'Delete selected')).toBeVisible();
     await ownerPage.goto(`/admin/${SITE}/c/asset/${photo.id}/edit`);
     await expect(ownerPage.getByRole('button', { name: 'Delete', exact: true }).first()).toBeVisible();
     await owner.close();

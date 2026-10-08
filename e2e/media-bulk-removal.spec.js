@@ -2,6 +2,7 @@
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { menuItem } = require('./menu');
 
 /*
  * An entry list's selection deleted, restored or deleted forever — ADR-042 decisions 35 and 36: at most fifty at a time,
@@ -119,7 +120,7 @@ async function listedArticles(page, words, count) {
 /** The list's *Bulk actions* menu, opened, and the action in it clicked. */
 async function bulkAction(page, label) {
     await page.getByRole('button', { name: /bulk actions/i }).click();
-    await page.getByRole('button', { name: label, exact: true }).click();
+    await menuItem(page, label).click();
 }
 
 /** Show the list's trash, as Filament's filter shows it: '' not in the trash, '1' everything, '0' only the trash. */

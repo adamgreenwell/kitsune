@@ -451,6 +451,17 @@ describe('on an installation with no organisation at all', function (): void {
             ->and(EntryType::query()->where('org_id', $org->getKey())->where('handle', 'dispatch')->exists())->toBeTrue();
     });
 
+    /** The README's next line: the first site's handle is the org's slug, and `kitsune:site address` gives it its address. */
+    it('leaves the site it creates admin-only, for kitsune:site address to give it an address under the org\'s slug', function (): void {
+        $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+
+        expect(Site::query()->withoutGlobalScopes()->sole()->canonical_host)->toBeNull();
+
+        $this->artisan('kitsune:site address https://acme.test --org=acme --site=acme')->assertSuccessful();
+
+        expect(Site::query()->withoutGlobalScopes()->sole()->canonical_host)->toBe('acme.test');
+    });
+
     /** ADR-026: onboarding creates the first user interactively, so a bootstrap that made one would pre-empt it. */
     /** ⚠️ THE ONE PLACE `apply` WOULD CREATE AN ORGANISATION, AND `reverse` STILL DOES NOT. */
     it('creates no organisation for a reverse', function (): void {

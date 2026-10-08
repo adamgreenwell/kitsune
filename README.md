@@ -86,12 +86,17 @@ one address in two organisations is two readers.
 A reader's sign-in pages are core's, placed by one line in the skeleton's `routes/web.php`; the reader's model,
 table and guard are the skeleton's (`App\Models\Reader`). They answer 404 until an operator switches them on for an
 organisation or a site, and they live under a site's public address — which a site `kitsune:blueprint apply` creates
-does not have until its `base_url` is set (today, through `php skeleton/artisan tinker`):
+does not have until it is given one:
 
 ```bash
+php skeleton/artisan kitsune:site address https://blog.example --org=myblog --site=myblog   # a blueprint's first site has the org's slug
 php skeleton/artisan kitsune:readers status --org=myblog          # is the guard usable, and what each site serves
 php skeleton/artisan kitsune:readers mode sign-in --org=myblog    # off, sign-in or open; --site=<handle> for one site
 ```
+
+An address is `https://` or `http://` and a host, with an optional path (`https://example.com/fr`). Moving a site that
+already answers somewhere needs `--force`, because every link to the old address breaks, and another organisation may
+then claim it, unless another of your sites still overlaps it.
 
 `find`, `export` and `erase` act on one reader — for an access or erasure request — and read the reader's address at
 a prompt, or from the first line of standard input, never from an option, which other users on the machine can read;
@@ -118,6 +123,7 @@ php skeleton/artisan serve
 ```
 
 That creates the organisation `myblog`, its first site, and you as its owner, then applies the Blog blueprint.
+Its site is reachable only through the admin until you give it an address — see *Reader accounts* above.
 You are asked for a password twice, hidden — at least 15 characters — and it is never shown; where it could not be
 hidden, as over `ssh` or `docker exec` without `-t`, the prompt is refused rather than shown. In a script, pipe it
 in instead with `--owner-password-stdin --no-interaction`, for example `< owner-password.txt` from a file only you

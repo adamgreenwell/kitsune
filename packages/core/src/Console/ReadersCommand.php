@@ -140,7 +140,7 @@ final class ReadersCommand extends Command
                     $site->handle,
                     $accounts->mode($site)->value,
                     $resolved?->describe() ?? 'platform default',
-                    $site->canonical_host === null ? ' — it has no public address (base_url) yet, so no reader page can be reached' : '',
+                    $site->canonical_host === null ? ' — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one' : '',
                 ));
             }
         }
