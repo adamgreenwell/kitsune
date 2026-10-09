@@ -1053,6 +1053,19 @@ php artisan kitsune:site address https://acme.example --org=acme --site=acme [--
 
 **Left as they are, and stated.** Taking an address away, so a site is admin-only again, still needs `tinker` (Adam, 2026-10-08: not in this pull request). A prefix under a panel's path, or ending in `account`, still saves and fails closed with a 404 (ADR-019's 2026-10-07 amendment); a fix for that belongs in `Site`, for every way in. A reader signed in on a site's old host signs in again on its new one. `kitsune:readers status` names a site with no address and points at this command.
 
+### Amendment — a host-less site's mailed links, 2026-10-09
+
+**Status:** Amended · ADR-037, reader accounts' second part, as built
+
+A reader link is mailed, so it is an absolute URL, and it is built from the site's own address — never from the
+request's `Host` (`ReaderLinks`). A site with a host of its own gives its scheme and port from `base_url` and its host
+from `canonical_host`; `base_url` itself is never printed, because it could hold a user name and password. **A host-less
+site (`/golfdom`) has no host to stand on**, so outside `local` and `testing` it mails no link, its sign-up and recovery
+pages answer 503, and `kitsune:readers status` names it and points at `kitsune:site address`. In `local` and `testing`
+its links are built from `APP_URL`'s scheme, host and port — so the seeded sites work for a developer — and an `APP_URL`
+that names a path, a user or a query is refused rather than guessed at. A site whose address names no scheme is treated
+as host-less for mail.
+
 ### Naming rule
 
 **"Tenant" is now ambiguous and is banned from Kitsune's own code.** Filament calls its segment a tenant; Kitsune means a Site. Use **Org** and **Site** explicitly everywhere, and the word "tenant" only at the Filament API boundary. This is a small rule that prevents a large category of confusion, in code and in support threads.
@@ -1163,8 +1176,8 @@ Phase 3's settings store, with `timezone` as the first setting production code r
 **Status:** Amended · ADR-037, as built
 
 `reader_accounts` decides which of a reader's pages a site serves: `off`, `sign-in` or `open` (ADR-037). Identity is per
-org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR means sign-up — when it lands — on Golfdom
-only, and sign-in on both.
+org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR means sign-up ~~— when it lands —~~ *(landed
+2026-10-09)* on Golfdom only, and sign-in on both.
 
 - **Default `off`**, in core's `config/kitsune.php` `settings`: a fresh install serves no reader page until an
   operator runs `kitsune:readers mode` and its site has an address (`kitsune:site address`).
@@ -1369,6 +1382,13 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 | `--owner` on an installation that already has an org or an account *(2026-10-02)* | An administrator created beside an identity process someone else runs, or a takeover of an account that exists. |
 
 **Cost, stated.** An installer is a permanent support surface that grows with every distro release, and it will generate support load disproportionate to its size — the ~3x multiplier in ADR-011 applies to it directly. Budget for it as an ongoing obligation, not a Phase 6 task that closes.
+
+**Amended 2026-10-09 — mail at the floor, and the pages that need it (ADR-037, reader accounts' second part).** The
+floor's mailer stays `log`, and onboarding and sign-in still need no mail. Reader sign-up and recovery do, so outside
+`local` and `testing` they answer 503, saying why, until the default mailer sends and `MAIL_FROM_ADDRESS` is the
+operator's own; `kitsune:readers status` says which is missing. The skeleton's `.env.example` now names the `MAIL_*`
+settings and `KITSUNE_PASSWORD_MIN_CHARACTERS` — the first owner's minimum too, which raises the floor of fifteen and
+never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
 
@@ -2975,7 +2995,7 @@ product that does not ship.
 
 ## ADR-037 — A reader is not a panel user, and gets a guard of their own
 
-**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)** · **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity and core owns the front door**; see the end of this entry
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)** · **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity and core owns the front door** · **Amended 2026-10-09 — reader accounts, second part, as built: sign-up and recovery by email**; see the end of this entry
 
 Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
 for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
@@ -3170,6 +3190,149 @@ with core's link tokens and the floor's mail rule. No release is tagged between 
 gives a production reader no way to come into being. **Deferred, named:** remember-me ("not yet" — Adam, 2026-10-07; it
 comes with "sign out everywhere"), self-service (address, password, your data, delete your account), an owner's
 Readers page and invitations, a breached-password list and a second factor.
+
+⚠️ **Amended 2026-10-09 — reader accounts, second part, as built: sign-up and recovery by email.**
+
+**Adam's five answers (2026-10-09).** An address with no account that asks for recovery is **mailed a short note**
+saying so, so every request below the mail limit sends exactly one mail and the time a response takes says nothing.
+**Mail limits:** one mail an address in five minutes and five a day, per organisation, shared by sign-up and recovery;
+five requests a minute and thirty a day per connection. **The sender is each site's own name** on the installation's
+`MAIL_FROM_ADDRESS` — over one name per installation, which was recommended; **named residual:** on a shared
+installation one organisation could name its site to look like another's, and the address is the same. **Passwords are
+always typed twice** — "passwords always need to be typed twice" — so both pages that choose one have a second field.
+**The minimum is configurable upward only:** `kitsune.passwords.min_characters` (`KITSUNE_PASSWORD_MIN_CHARACTERS`),
+from the floor of fifteen to a ceiling of sixty-four, for readers and the first owner alike; a value below the floor,
+above the ceiling or not a whole number is replaced by the bound and named by `kitsune:readers status` — "should not
+be allowed to be weak ever even by manual override".
+
+**The pages.** Eight more routes per prefix, every one a fallback as before: `/account/register` asks for a sign-up
+link and `/account/register/complete` uses one, both only where the site is `open` (`ReaderArea::class.':open'`, in
+place of the plain gate, never beside it); `/account/recover` asks for a recovery link and `/account/reset` uses one,
+wherever a reader can sign in. Asking needs a guest; using a link does not — a reader signed in on the browser is
+replaced by the one the link is for. The sign-in page links to recovery, and to sign-up where it is open, after its
+button.
+
+**Asking for a link — one answer.** The POST compares the body's token (419), then counts the connection (429), then
+asks the floor's mail rule (503, before anything about the address is read), then the address's grammar (422, in
+place). After that every branch — a new address, one with an account, one with no password, one over the mail limit —
+answers the same 303 to the same page with the same flash, and the page says "if that address can receive email,
+we've sent it a message". The reads behind it run inside Laravel's `Timebox` at 200 ms, which never returns early, and
+**nothing is written before the response**: the link is minted after it, with the mail (M2, below).
+Sign-up mails a new address its link, and an address with an account where to sign in and recover instead; recovery
+mails an address with an account its link, and one without a note. **No account is made by asking** (Adam,
+2026-10-07): it exists only when its link is used and a password chosen.
+
+**The links.** `reader_tokens`, core's table: one row per live link, `org_id` and `site_id` by cascade, a purpose
+(`register` or `recover`), a subject — the normalised address for a sign-up, the reader's key for a recovery — and the
+SHA-256 of a 43-character secret (256 bits), which is in the mail and nowhere else. `unique (org_id, purpose, subject)`
+makes a newer link replace an older one; two simultaneous requests for one subject let one row in, and the other mails
+nothing. A link works **once, for sixty minutes, on the site that mailed it**: the lookup names the site from `Context`
+and the org scope applies; a link is used by **deleting its row with every condition it was found by, as the first
+statement of the transaction that acts on it**, and only a delete that removed exactly one row wins — so two uses
+cannot both succeed on any engine, SQLite included. ⚠️ **A mint's delete is its own statement**, the insert alone in its
+transaction: on InnoDB at REPEATABLE READ a delete that finds no row takes a gap lock, and two mints that each held one
+and then inserted deadlocked — 13 times in 40 on MariaDB, two new addresses at once, even in two organisations (review,
+measured); 0 in 40 since, on MariaDB, PostgreSQL and SQLite. Expired rows are swept after a response, through the org
+scope and only while the org in context is the one that asked. The subject is bytes on MySQL and MariaDB, as
+`entitlements`' reader key is.
+
+**Using a link.** The GET with `?token=` puts the hash — never the secret — in the session, under the purpose and the
+site, and answers 303 to the same page with no query, so the secret is in no later address bar, history entry,
+`Referer` or page; nothing is used up by a GET, so a mail scanner that follows the link changes nothing. ⚠️ **The query
+comes off the request first**, in `ReaderArea`, before any of its gates can answer 404: Laravel's `StartSession` writes a
+GET's full URL into the session as `_previous.url` after the answer — a 404's too — which carried the secret into the
+session store (caught by a test, then by review for the 404). ⚠️ **The session moves to a new id before it holds the
+link** (review): an id an attacker planted in the reader's browser would otherwise hold it, and the attacker could
+choose the password; `migrate()` keeps a staff session riding along. The page shows the
+address the link is for, as text and in a read-only `autocomplete=username` field a password manager saves under, and
+asks for the password twice. The POST — the body's token, the stashed link live on this site (410), the password by
+`PasswordRules` and its confirmation (422, in place) — hashes once, then uses the link and writes the account in one
+transaction, link first, then the reader: a new account with `email_verified_at` set, or a new password with the
+remember token cycled. The reader is signed in with the instance written, so this session holds the new binding and
+every other session fails it. The account's sign-in throttle is cleared, under the address normalised as sign-in counts
+it — a host's model may hand it back in another case (review). A link used meanwhile is 410, with a way to
+ask for another. **An address that has an account by the time its sign-up link is used** — a host's import, or a
+simultaneous sign-up that reached the unique index, which rolls the whole transaction back — changes nothing, uses the
+link up on its own, and sends the reader to sign in with a message that says so.
+
+**The floor's mail rule.** The floor's mailer is `log`, which keeps mail in a file nobody reads; a page that said
+"check your email" there would lie. Outside `local` and `testing`, sign-up and recovery answer 503, saying why, while
+the default mailer keeps mail instead of sending it — `log`, `array`, a `failover` or `roundrobin` with one of them
+among its members, a `url` that names one, the legacy `mail.driver`, a mailer that is not defined — or the sender is
+empty, still Laravel's `hello@example.com`, or at any domain reserved for examples and tests (`example.com`, `.example`,
+`.test`, `.invalid`, `.localhost`; review — `.env.example`'s own sample had passed), or the site has no host of its own
+or its address names no scheme. Every
+case is checked against the transport `MailManager` builds for it. Sign-in, the account page, a link already mailed,
+export and erasure never ask, and ADR-027's floor is untouched: onboarding and sign-in need no mail. In `local` and
+`testing` the pages stay open, so a developer reads the link in `storage/logs/laravel.log`, and a host-less site's link
+is built from `APP_URL` — its scheme, host and port, refused if it names a path, a user or a query (ADR-021, amended).
+The pages are also closed everywhere if the HTTP kernel does not run `InvokeDeferredCallbacks`, because then no mail
+would ever be sent.
+
+**The mail.** Plain text only, in the copy's locale, from the site's name on `MAIL_FROM_ADDRESS`; a link is an absolute
+URL built from the site's own address — its scheme and port from `base_url`, its host from `canonical_host`, never the
+request's `Host` and never `base_url` itself, which could hold a user name and password. Symfony's `Address` drops a
+line break from a name and the subject is encoded, so a site's name adds no header (tested). Sent **after the
+response** with `defer()`, never in a queue — the floor's `sync` queue would send inside the request, and a queue would
+keep the secret in the jobs table — and a failure is caught into **one log line that names the mailer alone**, because
+the error's message can carry the address and the link. ⚠️ **A failover or round robin is walked here, member by
+member** — a round robin from a random one — and never sent through Laravel's own transport for it, which is built with
+the application's logger: Symfony logs every member that fails there, the mail server's reply with the reader's address
+in it, even when the next member delivers (review, reproduced). Nothing is audited: readers stay out of audit rows (ADR-040).
+
+**Export and erasure.** `kitsune:readers export` adds `pending_links` — each link's purpose, site and expiry, never
+its hash or subject — found by the reader's key and by their address normalised; `erase --force` deletes them in the
+same transaction as the entitlements and the account. For an address with no account, `export` reports and `erase`
+deletes the sign-up link it never used, and both exit 1 saying that nothing held under a reader's identifier was looked
+for — a reader the host deleted is found by `--reader` (review: they had answered "0 entitlements" for a lookup that
+never ran). `kitsune:readers status` says whether reader mail is deliverable, closed and why, or
+allowed only because of the environment; how long a password must be, and what is wrong with a configured minimum;
+which sites cannot mail a link, and why; and that `SESSION_SAME_SITE=strict` stops a link clicked in a webmail page.
+
+**Measured.** *M1* — with a mail server that takes 500 ms, under `php artisan serve`, every branch answers its first
+byte in 0.22–0.35 s (the box and the framework); the connection closes after the mail is sent, so a request over the
+mail limit closes sooner — which says only that the requester asked recently, since every other branch sends exactly
+one mail. PHP-FPM, whose `fastcgi_finish_request()` ends the response before the mail, was not available to measure
+here. *M2* — two hundred requests per branch, first byte: on an idle SQLite file every branch is p50 222 ms, p95 233;
+with a writer holding the lock 30 ms of every 40, a branch that minted inside the request reached p95 366 ms and a
+maximum of 1.46 s while one that did not stayed at p95 232 — so the mint moved after the response, and the minting
+branch is p95 239 since. *M3* — two simultaneous uses of one link gave one account and one 410, twenty times in twenty
+on SQLite, PostgreSQL and MariaDB. An erasure racing a reset of the same reader, forty times with jitter, never left
+anything half-done: on PostgreSQL every order completed; on MariaDB the reset lost a deadlock once and failed with its
+SQLSTATE; on SQLite, when the reset held the write lock, the erasure failed "database is locked" and rolled back whole,
+to be run again. *M4* — in Chromium, a link clicked in another site's page works with `SameSite=lax`, Laravel's
+default, and answers 410 with `strict`, whose cookie is not sent on that click or on the redirect after it; pasted into
+the address bar it works with both. *M5* — the unique violation is typed on PostgreSQL, MariaDB and SQLite, and the
+connection is usable after it (the reader suite on each engine). *M7* — whether Chromium's password manager saves
+under the read-only address was not measured: it does not run headless.
+
+**What the suites prove.** Seventy-six mutations of the PHP — the plan's fifteen and those of every review fix — each
+fail a test: among them a stash or store of the secret, the query left on the request or stripped after the gates, no
+new session id, `site_id` dropped from the lookup or the use, `>=` at expiry, a link used up on GET or built from the
+request, the mint before the response, the timebox removed or cut short, a failover not walked, a reserved sender
+allowed, a stale instance signed in, a link left usable after `EXISTS`, a register link erased by the un-normalised
+address, and the sweep without its context check. Six mutations of what only a browser sees fail a spec: the hint's
+contrast in either scheme, a long address that does not wrap, a stash that ends a staff session, links built from the
+request, and a read-only field unreadable in dark mode — that last only once the spec measured the field's contrast
+itself, because axe does not read the text inside an `<input>`. The "check your email" page says to ask again after five
+minutes, T4's gap, in words the same on every branch (review).
+
+**Named residuals.** The site's name as the sender, above. The mail limits are per organisation, so on a shared
+installation one mailbox can be mailed five times a day by each organisation with a reader page, all from the one
+sender — bounded by the per-connection limits; a cap across organisations would let any of them spend another's. And
+anyone can spend a victim's daily limit, silencing their recovery until it resets. `SameSite=strict` and webmail (M4). A secret in a URL
+reaches the web server's access log and any proxy in front of it, as every emailed link's does; it works once, for an
+hour. A reader's reset in a browser where staff are signed in rotates the CSRF token as sign-in does, so a client that
+sends no Fetch Metadata is refused once (`reader-sessions.spec.js`). Under `php artisan serve` the connection stays open
+while the mail is sent (M1). An erasure that meets a simultaneous reset of the same reader can fail and roll back (M3).
+A link's GET whose site resolution itself fails — a 500 before `ReaderArea` runs — still has its URL saved as
+`_previous.url`, for the session's lifetime.
+The floor's `file` cache store counts without a lock, as the first part says of sign-in.
+
+**Upgrades.** `php artisan migrate` creates `reader_tokens`; nothing in the skeleton changes, so an installation that
+already made the first part's four edits gets sign-up and recovery with `composer update` and a migration, and the
+pages stay closed until mail can reach a reader. **Deferred, still:** remember-me and "sign out everywhere",
+self-service, an owner's Readers page and invitations, a breached-password list and a second factor.
 
 ---
 

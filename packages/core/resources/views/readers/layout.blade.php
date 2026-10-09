@@ -25,7 +25,7 @@
             background: #fafaf9; color: #1c1917;
         }
         header { padding-block: 1rem; padding-inline: 1.5rem; border-block-end: 1px solid #e7e5e4; font-weight: 600; }
-        main { max-width: 30rem; margin-inline: auto; padding-block: 2rem 3rem; padding-inline: 1.5rem; }
+        main { max-width: 30rem; margin-inline: auto; padding-block: 2rem 3rem; padding-inline: 1.5rem; overflow-wrap: anywhere; }
         h1 { margin-block: 0 1.25rem; font-size: 1.75rem; line-height: 1.25; letter-spacing: -.01em; }
         h2 { margin-block: 0 .5rem; font-size: 1.125rem; }
         p { margin-block: 0 1rem; }
@@ -37,6 +37,10 @@
             font: inherit; color: inherit; background: #fff; border: 2px solid #57534e; border-radius: .25rem;
         }
         input[aria-invalid=true] { border-color: #b91c1c; }
+        input[readonly] { background: #f5f5f4; border-style: dashed; }
+        .hint { margin-block: 0 .25rem; color: #57534e; }
+        .links { margin-block: 1.5rem 0; padding: 0; list-style: none; }
+        .links a { display: inline-block; min-block-size: 2.75rem; padding-block: .625rem; }
         button {
             min-block-size: 2.75rem; min-inline-size: 2.75rem; padding: .5rem 1.25rem;
             font: inherit; font-weight: 600; color: #fafaf9; background: #1c1917;
@@ -59,6 +63,8 @@
             header, .back { border-color: #44403c; }
             input[type=email], input[type=password] { background: #292524; border-color: #a8a29e; }
             input[aria-invalid=true] { border-color: #fca5a5; }
+            input[readonly] { background: #1c1917; }
+            .hint { color: #d6d3d1; }
             button { color: #1c1917; background: #fafaf9; border-color: #fafaf9; }
             .summary { border-color: #fca5a5; }
             .summary a, .error { color: #fca5a5; }

@@ -34,12 +34,8 @@ final class ReaderPage
     public static function render(Site $site, string $view, string $title, array $data = [], int $status = 200): Response
     {
         $siteLocale = app()->getLocale();
-        $copyLocale = Lang::hasForLocale(self::PROBE, $siteLocale) ? $siteLocale : (string) config('app.fallback_locale', 'en');
-
-        // A `count` replacement picks a counted sentence's form.
-        $t = static fn (string $copy, array $replace = []): string => isset($replace['count']) && is_int($replace['count'])
-            ? trans_choice('kitsune::readers.'.$copy, $replace['count'], $replace, $copyLocale)
-            : (string) __('kitsune::readers.'.$copy, $replace, $copyLocale);
+        $copyLocale = self::copyLocale();
+        $t = self::translator($copyLocale);
 
         return response()->view('kitsune::readers.'.$view, [
             ...$data,
@@ -52,5 +48,25 @@ final class ReaderPage
             'copyDir' => Kitsune::textDirection($copyLocale),
             'homePath' => ($site->path_prefix ?? '') === '' ? '/' : $site->path_prefix,
         ], $status);
+    }
+
+    /** The locale the readers' copy is found in: the site's when core has `kitsune::readers` in it, else the fallback. */
+    public static function copyLocale(): string
+    {
+        $siteLocale = app()->getLocale();
+
+        return Lang::hasForLocale(self::PROBE, $siteLocale) ? $siteLocale : (string) config('app.fallback_locale', 'en');
+    }
+
+    /**
+     * One copy key, in that locale. A `count` replacement picks a counted sentence's form.
+     *
+     * @return \Closure(string, array<string, int|string>=): string
+     */
+    public static function translator(string $locale): \Closure
+    {
+        return static fn (string $copy, array $replace = []): string => isset($replace['count']) && is_int($replace['count'])
+            ? trans_choice('kitsune::readers.'.$copy, $replace['count'], $replace, $locale)
+            : (string) __('kitsune::readers.'.$copy, $replace, $locale);
     }
 }

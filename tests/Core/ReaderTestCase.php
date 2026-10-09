@@ -34,6 +34,8 @@ abstract class ReaderTestCase extends TestCase
         $app['config']->set('hashing.bcrypt.rounds', 4);
         $app['config']->set('session.driver', 'array');
         $app['config']->set('cache.default', 'array');
+        // Mail kept in memory, so a test reads what was sent; `fault()` allows it only because this is `testing`.
+        $app['config']->set('mail.default', 'array');
         // The session's cookie is encrypted, and the binding and the throttles' keys are HMACs under it.
         $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('k', 32)));
     }

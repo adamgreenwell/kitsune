@@ -75,4 +75,15 @@ return [
     'readers' => [
         'guard' => null,
     ],
+
+    /*
+     * Passwords, for everyone who sets one — the first owner and readers (`PasswordRules`).
+     *
+     * `min_characters` raises the minimum length a new password needs, up to 64. It cannot lower it: anything below 15,
+     * NIST SP 800-63B-4's minimum for a password that is the only factor, is never used — 15 applies, and
+     * `kitsune:readers status` says why (Adam, 2026-10-09: never weak, even by manual override).
+     */
+    'passwords' => [
+        'min_characters' => env('KITSUNE_PASSWORD_MIN_CHARACTERS', 15),
+    ],
 ];

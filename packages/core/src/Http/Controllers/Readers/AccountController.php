@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Http\Controllers\Readers;
 
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Readers\ReaderPage;
@@ -24,14 +25,19 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class AccountController
 {
-    public function __invoke(Context $context, ReaderSessions $sessions): Response
+    /** The messages this page shows when flashed: a finished sign-up and a reset. */
+    private const SHOWN = ['complete.done', 'reset.done'];
+
+    public function __invoke(Request $request, Context $context, ReaderSessions $sessions): Response
     {
         $site = $context->site() ?? abort(404);
         $reader = $sessions->current() ?? abort(404);
+        $status = $request->session()->get(SignInController::STATUS);
 
         return ReaderPage::render($site, 'account', 'home.title', [
             'email' => $reader->readerEmail(),
             'signOut' => ReaderLinks::path($site, ReaderLinks::SIGN_OUT),
+            'status' => in_array($status, self::SHOWN, true) ? $status : null,
         ]);
     }
 }

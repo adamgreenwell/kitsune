@@ -237,7 +237,7 @@ describe('creating the first owner', function (): void {
         [$status, $out] = applyThroughStream(ownerAtPrompt(), OWNER_COMMAND_PASSWORD."\n".OWNER_COMMAND_PASSWORD."\n");
 
         expect($status)->toBe(0)
-            ->and($out)->toContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL))
+            ->and($out)->toContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL, 15))
             ->and($out)->toContain(FirstOwnerCredentials::CONFIRM)
             ->and($out)->toContain('its first owner owner@example.test');
     });
@@ -363,7 +363,7 @@ describe('refusing at the prompt', function (): void {
         $this->artisan('kitsune:blueprint', ['action' => 'apply', ...ownerAtPrompt()])
             ->expectsOutputToContain('Refusing to ask for the password: standard input is not a terminal, so what is typed '
                 .'at the prompt could not be hidden')
-            ->doesntExpectOutputToContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL))
+            ->doesntExpectOutputToContain(sprintf(FirstOwnerCredentials::PROMPT, OWNER_COMMAND_EMAIL, 15))
             ->assertFailed();
 
         ownerCommandNothingWritten();

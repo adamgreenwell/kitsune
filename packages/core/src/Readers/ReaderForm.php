@@ -55,11 +55,17 @@ final class ReaderForm
      */
     public static function takePassword(Request $request): ?string
     {
-        $value = self::field($request, 'password');
+        return self::take($request, 'password');
+    }
 
-        $request->request->remove('password');
-        $request->query->remove('password');
-        unset($_POST['password'], $_GET['password'], $_REQUEST['password']);
+    /** Takes one secret field out of every bag the request parsed it into, as `takePassword()` does — and returns it. */
+    public static function take(Request $request, string $name): ?string
+    {
+        $value = self::field($request, $name);
+
+        $request->request->remove($name);
+        $request->query->remove($name);
+        unset($_POST[$name], $_GET[$name], $_REQUEST[$name]);
 
         return $value;
     }

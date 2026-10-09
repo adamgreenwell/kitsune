@@ -12,6 +12,8 @@ namespace Kitsune\Core\Readers;
 
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Controllers\Readers\AccountController;
+use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
+use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
 use Kitsune\Core\Http\Controllers\Readers\SignInController;
 use Kitsune\Core\Http\Controllers\Readers\SignOutController;
 use Kitsune\Core\Http\Middleware\ReaderArea;
@@ -55,9 +57,28 @@ final class ReaderRoutes
     public static function register(): void
     {
         $area = [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class];
+        // ⚠️ IN PLACE OF `ReaderArea`, never beside it, or the gate runs twice: sign-up's pages need mode `open`.
+        $open = [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class.':open'];
 
         foreach (['', '{'.self::SITE_PARAMETER.'}/'] as $at) {
+            $account = $at.ReaderLinks::SEGMENT;
             $routes = [
+                Route::get($account.ReaderLinks::REGISTER, [LinkRequestController::class, 'showRegister'])
+                    ->middleware([...$open, RequireGuest::class]),
+                Route::post($account.ReaderLinks::REGISTER, [LinkRequestController::class, 'storeRegister'])
+                    ->middleware([...$open, RequireGuest::class]),
+                Route::get($account.ReaderLinks::COMPLETE, [LinkUseController::class, 'showComplete'])
+                    ->middleware($open),
+                Route::post($account.ReaderLinks::COMPLETE, [LinkUseController::class, 'storeComplete'])
+                    ->middleware($open),
+                Route::get($account.ReaderLinks::RECOVER, [LinkRequestController::class, 'showRecover'])
+                    ->middleware([...$area, RequireGuest::class]),
+                Route::post($account.ReaderLinks::RECOVER, [LinkRequestController::class, 'storeRecover'])
+                    ->middleware([...$area, RequireGuest::class]),
+                Route::get($account.ReaderLinks::RESET, [LinkUseController::class, 'showReset'])
+                    ->middleware($area),
+                Route::post($account.ReaderLinks::RESET, [LinkUseController::class, 'storeReset'])
+                    ->middleware($area),
                 Route::get($at.ReaderLinks::SEGMENT, AccountController::class)
                     ->middleware([...$area, RequireReader::class]),
                 Route::get($at.ReaderLinks::SEGMENT.ReaderLinks::SIGN_IN, [SignInController::class, 'show'])

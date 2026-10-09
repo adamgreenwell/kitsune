@@ -16,6 +16,7 @@ use Kitsune\Core\Http\Middleware\ReaderArea;
 use Kitsune\Core\Http\Middleware\RequireGuest;
 use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\MiddlewarePriority;
+use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Readers\ReaderRoutes;
 
@@ -53,7 +54,7 @@ function surfaceFiles(string ...$paths): array
 /** @return list<class-string> */
 function surfaceSymbols(): array
 {
-    $symbols = [EmailAddress::class, PasswordRules::class, PasswordRefusal::class, ReadersCommand::class, ReaderArea::class, RequireReader::class, RequireGuest::class, MiddlewarePriority::class];
+    $symbols = [EmailAddress::class, PasswordRules::class, PasswordRefusal::class, ReadersCommand::class, ReaderArea::class, RequireReader::class, RequireGuest::class, MiddlewarePriority::class, ReaderToken::class];
 
     foreach (surfaceFiles('packages/core/src/Readers', 'packages/core/src/Http/Controllers/Readers') as $file) {
         $relative = substr($file, strlen(dirname(__DIR__, 2).'/packages/core/src/'), -4);
@@ -75,6 +76,7 @@ function surfaceDoorFiles(): array
         'packages/core/src/Console/ReadersCommand.php',
         'packages/core/src/Auth/EmailAddress.php',
         'packages/core/src/Auth/PasswordRules.php',
+        'packages/core/src/Models/ReaderToken.php',
         'skeleton/app/Models/Reader.php',
     );
 }
@@ -123,7 +125,7 @@ it('keeps the contract to five methods, exactly as published — it never grows'
 });
 
 it('keeps an address, a password, a key and a connection out of a stack trace', function (): void {
-    $sensitive = ['email', 'password', 'passwordHash', 'token', 'secret', 'reader', 'key', 'address', 'typed', 'ip', 'subject', 'line'];
+    $sensitive = ['email', 'password', 'passwordHash', 'token', 'secret', 'reader', 'key', 'address', 'typed', 'ip', 'subject', 'line', 'hash', 'url', 'link', 'body', 'confirmation'];
     $bare = [];
 
     foreach (surfaceDoorFiles() as $file) {
@@ -142,20 +144,27 @@ it('keeps an address, a password, a key and a connection out of a stack trace', 
     expect(array_values(array_unique($bare)))->toBe([]);
 });
 
-it('never ends a staff session, asks the default guard or logs anything', function (): void {
+it('never ends a staff session, asks the default guard or logs anything but one line about the mailer', function (): void {
     $found = [];
+    $logs = [];
 
     foreach (surfaceDoorFiles() as $file) {
         $source = surfaceCode($file);
 
-        foreach (['->invalidate(', 'regenerateToken(', 'Auth::user(', 'auth()->user(', 'Auth::guard()', 'Log::', 'logger(', "'unique", "'exists"] as $needle) {
+        foreach (['->invalidate(', 'regenerateToken(', 'Auth::user(', 'auth()->user(', 'Auth::guard()', 'logger(', "'unique", "'exists"] as $needle) {
             if (str_contains($source, $needle)) {
                 $found[] = basename($file).': '.$needle;
             }
         }
+
+        $logs[basename($file)] = substr_count($source, 'Log::');
     }
 
-    expect($found)->toBe([]);
+    // ⚠️ ONE LOG LINE, IN `ReaderMail`, and it names only the mailer: a mail that cannot be sent after the response.
+    expect($found)->toBe([])
+        ->and(array_filter($logs))->toBe(['ReaderMail.php' => 1])
+        ->and(surfaceCode(dirname(__DIR__, 2).'/packages/core/src/Readers/ReaderMail.php'))
+        ->toContain("Log::warning(sprintf('A reader email could not be made or sent through the mailer [%s]; the address, the link and the error are not logged.', \$mailer));");
 });
 
 it('keeps the skeleton\'s reader files to core\'s public reader surface — they are frozen at create-project', function (): void {
@@ -187,9 +196,18 @@ it('keeps the skeleton\'s reader files to core\'s public reader surface — they
 it('opens every reader view with the licence, within its first 400 bytes', function (): void {
     $views = glob(dirname(__DIR__, 2).'/packages/core/resources/views/readers/*.blade.php') ?: [];
 
-    expect($views)->toHaveCount(4);
+    expect($views)->toHaveCount(8);
 
     foreach ($views as $view) {
-        expect((string) file_get_contents($view, false, null, 0, 400))->toContain('Mozilla Public');
+        $source = (string) file_get_contents($view);
+
+        expect(substr($source, 0, 400))->toContain('Mozilla Public');
+
+        // ⚠️ RAW OUTPUT ONLY IN THE PLAIN-TEXT MAIL, which is never HTML, and nothing escaped there to double up.
+        if (basename($view) === 'mail.blade.php') {
+            expect($source)->not->toContain('{{ ')->and(substr_count($source, '{!!'))->toBe(1);
+        } else {
+            expect($source)->not->toContain('{!!');
+        }
     }
 });

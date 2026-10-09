@@ -44,6 +44,14 @@ function areaPages(string $prefix): array
         'the sign-in page' => ['GET', $prefix.'/account/sign-in'],
         'signing in' => ['POST', $prefix.'/account/sign-in'],
         'signing out' => ['POST', $prefix.'/account/sign-out'],
+        'the sign-up page' => ['GET', $prefix.'/account/register'],
+        'asking for a sign-up link' => ['POST', $prefix.'/account/register'],
+        'a sign-up link' => ['GET', $prefix.'/account/register/complete'],
+        'finishing a sign-up' => ['POST', $prefix.'/account/register/complete'],
+        'the recovery page' => ['GET', $prefix.'/account/recover'],
+        'asking for a recovery link' => ['POST', $prefix.'/account/recover'],
+        'a recovery link' => ['GET', $prefix.'/account/reset'],
+        'choosing a new password' => ['POST', $prefix.'/account/reset'],
     ];
 }
 
@@ -53,7 +61,7 @@ function areaAnswers(object $test, string $prefix, int $status): void
     foreach (areaPages($prefix) as $name => [$method, $path]) {
         $response = $method === 'GET'
             ? $test->readerGet($path)
-            : $test->readerPost($path, ['email' => 'nobody@kitsune.test', 'password' => 'not-the-password-at-all']);
+            : $test->readerPost($path, ['email' => 'nobody@kitsune.test', 'password' => 'not-the-password-at-all', 'password_confirmation' => 'not-the-password-at-all']);
 
         expect($response->getStatusCode())->toBe($status, "{$name} ({$method} {$path})");
     }
@@ -83,11 +91,13 @@ it('marks every reader route a fallback, registered ahead of the skeleton\'s cat
     $uris = array_map(static fn (RoutingRoute $route): string => implode('|', $route->methods()).' '.$route->uri(), $fallbacks);
     $readers = array_filter(app('router')->getRoutes()->getRoutes(), static fn (RoutingRoute $route): bool => str_contains($route->uri(), 'account'));
 
-    expect($readers)->toHaveCount(8)
+    expect($readers)->toHaveCount(24)
         ->and(array_filter($readers, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
         ->and(end($uris))->toBe('GET|HEAD {fallbackPlaceholder}')
         ->and($uris)->toContain('GET|HEAD account', 'GET|HEAD account/sign-in', 'POST account/sign-in', 'POST account/sign-out')
-        ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out');
+        ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out')
+        ->and($uris)->toContain('GET|HEAD account/register', 'POST account/register', 'GET|HEAD account/register/complete', 'POST account/register/complete')
+        ->and($uris)->toContain('GET|HEAD {readerSite}/account/recover', 'POST {readerSite}/account/recover', 'GET|HEAD {readerSite}/account/reset', 'POST {readerSite}/account/reset');
 });
 
 it('builds the site pattern from the model\'s own constants', function (): void {
@@ -126,6 +136,22 @@ it('serves every page of a site whose accounts are switched on', function (): vo
     $this->readerGet('/golfdom/account/sign-in')->assertOk();
     $this->readerPost('/golfdom/account/sign-in', ['email' => 'nobody@kitsune.test', 'password' => 'not-the-password-at-all'])->assertStatus(422);
     $this->readerPost('/golfdom/account/sign-out')->assertStatus(303)->assertHeader('Location', '/golfdom/account/sign-in');
+});
+
+it('serves sign-up only where accounts are open, and recovery wherever a reader can sign in', function (): void {
+    // `sign-in`: no one may create an account, and a reader who has one may still recover it.
+    $this->readerGet('/golfdom/account/register')->assertNotFound();
+    $this->readerPost('/golfdom/account/register', ['email' => 'nobody@kitsune.test'])->assertNotFound();
+    $this->readerGet('/golfdom/account/register/complete')->assertNotFound();
+    $this->readerPost('/golfdom/account/register/complete', ['password' => 'x'])->assertNotFound();
+    $this->readerGet('/golfdom/account/recover')->assertOk();
+    $this->readerGet('/golfdom/account/reset')->assertStatus(410);
+
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+
+    $this->readerGet('/golfdom/account/register')->assertOk();
+    $this->readerGet('/golfdom/account/register/complete')->assertStatus(410);
+    $this->readerGet('/golfdom/account/recover')->assertOk();
 });
 
 it('answers a stranger\'s path that resolves no site with 404', function (): void {
@@ -246,9 +272,19 @@ it('serves a site with a host on that host only', function (): void {
 });
 
 it('answers with headers for a page that holds a password form', function (): void {
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+
     foreach ([
         $this->readerGet('/golfdom/account/sign-in'),
         $this->readerGet('/golfdom/account'),
+        $this->readerGet('/golfdom/account/register'),
+        $this->readerPost('/golfdom/account/register', ['email' => 'nobody@kitsune.test']),
+        $this->readerGet('/golfdom/account/register/complete?token='.str_repeat('a', 43)),
+        $this->readerGet('/golfdom/account/register/complete'),
+        $this->readerGet('/golfdom/account/recover'),
+        $this->readerPost('/golfdom/account/recover', ['email' => 'nobody@kitsune.test']),
+        $this->readerGet('/golfdom/account/reset?token='.str_repeat('a', 43)),
+        $this->readerPost('/golfdom/account/reset', ['password' => 'x']),
         $this->readerPost('/golfdom/account/sign-in', ['email' => 'nobody@kitsune.test', 'password' => 'not-the-password-at-all']),
         $this->readerPost('/golfdom/account/sign-in', [], token: false),
     ] as $response) {

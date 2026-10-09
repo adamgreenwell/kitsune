@@ -13,7 +13,9 @@ namespace Kitsune\Core\Readers;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
@@ -28,7 +30,7 @@ use Kitsune\Core\Tenancy\Context;
  * read before the account, so a refusal reads nothing of the host's.
  *
  * ⚠️ NO SECRET, EVER. The account is `exportAccount()`, which the contract forbids to carry a password hash or remember
- * token; core adds no column of its own.
+ * token; a link waiting in the reader's mail is listed by purpose, site and end, never its hash or subject.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
@@ -42,7 +44,7 @@ final class ReaderExport
     ) {}
 
     /**
-     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, generated_at: string}
+     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string}
      *
      * @throws EntitlementRefused
      */
@@ -50,12 +52,34 @@ final class ReaderExport
     {
         $entitlements = EntitlementRecords::forReader($reader);
         $account = $this->find($reader);
+        $address = $account !== null ? EmailAddress::normalise($account->readerEmail()) : null;
+        $key = app(EntitlementAuthority::class)->filedKey(EntitlementRefused::EXPORT, $reader);
 
         return [
             'account' => $account?->exportAccount(),
             'entitlements' => $entitlements,
+            'pending_links' => app(ReaderTokens::class)->pending($key, $address),
             'generated_at' => CarbonImmutable::now('UTC')->format('Y-m-d\TH:i:s\Z'),
         ];
+    }
+
+    /**
+     * The sign-up link waiting for an address no reader of the org in context has — at most one — for an export. Nothing
+     * held under a reader's identifier can be found by an address with no account.
+     *
+     * @return list<array{purpose: string, site: ?string, expires_at: string}>
+     *
+     * @throws EntitlementRefused
+     */
+    public function forAddress(#[\SensitiveParameter] string $address): array
+    {
+        return EntitlementAuthority::mapped(EntitlementRefused::EXPORT, null, static function () use ($address): array {
+            $authority = app(EntitlementAuthority::class);
+            $authority->org(EntitlementRefused::EXPORT);
+            $authority->authorise(EntitlementRefused::EXPORT, null);
+
+            return app(ReaderTokens::class)->pending(null, $address);
+        });
     }
 
     /**

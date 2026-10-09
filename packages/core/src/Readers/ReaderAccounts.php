@@ -100,12 +100,18 @@ final class ReaderAccounts
             return $query();
         } catch (PDOException $e) {
             // `QueryException` is a PDOException, and so is Laravel's `DeadlockException`.
-            $state = isset($e->errorInfo[0]) && is_string($e->errorInfo[0])
-                ? $e->errorInfo[0]
-                : (preg_match('/SQLSTATE\[(\w{5})\]/', $e->getMessage(), $match) === 1 ? $match[1] : (string) $e->getCode());
-
-            throw new RuntimeException("The readers table could not be read or written (SQLSTATE {$state}).");
+            throw self::refusal($e);
         }
+    }
+
+    /** A failure on the host's reader table, as its SQLSTATE alone. */
+    public static function refusal(PDOException $e): RuntimeException
+    {
+        $state = isset($e->errorInfo[0]) && is_string($e->errorInfo[0])
+            ? $e->errorInfo[0]
+            : (preg_match('/SQLSTATE\[(\w{5})\]/', $e->getMessage(), $match) === 1 ? $match[1] : (string) $e->getCode());
+
+        return new RuntimeException("The readers table could not be read or written (SQLSTATE {$state}).");
     }
 
     /**

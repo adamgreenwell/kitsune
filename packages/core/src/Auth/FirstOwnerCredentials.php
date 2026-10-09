@@ -35,16 +35,14 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  */
 final class FirstOwnerCredentials
 {
-    /** NIST SP 800-63B-4's minimum for a password that is the only factor — and here it is. */
-    public const MIN_CHARACTERS = PasswordRules::MIN_CHARACTERS;
-
     /** bcrypt reads no further, whatever `hashing.bcrypt.limit` says. */
     public const MAX_BYTES = PasswordRules::MAX_BYTES;
 
     /** How much of a line is read from standard input at most; anything this long is refused by `MAX_BYTES` anyway. */
     public const READ_BOUND = 4096;
 
-    public const PROMPT = 'Choose a password for %s, the first owner (hidden; at least 15 characters)';
+    /** `%s` the address, `%d` the minimum in force (`PasswordRules::minCharacters()`). */
+    public const PROMPT = 'Choose a password for %s, the first owner (hidden; at least %d characters)';
 
     public const CONFIRM = 'Type the same password again (hidden)';
 
@@ -94,7 +92,7 @@ final class FirstOwnerCredentials
     public static function ask(SymfonyStyle $io, string $email): string
     {
         try {
-            $first = self::answered($io->askQuestion(self::question(sprintf(self::PROMPT, $email))));
+            $first = self::answered($io->askQuestion(self::question(sprintf(self::PROMPT, $email, PasswordRules::minCharacters()))));
             self::refuse(self::passwordRefusal($first, $email));
 
             $second = self::answered($io->askQuestion(self::question(self::CONFIRM)));
@@ -172,8 +170,8 @@ final class FirstOwnerCredentials
             PasswordRefusal::Edges => 'The password begins or ends with whitespace, or with a character nobody can see — a byte-order mark a '
                 .'file was saved with, a zero-width space. The sign-in form sends it exactly as typed, a character nobody '
                 .'can see is one nobody types again, and there is no password reset for staff yet. Nothing was written.',
-            PasswordRefusal::Short => 'The password is shorter than 15 characters. Kitsune has no second factor yet, so the password is all '
-                .'that protects the owner of this installation. Nothing was written.',
+            PasswordRefusal::Short => 'The password is shorter than '.PasswordRules::minCharacters().' characters. Kitsune has no second factor '
+                .'yet, so the password is all that protects the owner of this installation. Nothing was written.',
             PasswordRefusal::Long => 'The password is longer than 72 bytes. bcrypt reads no further, so everything after the 72nd byte would '
                 .'protect nothing. Nothing was written.',
             PasswordRefusal::IsEmail => 'The password is the owner\'s email address. Nothing was written.',

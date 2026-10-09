@@ -14,13 +14,14 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Readers\ReaderErasure;
+use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
 use Kitsune\Core\Tests\TestCase;
 
 /*
- * One reader's erasure at transaction level 0, on a file another process can read — ADR-037, as built: the entitlements
- * and the account go together or not at all, so a reader is never half-erased.
+ * One reader's erasure at transaction level 0, on a file another process can read — ADR-037, as built: the entitlements,
+ * the links waiting for them and the account go together or not at all, so a reader is never half-erased.
  */
 
 beforeEach(function (): void {
@@ -33,13 +34,14 @@ beforeEach(function (): void {
     $this->reader = Reader::createReader('zero@kitsune.test', Hash::make('correct-horse-battery-staple'), null);
     Fx::plant($this->site, (string) $this->reader->getKey(), 'course.advanced-php');
     Fx::plant($this->site, (string) $this->reader->getKey(), 'course.linked');
+    app(ReaderTokens::class)->mint(ReaderTokens::RECOVER, (string) $this->reader->getKey());
     Fx::nobody();
     app(Context::class)->forget()->setOrg($this->org);
 });
 
 afterEach(fn () => Fx::tearDown());
 
-/** What another process sees. @return array{readers: int, entitlements: int} */
+/** What another process sees. @return array{readers: int, entitlements: int, links: int} */
 function readerZeroSeen(string $file): array
 {
     $pdo = new PDO('sqlite:'.$file);
@@ -47,18 +49,19 @@ function readerZeroSeen(string $file): array
     return [
         'readers' => (int) $pdo->query('select count(*) from readers')->fetchColumn(),
         'entitlements' => (int) $pdo->query('select count(*) from entitlements')->fetchColumn(),
+        'links' => (int) $pdo->query('select count(*) from reader_tokens')->fetchColumn(),
     ];
 }
 
-it('commits the entitlements\' erasure and the account\'s together', function (): void {
-    expect(readerZeroSeen($this->custodyFile))->toBe(['readers' => 1, 'entitlements' => 2]);
+it('commits the entitlements\' erasure, the links\' and the account\'s together', function (): void {
+    expect(readerZeroSeen($this->custodyFile))->toBe(['readers' => 1, 'entitlements' => 2, 'links' => 1]);
 
-    expect(app(ReaderErasure::class)->erase((string) $this->reader->getKey()))->toBe(['grants' => 2, 'account' => true])
-        ->and(readerZeroSeen($this->custodyFile))->toBe(['readers' => 0, 'entitlements' => 0])
+    expect(app(ReaderErasure::class)->erase((string) $this->reader->getKey()))->toBe(['grants' => 2, 'links' => 1, 'account' => true])
+        ->and(readerZeroSeen($this->custodyFile))->toBe(['readers' => 0, 'entitlements' => 0, 'links' => 0])
         ->and(DB::connection()->transactionLevel())->toBe(0);
 });
 
-it('keeps the entitlements when the account cannot be erased', function (): void {
+it('keeps the entitlements and the links when the account cannot be erased', function (): void {
     Reader::deleting(static function (): bool {
         throw new RuntimeException('The host refused to delete the row.');
     });
@@ -66,6 +69,6 @@ it('keeps the entitlements when the account cannot be erased', function (): void
     expect(fn () => app(ReaderErasure::class)->erase((string) $this->reader->getKey()))
         ->toThrow(RuntimeException::class, 'The host refused to delete the row.');
 
-    expect(readerZeroSeen($this->custodyFile))->toBe(['readers' => 1, 'entitlements' => 2])
+    expect(readerZeroSeen($this->custodyFile))->toBe(['readers' => 1, 'entitlements' => 2, 'links' => 1])
         ->and(DB::connection()->transactionLevel())->toBe(0);
 });

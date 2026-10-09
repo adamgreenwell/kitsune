@@ -27,7 +27,7 @@ enum PasswordRefusal
     /** Whitespace, or a character nobody can see, at either end. */
     case Edges;
 
-    /** Fewer than `PasswordRules::MIN_CHARACTERS` characters. */
+    /** Fewer than `PasswordRules::minCharacters()` characters — never fewer than its floor. */
     case Short;
 
     /** More than `PasswordRules::MAX_BYTES` bytes, which bcrypt never reads. */

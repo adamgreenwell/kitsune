@@ -23,15 +23,21 @@ enum ReaderMode: string
     /** No reader page answers: every reader route is a 404. The platform default. */
     case Off = 'off';
 
-    /** Sign-in, sign-out, the account page and (with PR 2) recovery. */
+    /** Sign-in, sign-out, the account page and recovery. */
     case SignIn = 'sign-in';
 
-    /** All of `SignIn`, and (with PR 2) sign-up. */
+    /** All of `SignIn`, and sign-up. */
     case Open = 'open';
 
     /** Whether a reader may sign in here: `sign-in` or `open`. */
     public function signsIn(): bool
     {
         return $this !== self::Off;
+    }
+
+    /** Whether someone new may create an account here: `open` only. */
+    public function signsUp(): bool
+    {
+        return $this === self::Open;
     }
 }
