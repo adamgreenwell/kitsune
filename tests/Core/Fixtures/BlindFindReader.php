@@ -14,14 +14,24 @@ use App\Models\Reader;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 
 /**
- * The skeleton's reader, with a lookup that never finds anyone — as a host's would that ran a moment before another
- * request, or an import, wrote the same address. The insert after it then meets the table's unique index.
+ * The skeleton's reader, with a lookup that misses its first few calls — as a host's would that ran a moment before
+ * another request, or an import, wrote the same address — and finds the row once it is there. The insert after a miss
+ * then meets the table's unique index, and the look again after it finds the account.
  */
 #[OrgScoped]
 class BlindFindReader extends Reader
 {
+    /** How many lookups still miss. */
+    public static int $misses = 0;
+
     public static function findByEmail(#[\SensitiveParameter] string $email): ?static
     {
-        return null;
+        if (self::$misses > 0) {
+            self::$misses--;
+
+            return null;
+        }
+
+        return parent::findByEmail($email);
     }
 }

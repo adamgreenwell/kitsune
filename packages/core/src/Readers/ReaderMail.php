@@ -18,6 +18,8 @@ use Illuminate\Notifications\Notification;
 use Illuminate\Support\ConfigurationUrlParser;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification as Notifications;
+use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Exception\RfcComplianceException;
 use Throwable;
 
 /**
@@ -121,6 +123,13 @@ final class ReaderMail extends Notification
 
         if (! is_string($from) || trim($from) === '') {
             return 'no sender address is configured (MAIL_FROM_ADDRESS)';
+        }
+
+        // As Symfony will read it when the mail is sent, after the response, where a refusal is only a log line (review).
+        try {
+            new Address(trim($from));
+        } catch (RfcComplianceException) {
+            return 'the sender address is not an email address a mail can be sent from (MAIL_FROM_ADDRESS)';
         }
 
         if (strtolower(trim($from)) === self::PLACEHOLDER_FROM) {

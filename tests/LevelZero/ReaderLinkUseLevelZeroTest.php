@@ -19,6 +19,7 @@ use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\BlindFindReader;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\UsernameClashReader;
 use Kitsune\Core\Tests\TestCase;
 
 /*
@@ -89,11 +90,23 @@ it('keeps the link when the account cannot be made', function (): void {
 it('uses the link up on its own when the insert meets the unique index, and the connection still works', function (): void {
     config(['auth.providers.readers.model' => BlindFindReader::class]);
     $token = linkZeroToken(ReaderTokens::REGISTER, 'zero@kitsune.test');
+    BlindFindReader::$misses = 1;
 
     expect(app(ReaderLinkUse::class)->complete($token, Hash::make('a long new password for zero')))->toBe([ReaderLinkUse::EXISTS, null])
         ->and(array_slice(linkZeroSeen($this->custodyFile), 0, 2))->toBe(['readers' => 1, 'links' => 0])
         ->and(DB::connection()->transactionLevel())->toBe(0)
         ->and(DB::table('readers')->count())->toBe(1);
+});
+
+it('keeps the link when the host refuses the insert for a reason of its own — another unique column', function (): void {
+    config(['auth.providers.readers.model' => UsernameClashReader::class]);
+    $token = linkZeroToken(ReaderTokens::REGISTER, 'newcomer@kitsune.test');
+
+    expect(fn () => app(ReaderLinkUse::class)->complete($token, Hash::make('a long new password for zero')))
+        ->toThrow(RuntimeException::class, 'The readers table could not be read or written (SQLSTATE 23000).');
+
+    expect(array_slice(linkZeroSeen($this->custodyFile), 0, 2))->toBe(['readers' => 1, 'links' => 1])
+        ->and(DB::connection()->transactionLevel())->toBe(0);
 });
 
 it('commits the new password and the link\'s use together', function (): void {

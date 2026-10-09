@@ -60,8 +60,9 @@ final class ReaderLinkUse
      * address has an account by now.
      *
      * ⚠️ A SIMULTANEOUS SIGN-UP OF THE SAME ADDRESS (two links cannot exist, but a host's own import can make the row)
-     * reaches the unique index, which rolls the whole transaction back — the link's deletion with it. So the link is
-     * deleted again on its own, and the answer is `EXISTS`: a link works once, whatever happened.
+     * reaches the unique index, which rolls the whole transaction back — the link's deletion with it. So, once the
+     * address is found to have its account now, the link is deleted again on its own, and the answer is `EXISTS`: a link
+     * works once, whatever happened. Any other unique violation is the host's, and is thrown.
      *
      * @return array{0: self::DEAD|self::EXISTS|self::CREATED, 1: (Model&Authenticatable&ReaderAccount)|null}
      */
@@ -93,7 +94,16 @@ final class ReaderLinkUse
 
                 return [self::CREATED, $reader];
             });
-        } catch (UniqueConstraintViolationException) {
+        } catch (UniqueConstraintViolationException $violation) {
+            // ⚠️ ONLY THE ADDRESS'S OWN ACCOUNT MAKES THIS `EXISTS` (review): a host's table can hold another unique
+            // column — a user name made from the address — and refuse the insert for a reason of its own. Then the
+            // database's failure stands, with its SQLSTATE alone, and the link, put back by the rollback, still works.
+            $found = ReaderAccounts::mapped(static fn () => $model::findByEmail($token->subject));
+
+            if ($found === null || self::writtenKey($found->getAttributes()['org_id'] ?? null) !== $orgId) {
+                throw ReaderAccounts::refusal($violation);
+            }
+
             $this->tokens->forgetSubject(ReaderTokens::REGISTER, $token->subject);
 
             return [self::EXISTS, null];

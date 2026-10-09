@@ -13,6 +13,7 @@ use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Testing\TestResponse;
 use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
@@ -24,6 +25,7 @@ use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderMailbox;
 use Kitsune\Core\Tests\Fixtures\RecordingTimebox;
 use Kitsune\Core\Tests\Fixtures\UnscopedFindReader;
+use Kitsune\Core\Tests\Fixtures\UsernameClashReader;
 
 /*
  * Creating an account by email — ADR-037's second part, as built. `POST {prefix}/account/register` asks for a link;
@@ -445,14 +447,36 @@ it('uses the link up and logs nothing when the insert meets the unique index', f
         $logged[] = $message->message;
     });
 
+    // The lookup before the insert misses, as one a moment before the other sign-up committed would; the look after finds it.
+    BlindFindReader::$misses = 1;
     signUpFinish()->assertStatus(303)->assertHeader('Location', '/golfdom/account/sign-in');
 
     expect($logged)->toBe([])
+        ->and(BlindFindReader::$misses)->toBe(0)
         ->and(signUpSignedIn())->toBeNull()
         ->and(DB::table('reader_tokens')->count())->toBe(0)
         ->and(signUpReaders())->toBe(3);
 
     signUpFinish()->assertStatus(410);
+});
+
+it('says nothing is taken when the host refuses the insert for a reason of its own, and keeps the link', function (): void {
+    Exceptions::fake();
+    config(['auth.providers.readers.model' => UsernameClashReader::class]);
+    signUpOpened();
+
+    signUpFinish()->assertStatus(500)->assertDontSeeText('already exists');
+
+    Exceptions::assertReported(static fn (RuntimeException $refused): bool => $refused->getMessage() === 'The readers table could not be read or written (SQLSTATE 23000).');
+
+    expect(DB::table('reader_tokens')->count())->toBe(1)
+        ->and(signUpReaders())->toBe(2)
+        ->and(signUpSignedIn())->toBeNull()
+        ->and(app('session.store')->get(SignInController::STATUS))->toBeNull();
+
+    // Once the host's own constraint lets it, the same link makes the account.
+    config(['auth.providers.readers.model' => Reader::class]);
+    signUpFinish()->assertStatus(303)->assertHeader('Location', '/golfdom/account');
 });
 
 it('leaves a reader signed in at another org alone, and signs the new one in here', function (): void {
