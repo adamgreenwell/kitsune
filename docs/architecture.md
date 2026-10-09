@@ -192,6 +192,14 @@ readers                          -- ADR-037, as built: the HOST's table (the ske
   email           string(255)    -- lower-case ASCII (the HTML type=email grammar), so every engine compares alike
   password NULL, email_verified_at NULL, remember_token NULL, timestamps
   UNIQUE (org_id, email)         -- one address in two orgs is two readers
+
+reader_tokens                    -- ADR-037, part two: core's mailed links, one live per subject; used by deleting the row
+  org_id, site_id                -- FKs, cascade; #[OrgScoped] with EnforcesScope; the link works on site_id alone
+  purpose         string(8)      -- register | recover
+  subject         string(255)    -- the normalised address (register) or the reader's key (recover); varbinary on MySQL/MariaDB
+  token_hash      char(64)       -- SHA-256 of a 256-bit secret that is in the mail and nowhere else
+  expires_at      datetime       -- UTC, sixty minutes after the mint
+  UNIQUE (org_id, purpose, subject), UNIQUE (org_id, token_hash), INDEX (org_id, expires_at)
 ```
 
 **`orgs` carries no mode, by design** (ADR-040, the credential store as built): `Org` is unscoped and a save of it is
@@ -214,7 +222,9 @@ no usable reader guard is declared and puts no reader's identifier in an address
 `readers` table, `App\Models\Reader` and the `readers` guard; core reaches the row only through
 `ReaderAccount`'s five methods, and serves the sign-in pages at `{prefix}/account` under each site's prefix, placed by
 `ReaderRoutes::register()` in the host's `routes/web.php`. A site serves them while its `reader_accounts` setting is
-`sign-in` or `open` (`off` by default). No reader account event is audited, and nothing logs an address.
+`sign-in` or `open` (`off` by default). Sign-up (`open` only) and recovery mail a link from `reader_tokens`; it works
+once, for an hour, on the site that mailed it, and outside `local` and `testing` both pages answer 503 until mail can
+reach a reader. No reader account event is audited, and nothing logs an address.
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 

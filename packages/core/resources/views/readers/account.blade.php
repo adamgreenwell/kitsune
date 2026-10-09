@@ -10,6 +10,10 @@
 @section('content')
     <h1>{{ $title }}</h1>
 
+    @if ($status !== null)
+        <p class="status" role="status">{{ $t($status) }}</p>
+    @endif
+
     <p>{{ $t('home.signed_in_as', ['email' => $email]) }}</p>
 
     <form method="post" action="{{ $signOut }}">

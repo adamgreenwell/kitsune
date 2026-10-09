@@ -18,18 +18,21 @@ use Illuminate\Support\Facades\Auth;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderRoutes;
+use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Tenancy\Context;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * The gate in front of every reader page — ADR-037, as built. In this order, each a 404 that names nothing:
+ * The gate in front of every reader page — ADR-037, as built. First a query comes off the request, a link's secret with
+ * it (`QUERY_LINK`); then, in this order, each a 404 that names nothing:
  *
  * 1. no site in context;
  * 2. the route's `{readerSite}` is not exactly the site's prefix (lower-cased; absent only for a site at the root), so
  *    each page has one address per site, and `/golfdom/x/account` is not Golfdom's;
  * 3. the path is inside a panel's URL space;
  * 4. reader accounts cannot work here (`ReaderAccounts::fault()` — the console says why);
- * 5. the site's mode is `off`.
+ * 5. the site's mode does not serve these pages: `off` serves none, `sign-in` all but sign-up, and `open` all of them —
+ *    the route says which it needs (`ReaderArea:open` for sign-up).
  *
  * Then `Auth::shouldUse()` the reader guard, so on a reader route `auth()->user()`, `Permissions::currentUser()` and any
  * audit actor are the reader or nobody — never a staff user riding the same session. And on the way out, headers for a
@@ -54,20 +57,42 @@ final class ReaderArea
         'Content-Security-Policy' => "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     ];
 
+    /**
+     * The request attribute a reader page's query leaves behind once it is taken off the request: the hash of its `token`,
+     * or null. Present only when the request had a query — `LinkUseController` reads it, and nothing reads the query.
+     */
+    public const QUERY_LINK = 'kitsune.readers.query_link';
+
     public function __construct(
         private readonly Context $context,
         private readonly ReaderAccounts $accounts,
     ) {}
 
-    public function handle(Request $request, Closure $next): Response
+    /** @param  string  $pages  `sign-in` for every page a signing-in site serves; `open` for sign-up's */
+    public function handle(Request $request, Closure $next, string $pages = 'sign-in'): Response
     {
+        // ⚠️ A LINK'S SECRET LEAVES THE REQUEST BEFORE ANYTHING HERE CAN REFUSE IT. `StartSession` writes a GET's full URL
+        // into the session as `_previous.url` once the answer is made — a 404's too (review) — and that URL would carry
+        // the secret into the session store. Only the secret's hash stays, as an attribute.
+        if ($request->query->count() > 0) {
+            $request->attributes->set(self::QUERY_LINK, ReaderTokens::hashOf($request->query->all()['token'] ?? null));
+            $request->query->replace([]);
+            $request->server->remove('QUERY_STRING');
+        }
+
         $site = $this->context->site();
 
         abort_if($site === null, 404);
         abort_unless(self::exactPrefix($request, $site), 404);
         abort_if(self::underPanel($request), 404);
         abort_if($this->accounts->fault() !== null, 404);
-        abort_unless($this->accounts->mode($site)->signsIn(), 404);
+        $mode = $this->accounts->mode($site);
+
+        abort_unless(match ($pages) {
+            'open' => $mode->signsUp(),
+            'sign-in' => $mode->signsIn(),
+            default => false,
+        }, 404);
 
         Auth::shouldUse((string) $this->accounts->guardName());
 

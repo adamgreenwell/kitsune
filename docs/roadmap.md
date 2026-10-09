@@ -425,7 +425,8 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       their own guard, provider and model, provided by the host (the skeleton's, for a stock install);
       registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for
       every row of the one that exists. Before commerce, because gated content, a paid course and a subscription
-      site all need a reader who can sign in
+      site all need a reader who can sign in. *Sign-in landed 2026-10-07; sign-up and recovery by email 2026-10-09
+      (ADR-037, amended). Left: readers named on the owner's entitlements page.*
 - [ ] **The reader's download route** ([ADR-041](decision-log.md)): a second, public route that asks
       `EntitlementCheck::holds()`
 - [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.

@@ -3,6 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const { READERS } = require('./accounts');
+const { mailMark, mailTo, mailLink } = require('./mail');
 
 /*
  * Staff and a reader in one browser — ADR-037, as built. One cookie carries both sessions, under a key per guard; a
@@ -19,6 +20,7 @@ const { READERS } = require('./accounts');
 
 const SKELETON = path.join(__dirname, '..', 'skeleton');
 const GOLFDOM = READERS.golfdom;
+const GOLFDOM2 = READERS.golfdom2;
 
 function artisan(...args) {
     return execFileSync('php', ['artisan', ...args], { cwd: SKELETON, encoding: 'utf8' }).trim();
@@ -122,3 +124,33 @@ test('signs the reader out with the owner when Filament logs out — a named res
 
     await context.close();
 });
+
+test('keeps the owner working after a reader chooses a new password in the same browser — one reload, a named residual', async ({ browser }) => {
+    const context = await browser.newContext();
+    const admin = await context.newPage();
+    const reader = await context.newPage();
+
+    await ownerSignsIn(admin);
+    await admin.goto('/admin/golfdom/c/article');
+
+    // Reader 2's recovery, in the owner's browser: a reset signs its reader in, which rotates the session as sign-in does.
+    const mark = mailMark();
+    await reader.goto('/golfdom/account/recover');
+    await reader.getByLabel('Email address', { exact: true }).fill(GOLFDOM2.email);
+    await reader.getByRole('button', { name: 'Send me a link', exact: true }).click();
+    await reader.goto(String(mailLink(await mailTo(GOLFDOM2.email, mark))));
+    await reader.getByLabel('New password', { exact: true }).fill(GOLFDOM2.password);
+    await reader.getByLabel('Type the same password again', { exact: true }).fill(GOLFDOM2.password);
+    await reader.getByRole('button', { name: 'Change my password', exact: true }).click();
+    await expect(reader).toHaveURL(/\/golfdom\/account$/);
+
+    // The staff session survived it, and after one reload the admin carries on.
+    await admin.reload();
+    await expect(admin).toHaveURL(/\/admin\/golfdom\/c\/article$/);
+    const update = admin.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/update'));
+    await admin.locator('.fi-ta').getByPlaceholder('Search').fill('a');
+    expect((await update).status()).toBe(200);
+
+    await context.close();
+});
+

@@ -19,7 +19,16 @@ use Illuminate\Support\Facades\RateLimiter;
  * | | Door | Key | Limit |
  * |---|---|---|---|
  * | T1 | sign-in POST | the IP (an IPv6 address by its /64) | 5 a minute, every POST counted, success included |
- * | T2 | sign-in POST | the org and the address | 10 failures in 15 minutes, counted for unknown addresses too; cleared on success |
+ * | T2 | sign-in POST | the org and the address | 10 failures in 15 minutes, counted for unknown addresses too; cleared on success, a finished sign-up and a reset |
+ * | T3 | sign-up and recovery POSTs, together | the IP, as T1 | 5 a minute, every POST counted; 30 a day, counted for each POST the minute let through |
+ * | T4 | the mail itself, sign-up and recovery together | the org and the address | 1 every 5 minutes; 5 a day, counted for each the 5 minutes let through — silent (Adam, 2026-10-09) |
+ *
+ * ⚠️ T4 IS SILENT. Over it, the page answers exactly as it does when a mail goes, and no mail goes: a different answer
+ * would say the address had been asked for. A named residual: anyone can spend an address's five a day, and so keep its
+ * recovery mail from arriving until the day is out. One shared IPv4 address — an office, carrier NAT — shares T3's 30.
+ *
+ * ⚠️ NO T5, ON USING A LINK. A link is 256 random bits; guessing one is not a rate problem, and using one costs a single
+ * hash, which only someone holding a live link can make the server do.
  *
  * ⚠️ NO ADDRESS AND NO IP IN A CACHE KEY. Each key is an HMAC with the app key, so a cache file says nothing about who
  * knocked, and a key cannot be linked to an address without the app key.
@@ -47,6 +56,18 @@ final class ReaderThrottle
 
     public const ACCOUNT_DECAY = 900;
 
+    public const LINK_IP_LIMIT = 5;
+
+    public const LINK_IP_DECAY = 60;
+
+    public const LINK_IP_DAY_LIMIT = 30;
+
+    public const MAIL_GAP = 300;
+
+    public const MAIL_DAY_LIMIT = 5;
+
+    public const DAY = 86400;
+
     /** T1: this attempt counted, then true when it is over this connection's limit. */
     public static function signInFromIpRefused(#[\SensitiveParameter] ?string $ip): bool
     {
@@ -65,6 +86,37 @@ final class ReaderThrottle
         return RateLimiter::hit($key, self::ACCOUNT_DECAY) > self::ACCOUNT_LIMIT
             ? max(1, (int) ceil(RateLimiter::availableIn($key) / 60))
             : null;
+    }
+
+    /**
+     * T3: this sign-up or recovery POST counted for this connection, then why it may not go on — the copy key and, for
+     * the day's limit, the whole hours to wait — or null when it may.
+     *
+     * @return array{0: string, 1: ?int}|null
+     */
+    public static function linkRequestRefusal(#[\SensitiveParameter] ?string $ip): ?array
+    {
+        $network = self::network($ip);
+
+        if (RateLimiter::hit(self::key('link-ip', $network), self::LINK_IP_DECAY) > self::LINK_IP_LIMIT) {
+            return ['throttle.ip', null];
+        }
+
+        $day = self::key('link-ip-day', $network);
+
+        return RateLimiter::hit($day, self::DAY) > self::LINK_IP_DAY_LIMIT
+            ? ['throttle.ip_day', max(1, (int) ceil(RateLimiter::availableIn($day) / 3600))]
+            : null;
+    }
+
+    /** T4: this mail counted for this org's address, then whether it may go — silently refused when it may not. */
+    public static function mayMail(int $orgId, #[\SensitiveParameter] string $address): bool
+    {
+        if (RateLimiter::hit(self::key('mail', $orgId.'|'.$address), self::MAIL_GAP) > 1) {
+            return false;
+        }
+
+        return RateLimiter::hit(self::key('mail-day', $orgId.'|'.$address), self::DAY) <= self::MAIL_DAY_LIMIT;
     }
 
     /** T2: the count for this org's address starts again. */

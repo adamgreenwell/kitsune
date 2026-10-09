@@ -38,10 +38,11 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
     ->name('home');
 
 /*
- * A reader's pages — `/account`, `/account/sign-in` and `/account/sign-out` under each site's prefix (ADR-037). The
- * routes, their controllers and their checks are core's, so a fix reaches this site with `composer update`; this line
- * says where they go. They answer 404 until a site's reader accounts are switched on: `php artisan kitsune:readers mode
- * sign-in --org=<slug>`.
+ * A reader's pages — `/account`, its sign-in and sign-out, and the sign-up and password recovery pages that mail a link
+ * (`/account/register`, `/account/recover`), under each site's prefix (ADR-037). The routes, their controllers and their
+ * checks are core's, so a fix reaches this site with `composer update`; this line says where they go. They answer 404
+ * until a site's reader accounts are switched on: `php artisan kitsune:readers mode sign-in --org=<slug>`, or `open` to
+ * let anyone create an account.
  *
  * ⚠️ BEFORE THE CATCH-ALL BELOW: both are fallbacks, and among fallbacks the one declared first wins. After it, every
  * reader page would render the placeholder instead.

@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Auth\FirstOwnerCredentials;
+use Kitsune\Core\Auth\PasswordRules;
 use Symfony\Component\Process\Process;
 
 /*
@@ -61,6 +62,19 @@ it('accepts a password at each boundary', function (string $password): void {
 ]);
 
 /** ⚠️ The sign-in form's field is `type="email"`, so the browser's grammar decides as surely as the server's does. */
+it('asks the first owner for the minimum configured, and never for less than the floor', function (): void {
+    config(['kitsune.passwords.min_characters' => 20]);
+
+    expect(FirstOwnerCredentials::passwordRefusal(str_repeat('a', 19), 'owner@example.test'))->toStartWith('The password is shorter than 20 characters.')
+        ->and(FirstOwnerCredentials::passwordRefusal(str_repeat('a', 20), 'owner@example.test'))->toBeNull()
+        ->and(sprintf(FirstOwnerCredentials::PROMPT, 'owner@example.test', PasswordRules::minCharacters()))
+        ->toBe('Choose a password for owner@example.test, the first owner (hidden; at least 20 characters)');
+
+    config(['kitsune.passwords.min_characters' => 8]);
+
+    expect(FirstOwnerCredentials::passwordRefusal(str_repeat('a', 14), 'owner@example.test'))->toStartWith(OWNER_TOO_SHORT);
+});
+
 it('refuses an address the sign-in form would not accept', function (string $email): void {
     expect(FirstOwnerCredentials::emailRefusal($email))->toStartWith('Refusing `--owner`: that is not an email address the sign-in form accepts');
 })->with([

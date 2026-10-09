@@ -22,10 +22,13 @@ use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Readers\ReaderRoutes;
 use Kitsune\Core\Readers\ReaderSessions;
+use Kitsune\Core\Readers\ReaderThrottle;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
+use Kitsune\Core\Tests\Fixtures\ReaderMailbox;
+use Kitsune\Core\Tests\Fixtures\RecordingTimebox;
 use Kitsune\Core\Tests\Fixtures\ScopeStrippingReaderProvider;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 use Kitsune\Core\Tests\Fixtures\UnscopedFindReader;
@@ -315,6 +318,35 @@ it('audits nothing and logs nothing on any reader page', function (): void {
     $this->readerPost('/golfdom/account/sign-in', ['email' => 'subscriber@kitsune.test', 'password' => ReaderFixture::PASSWORD])->assertStatus(303);
     $this->readerGet('/golfdom/account')->assertOk();
     $this->readerPost('/golfdom/account/sign-out')->assertStatus(303);
+
+    expect(DB::table('audit_log')->count())->toBe($audited)
+        ->and($logged)->toBe([]);
+});
+
+it('audits nothing and logs nothing on sign-up or recovery, whichever way each goes', function (): void {
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+    RecordingTimebox::install();
+    $logged = [];
+    Event::listen(MessageLogged::class, static function (MessageLogged $message) use (&$logged): void {
+        $logged[] = $message->message;
+    });
+    $audited = DB::table('audit_log')->count();
+
+    $this->readerGet('/golfdom/account/register')->assertOk();
+    $this->readerPost('/golfdom/account/register', ['email' => 'not-an-address'])->assertStatus(422);
+    $this->readerPost('/golfdom/account/register', ['email' => 'subscriber@kitsune.test'])->assertStatus(303);
+    $this->readerPost('/golfdom/account/register', ['email' => 'newcomer@kitsune.test'])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+    $this->readerPost('/golfdom/account/register/complete', ['password' => 'short', 'password_confirmation' => 'short'])->assertStatus(422);
+    $this->readerPost('/golfdom/account/register/complete', ['password' => 'a long new password', 'password_confirmation' => 'a long new password'])->assertStatus(303);
+    $this->readerPost('/golfdom/account/sign-out')->assertStatus(303);
+    $this->readerGet('/golfdom/account/register/complete')->assertStatus(410);
+
+    $this->readerPost('/golfdom/account/recover', ['email' => 'nobody@kitsune.test'])->assertStatus(303);
+    $this->travel(ReaderThrottle::MAIL_GAP + 1)->seconds();
+    $this->readerPost('/golfdom/account/recover', ['email' => 'subscriber@kitsune.test'])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+    $this->readerPost('/golfdom/account/reset', ['password' => 'a different long password', 'password_confirmation' => 'a different long password'])->assertStatus(303);
 
     expect(DB::table('audit_log')->count())->toBe($audited)
         ->and($logged)->toBe([]);

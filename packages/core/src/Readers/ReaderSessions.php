@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Kitsune\Core\Auth\ReaderGuard;
+use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Context;
@@ -42,8 +43,9 @@ use Kitsune\Core\Tenancy\Context;
  * ⚠️ SIGN-OUT NEVER INVALIDATES AND NEVER REGENERATES THE TOKEN. One cookie carries a staff session too; Filament's
  * logout calls `invalidate()` and ends both, and this must not repay the favour.
  *
- * ⚠️ When remember-me lands, a reset and a password change must also cycle `remember_token`: a recaller sign-in fires
- * `Login` and so re-writes the binding, which only a cycled token stops.
+ * ⚠️ A RESET CYCLES `remember_token` AS WELL AS THE PASSWORD (`ReaderLinkUse::reset()`), so when remember-me lands a
+ * recaller sign-in — which fires `Login` and so re-writes the binding — cannot outlive one. A future password change
+ * must do the same.
  *
  * ⚠️ A NAMED RESIDUAL: a rehash at sign-in — after the operator changes the hashing cost or driver — changes the hash,
  * and so ends that reader's other sessions as a password change would.
@@ -141,7 +143,7 @@ final class ReaderSessions
         $guard = $this->sessionGuard();
 
         $guard->logoutCurrentDevice();
-        $guard->getSession()->forget(self::BINDING);
+        $guard->getSession()->forget([self::BINDING, LinkUseController::STASH]);
         $guard->getSession()->migrate(true);
     }
 

@@ -43,4 +43,12 @@
 
         <button type="submit">{{ $t('sign_in.button') }}</button>
     </form>
+
+    {{-- After the button, so the first Tab still reaches the address. --}}
+    <ul class="links">
+        <li><a href="{{ $recover }}">{{ $t('sign_in.forgot') }}</a></li>
+        @isset($register)
+            <li><a href="{{ $register }}">{{ $t('sign_in.register') }}</a></li>
+        @endisset
+    </ul>
 @endsection

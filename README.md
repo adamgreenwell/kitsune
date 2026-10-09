@@ -98,10 +98,26 @@ An address is `https://` or `http://` and a host, with an optional path (`https:
 already answers somewhere needs `--force`, because every link to the old address breaks, and another organisation may
 then claim it, unless another of your sites still overlaps it.
 
+**Sign-up and password recovery mail a link.** Where a site is `open`, anyone can ask for an account at
+`/account/register`; wherever a reader can sign in, `/account/recover` mails a link to choose a new password, and the
+sign-in page links to both. An account is made only when its link is used and a password chosen — typed twice — and a
+link works once, for an hour, on the site that mailed it. In development the mail lands in
+`storage/logs/laravel.log` (the `log` mailer), and a site with no host of its own builds its link from `APP_URL`, so
+set `APP_URL` to the address you browse, such as `http://127.0.0.1:8000`. Outside `local`, both pages answer 503 until
+mail can reach a reader: set `MAIL_MAILER` to a mailer that sends, `MAIL_FROM_ADDRESS` to an address of your own, and
+give each site a public address with `kitsune:site address`. Signing in needs no mail, and `kitsune:readers status`
+says which of these is missing. A reader's mail goes out under the site's own name.
+
+Passwords — a reader's and the first owner's — are at least 15 characters. `KITSUNE_PASSWORD_MIN_CHARACTERS` raises
+that, up to 64; nothing lowers it.
+
 `find`, `export` and `erase` act on one reader — for an access or erasure request — and read the reader's address at
 a prompt, or from the first line of standard input, never from an option, which other users on the machine can read;
-`--reader=<id>` names one by number instead. `erase --force` deletes the reader's account and every entitlement they
-hold, in one transaction. After restoring a backup, run each `erase` again: the restore brings the reader back.
+`--reader=<id>` names one by number instead. `export` includes any link waiting for the reader, and `erase --force`
+deletes the reader's account, every entitlement they hold and any such link, in one transaction. For an address with
+no account, both report or erase only a sign-up link it never used and exit 1, because nothing held under a reader's
+identifier can be found by an address — for a reader whose account the host deleted, use `--reader=<id>`. After
+restoring a backup, run each `erase` again: the restore brings the reader back.
 
 The pages' views and words are core's (`kitsune::readers`), and a site may override them under
 `resources/views/vendor/kitsune/readers/` and `lang/vendor/kitsune/`, with no promise they keep their shape before
@@ -110,7 +126,8 @@ v1.1's theme layer.
 **An installation made before reader accounts** gets core's half with `composer update` and nothing else — the skeleton
 is copied at `create-project`, so its half is four edits to make by hand: `app/Models/Reader.php`, the
 `0001_01_01_000020_create_readers_table.php` migration, the three settings in `AppServiceProvider::readerConfig()`
-(called from `register()`), and the `ReaderRoutes::register();` line in `routes/web.php`, above the catch-all.
+(called from `register()`), and the `ReaderRoutes::register();` line in `routes/web.php`, above the catch-all. Sign-up
+and recovery need one more step after `composer update`: `php artisan migrate`, for core's `reader_tokens` table.
 
 ### Starting from nothing
 
@@ -124,11 +141,11 @@ php skeleton/artisan serve
 
 That creates the organisation `myblog`, its first site, and you as its owner, then applies the Blog blueprint.
 Its site is reachable only through the admin until you give it an address — see *Reader accounts* above.
-You are asked for a password twice, hidden — at least 15 characters — and it is never shown; where it could not be
-hidden, as over `ssh` or `docker exec` without `-t`, the prompt is refused rather than shown. In a script, pipe it
-in instead with `--owner-password-stdin --no-interaction`, for example `< owner-password.txt` from a file only you
-can read; it is never accepted as an argument or an environment variable, which other users on the machine can
-read. `--owner` is refused on an installation that already has an organisation or an account — `migrate --seed`
+You are asked for a password twice, hidden — at least 15 characters, or more if `KITSUNE_PASSWORD_MIN_CHARACTERS`
+says so — and it is never shown; where it could not be hidden, as over `ssh` or `docker exec` without `-t`, the
+prompt is refused rather than shown. In a script, pipe it in instead with `--owner-password-stdin --no-interaction`,
+for example `< owner-password.txt` from a file only you can read; it is never accepted as an argument or an
+environment variable, which other users on the machine can read. `--owner` is refused on an installation that already has an organisation or an account — `migrate --seed`
 above included — because it creates the *first* owner and nothing else.
 
 For a site of pages instead, apply `marketing-site` — and either blueprint can be added to the other's organisation

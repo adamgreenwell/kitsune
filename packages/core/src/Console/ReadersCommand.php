@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\FirstOwnerCredentials;
+use Kitsune\Core\Auth\PasswordRules;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Auth\ReaderGuardFault;
 use Kitsune\Core\Models\Org;
@@ -20,6 +21,8 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderErasure;
 use Kitsune\Core\Readers\ReaderExport;
+use Kitsune\Core\Readers\ReaderLinks;
+use Kitsune\Core\Readers\ReaderMail;
 use Kitsune\Core\Readers\ReaderMode;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
@@ -86,7 +89,7 @@ final class ReadersCommand extends Command
         }
 
         if ($action === 'erase' && ! $this->option('force')) {
-            return $this->refuse("Refusing: erase deletes the reader's account and every entitlement they hold on every site of [{$slug}]. Run it again with --force. Nothing was written.");
+            return $this->refuse("Refusing: erase deletes the reader's account, every entitlement they hold on every site of [{$slug}], and any link waiting for them. Run it again with --force. Nothing was written.");
         }
 
         // ⚠️ WITH THE TRASHED: a soft-deleted org keeps its rows for its restore, so its readers' requests stay answerable.
@@ -129,6 +132,26 @@ final class ReadersCommand extends Command
             ? 'Reader accounts: usable — the model implements ReaderAccount.'
             : sprintf('Reader accounts: NOT usable — %s.', $accounts->faultSentence()));
 
+        $mail = ReaderMail::fault();
+        $mailer = ReaderMail::mailerName();
+
+        $this->line(match (true) {
+            $mail !== null => sprintf('Reader mail: CLOSED — %s, so sign-up and recovery answer 503. Sign-in still works.', $mail),
+            ! app()->environment(['local', 'testing']) => sprintf('Reader mail: deliverable through [%s], from [%s].', $mailer, (string) config('mail.from.address')),
+            default => sprintf('Reader mail: through [%s], allowed only because the environment is [%s].', $mailer, (string) app()->environment()),
+        });
+
+        // Measured (M4): a strict cookie is not sent on a click from another site's page, nor on the redirect after it.
+        if (strtolower((string) config('session.same_site')) === 'strict') {
+            $this->line('Sessions: SameSite is strict (SESSION_SAME_SITE), so a mailed link opened from a webmail page arrives without its session and answers 410; pasted into the address bar it works. lax, Laravel\'s default, works both ways.');
+        }
+
+        $passwords = PasswordRules::misconfiguration();
+
+        $this->line($passwords === null
+            ? sprintf('Passwords: at least %d characters.', PasswordRules::minCharacters())
+            : sprintf('Passwords: at least %d characters — %s.', PasswordRules::minCharacters(), $passwords));
+
         if ($org !== null) {
             $resolver = app(SettingsResolver::class);
 
@@ -140,7 +163,11 @@ final class ReadersCommand extends Command
                     $site->handle,
                     $accounts->mode($site)->value,
                     $resolved?->describe() ?? 'platform default',
-                    $site->canonical_host === null ? ' — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one' : '',
+                    match (true) {
+                        $site->canonical_host === null => ' — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one',
+                        ReaderLinks::origin($site) === null => ' — no link can be mailed from it, because '.($site->canonical_host === '' ? 'it has no host of its own' : 'its address names no scheme').'; kitsune:site address gives it one',
+                        default => '',
+                    },
                 ));
             }
         }
@@ -207,8 +234,30 @@ final class ReadersCommand extends Command
                 ? app(ReaderGuard::class)->key($found->getAuthIdentifier())
                 : null;
 
-            if ($key === null) {
+            if ($key === null && $action === 'find') {
                 $this->error("No reader in [{$org->slug}] has that address.");
+
+                return self::FAILURE;
+            }
+
+            // ⚠️ AN ADDRESS WITH NO ACCOUNT: nothing held under a reader's identifier can be looked for by it — a reader
+            // the host deleted is found by `--reader` — so this says so and exits 1; only a sign-up link it never used is
+            // held under the address itself, and that is reported or erased (review).
+            if ($key === null) {
+                $missing = sprintf('No reader in [%s] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>.', $org->slug);
+
+                if ($action === 'export') {
+                    $links = app(ReaderExport::class)->forAddress($address);
+
+                    $this->error($missing.' '.($links === []
+                        ? 'No sign-up link mailed to it is waiting.'
+                        : sprintf('A sign-up link mailed to it waits unused at [%s], until %s.', (string) $links[0]['site'], $links[0]['expires_at'])));
+
+                    return self::FAILURE;
+                }
+
+                $erased = app(ReaderErasure::class)->eraseAddress($address);
+                $this->error(sprintf('%s Erased %d pending sign-up link%s.', $missing, $erased, $erased === 1 ? '' : 's'));
 
                 return self::FAILURE;
             }
@@ -229,9 +278,11 @@ final class ReadersCommand extends Command
         $erased = app(ReaderErasure::class)->erase($key);
 
         $this->line(sprintf(
-            'Erased %d entitlement grant%s; %s.',
+            'Erased %d entitlement grant%s and %d pending link%s; %s.',
             $erased['grants'],
             $erased['grants'] === 1 ? '' : 's',
+            $erased['links'],
+            $erased['links'] === 1 ? '' : 's',
             $erased['account'] ? 'the account was deleted' : 'no account had that identifier',
         ));
 

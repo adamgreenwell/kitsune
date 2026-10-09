@@ -9,16 +9,20 @@
 declare(strict_types=1);
 
 use App\Models\Reader;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Models\Entitlement;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderErasure;
+use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Settings\SettingsWriter;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
+use Kitsune\Core\Tests\Fixtures\ShoutingReader;
 use Kitsune\Core\Tests\Fixtures\TestReader;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 use Kitsune\Core\Tests\Fixtures\UnscopedFindReader;
@@ -79,6 +83,8 @@ it('says the skeleton\'s declaration is usable, and exits 0', function (): void 
     expect(readersRun(['action' => 'status']))->toBe([0, implode("\n", [
         'Reader guard: declared and usable [readers].',
         'Reader accounts: usable — the model implements ReaderAccount.',
+        'Reader mail: through [array], allowed only because the environment is [testing].',
+        'Passwords: at least 15 characters.',
     ])]);
 });
 
@@ -88,6 +94,8 @@ it('says no guard is declared without failing a deploy that has none', function 
     expect(readersRun(['action' => 'status']))->toBe([0, implode("\n", [
         'Reader guard: none declared (kitsune.readers.guard) — no reader can sign in.',
         'Reader accounts: NOT usable — no usable reader guard is declared, so no reader can sign in.',
+        'Reader mail: through [array], allowed only because the environment is [testing].',
+        'Passwords: at least 15 characters.',
     ])]);
 });
 
@@ -121,7 +129,7 @@ it('lists each site\'s mode and where it comes from', function (): void {
     [$status, $output] = readersRun(['action' => 'status', '--org' => 'golfdom']);
 
     expect($status)->toBe(0)
-        ->and(array_slice(explode("\n", $output), 2))->toBe([
+        ->and(array_slice(explode("\n", $output), 4))->toBe([
             'Site [admin-only]: open (inherited from the organisation) — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one.',
             'Site [golfdom]: open (inherited from the organisation).',
             'Site [golfdom-fr]: sign-in (set on this site).',
@@ -207,7 +215,7 @@ it('names no other org\'s reader, even when a host\'s lookup finds one', functio
     expect(readersRun(['action' => 'find', '--org' => 'rival'], "subscriber@kitsune.test\n"))
         ->toBe([1, 'No reader in [rival] has that address.'])
         ->and(readersRun(['action' => 'erase', '--org' => 'rival', '--force' => true], "subscriber@kitsune.test\n"))
-        ->toBe([1, 'No reader in [rival] has that address.'])
+        ->toBe([1, 'No reader in [rival] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>. Erased 0 pending sign-up links.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1);
 });
 
@@ -238,7 +246,7 @@ it('exports one reader: the host\'s account and core\'s entitlements, and no sec
     $export = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
 
     expect($status)->toBe(0)
-        ->and(array_keys($export))->toBe(['account', 'entitlements', 'generated_at'])
+        ->and(array_keys($export))->toBe(['account', 'entitlements', 'pending_links', 'generated_at'])
         ->and(array_keys($export['account']))->toBe(['reader', 'email', 'email_verified_at', 'has_password', 'created_at', 'updated_at'])
         ->and($export['account']['reader'])->toBe((string) $this->reader->getKey())
         ->and($export['account']['email'])->toBe('subscriber@kitsune.test')
@@ -278,7 +286,7 @@ it('refuses to read or write accounts a model cannot hold', function (string $ac
 
 it('refuses to erase without --force, before reading anything', function (): void {
     expect(readersRun(['action' => 'erase', '--org' => 'golfdom', '--reader' => (string) $this->reader->getKey()]))
-        ->toBe([1, 'Refusing: erase deletes the reader\'s account and every entitlement they hold on every site of [golfdom]. Run it again with --force. Nothing was written.'])
+        ->toBe([1, 'Refusing: erase deletes the reader\'s account, every entitlement they hold on every site of [golfdom], and any link waiting for them. Run it again with --force. Nothing was written.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1);
 });
 
@@ -289,21 +297,21 @@ it('erases a reader\'s entitlements on every site of the org, then their account
         ? readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true], "subscriber@kitsune.test\n")
         : readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true, '--reader' => (string) test()->reader->getKey()]);
 
-    expect($erase())->toBe([0, 'Erased 2 entitlement grants; the account was deleted.'])
+    expect($erase())->toBe([0, 'Erased 2 entitlement grants and 0 pending links; the account was deleted.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(0)
         ->and(Entitlement::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(0)
         ->and(DB::table('audit_log')->where('action', 'entitlement.erased')->count())->toBe(2);
 
     expect($erase())->toBe($byAddress
-        ? [1, 'No reader in [golfdom] has that address.']
-        : [0, 'Erased 0 entitlement grants; no account had that identifier.']);
+        ? [1, 'No reader in [golfdom] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>. Erased 0 pending sign-up links.']
+        : [0, 'Erased 0 entitlement grants and 0 pending links; no account had that identifier.']);
 })->with(['by identifier' => [false], 'by address' => [true]]);
 
 it('erases in one org only: another org\'s reader with the same identifier is untouched', function (): void {
     EntitlementFixture::plant($this->world['sites']['golfdom'], (string) $this->reader->getKey(), 'course.advanced-php');
 
     expect(readersRun(['action' => 'erase', '--org' => 'rival', '--force' => true, '--reader' => (string) $this->reader->getKey()]))
-        ->toBe([0, 'Erased 0 entitlement grants; no account had that identifier.'])
+        ->toBe([0, 'Erased 0 entitlement grants and 0 pending links; no account had that identifier.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1)
         ->and(Entitlement::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1);
 });
@@ -312,7 +320,7 @@ it('erases a reader of an organisation that has been deleted', function (): void
     $this->world['golfdom']->delete();
 
     expect(readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true, '--reader' => (string) $this->reader->getKey()]))
-        ->toBe([0, 'Erased 0 entitlement grants; the account was deleted.']);
+        ->toBe([0, 'Erased 0 entitlement grants and 0 pending links; the account was deleted.']);
 });
 
 it('erases nothing of the account when the entitlements cannot be erased — they go first', function (): void {
@@ -341,4 +349,122 @@ it('keeps everything when the account cannot be erased', function (): void {
         ->toBe([1, 'The host refused to delete the row.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1)
         ->and(Entitlement::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1);
+});
+
+// ---- Pending links --------------------------------------------------------------------------------------------------
+
+/** A link minted at a site, as its page mints one. */
+function readersLink(Site $site, string $purpose, string $subject): void
+{
+    app(Context::class)->forget()->setSite($site);
+
+    try {
+        app(ReaderTokens::class)->mint($purpose, $subject);
+    } finally {
+        ReaderFixture::forget();
+    }
+}
+
+it('exports the links waiting for a reader, and nothing that opens them', function (): void {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-09 12:00:00', 'UTC'));
+    readersLink($this->world['sites']['golfdom-fr'], ReaderTokens::RECOVER, (string) $this->reader->getKey());
+    $hash = (string) DB::table('reader_tokens')->value('token_hash');
+
+    [$status, $output] = readersRun(['action' => 'export', '--org' => 'golfdom', '--reader' => (string) $this->reader->getKey()]);
+    $export = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+    expect($status)->toBe(0)
+        ->and($export['pending_links'])->toBe([['purpose' => 'recover', 'site' => 'golfdom-fr', 'expires_at' => '2026-10-09T13:00:00Z']])
+        ->and($output)->not->toContain($hash);
+
+    // Another org's link for the same key is that org's to export.
+    expect(json_decode(readersRun(['action' => 'export', '--org' => 'rival', '--reader' => (string) $this->reader->getKey()])[1], true)['pending_links'])->toBe([]);
+});
+
+it('says what it did for an address with no account, and exits 1: nothing under an identifier was looked for', function (): void {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-09 12:00:00', 'UTC'));
+    readersLink($this->world['sites']['golfdom'], ReaderTokens::REGISTER, 'newcomer@kitsune.test');
+    readersLink($this->world['sites']['rival'], ReaderTokens::REGISTER, 'newcomer@kitsune.test');
+
+    expect(readersRun(['action' => 'export', '--org' => 'golfdom'], "NewComer@Kitsune.test\n"))
+        ->toBe([1, 'No reader in [golfdom] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>. A sign-up link mailed to it waits unused at [golfdom], until 2026-10-09T13:00:00Z.'])
+        ->and(readersRun(['action' => 'export', '--org' => 'golfdom'], "nobody@kitsune.test\n"))
+        ->toBe([1, 'No reader in [golfdom] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>. No sign-up link mailed to it is waiting.'])
+        ->and(readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true], "newcomer@kitsune.test\n"))
+        ->toBe([1, 'No reader in [golfdom] has that address, so nothing held under a reader\'s identifier was looked for — for a reader the host deleted, run again with --reader=<id>. Erased 1 pending sign-up link.'])
+        ->and(DB::table('reader_tokens')->pluck('org_id')->all())->toBe([$this->world['rival']->getKey()]);
+});
+
+it('erases a reader\'s links with their account — the recovery link by key, a sign-up link by the address normalised', function (): void {
+    config(['auth.providers.readers.model' => ShoutingReader::class]);
+    readersLink($this->world['sites']['golfdom'], ReaderTokens::RECOVER, (string) $this->reader->getKey());
+    // Minted before the host imported the account, so it waits under the address.
+    readersLink($this->world['sites']['golfdom-fr'], ReaderTokens::REGISTER, 'subscriber@kitsune.test');
+    readersLink($this->world['sites']['rival'], ReaderTokens::REGISTER, 'subscriber@kitsune.test');
+
+    expect(readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true, '--reader' => (string) $this->reader->getKey()]))
+        ->toBe([0, 'Erased 0 entitlement grants and 2 pending links; the account was deleted.'])
+        ->and(DB::table('reader_tokens')->pluck('org_id')->all())->toBe([$this->world['rival']->getKey()]);
+});
+
+it('keeps a reader\'s links when the account cannot be erased', function (): void {
+    readersLink($this->world['sites']['golfdom'], ReaderTokens::RECOVER, (string) $this->reader->getKey());
+    Reader::deleting(static function (): bool {
+        throw new RuntimeException('The host refused to delete the row.');
+    });
+
+    expect(readersRun(['action' => 'erase', '--org' => 'golfdom', '--force' => true, '--reader' => (string) $this->reader->getKey()])[0])->toBe(1)
+        ->and(DB::table('reader_tokens')->count())->toBe(1);
+});
+
+it('says on the status line whether mail can reach a reader, and how long a password must be', function (): void {
+    app()->detectEnvironment(static fn (): string => 'production');
+    config(['app.env' => 'production', 'mail.default' => 'log', 'kitsune.passwords.min_characters' => 'twenty']);
+
+    $lines = explode("\n", readersRun(['action' => 'status'])[1]);
+
+    expect($lines[2])->toBe('Reader mail: CLOSED — the mailer [log] uses the [log] transport, which keeps mail instead of sending it, so sign-up and recovery answer 503. Sign-in still works.')
+        ->and($lines[3])->toStartWith('Passwords: at least 15 characters — ');
+
+    config(['mail.default' => 'smtp', 'mail.from.address' => 'readers@kitsunecms.org', 'kitsune.passwords.min_characters' => 20]);
+
+    $lines = explode("\n", readersRun(['action' => 'status'])[1]);
+
+    expect($lines[2])->toBe('Reader mail: deliverable through [smtp], from [readers@kitsunecms.org].')
+        ->and($lines[3])->toBe('Passwords: at least 20 characters.');
+});
+
+it('names each site no link can be mailed from, and why', function (): void {
+    app()->detectEnvironment(static fn (): string => 'production');
+    config(['app.env' => 'production']);
+    DB::table('sites')->where('id', $this->world['sites']['shop']->getKey())->update(['base_url' => '//rival.test/shop']);
+
+    $lines = explode("\n", readersRun(['action' => 'status', '--org' => 'rival'])[1]);
+
+    expect(array_slice($lines, 4))->toBe([
+        'Site [rival]: off (platform default) — no link can be mailed from it, because it has no host of its own; kitsune:site address gives it one.',
+        'Site [shop]: off (platform default) — no link can be mailed from it, because its address names no scheme; kitsune:site address gives it one.',
+    ]);
+});
+
+it('warns that a strict session cookie stops a link clicked in a webmail page, and says nothing for lax', function (): void {
+    config(['session.same_site' => 'strict']);
+
+    expect(explode("\n", readersRun(['action' => 'status'])[1])[3])
+        ->toBe('Sessions: SameSite is strict (SESSION_SAME_SITE), so a mailed link opened from a webmail page arrives without its session and answers 410; pasted into the address bar it works. lax, Laravel\'s default, works both ways.');
+
+    config(['session.same_site' => 'lax']);
+
+    expect(readersRun(['action' => 'status'])[1])->not->toContain('SameSite');
+});
+
+it('reads staging as an environment where mail must reach a reader, on the status line too', function (): void {
+    app()->detectEnvironment(static fn (): string => 'staging');
+    config(['app.env' => 'staging', 'mail.default' => 'log']);
+
+    expect(explode("\n", readersRun(['action' => 'status'])[1])[2])->toStartWith('Reader mail: CLOSED — the mailer [log]');
+
+    config(['mail.default' => 'smtp', 'mail.from.address' => 'readers@kitsunecms.org']);
+
+    expect(explode("\n", readersRun(['action' => 'status'])[1])[2])->toBe('Reader mail: deliverable through [smtp], from [readers@kitsunecms.org].');
 });

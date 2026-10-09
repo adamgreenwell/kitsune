@@ -88,7 +88,8 @@ That is a real result and it is a *narrow* one. Axe evaluates machine-detectable
 ### Built — a reader's pages (ADR-037, as built, 2026-10-07)
 
 Core's own Blade views, so nothing is inherited: sign-in, the account page and a notice, at `{prefix}/account` under
-each site. What they do, and what checks it:
+each site — and, since 2026-10-09, sign-up, recovery, "check your email" and choosing a password from a mailed link.
+What they do, and what checks it:
 
 | | Evidence |
 |---|---|
@@ -97,8 +98,13 @@ each site. What they do, and what checks it:
 | One `<main>`, one `<h1>`; `:focus-visible` outlines; targets at least 44 × 44 px; light and dark through `prefers-color-scheme` | the stylesheet; axe on every page in `readers.spec.js` |
 | The site's language and direction on `<html>`, the copy's on `<main>` | `ReaderPagesTest`; `readers.spec.js` on `/golfdom-ar` and `/news/fr` |
 | No script, no stylesheet or font from anywhere, nothing off-host | `ReaderPagesTest`; the request log in `readers.spec.js` |
+| A new password is typed twice, each field labelled, `autocomplete=new-password`; the hint (`password-hint`) describes the first field; the account it is for is shown as text and in a read-only `autocomplete=username` field a password manager saves under | `ReaderPagesTest`; `reader-mail.spec.js` fills both from the keyboard |
+| The sign-in page's links to recovery and sign-up come after its button, in a list, each a 44 px target | `ReaderPagesTest` |
+| A link that does not work, and a page closed for want of mail, say why and offer a link onward, with no form | `SignUpTest`, `RecoveryTest`, `ReaderMailTest` |
+| Reflow at 320 px, light and dark — a long address wraps anywhere, since a browser will not break one at `@` or `.` (review) | `reader-mail.spec.js`, on every new page and refusal, with a long address that has no hyphen |
 
-Still owed here, as for the admin: a screen-reader pass (§5), and reflow at 320 px and 200 % zoom, which no spec measures yet.
+Still owed here, as for the admin: a screen-reader pass (§5), and 200 % zoom, which no spec measures yet; reflow at
+320 px is measured on the new pages only.
 
 ---
 

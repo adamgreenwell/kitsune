@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
+use Kitsune\Core\Tests\Fixtures\ReaderMailbox;
 
 /*
  * How a reader page renders — ADR-037, as built: the site's language on `<html>`, the copy's on `<main>`, forms a
@@ -160,4 +161,108 @@ it('renders a refused connection as a notice, in the layout, with nothing to sub
         ->and($dom->query('//main/p[@role="alert"]')->item(0)?->textContent)
         ->toBe('Too many attempts from your connection. Please wait a minute, then try again. Nothing was checked or sent.')
         ->and($dom->query('//form')->length)->toBe(0);
+});
+
+// ---- Sign-up and recovery -------------------------------------------------------------------------------------------
+
+it('offers recovery on the sign-in page, and sign-up only where accounts are open — after the button', function (): void {
+    $signIn = pagesDom((string) $this->readerGet('/golfdom/account/sign-in')->getContent());
+
+    expect(array_map(static fn (DOMElement $a): array => [$a->getAttribute('href'), $a->textContent], iterator_to_array($signIn->query('//form/following-sibling::ul[@class="links"]//a'))))
+        ->toBe([['/golfdom/account/recover', 'Forgotten your password?']]);
+
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+    $open = pagesDom((string) $this->readerGet('/golfdom/account/sign-in')->getContent());
+
+    expect(array_map(static fn (DOMElement $a): array => [$a->getAttribute('href'), $a->textContent], iterator_to_array($open->query('//form/following-sibling::ul[@class="links"]//a'))))
+        ->toBe([['/golfdom/account/recover', 'Forgotten your password?'], ['/golfdom/account/register', 'Create an account']])
+        ->and($open->query('//form//a')->length)->toBe(0);
+});
+
+it('asks for an address on the sign-up and recovery pages as sign-in does', function (string $path, string $title): void {
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+    $dom = pagesDom((string) $this->readerGet($path)->assertOk()->getContent());
+    $email = $dom->query('//input[@id="email"]')->item(0);
+
+    expect($dom->query('//title')->item(0)?->textContent)->toBe($title.' — Golfdom')
+        ->and($dom->query('//h1')->item(0)?->textContent)->toBe($title)
+        ->and($dom->query('//label[@for="email"]')->item(0)?->textContent)->toBe('Email address')
+        ->and($email?->getAttribute('type'))->toBe('email')
+        ->and($email?->getAttribute('autocomplete'))->toBe('email')
+        ->and($email?->getAttribute('dir'))->toBe('ltr')
+        ->and($dom->query('//input[@type="password"]')->length)->toBe(0)
+        ->and($dom->query('//form[@method="post"][@action="'.$path.'"][@novalidate]')->length)->toBe(1)
+        ->and($dom->query('//form//input[@type="hidden"][@name="_token"]')->length)->toBe(1)
+        ->and($dom->query('//button[@type="submit"]')->item(0)?->textContent)->toBe('Send me a link')
+        ->and($dom->query('//a[@href="/golfdom/account/sign-in"]')->item(0)?->textContent)->toBe('Go to sign in');
+})->with([
+    'sign-up' => ['/golfdom/account/register', 'Create an account'],
+    'recovery' => ['/golfdom/account/recover', 'Forgotten your password?'],
+]);
+
+it('re-fills a refused address as text, never as markup', function (): void {
+    $typed = '"><script>alert(1)</script>';
+    $html = (string) $this->readerPost('/golfdom/account/recover', ['email' => $typed])->assertStatus(422)->getContent();
+    $dom = pagesDom($html);
+
+    expect($html)->not->toContain('<script>')
+        ->and($dom->query('//input[@id="email"]')->item(0)?->getAttribute('value'))->toBe($typed)
+        ->and($dom->query('//input[@id="email"]')->item(0)?->getAttribute('aria-describedby'))->toBe('email-error')
+        ->and($dom->query('//div[@class="summary"]//a[@href="#email"]')->item(0)?->textContent)->toBe('Enter an email address, like name@example.com.');
+});
+
+it('asks for the password twice, under the address a password manager saves it for', function (): void {
+    ReaderFixture::reader($this->world['golfdom'], 'subscriber@kitsune.test');
+    $this->readerPost('/golfdom/account/recover', ['email' => 'subscriber@kitsune.test'])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+
+    $dom = pagesDom((string) $this->readerGet('/golfdom/account/reset')->assertOk()->getContent());
+    $username = $dom->query('//input[@id="username"]')->item(0);
+    $password = $dom->query('//input[@id="password"]')->item(0);
+    $again = $dom->query('//input[@id="password_confirmation"]')->item(0);
+
+    expect($username?->getAttribute('autocomplete'))->toBe('username')
+        ->and($username?->getAttribute('value'))->toBe('subscriber@kitsune.test')
+        ->and($username?->hasAttribute('readonly'))->toBeTrue()
+        ->and($dom->query('//label[@for="username"]')->item(0)?->textContent)->toBe('Account')
+        ->and($dom->query('//label[@for="password"]')->item(0)?->textContent)->toBe('New password')
+        ->and($dom->query('//label[@for="password_confirmation"]')->item(0)?->textContent)->toBe('Type the same password again')
+        ->and($password?->getAttribute('type'))->toBe('password')
+        ->and($password?->getAttribute('autocomplete'))->toBe('new-password')
+        ->and($password?->getAttribute('aria-describedby'))->toBe('password-hint')
+        ->and($dom->query('//p[@id="password-hint"]')->item(0)?->textContent)->toBe('At least 15 characters. A few words in a row is easy to remember and hard to guess.')
+        ->and($again?->getAttribute('type'))->toBe('password')
+        ->and($again?->getAttribute('autocomplete'))->toBe('new-password')
+        ->and($again?->hasAttribute('aria-describedby'))->toBeFalse()
+        ->and($dom->query('//form[@method="post"][@action="/golfdom/account/reset"]')->length)->toBe(1)
+        ->and($dom->query('//input[@type="password"][@value]')->length)->toBe(0)
+        ->and($dom->query('//button[@type="submit"]')->item(0)?->textContent)->toBe('Change my password');
+
+    $refused = pagesDom((string) $this->readerPost('/golfdom/account/reset', ['password' => 'a different long password', 'password_confirmation' => 'something else'])->assertStatus(422)->getContent());
+
+    expect($refused->query('//input[@id="password"]')->item(0)?->getAttribute('aria-describedby'))->toBe('password-hint')
+        ->and($refused->query('//input[@id="password_confirmation"]')->item(0)?->getAttribute('aria-describedby'))->toBe('password_confirmation-error')
+        ->and($refused->query('//input[@id="password_confirmation"]')->item(0)?->getAttribute('aria-invalid'))->toBe('true')
+        ->and($refused->query('//input[@type="password"][@value]')->length)->toBe(0)
+        ->and($refused->query('//div[@class="summary"]//a[@href="#password_confirmation"]')->item(0)?->textContent)->toBe('The two passwords don\'t match.');
+});
+
+it('says the minimum configured in the hint', function (): void {
+    config(['kitsune.passwords.min_characters' => 20]);
+    ReaderFixture::reader($this->world['golfdom'], 'subscriber@kitsune.test');
+    $this->readerPost('/golfdom/account/recover', ['email' => 'subscriber@kitsune.test'])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+
+    $this->readerGet('/golfdom/account/reset')->assertOk()->assertSeeText('At least 20 characters.');
+});
+
+it('shows the address a link is for as text, never as markup', function (): void {
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+    // The grammar admits an apostrophe and an ampersand; nothing else that markup cares about.
+    $this->readerPost('/golfdom/account/register', ['email' => "o'neil&co@kitsune.test"])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+
+    $html = (string) $this->readerGet('/golfdom/account/register/complete')->assertOk()->getContent();
+
+    expect($html)->toContain('o&#039;neil&amp;co@kitsune.test')->not->toContain("o'neil&co");
 });

@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Model;
 use InvalidArgumentException;
 
 /**
- * An instant on `entitlements`, stored as UTC wall clock in whole seconds and read back as UTC — ADR-040.
+ * An instant on `entitlements` or `reader_tokens`, stored as UTC wall clock in whole seconds and read back as UTC — ADR-040.
  *
  * ⚠️ NOT Eloquent's own `datetime` cast, which formats a Carbon in ITS OWN zone with no offset: a host that changes
  * `app.timezone` would then move every stored end by the offset, and a caller's Paris-zoned end would be stored as
@@ -57,9 +57,10 @@ final class UtcInstant implements CastsAttributes
 
         if (! $value instanceof DateTimeInterface) {
             throw new InvalidArgumentException(sprintf(
-                'Refusing to write [%s] on entitlements from a %s: only an instant is written, and it is stored as UTC in '
+                'Refusing to write [%s] on %s from a %s: only an instant is written, and it is stored as UTC in '
                 .'whole seconds, so a string spelled another way can never be compared against the clock (ADR-040).',
                 $key,
+                $model->getTable(),
                 get_debug_type($value),
             ));
         }

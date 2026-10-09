@@ -52,8 +52,11 @@ final class SignInController
 {
     use ReadsWrittenKeys;
 
-    /** The session key a one-time status message (`sign_out.done`) is flashed under. */
+    /** The session key a one-time status message (`sign_out.done`, `complete.exists`, `sent.*`) is flashed under. */
     public const STATUS = 'kitsune.readers.status';
+
+    /** The messages this page shows when flashed: anything else in the session is ignored. */
+    private const SHOWN = ['sign_out.done', 'complete.exists'];
 
     public function __construct(
         private readonly Context $context,
@@ -64,7 +67,7 @@ final class SignInController
     {
         $status = $request->session()->get(self::STATUS);
 
-        return $this->form($this->site(), status: is_string($status) && $status === 'sign_out.done' ? $status : null);
+        return $this->form($this->site(), status: in_array($status, self::SHOWN, true) ? $status : null);
     }
 
     public function store(Request $request): Response|RedirectResponse
@@ -149,6 +152,9 @@ final class SignInController
             'email' => $email,
             'problems' => $errors,
             'status' => $status,
+            'recover' => ReaderLinks::path($site, ReaderLinks::RECOVER),
+            // Only where someone new may create an account.
+            'register' => app(ReaderAccounts::class)->mode($site)->signsUp() ? ReaderLinks::path($site, ReaderLinks::REGISTER) : null,
         ], $code);
     }
 
