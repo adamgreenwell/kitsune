@@ -203,5 +203,21 @@ return [
         'private' => 'Private',
         'missing' => 'No file',
         'trashed' => 'In the trash',
+        // A public image the web server did not serve as one — missing from its disk, refused there, or not an image. An
+        // `<img>` cannot tell which, so the words say what happened, never why (Adam, decision 42).
+        'unloaded' => 'Did not load',
+        // A private tile's status line, by the state its script is in (decision 39): one lower-case word each, as
+        // `MediaTileColumn::SAID` explains. `shown` is said to a screen reader alone; the image says it to everyone else.
+        'status' => [
+            'loading' => 'Loading the preview.',
+            'shown' => 'Preview shown.',
+            'signedout' => 'You are signed out.',
+            'refused' => 'You may no longer see this file.',
+            'gone' => 'This file is no longer available here.',
+            'failed' => 'The preview could not be loaded. Reload the page and try again.',
+        ],
+        // After the signed-out words: a link that reloads this page, which sends the editor to sign in and back here
+        // (Adam, decision 41).
+        'sign_in' => 'Sign in again',
     ],
 ];
