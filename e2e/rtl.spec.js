@@ -54,6 +54,9 @@ const PAGES = [
     ['entry create', `/admin/${SITE}/c/article/create`],
     ['entry edit', `/admin/${SITE}/c/article/1/edit`],
     ['related records', `/admin/${SITE}/c/article/1/related`],
+    // A media type's list is a grid of tiles, with core's own buttons, words and badges in it (ADR-042 decisions 6, 39–42).
+    // After the first three, which the mirror test below compares with their LTR render.
+    ['media list', `/admin/${SITE}/c/image`],
     // ADR-040's admin half: core's one hand-built form sits in its Set modal, scanned there by `credentials.spec.js`.
     ['credentials', `/admin/${SITE}/credentials`],
     ['entitlements', `/admin/${SITE}/entitlements`],
@@ -197,6 +200,38 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
 
         expect(boxes['.fi-sidebar']).not.toBeNull();
         expect(boxes['.fi-sidebar'].left).toBeGreaterThanOrEqual(clientWidth);
+    });
+
+    /*
+     * ⚠️ A TILE'S WORDS READ IN THEIR OWN DIRECTION — ADR-042 decisions 39–42. Core's words are English under an Arabic
+     * admin until core ships a translation, and a status line that took the page's direction put its full stop at the
+     * wrong end (measured). So the line is `dir="auto"`; and a public image that did not load is scanned beside it.
+     */
+    test('the media list\'s tile words read in their own direction under RTL, with a tile refused and one that did not load', async ({ page }) => {
+        await page.route(/\/admin\/[^/]+\/media\/\d+$/, (route) => route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }));
+        await page.route(/\/storage\//, (route) => route.fulfill({ status: 404, contentType: 'text/plain', body: '' }));
+        await page.goto(`/admin/${SITE}/c/image`);
+
+        const tile = page.locator('.fi-ta-record').filter({ hasText: 'Course map' }).locator('[data-kitsune-tile="deferred"]');
+        const line = tile.locator('[role="status"]');
+        await tile.getByRole('button').click();
+
+        await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+        await expect(line).toHaveText('You may no longer see this file.');
+        expect(await line.evaluate((el) => getComputedStyle(el).direction)).toBe('ltr');
+        await expect(page.locator('.fi-ta-record').filter({ hasText: 'Golfdom logo' }).locator('.fi-badge')).toHaveText('Did not load');
+
+        const results = await new AxeBuilder({ page }).include('.fi-ta').withTags(TAGS).analyze();
+
+        if (results.violations.length > 0) {
+            console.log(`\nmedia list in its states (RTL) — ${results.violations.length} violation(s) at all levels:`);
+            for (const v of results.violations) {
+                console.log(`  [${v.impact}] ${v.id}: ${v.help}`);
+                console.log(`    ${v.nodes.length} node(s), e.g. ${v.nodes[0]?.target?.join(' ')}`);
+            }
+        }
+
+        expect(results.violations.filter((v) => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
     });
 
     test('has no critical or serious WCAG violations at a mobile width under RTL', async ({ page }) => {

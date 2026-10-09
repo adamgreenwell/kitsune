@@ -32,9 +32,19 @@ find packages/core/src skeleton/app skeleton/resources -name "*.blade.php"      
 find packages/core/src skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 0 files
 ```
 
+*Amended 2026-10-09:* the roots above miss `packages/core/resources`, where core's reader views (ADR-037) and its rich
+editor's direction script live, so both counts were stale before the media tiles changed anything. With it:
+
+```bash
+find packages/core/src packages/core/resources skeleton/app skeleton/resources -name "*.blade.php"              # 9 files
+find packages/core/src packages/core/resources skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 1 file
+```
+
 ⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1. Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
 
-Kitsune authors ~~**one** Blade view~~ *the welcome page and a reader's pages (ADR-037, as built, 2026-10-07)* and **zero** lines of JavaScript; the only CSS is those pages' own inline styles. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
+Kitsune authors ~~**one** Blade view~~ *the welcome page and a reader's pages (ADR-037, as built, 2026-10-07)* and ~~**zero** lines of JavaScript~~ *one
+script file, `rich-editor-direction.js`, and inline Alpine — the credential form's one attribute and the media list's
+tiles (2026-10-09)*; the only CSS is those pages' own inline styles. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
 
 *Amended 2026-10-06 (ADR-040):* core also builds one form in PHP, the credential form, hand-built because its value must
 not be a Livewire field — Filament's own field and button classes, one inline Alpine attribute that disables its button
@@ -50,6 +60,29 @@ badge says its word, so colour is never the only cue. Scanned with the Comp moda
 keyboard alone, and in the accessibility and RTL scans (`entitlements.spec.js`, `accessibility.spec.js`,
 `rtl.spec.js`). Inherited and recorded: the same grey placeholder elsewhere in the admin, where Filament draws it.
 
+*Amended 2026-10-09 (ADR-042 decisions 39–42, the media list's tiles):* a media type's list is core's own markup inside
+Filament's card grid, with inline Alpine: a private tile's script of about 40 lines, the same bytes on every tile with no
+value of PHP's in it, and three attributes and a badge on a public tile. Its own conformance, each measured in Chromium:
+- **Focus stays on the button.** Main hid a pressed tile's button and focus fell to `<body>`; the button is now never
+  hidden or `disabled`, and is `aria-disabled` once its image is drawn inside it.
+- **The ring is drawn.** A clipping frame cut Filament's 2px ring off; a private tile's frame no longer clips, so the ring
+  is outside the square, light and dark (`media-tiles.spec.js`). Its contrast over a photograph was not measured.
+- **One `role="status"` line per private tile**, outside the button — a button's children are presentational — in the
+  page and empty from the start, and named by the button as its description (measured in the accessibility tree); what a
+  screen reader says of it is §5's item 4. Each refusal says what happened in words; `alt` stays empty (ADR-042
+  decision 28).
+- **Label in name (2.5.3)**: the button's name begins with *Show preview*, the words it shows, and never changes.
+- **`dir="auto"`** on the line: core's words are English under an Arabic admin, and the full stop went to the wrong end.
+- **At 200 % text** the square grows to hold its button and words rather than clipping them.
+- **Colour is never the only sign**: a public image that did not load is an amber badge whose words say *Did not load*.
+
+Scanned in those states — shown, refused, signed out and not loaded — light and dark (`media-tiles.spec.js`), and under
+RTL, light, with a tile refused and one not loaded, beside the media list joining `rtl.spec.js`'s pages. A tile switched
+between private and public in place, by *Make selected public* or *private*, keeps its node and is drawn as its new kind. Inherited and recorded:
+a card a re-render moves later in the list is drawn again, its tile reset and focus falling to `<body>`; and a drawn
+private image cannot be opened in a new tab, its `blob:` URL let go once drawn (ADR-042 decision 40). Not checked: any
+screen reader — see §5.
+
 That will change. Every custom Filament component, every published view and every line of project CSS moves surface from the first column to the second, and each one has to carry its own conformance rather than inheriting it.
 
 ---
@@ -58,7 +91,7 @@ That will change. Every custom Filament component, every published view and ever
 
 ### What was measured
 
-`e2e/accessibility.spec.js` runs `@axe-core/playwright` with tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` across the five page shapes the admin has — dashboard, entry list, entry create, entry edit, related records. `e2e/rtl.spec.js` runs the same scan again against a server in an RTL locale.
+`e2e/accessibility.spec.js` runs `@axe-core/playwright` with tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` across ~~the five page shapes the admin has — dashboard, entry list, entry create, entry edit, related records~~ *eight page shapes (2026-10-09): those five, the media list, credentials and entitlements — the last two joined with ADR-040, so the count was stale before the media list joined `rtl.spec.js` with ADR-042 decision 39*. `e2e/rtl.spec.js` runs the same scan again against a server in an RTL locale.
 
 **Result: zero violations at any impact level, on every page shape, in both directions**, plus zero at a 390px mobile viewport under RTL.
 
@@ -71,7 +104,7 @@ That is a real result and it is a *narrow* one. Axe evaluates machine-detectable
 | | Evidence |
 |---|---|
 | Document language on every admin page | `lang` asserted non-empty; `ar` under the RTL locale |
-| No detectable WCAG 2.1 A/AA failures in admin chrome | 5 page shapes × 2 directions, 0 violations |
+| No detectable WCAG 2.1 A/AA failures in admin chrome | ~~5~~ *8 (2026-10-09)* page shapes × 2 directions, 0 violations |
 | Landmark structure, ARIA validity, label association | Axe rule families, all passing |
 | Contrast in the default theme | Axe contrast rules, passing |
 
@@ -140,9 +173,9 @@ Logical inset properties, so the browser does the mirroring. Consistent with the
 
 | | Evidence |
 |---|---|
-| `dir` on `<html>` from the app locale | `dir="rtl"`, `lang="ar"`, all five page shapes |
+| `dir` on `<html>` from the app locale | `dir="rtl"`, `lang="ar"`, all ~~five~~ *eight (2026-10-09)* page shapes |
 | Admin layout mirrors exactly | Drift 0 on 5 landmarks × 3 page shapes at 1280px |
-| No horizontal overflow under RTL | `scrollWidth <= clientWidth`, all five shapes |
+| No horizontal overflow under RTL | `scrollWidth <= clientWidth`, all ~~five~~ *eight (2026-10-09)* shapes |
 | Off-canvas drawer parks on the correct side | At 390px the sidebar sits at `left: 406` — beyond the right edge, mirroring LTR's negative offset |
 | No new WCAG failures introduced by mirroring | Axe re-run under RTL, 0 violations |
 | An unknown locale degrades safely | `APP_LOCALE=xx` yields `dir="ltr"`: Laravel resolves the fallback locale before returning a missing key, so Filament's `?? 'ltr'` is dead code rather than a latent bug. Checked because it looked like one |
@@ -251,8 +284,8 @@ Mirrored geometry is not the same as comprehensible reading order. This folds in
 
 | Job | Covers |
 |---|---|
-| `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on five page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
-| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on five page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
+| `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on ~~five~~ *eight (2026-10-09)* page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
+| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on ~~five~~ *eight (2026-10-09)* page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
 | `tests/Core/TextDirectionTest.php` | `Kitsune::textDirection()` across the six RTL languages, LTR languages, `ar_EG`/`ar-EG`/`AR` subtag forms, and the unknown-locale fallback |
 
 The RTL project needs a second server, which `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
@@ -266,5 +299,9 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
 1. **Drive the entry editor with a screen reader** — NVDA on Windows and VoiceOver on macOS at minimum. Create an entry, fill a rich-text field, attach a relation, save, and recover from a validation error. Record what is unusable rather than what is imperfect.
 2. **Drive it with the keyboard only**, including the create-field modal whose Settings section rebuilds on type change.
 3. **Have someone who reads Arabic or Hebrew use the admin.** Mirrored geometry is measurable; whether the interface *reads* is not.
+4. **Press a private media tile with NVDA and VoiceOver** (*added 2026-10-09, ADR-042 decisions 39–42*) — signed in,
+   after its grant is revoked, and signed out. Record what is heard: whether the description and the live region are
+   both spoken, how "unavailable" sounds once a tile is shown, and whether a refusal heard after focus has moved on
+   makes sense without naming its file.
 
 Until those happen, the honest claim is the one at the top of this document: no detectable failures, on a surface that is almost entirely inherited. That is a good starting position and it is not a conformance statement, and ADR-018 is explicit that a boilerplate conformance claim is exactly what this project will not make.
