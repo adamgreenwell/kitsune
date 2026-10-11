@@ -8,7 +8,10 @@
 
 declare(strict_types=1);
 
+use Filament\Http\Middleware\Authenticate;
 use Filament\Tables\Table;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
@@ -62,6 +65,14 @@ function asListed(Entry $entry): Entry
 function tileHtml(Entry $entry): string
 {
     return MediaTileColumn::make()->record(asListed($entry))->toEmbeddedHtml();
+}
+
+/** A tile's script — its frame's `x-data` — as Alpine reads it, with the attribute's escaping undone. */
+function tileScript(string $html): string
+{
+    preg_match('/<div class="kitsune-media-tile"[^>]* x-data="([^"]*)"/', $html, $match);
+
+    return html_entity_decode($match[1] ?? '', ENT_QUOTES | ENT_HTML5);
 }
 
 beforeEach(function (): void {
@@ -273,8 +284,8 @@ describe('a tile\'s HTML', function (): void {
     });
 
     /*
-     * ⚠️ NOTHING A BROWSER FETCHES UNTIL IT IS CLICKED. The route's path is only in `data-src`, and the one image is inside
-     * a `<template>`, which a browser never loads from; `x-bind:src` makes it once `shown` is true.
+     * ⚠️ NOTHING A BROWSER FETCHES UNTIL IT IS PRESSED. The route's path is only in `data-src`, and the one image is inside
+     * a `<template>`, which a browser never loads from; `x-bind:src` makes it once the answer's bytes are there.
      */
     it('draws a deferred tile as a button, with the route only where nothing fetches it', function (): void {
         $entry = tiled(TILE_PNG, 'map.png', $this->type);
@@ -282,14 +293,217 @@ describe('a tile\'s HTML', function (): void {
         $route = '/admin/tiles-main/media/'.$entry->getKey();
 
         expect($html)->toContain('data-kitsune-tile="deferred"')
-            ->and($html)->toContain('x-data="{ shown: false }" data-src="'.$route.'"')
+            ->and($html)->toContain('" data-src="'.$route.'"')
             ->and($html)->toContain('<button type="button"')
             // No plain `src` anywhere: only `data-src`, which nothing fetches, and the template's `x-bind:src`.
             ->and($html)->not->toMatch('/\ssrc="/')
             ->and(substr_count($html, $route))->toBe(1)
             ->and(substr_count($html, '<img'))->toBe(1)
-            ->and(strpos($html, '<img'))->toBeGreaterThan((int) strpos($html, '<template x-if="shown">'))
-            ->and(strpos($html, '<img'))->toBeLessThan((int) strpos($html, '</template>'));
+            ->and(strpos($html, '<img'))->toBeGreaterThan((int) strpos($html, '<template x-if="src">'))
+            ->and(strpos($html, '<img'))->toBeLessThan((int) strpos($html, '</template>'))
+            // The image is drawn inside the button, so the button stays where focus is (decision 39).
+            ->and(strpos($html, '<template x-if="src">'))->toBeGreaterThan((int) strpos($html, '<button'))
+            ->and(strpos($html, '</template>'))->toBeLessThan((int) strpos($html, '</button>'));
+    });
+
+    /*
+     * ⚠️ ONE `fetch()`, BEHIND THE BUTTON'S CLICK, AND NOTHING THAT RUNS ON ITS OWN (decision 6). An `init()` or an
+     * `x-init` would run on every render, sort and page change; a press while a request is out, or once shown, asks
+     * nothing.
+     */
+    it('asks nothing until pressed: one fetch, behind its button\'s click, and no init', function (): void {
+        $html = tileHtml(tiled(TILE_PNG, 'map.png', $this->type));
+        $script = tileScript($html);
+
+        expect(substr_count($script, 'fetch('))->toBe(1)
+            ->and($script)->not->toContain('init(')
+            ->and($html)->not->toContain('x-init')
+            ->and($script)->toContain("if (this.state === 'loading' || this.state === 'shown') return;")
+            ->and($html)->toContain('x-on:click.prevent.stop="show()"');
+    });
+
+    /*
+     * ⚠️ AN AJAX REQUEST THAT FOLLOWS NO REDIRECT AND NAMES NO ACCEPT (decision 40). Signed out, that is a 401 and nowhere
+     * recorded to land; an image's Accept would be the redirect, and the file recorded — `a private tile's request, signed
+     * out`, below, holds the middleware to both.
+     */
+    it('asks as an Ajax request that follows no redirect and names no Accept', function (): void {
+        $script = tileScript(tileHtml(tiled(TILE_PNG, 'map.png', $this->type)));
+
+        expect($script)->toContain("redirect: 'manual'")
+            ->and($script)->toContain("headers: { 'X-Requested-With': 'XMLHttpRequest' }")
+            ->and(strtolower($script))->not->toContain('accept');
+    });
+
+    /*
+     * ⚠️ A REASON ONLY FOR THE ROUTE'S OWN REFUSAL, WHICH IS JSON (review, decision 39). A gateway's 403 page, basic
+     * auth's 401 or a proxy's 404 would otherwise be said as Kitsune's reason: "You may no longer see this file." to
+     * an editor who still holds the grant. The map is read only inside the check.
+     */
+    it('gives a refusal its reason only when the answer is the route\'s own JSON', function (): void {
+        $script = tileScript(tileHtml(tiled(TILE_PNG, 'map.png', $this->type)));
+        $check = "if ((response.headers.get('Content-Type') ?? '').startsWith('application/json')) {";
+        $map = "state = { 401: 'signedout', 403: 'refused', 404: 'gone' }[response.status] ?? 'failed';";
+
+        expect(substr_count($script, $check))->toBe(1)
+            ->and(substr_count($script, $map))->toBe(1)
+            ->and(strpos($script, $map))->toBeGreaterThan((int) strpos($script, $check))
+            ->and(substr($script, (int) strpos($script, $check), (int) strpos($script, $map) - (int) strpos($script, $check)))
+            ->not->toContain('}')
+            // Anything else stays what the state starts as: something that went wrong.
+            ->and($script)->toContain("let state = 'failed';");
+    });
+
+    /* ⚠️ A CARD MOVED LATER IS TORN DOWN AND STARTED AGAIN, ON THE SAME DATA: an answer from before lands on nothing. */
+    it('writes an answer onto its tile only while the request is still the tile\'s, and drops it when the tile goes', function (): void {
+        $script = tileScript(tileHtml(tiled(TILE_PNG, 'map.png', $this->type)));
+        $destroy = substr($script, (int) strpos($script, 'destroy() {'));
+
+        expect($script)->toContain('if (request === this.request) this.src = URL.createObjectURL(blob);')
+            ->and($script)->toContain('if (request === this.request) {')
+            ->and($script)->toContain('destroy() {')
+            ->and($destroy)->toContain('this.request?.abort();')
+            ->and($destroy)->toContain('if (this.src) URL.revokeObjectURL(this.src);');
+    });
+
+    /* ⚠️ SHOWN ONCE DRAWN: bytes that are not an image fail to draw, and are never said to be shown first. */
+    it('says it is shown only once its image has loaded', function (): void {
+        $html = tileHtml(tiled(TILE_PNG, 'map.png', $this->type));
+        $script = tileScript($html);
+
+        expect(substr_count($script, "this.state = 'shown'"))->toBe(1)
+            ->and(strpos($script, "this.state = 'shown'"))->toBeGreaterThan((int) strpos($script, 'drawn(event) {'))
+            ->and($html)->toContain('x-on:load="drawn($event)" x-on:error="drawn($event)"')
+            ->and($html)->toContain('x-show="state === &#039;shown&#039;"');
+    });
+
+    /* ⚠️ NEVER HIDDEN AND NEVER `disabled`, so keyboard focus never falls to the page (decision 39, measured). */
+    it('keeps its button whatever it shows, so focus stays on it', function (): void {
+        $html = tileHtml(tiled(TILE_PNG, 'map.png', $this->type));
+        preg_match('/<button[^>]*>/', $html, $button);
+
+        expect($button[0])->not->toContain('x-show')
+            ->and($button[0])->not->toContain('x-if')
+            // Neither as an attribute nor bound by Alpine — `x-bind:disabled`, `:hidden` — which would drop focus as well.
+            ->and($button[0])->not->toMatch('/[\s:]disabled[\s=>]/')
+            ->and($button[0])->not->toMatch('/[\s:]hidden[\s=>]/')
+            ->and(substr_count($button[0], 'x-bind:style'))->toBe(1)
+            ->and($button[0])->toContain('x-bind:style="{ cursor: state === &#039;shown&#039; ? &#039;default&#039; : &#039;pointer&#039; }"')
+            ->and($button[0])->toContain('x-bind:aria-disabled="state === &#039;shown&#039;"')
+            ->and($html)->toContain('<span x-show="state !== &#039;shown&#039;">Show preview</span>')
+            ->and(strpos($html, '>Show preview</span>'))->toBeLessThan((int) strpos($html, '</button>'));
+    });
+
+    /*
+     * ⚠️ EVERY STATE THE SCRIPT CAN BE IN HAS ITS WORDS, from the lang file — read back by the line as `dataset[state]`,
+     * so a state with no attribute of its name would say nothing at all. The line is beside the button, never in it,
+     * and the button names it as its description.
+     */
+    it('says every answer in a status line beside its button, in the lang file\'s words, which the button names as its description', function (): void {
+        $entry = tiled(TILE_PNG, 'map.png', $this->type);
+        $html = tileHtml($entry);
+        $script = tileScript($html);
+
+        preg_match('/<p id="([^"]+)" role="status"[^>]*>(.*)<\/p>/s', $html, $line);
+        preg_match_all("/state = '(\\w+)'|\\d{3}: '(\\w+)'|state: '(\\w+)'/", $script, $states);
+        preg_match_all('/ data-(\w+)="([^"]*)"/', $line[2], $words);
+        $said = array_values(array_diff(array_unique(array_filter(array_merge(...array_slice($states, 1)))), ['idle']));
+        sort($said);
+        $named = $words[1];
+        sort($named);
+
+        preg_match('/<p id="[^"]+" role="status"[^>]*>/', $html, $open);
+        $between = substr($html, (int) strpos($html, '</button>'), (int) strpos($html, '<p id=') - (int) strpos($html, '</button>'));
+
+        expect($line)->not->toBeEmpty()
+            ->and(strpos($html, 'role="status"'))->toBeGreaterThan((int) strpos($html, '</button>'))
+            // In the page from the start, empty: a live region added with its words is not reliably read.
+            ->and($open[0])->not->toMatch('/[\s:](x-show|x-if|x-cloak|hidden)[\s=>]/')
+            ->and($between)->not->toContain('<template')
+            ->and($html)->toContain('aria-describedby="'.$line[1].'"')
+            ->and($line[1])->toBe('kitsune-media-tile-'.$entry->getKey())
+            ->and($line[0])->toContain('dir="auto"')
+            ->and($line[2])->toContain('x-text=')
+            ->and($html)->not->toContain('x-html')
+            ->and($said)->toBe(['failed', 'gone', 'loading', 'refused', 'shown', 'signedout'])
+            ->and($named)->toBe($said)
+            ->and(array_combine($words[1], $words[2]))->toBe(array_combine(
+                $words[1],
+                array_map(fn (string $state): string => e(__("kitsune::media.tile.status.{$state}")), $words[1]),
+            ))
+            ->and($line[2])->not->toContain('kitsune::')
+            ->and($line[2])->toContain('<template x-if="state === &#039;signedout&#039;"><span> <a href="" class="fi-link"')
+            ->and($line[2])->toContain('>Sign in again</a>');
+
+        // The words are the ones the decision names, so a slip in the lang file is caught here too.
+        expect(__('kitsune::media.tile.status.refused'))->toBe('You may no longer see this file.')
+            ->and(__('kitsune::media.tile.status.gone'))->toBe('This file is no longer available here.')
+            ->and(__('kitsune::media.tile.status.signedout'))->toBe('You are signed out.');
+    });
+
+    /* ⚠️ NO VALUE OF PHP'S IS WRITTEN INTO THE SCRIPT: a title reaches a tile as escaped text, never as code. */
+    it('writes nothing of the entry\'s into a private tile\'s script', function (): void {
+        $hostile = tiled(TILE_PNG, 'map.png', $this->type, title: '<b onclick="x()">Map</b> & "key"\'); alert(1); (\'');
+        $plain = tiled(TILE_PNG, 'other.png', $this->type, title: 'Plain');
+
+        expect(tileScript(tileHtml($hostile)))->toBe(tileScript(tileHtml($plain)))
+            ->and(tileScript(tileHtml($hostile)))->not->toContain('Map')
+            ->and(tileScript(tileHtml($hostile)))->not->toContain('/media/'.$hostile->getKey())
+            ->and(tileScript(tileHtml($plain)))->not->toContain('Plain')
+            ->and(tileScript(tileHtml($plain)))->not->toContain('/media/'.$plain->getKey());
+    });
+
+    /*
+     * ⚠️ A PRIVATE TILE'S FRAME LETS ITS FOCUS RING OUT, and its button never shrinks below its words, measured at 200 %
+     * text; a public tile and a badge keep clipping, as they did.
+     */
+    it('lets a private tile\'s ring out, and keeps its button and words in the square at any text size', function (): void {
+        $private = tileHtml(tiled(TILE_PNG, 'map.png', $this->type));
+        $public = tileHtml(tiled(TILE_PNG, 'logo.png', $this->type, 'public'));
+        $badge = tileHtml(tiled(TILE_PDF, 'rules.pdf', $this->type));
+        $frame = fn (string $html): string => preg_match('/<div class="kitsune-media-tile"[^>]* style="([^"]*)"/', $html, $m) === 1 ? $m[1] : '';
+        preg_match('/<button[^>]* style="([^"]*)"/', $private, $button);
+        preg_match('/<img x-bind:src="src"[^>]* style="([^"]*)"/', $private, $image);
+
+        expect($frame($private))->not->toContain('overflow:hidden')
+            ->and($frame($private))->toContain('aspect-ratio:1/1')
+            ->and($button[1])->toContain('flex:1 0 auto')
+            ->and($button[1])->toContain('overflow:hidden;border-radius:inherit')
+            ->and($image[1])->toStartWith('position:absolute;inset:0;')
+            ->and($frame($public))->toContain('overflow:hidden')
+            ->and($frame($badge))->toContain('overflow:hidden');
+    });
+
+    /*
+     * ⚠️ A PUBLIC IMAGE THAT DOES NOT LOAD IS AN AMBER BADGE SAYING SO, caught whether it failed before Alpine started —
+     * `x-init` asks the image — or after, and taken back if it loads after all (decisions 39 and 42).
+     */
+    it('draws a public tile with an amber badge for an image that did not load, before Alpine starts or after, and takes it back if it loads', function (): void {
+        $html = tileHtml(tiled(TILE_PNG, 'logo.png', $this->type, 'public'));
+        preg_match('/<img[^>]*>/', $html, $image);
+        preg_match('/<span class="fi-badge[^"]*"[^>]*>[^<]*<\/span>/', $html, $badge);
+
+        expect($html)->toContain('x-data="{ failed: false }"')
+            ->and($image[0])->toContain('x-init="failed = $el.complete &amp;&amp; $el.naturalWidth === 0"')
+            ->and($image[0])->toContain('x-on:error="failed = true"')
+            ->and($image[0])->toContain('x-on:load="failed = false"')
+            ->and($image[0])->toContain('x-bind:style="{ visibility: failed ? &#039;hidden&#039; : &#039;visible&#039; }"')
+            ->and($image[0])->not->toContain('x-show')
+            ->and($badge[0])->toContain('x-show="failed" style="display:none;position:absolute">Did not load</span>')
+            ->and($badge[0])->toContain('fi-color-warning')
+            ->and($html)->not->toContain('x-cloak')
+            ->and(substr_count($html, '<img'))->toBe(1);
+    });
+
+    /* Decision 28: the title under a tile names it. A refusal is said by the line, a failed public image by its badge. */
+    it('keeps every image\'s alt empty', function (): void {
+        foreach ([tileHtml(tiled(TILE_PNG, 'logo.png', $this->type, 'public')), tileHtml(tiled(TILE_PNG, 'map.png', $this->type))] as $html) {
+            preg_match_all('/<img[^>]*>/', $html, $images);
+
+            expect($images[0])->toHaveCount(1)
+                ->and(substr_count($images[0][0], 'alt='))->toBe(1)
+                ->and($images[0][0])->toContain(' alt=""');
+        }
     });
 
     /* Its name begins with the words it shows, which is the name a voice user speaks (WCAG 2.5.3). */
@@ -300,14 +514,76 @@ describe('a tile\'s HTML', function (): void {
             ->and(tileHtml($entry))->not->toContain('<b onclick');
     });
 
-    it('draws a badge with no image, no button and nothing to fetch', function (): void {
+    it('draws a badge with no image, no button, no script and nothing to fetch', function (): void {
         $html = tileHtml(tiled(TILE_PDF, 'rules.pdf', $this->type, 'public'));
 
         expect($html)->toContain('data-kitsune-tile="badge"')
             ->and($html)->toContain('>PDF</span>')
+            // Gray is Filament's badge with no colour classes; amber is only for an image that did not load.
+            ->and($html)->not->toContain('fi-color-warning')
             ->and($html)->not->toContain('<img')
             ->and($html)->not->toContain('<button')
-            ->and($html)->not->toContain('src=');
+            ->and($html)->not->toContain('src=')
+            // No Alpine attribute at all — `flex-direction` in its style is not one.
+            ->and($html)->not->toMatch('/\sx-[a-z]/');
+    });
+});
+
+/*
+ * ────────────────────────────────  A private tile's request, signed out  ────────────────────────────────
+ */
+
+/*
+ * ⚠️ WHERE A SIGNED-OUT PRESS SENDS THE EDITOR ONCE SIGNED IN AGAIN — decision 40, through Filament's own `Authenticate`
+ * on a route shaped like the real one. Main's `<img>` asked as an image asks: redirected to sign in, with the file
+ * recorded as where to land, and signed in again the editor was shown the bare image, outside the admin (measured). The
+ * tile's request is answered 401, and records nothing. The browser suite asserts what the page sends and receives; the
+ * session is this file's to read.
+ */
+describe('a private tile\'s request, signed out', function (): void {
+    beforeEach(function (): void {
+        config(['app.key' => 'base64:'.base64_encode(str_repeat('k', 32))]);
+        PanelTenancy::enter($this->site)->login();
+        Auth::logout();
+        Route::middleware(['web', Authenticate::class])->get('/admin/{tenant}/media/{media}', static fn (): string => 'bytes');
+        Route::middleware('web')->get('/admin/login', static fn (): string => 'sign in')->name('filament.admin.auth.login');
+        app('router')->getRoutes()->refreshNameLookups();
+    });
+
+    $image = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+
+    it('is answered 401 and records nowhere to land, asked as the tile asks', function (): void {
+        $response = $this->get('/admin/tiles-main/media/7', ['X-Requested-With' => 'XMLHttpRequest', 'Accept' => '*/*']);
+
+        $response->assertStatus(401);
+
+        expect($response->headers->has('Location'))->toBeFalse()
+            ->and(session()->has('url.intended'))->toBeFalse();
+    });
+
+    it('is redirected to sign in and records the file, asked as an image asks — the control', function () use ($image): void {
+        $response = $this->get('/admin/tiles-main/media/7', ['Accept' => $image]);
+
+        $response->assertRedirect('/admin/login');
+
+        expect(session('url.intended'))->toBe('http://localhost/admin/tiles-main/media/7');
+    });
+
+    /* ⚠️ WHY THE SCRIPT NAMES NO ACCEPT: the header alone is not enough, with an image's Accept beside it. */
+    it('is redirected as well when an Ajax request names an image\'s Accept — the second control', function () use ($image): void {
+        $response = $this->get('/admin/tiles-main/media/7', ['X-Requested-With' => 'XMLHttpRequest', 'Accept' => $image]);
+
+        $response->assertRedirect('/admin/login');
+
+        expect(session('url.intended'))->toBe('http://localhost/admin/tiles-main/media/7');
+    });
+
+    it('reads the tile\'s request as expecting JSON, and an image\'s as not', function () use ($image): void {
+        $tile = Request::create('/x', 'GET', server: ['HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest', 'HTTP_ACCEPT' => '*/*']);
+        $img = Request::create('/x', 'GET', server: ['HTTP_ACCEPT' => $image]);
+
+        expect($tile->expectsJson())->toBeTrue()
+            ->and($img->expectsJson())->toBeFalse();
     });
 });
 
