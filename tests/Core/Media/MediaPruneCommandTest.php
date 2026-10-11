@@ -69,7 +69,10 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-prune-*') ?: [] as $leftover) {
+    // This process's own: another run sharing the temporary directory — a second checkout's suite — has its own in
+    // flight. Measured 2026-10-10: two checkouts running this file at once failed 3 and 6 tests, `hash_file()` finding
+    // the other's fixture gone mid-store; with each run sweeping only its own, both passed.
+    foreach (glob(sys_get_temp_dir().'/kitsune-prune-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
@@ -83,7 +86,7 @@ function pruneFixtureBytes(): string
 
 function storedForPrune(EntryType $type): MediaFile
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-prune-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-prune-'.getmypid().'-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));
@@ -91,6 +94,23 @@ function storedForPrune(EntryType $type): MediaFile
     $entry = MediaLibrary::store($path, 'kept.png', $type);
 
     return MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+}
+
+/*
+ * ⚠️ ANOTHER MONTH'S DIRECTORY, DERIVED FROM THE ROW'S OWN — NEVER A LITERAL ONE. The library files an upload under the
+ * month it arrives in, so a literal `2026/10` was "another directory" until 2026-10-01 and the row's own directory
+ * throughout October 2026. Two cases below then built something other than what their names say: on a volume that
+ * folds, a hard link BESIDE another spelling of the row's path, which ADR-042 keeps; and on every volume, "in another
+ * directory" testing "beside" and passing, even with `reachedAmong()`'s other-directory exit removed. Measured
+ * 2026-10-10 on APFS: the folding test's two datasets, "in another case" and "in another normalization", failed in
+ * October and passed with the clock in September or November. The month before the row's is a real month's directory
+ * and can never be the row's own; the guards beside each use say so, and fail if a literal month comes back.
+ */
+function pruneAnotherMonth(string $dir): string
+{
+    [$media, $org, $year, $month] = explode('/', $dir);
+
+    return $media.'/'.$org.'/'.now()->setDate((int) $year, (int) $month, 1)->subMonth()->format('Y/m');
 }
 
 it('reports nothing when every file is claimed by a row', function (): void {
@@ -2666,7 +2686,7 @@ describe('reading in batches', function (): void {
 
         $link = match ($where) {
             'beside' => $dir.'/other.png',
-            'elsewhere' => 'media/'.$this->org->getKey().'/2026/10/else.png',
+            'elsewhere' => pruneAnotherMonth($dir).'/else.png',
             'accent' => $dir.'/caf'."\u{e9}".'.png',
             default => $dir.'/'.strtoupper(basename($kept->path)),
         };
@@ -2674,6 +2694,8 @@ describe('reading in batches', function (): void {
         if ($where === 'case' && @stat($this->root.'/'.$link) !== false) {
             test()->markTestSkipped('this volume folds case: the two names are one entry');
         }
+
+        expect(dirname($link) === $dir)->toBe($where !== 'elsewhere');
 
         @mkdir(dirname($this->root.'/'.$link), 0777, true);
         link($this->root.'/'.$kept->path, $this->root.'/'.$link);
@@ -2759,8 +2781,10 @@ describe('reading in batches', function (): void {
             test()->markTestSkipped('this volume does not fold '.$fold);
         }
 
-        @mkdir($this->root.'/media/'.$this->org->getKey().'/2026/10', 0777, true);
-        link($this->root.'/'.$dir.'/sol'."\u{e9}".'.png', $this->root.'/media/'.$this->org->getKey().'/2026/10/sole-link.png');
+        $elsewhere = pruneAnotherMonth($dir);
+        expect($elsewhere)->not->toBe($dir);
+        @mkdir($this->root.'/'.$elsewhere, 0777, true);
+        link($this->root.'/'.$dir.'/sol'."\u{e9}".'.png', $this->root.'/'.$elsewhere.'/sole-link.png');
         link($this->root.'/'.$dir.'/t1'."\u{e9}".'.png', $this->root.'/'.$dir.'/t2.png');
         DB::table('media_files')->where('id', $sole->getKey())->update(['path' => $soleRow]);
         DB::table('media_files')->where('id', $pair->getKey())->update(['path' => $pairRow]);
@@ -2769,7 +2793,7 @@ describe('reading in batches', function (): void {
 
         expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
             ->and(is_file($this->root.'/'.$dir.'/sol'."\u{e9}".'.png'))->toBeTrue()
-            ->and(file_exists($this->root.'/media/'.$this->org->getKey().'/2026/10/sole-link.png'))->toBeFalse()
+            ->and(file_exists($this->root.'/'.$elsewhere.'/sole-link.png'))->toBeFalse()
             ->and(is_file($this->root.'/'.$dir.'/t1'."\u{e9}".'.png'))->toBeTrue()
             ->and(is_file($this->root.'/'.$dir.'/t2.png'))->toBeTrue()
             ->and($exit)->toBe(0);
@@ -4184,7 +4208,9 @@ describe('reading in batches', function (): void {
             }
 
             // Two hard links, listed before the file itself: its own name is the third of its inode's (review of 5c).
-            $hardLinks = ['media/'.$this->org->getKey().'/2026/01/sole-link.png', 'media/'.$this->org->getKey().'/2026/02/sole-link.png'];
+            // Earlier months than the row's own, so still listed first — across a year's turn too (2026/11 before 2027/01).
+            $hardLinks = [pruneAnotherMonth(pruneAnotherMonth($dir)).'/sole-link.png', pruneAnotherMonth($dir).'/sole-link.png'];
+            expect(array_map('dirname', $hardLinks))->not->toContain($dir);
 
             foreach ($hardLinks as $hardLink) {
                 @mkdir(dirname($this->root.'/'.$hardLink), 0777, true);
