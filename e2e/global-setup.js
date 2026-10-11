@@ -2,7 +2,7 @@
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BLOG_OWNER, plantCrossOrgRows, seedReaderGrant } = require('./accounts');
+const { BLOG_OWNER, plantCrossOrgRows, seedReaderDownload, seedReaderGrant } = require('./accounts');
 
 /*
  * Rebuilds the skeleton's database before the browser suite runs.
@@ -84,6 +84,14 @@ module.exports = async () => {
      * first reader gets a producer's grant the page did not make; anything but a grant stops the run here.
      */
     seedReaderGrant();
+
+    /*
+     * ⚠️ AND A FILE OFFERED TO READERS (ADR-041, the reader's download route): a private PDF kept to Golfdom, offered by
+     * its owner through `MediaVisibility::offer()`, and its name granted to reader 1 — `reader-downloads.spec.js` signs
+     * reader 1 in and downloads it. Stored old, so no image list's first page changes; `entitlements.spec.js` erases
+     * reader 1's rows before it counts them, so the grant is not among them, and the download spec grants it again.
+     */
+    seedReaderDownload();
 
     /*
      * ⚠️ AND GOLFDOM MEDIA'S OWNERS SEE READERS' ADDRESSES (ADR-037 decision 1): switched on by the operator's console,

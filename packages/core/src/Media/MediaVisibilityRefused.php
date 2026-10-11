@@ -14,7 +14,8 @@ use RuntimeException;
 use Throwable;
 
 /**
- * A file's visibility left as it was — ADR-042 decision 32 — in words whoever asked is shown (decision 7).
+ * A file's visibility left as it was — ADR-042 decision 32 — in words whoever asked is shown (decision 7). And its offer
+ * to readers left as it was — ADR-041 decisions 1 and 2 — in the same words, by the same door.
  *
  * ⚠️ THE MESSAGE NAMES THE ENTRY AND AT MOST A DISK, NEVER A PATH. It reaches the editor who asked, in the panel as much
  * as in a log, and a stored file's path is not theirs to read; the path goes to the log alone, as a withdrawal's does
@@ -77,8 +78,25 @@ final class MediaVisibilityRefused extends RuntimeException
     /** `EXPOSED`'s detail when what a served disk holds is a partial copy — a write that did not finish. */
     public const PARTIAL = 'partial';
 
+    /** What was typed is not an entitlement name (ADR-041 decision 1). */
+    public const NOT_A_NAME = 'not_a_name';
+
+    /** The file is public, and only a private file is offered to readers (ADR-041 decision 2). */
+    public const PUBLIC_FILE = 'public_file';
+
+    /** The entry is shared with the organisation's sites, and only a file kept to one site is offered (decision 2). */
+    public const SHARED = 'shared';
+
+    /** The file is offered to readers, so it is not made public until the offer stops (decision 2). */
+    public const OFFERED = 'offered';
+
+    /** `$to` for offering a file to readers, and for stopping. */
+    public const TO_OFFER = 'offer';
+
+    public const TO_STOP = 'stop offering';
+
     /**
-     * @param  string  $to  "public" or "private"
+     * @param  string  $to  "public" or "private", or `TO_OFFER` or `TO_STOP`
      * @param  ?string  $disk  the disk the refusal is about, where there is one
      * @param  ?string  $detail  the type's handle for `NOT_PERMITTED`, the private disk for `UNSETTLED`, the
      *                           configuration's own refusal for `UNSAFE_DISKS`, and `PARTIAL` for a partial copy `EXPOSED`
@@ -93,7 +111,13 @@ final class MediaVisibilityRefused extends RuntimeException
     ) {
         $disk = (string) $disk;
 
-        parent::__construct(sprintf('Refusing to make entry %d %s: ', $entryId, $to).match ($reason) {
+        $prefix = match ($to) {
+            self::TO_OFFER => sprintf('Refusing to offer entry %d to readers: ', $entryId),
+            self::TO_STOP => sprintf('Refusing to stop offering entry %d to readers: ', $entryId),
+            default => sprintf('Refusing to make entry %d %s: ', $entryId, $to),
+        };
+
+        parent::__construct($prefix.match ($reason) {
             self::GONE => 'it no longer exists.',
             self::OUT_OF_SCOPE => 'it is neither this site\'s nor shared with this site\'s organisation, so nothing was changed.',
             self::NOT_PERMITTED => sprintf(
@@ -164,6 +188,15 @@ final class MediaVisibilityRefused extends RuntimeException
             ),
             self::STRIP_FAILED => 'its copy without the location failed its own check, so it stays private and as it '
                 .'was. The log says why.',
+            // What was typed is not repeated: this message can reach a log, and what was typed is not known to be a name.
+            self::NOT_A_NAME => 'that is not an entitlement name — two lower-case words joined by a dot, the first '
+                .'starting with a letter, such as course.advanced-php — so nothing was changed (ADR-041 decision 1).',
+            self::PUBLIC_FILE => 'its file is public, so anyone can already download it, and only a private file is '
+                .'offered to readers — so nothing was changed. Make it private first (ADR-041 decision 2).',
+            self::SHARED => 'it is shared with every site of the organisation, and only a file kept to one site is offered '
+                .'to readers, so nothing was changed. Upload it to this site alone (ADR-041 decision 2).',
+            self::OFFERED => 'it is offered to readers, who must hold an entitlement to download it, and making it public '
+                .'would give it to everyone — so nothing was changed. Stop offering it first (ADR-041 decision 2).',
             default => sprintf(
                 'a copy of its file could not be read on [%s], so nothing was changed. The log names the file; retry once '
                 .'the disk answers.',

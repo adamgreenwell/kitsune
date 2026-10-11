@@ -446,7 +446,7 @@ Field values do not all live in the `values` JSON column. Every field type decla
 
 ## ADR-016 — Media are entries
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — `media_files.path` is unique, and written as the disks read it · **Amended 2026-09-28 by ADR-042 decision 5, slice 5c** — `MediaFile` refuses a `media_files.path` ending in custody's partial suffix, in any case a volume reads as it · **Amended 2026-10-05 by ADR-039 (the DAM, as built)** — *Why* 1's `image` sentence is struck, and a media type carries no fields until its owner or a blueprint adds them
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — `media_files.path` is unique, and written as the disks read it · **Amended 2026-09-28 by ADR-042 decision 5, slice 5c** — `MediaFile` refuses a `media_files.path` ending in custody's partial suffix, in any case a volume reads as it · **Amended 2026-10-05 by ADR-039 (the DAM, as built)** — *Why* 1's `image` sentence is struck, and a media type carries no fields until its owner or a blueprint adds them · **Amended 2026-10-11 by ADR-041 decision 1** — the published `media_files` column list gains `reader_entitlement`, the entitlement a reader needs to download the file
 
 There is no separate media subsystem. An uploaded file is an **entry** of a system entry type (`image`, `document`, `video`) carrying its own fields — alt text, caption, credit, rights, expiry. The bytes live in a companion `media_files` table joined 1:1 to that entry (disk, path, mime, size, checksum, dimensions, duration).
 
@@ -3236,7 +3236,9 @@ link and `/account/register/complete` uses one, both only where the site is `ope
 place of the plain gate, never beside it); `/account/recover` asks for a recovery link and `/account/reset` uses one,
 wherever a reader can sign in. Asking needs a guest; using a link does not — a reader signed in on the browser is
 replaced by the one the link is for. The sign-in page links to recovery, and to sign-up where it is open, after its
-button.
+button. *Two more since 2026-10-11 (ADR-041 decisions 1–4): `/account/downloads/{id}` and `…/{id}/file`, a file offered to
+readers, behind `ReaderArea:download` — served as sign-in's pages are, and sent with headers of its own — then
+`IsolateDownload` and `RequireReader`; 28 routes.*
 
 **Asking for a link — one answer.** The POST compares the body's token (419), then counts the connection (429), then
 asks the floor's mail rule (503, before anything about the address is read), then the address's grammar (422, in
@@ -3313,7 +3315,8 @@ deletes the sign-up link it never used, and both exit 1 saying that nothing held
 for — a reader the host deleted is found by `--reader` (review: they had answered "0 entitlements" for a lookup that
 never ran). `kitsune:readers status` says whether reader mail is deliverable, closed and why, or
 allowed only because of the environment; how long a password must be, and what is wrong with a configured minimum;
-which sites cannot mail a link, and why; and that `SESSION_SAME_SITE=strict` stops a link clicked in a webmail page.
+which sites cannot mail a link, and why; and that `SESSION_SAME_SITE=strict` stops a link clicked in a webmail page *— and
+that `none` sends a reader's session with what another site's page asks of this one (ADR-041, as built, 2026-10-11)*.
 
 **Measured.** *M1* — with a mail server that takes 500 ms, under `php artisan serve`, every branch answers its first
 byte in 0.22–0.35 s (the box and the framework); the connection closes after the mail is sent, so a request over the
@@ -4813,8 +4816,9 @@ persisted events: a refund is processed only once its order's grant has been (re
 refund is an owner's comp until commerce adds `reinstate()` with that consumer. A pass bought twice is two orders, each
 with its own end, and whether the second starts when the first ends is commerce's product decision. Imports use a
 source of their own and rerun as no-ops. A subscription, when one comes, is one source per subscription, renewed by
-grants with each period's end. A gated route runs `ResolveSiteFromRequest`, then the reader guard's `auth` middleware
-if it has one, then `holds()`, and shows an error page on `EntitlementUnavailable`, never a paywall.
+grants with each period's end. A gated route runs `ResolveSiteFromRequest`, then ~~the reader guard's `auth` middleware
+if it has one~~ *`RequireReader`, core's own, which sends a guest to sign in and back (ADR-041, as built, 2026-10-11)*,
+then `holds()`, and shows an error page on `EntitlementUnavailable`, never a paywall.
 
 **The surface, all `@internal`,** listed so the v1.2 freeze inherits it: `Models\Entitlement`; in
 `Kitsune\Core\Entitlements\`, `EntitlementName`, `EntitlementSource`, `EntitlementCheck`, `EntitlementWriter`,
@@ -4847,7 +4851,7 @@ MySQL 8.4 on the CI leg only.
   SQLite over 50 first grants — measured before review put the org's shared lock in front of it, one statement more.
   Accepted, as the credential store's org lock is.
 
-**Owed, and named:** the reader's download route (ADR-041, inside v1.0); a batch form of the check, with its first
+**Owed, and named:** ~~the reader's download route (ADR-041, inside v1.0);~~ *(landed 2026-10-11, ADR-041 decisions 1–4)*; a batch form of the check, with its first
 consumer, a catalogue; `reinstate()` for a producer's source, with commerce's dispute path; the `erasure_log` replay;
 ~~naming readers rather than ids on the owner's page, with reader accounts;~~ *(landed 2026-10-10, ADR-037 decisions 1–3:
 an address beside the identifier, where the operator shows them)*; and a staff preview path, if a consumer wants
@@ -5071,7 +5075,7 @@ browser calls by name, which Livewire hands back — the query now lists nothing
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique
+**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**
 
 ADR-016 decided the shape of this in September and nothing was built: *"There is no separate media subsystem.
 An uploaded file is an **entry** of a system entry type … The bytes live in a companion `media_files` table."*
@@ -5125,7 +5129,8 @@ authorises first.
 > stored before it still name `local` and are delivered and disposed of from it; `kitsune:media-reconcile`, which is to
 > move them, ~~is not yet built~~ — built by ADR-042 decision 5, slice 5b (2026-09-25).
 
-⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
+⚠️ **~~Authorising *what*, exactly, is deliberately left open here.~~** *Answered 2026-10-11 (decisions 1–4, at the end
+of this entry): a private file kept to one site is offered to readers who hold one entitlement there.* Today the only answer core can give is the
 entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
 expressible, and they do not exist yet. *(As of ADR-040's entitlements, as built: the reader question is expressible,
 `EntitlementCheck::holds()`; the reader's download route is still owed, inside v1.0.)* So the first media slice authorises a **staff** question, and the
@@ -5347,6 +5352,145 @@ upload response; a private file is refused to an unauthorised request and served
 force-deleted media entry leaves no file on disk, asserted against the disk; and `duration_ms` is null for
 every row, asserted so that a later change to populate it is a visible decision rather than a drift.
 
+⚠️ **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4).** The entry's first numbered
+decisions; the answers above stay dated and unnumbered. It answers *Authorising what, exactly*, left open above.
+
+**Adam's decisions 1–4 (2026-10-11).**
+
+1. **A file is offered to readers by name** (Adam, decision 1): *Offer to readers* on a media entry's page puts one
+   entitlement name on its file, in `media_files.reader_entitlement` — as wide as the longest name, null for a file
+   offered to no one — and anyone holding that name on the file's site may download it, a grant made before the upload
+   included. Whoever may publish the type offers it, changes the name or stops offering, through
+   `MediaVisibility::writeRow()` — the one writer, under custody's lock and decision 32's guard — and each is audited as
+   `media.offered_to_readers`, `media.reader_offer_changed` or `media.reader_offer_stopped`, naming the entry and never
+   the name (ADR-040: no audit row holds what a reader holds). Every model door refuses the column, and no row is
+   created with it set: `MediaFile` refuses such a row through `RefusesInsertedRows`, which `ScopedBuilder` asks of
+   every row an Eloquent insert carries — a quiet save, `insert()`, `insertGetId()`, `insertOrIgnore()` and an
+   upsert's insert half, by column so another case of the name is the same column — and a subquery insert, whose rows
+   it cannot read, is refused outright (review: each of those had created an offered row, measured). Rejected: a name
+   made from the file (`media.4821-3fa9c2e1`), which ties every grant to one upload; and a link table of several names
+   per file, about four slices, which commerce can bring later by migration, never by reinterpretation.
+2. **Only a private file kept to one site** (decision 2). The writer refuses a public file and one shared with the
+   organisation's sites, and *Make public* is refused while an offer stands; the route's lookup asks both again, of a
+   row planted below the writer. Rejected: shared files too, which would open on every site of the organisation for
+   whoever holds the name there, though a sibling site may mean something else by it. ADR-021 is unchanged; a shared
+   file is offered by uploading it to one site.
+3. **The link lands on a page** (decision 3): `{prefix}/account/downloads/{id}` shows the file's title, its format and
+   size, and one link to `…/{id}/file` — *Open* or *Download*, as `MediaDelivery`'s inline rule will send it — which
+   streams the bytes. So no other site can learn from a popup whether its visitor bought the file. Rejected: straight to
+   the file, which leaves the tab on a filled-in sign-in form after signing in, and lets a hostile page tell a purchase
+   by a popup; and straight except from elsewhere.
+4. **A photo is served as stored, with any location it holds, and the owner is told** (decision 4): the offer dialog and
+   the File section say so. A JPEG made public at some point lost its GPS coordinates then; any other keeps them.
+   Decision 30 of ADR-042 is unchanged. Rejected: stripping the location on offer, for good; and refusing until it is
+   stripped.
+
+**Defaults taken, for Adam to overrule.**
+- **One answer.** Every refusal — an unknown id, a file not offered, not held, lapsed, revoked, trashed, of a type the
+  site does not serve, another organisation's, held only on a sibling site, a public or shared row planted below the
+  writer — is the same 404 notice after the same work: one joined lookup, one availability read and one `holds()`; when
+  nothing was found the route asks `holds('none.none')` and throws the answer away. ⚠️ **The decoy is a rule, not dead
+  code**: without it an unknown id costs one query fewer than a file not held. A guest gets one 303 to sign in, before
+  any lookup, and comes back to the page after it; so does a reader of another organisation, and an owner signed in to
+  the admin alone — a panel session is not a reader account.
+- **The door.** `ResolveSiteFromRequest`, `SetSiteLocale`, `ReaderArea:download` — served as sign-in's pages are, so a
+  site whose reader accounts are `off` answers 404 — then `IsolateDownload`, then `RequireReader` (ADR-040's gated-route
+  sentence named `auth`; amended). Two routes in each of the two prefix forms, fallbacks, with no `where()` on the id:
+  the skeleton's catch-all, a fallback too, would answer a refused id with its 200 placeholder (AGENTS.md §6), so
+  `MediaStream::key()` refuses it instead — digits, no leading zero, within the key column (*M6*). 28 reader routes.
+- **Other sites learn nothing.** `IsolateDownload` answers an embed or a script's fetch from elsewhere with 404 before
+  the reader or the file is read, and sends a link from elsewhere straight to the bytes to the page instead. The file
+  goes with `Content-Security-Policy: default-src 'none'; sandbox; frame-ancestors 'none'`,
+  `Cross-Origin-Resource-Policy: same-origin`, `no-store`, `nosniff`, `no-referrer` and `noindex`; the page keeps every
+  reader page's set. `kitsune:readers status` says what `SESSION_SAME_SITE=none` allows.
+- **Faults.** An `EntitlementUnavailable` or a `QueryException` is a 503 notice, the same for every id, and one log line
+  holding the SQLSTATE alone — never `report()`, which would carry the exception and a `userId`. A file whose bytes are
+  missing is the 404 and the staff route's own line, to a holder only; anybody else causes no disk read.
+- **Bytes.** Opened before any answer exists, then sent 256 KiB at a time, flushed, stopping at `size_bytes` and when
+  the reader leaves; the handle is closed in `finally`, and at once for HEAD, which is answered as GET with no body. No
+  ranges in v1.0, as decided above for video and audio. The file's name is UTF-8 (`filename*`), its slug the ASCII
+  fallback, with controls and bidi marks removed and dots, slashes and reserved characters made spaces, so no inner
+  extension survives. The staff route is unchanged but for its key check, which moved to `MediaStream::key()`.
+- **The admin.** The three actions are for whoever may publish the type, and hidden from anyone else; *Offer* is shown
+  disabled, saying why, on a public or a shared file; *Make public* is disabled while an offer stands. The File section
+  shows who it is offered to, the link — absolute where the site has an address, and its path with a note where it has
+  none — with a *Copy reader link* button, and notes for a site whose reader accounts are off, for staff, and on location.
+- **Left out.** No record of a download, no throttle, no staff preview and no list of a reader's files.
+
+**Measured.** Taken where this slice was built: PHP 8.5.10, this Mac, SQLite in memory, PostgreSQL 17 and MariaDB 10.11
+in containers, Chromium under the Playwright suite — in-process host figures, not the floor's. *M1* — every refusal is
+8 queries on the same tables in the same order, with byte-identical bodies and SQL, on SQLite, PostgreSQL and MariaDB;
+a holder's page or file 9; a guest 4. The rows differ by cause, the queries do not. *M2* — 50 warm requests per cause,
+shuffled: no cause is distinguishable by timing — the fastest and slowest cause's p50 apart by 0.11–0.33 ms on SQLite
+and 0.83–0.93 ms on PostgreSQL in one pass, 0.16–0.31 ms over three; Kruskal–Wallis p ≥ 0.21, and the slowest cause
+changes from pass to pass. A holder's answer is slower by its one more query, which tells them nothing they do not know.
+*M3* — a download's memory grows about 800 KiB at its peak, the same for 1 MiB and 64 MiB; the first byte comes in
+about 2 ms. Under PHP-FPM the design round measured 66 MiB of a worker for `fpassthru()`'s path against 2 MiB for this
+loop, at 64 MiB. *M4* — in Chromium, the file's headers as listed above, `filename*` honoured (`Règles du parcours
+2026.pdf`), and a 603,045-byte PDF downloaded byte for byte; a cross-site `<img>` and `<iframe>` of the file, sent with
+the reader's session, answered 404, `naturalWidth` 0; a typed or bookmarked file address lands on the page, and after
+signing in returns to it. *M5* — a top-level video fails under the file's `sandbox` in Chromium and WebKit (design
+round), so video and audio stay attachments. *M6* — an id past the key column raised SQLSTATE 22003 on PostgreSQL, a
+500 where every other id is the 404, until `key()` refused it. With that bound removed, the key's own table and the
+malformed-id test fail on every engine, and PostgreSQL's 22003 case with them (measured).
+
+**What the suites prove.** Fifty-one mutations of the PHP, each a guard removed in turn in a copy of the
+tree, and all fifty-one fail a test. By family, and what catches it:
+- **Access** (5): `holds()` answered yes, the type switched off ignored, the stored name read raw, the file's row not
+  read again after the yes, and `withTrashed()` — `ReaderDownloadTest`'s one-answer and staged-race tests.
+- **Scope** (2): the `entries.site_id` conjunct and `visibility = 'private'` dropped — the planted shared and public
+  rows.
+- **Uniform work** (2): the decoy dropped, and the availability read only when found — the eight-query pin, on every
+  engine.
+- **The id** (2): the digits check and the column's bound — the key table and the malformed-id test, and on PostgreSQL
+  its 22003 case.
+- **Faults** (2): a `QueryException` not caught, and `report()` beside the line — the 503 tests, on every engine.
+- **Bytes** (4): the file in one read (the 64 MiB memory guard), past `size_bytes`, `fclose` out of `finally`, and
+  HEAD leaving the handle open — `MediaStreamTest`.
+- **The door** (6): the `download` parameter ignoring the mode; `IsolateDownload` or `RequireReader` out of the stack,
+  or in the other order; plain `ReaderArea`; and a `where('[0-9]+')` on the id — `ReaderDownloadTest`,
+  `MiddlewarePriorityTest` and `ReaderAreaTest`.
+- **Isolation** (4): same-site admitted, unknown values allowed, embeds and fetches allowed, and a link from elsewhere
+  to the bytes served.
+- **Headers** (5): the file's set never taken, or taken without `Content-Disposition`; `sandbox`, `frame-ancestors` or
+  CORP dropped.
+- **The writer** (8): a public or shared file offered, either name check dropped, `mayChange` dropped, the name in the
+  audit row, *Make public*'s refusal dropped, and *Stop* writing nothing — `MediaOfferTest`.
+- **The model and the builder** (7): the fixed-column entry, the refusal of a row created offered, `readerEntitlement()`
+  read raw, the columns not folded, an upsert's insert half or `insertGetId()` not asked, and `insertUsing()` not refused
+  — `MediaFileImmutabilityTest`.
+- **The filename** (2): format characters or dots kept — `MediaStreamTest`'s table.
+- **The admin** (2): an offer allowed to a non-publisher, and *Make public* enabled while offered.
+
+Not seen by Pest: the loop stopping when a reader leaves (`connection_aborted()`), which the FPM probe saw.
+Six mutations of what a browser sees, in the main tree after review, each fail `reader-downloads.spec.js`: `holds()`
+answered yes, `IsolateDownload` out of the stack (a typed address to the file is no longer sent to the page), `sandbox`,
+CORP or the file's whole header set dropped, and *Make public* enabled while offered. The fences, the uniform work and
+the builder's refusals are the PHP suite's alone.
+
+**Named residuals.** A browser that sends no Fetch Metadata, and a plain-http site, reach the route as the site's own
+pages do, so `Cross-Origin-Resource-Policy` is all that stands for them; host-less sites of different organisations are
+one origin to every browser. Access logs, proxies and a CDN see the path and the status, and a 200 implies a purchase. A
+download under way continues after a revoke. Metadata other than a JPEG's location is served as stored. An instance
+save that moves a file to another site carries its offer with it — `Entry` guards only bulk writes — so when the
+sharing question is settled a move must clear it. A widely held name on a confidential file gives it to everyone who
+holds the name; only the dialog and the audit row stand in the way. A reader-table failure is the host's 500; a 404 that
+`IsolateDownload` or `ReaderArea` answers is the host's plain page, not the notice; and an exception reported behind
+`ReaderArea` carries Laravel's `userId` (ADR-037's residual). The staff route still uses `fpassthru()`, measured fatal at
+64 MiB under PHP-FPM after its 200 was sent. Pest cannot see the loop stop when a reader leaves; the FPM probe did.
+
+**Owed.** The staff route onto `MediaStream`, with `filename*`; a "Your downloads" list, with the batch check; a warning
+when a site with offered files has its reader accounts switched off; offering a selection; a size check against
+`size_bytes` before streaming; a canonical lower-case prefix.
+
+**The surface, all `@internal`:** `Media\MediaStream`; `Http\Middleware\IsolateDownload`;
+`Http\Controllers\Readers\DownloadController` and the view `kitsune::readers.download`; `Filament\MediaReaderActions`;
+`Tenancy\Contracts\RefusesInsertedRows`; `MediaFile::readerEntitlement()` and `::refuseInsertedRow()`;
+`MediaVisibility::offer()` and `::stopOffering()`; `MediaDelivery::readerFilenameFor()`; `ReaderArea::FILE_HEADERS` and
+its `download` parameter; `ReaderLinks::download()`, `::downloadFile()` and `::absoluteDownload()`; the column
+`media_files.reader_entitlement`; and the words `kitsune::readers.download.*` and `kitsune::media.readers.*`. CONTRIBUTING
+gains no exception: `ReaderAccount` did not grow.
+
 ---
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
@@ -5539,7 +5683,8 @@ carries an **Upload** header action whose modal holds a Filament `FileUpload`. I
 stored through `MediaLibrary::store()`, each reporting its own result. `/c/{type}/create` answers 404 for a media
 type, because a media entry without bytes is the broken state this whole design avoids. The edit page gains a
 File section showing what is stored. The status control is withheld for media types: `store()` creates them
-published, delivery never reads status, and a media file's gate is its visibility.
+published, delivery never reads status, and a media file's gate is its visibility *— and, for a reader, the
+entitlement it is offered for (ADR-041 decision 1, 2026-10-11)*.
 
 Upload needs `entry.{type}.create` **and** `entry.{type}.publish`, because `store()` creates entries published and
 `refuseUnpermittedCreationAsPublished()` would otherwise refuse it after the bytes were written. This was a code
@@ -7062,7 +7207,9 @@ arrives as Livewire's own "failed to upload".
 >   switch it; making a file public asks for the same acknowledgement as uploading it public (decision 15); the bytes
 >   move as a trash and a restore move them, under decision 5's rules; and each switch is audited. It lifts
 >   `visibility` out of `MediaFile::columnsFixedAtCreation()`, for that path alone — and `checksum` and `size_bytes`
->   with it, where making a JPEG public strips its location (decision 30), rewritten in the same step.
+>   with it, where making a JPEG public strips its location (decision 30), rewritten in the same step. *And
+>   `reader_entitlement`, by the same door, for *Offer to readers*, *Change* and *Stop offering*; and *Make public* is
+>   refused while an offer stands (ADR-041 decisions 1 and 2, 2026-10-11).*
 > - **Each media type names the files it accepts (Adam, decision 33)** — `image`, images alone — within what
 >   `MediaIntake` accepts, never beyond it. A file the type does not take is refused in words naming what it does take:
 >   by the handler always, and on the field before submitting wherever the slice can ask there — the staging endpoint

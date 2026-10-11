@@ -15,11 +15,14 @@ use Illuminate\Routing\Route as RoutingRoute;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Middleware\ReaderArea;
+use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
+use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderRoutes;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\TestReader;
+use Symfony\Component\HttpFoundation\Response;
 
 /*
  * Where the reader pages are, and when they are not — ADR-037, as built. Every misconfiguration is a 404 that names
@@ -52,6 +55,8 @@ function areaPages(string $prefix): array
         'asking for a recovery link' => ['POST', $prefix.'/account/recover'],
         'a recovery link' => ['GET', $prefix.'/account/reset'],
         'choosing a new password' => ['POST', $prefix.'/account/reset'],
+        'a download\'s page' => ['GET', $prefix.'/account/downloads/1'],
+        'a download\'s file' => ['GET', $prefix.'/account/downloads/1/file'],
     ];
 }
 
@@ -91,13 +96,27 @@ it('marks every reader route a fallback, registered ahead of the skeleton\'s cat
     $uris = array_map(static fn (RoutingRoute $route): string => implode('|', $route->methods()).' '.$route->uri(), $fallbacks);
     $readers = array_filter(app('router')->getRoutes()->getRoutes(), static fn (RoutingRoute $route): bool => str_contains($route->uri(), 'account'));
 
-    expect($readers)->toHaveCount(24)
+    expect($readers)->toHaveCount(28)
         ->and(array_filter($readers, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
         ->and(end($uris))->toBe('GET|HEAD {fallbackPlaceholder}')
         ->and($uris)->toContain('GET|HEAD account', 'GET|HEAD account/sign-in', 'POST account/sign-in', 'POST account/sign-out')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out')
         ->and($uris)->toContain('GET|HEAD account/register', 'POST account/register', 'GET|HEAD account/register/complete', 'POST account/register/complete')
-        ->and($uris)->toContain('GET|HEAD {readerSite}/account/recover', 'POST {readerSite}/account/recover', 'GET|HEAD {readerSite}/account/reset', 'POST {readerSite}/account/reset');
+        ->and($uris)->toContain('GET|HEAD {readerSite}/account/recover', 'POST {readerSite}/account/recover', 'GET|HEAD {readerSite}/account/reset', 'POST {readerSite}/account/reset')
+        ->and($uris)->toContain('GET|HEAD account/downloads/{id}', 'GET|HEAD account/downloads/{id}/file', 'GET|HEAD {readerSite}/account/downloads/{id}', 'GET|HEAD {readerSite}/account/downloads/{id}/file');
+});
+
+/*
+ * ⚠️ NO `where()` ON A DOWNLOAD'S ID (ADR-041). A route that refused `abc` would hand it to the skeleton's catch-all, whose
+ * placeholder answers 200 (AGENTS.md §6); unconstrained, the id reaches `MediaStream::key()`, which refuses it.
+ */
+it('constrains a download\'s id nowhere in the route, so a malformed one still reaches the route that refuses it', function (): void {
+    foreach (['/golfdom/account/downloads/abc' => '{readerSite}/account/downloads/{id}', '/golfdom/account/downloads/1abc/file' => '{readerSite}/account/downloads/{id}/file', '/account/downloads/-1' => 'account/downloads/{id}'] as $path => $uri) {
+        $route = areaRouteFor('GET', $path);
+
+        expect($route->uri())->toBe($uri)
+            ->and(array_keys($route->wheres))->toBe($uri === 'account/downloads/{id}' ? [] : [ReaderRoutes::SITE_PARAMETER]);
+    }
 });
 
 it('builds the site pattern from the model\'s own constants', function (): void {
@@ -299,5 +318,50 @@ it('answers with headers for a page that holds a password form', function (): vo
         'X-Content-Type-Options' => 'nosniff',
         'X-Robots-Tag' => 'noindex',
         'Content-Security-Policy' => "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    ]);
+});
+
+/*
+ * ⚠️ A FILE'S HEADERS ONLY WHERE BOTH SAY IT IS ONE (ADR-041): the route asked for `download`, and the answer carries
+ * `Content-Disposition`. The landing page and a refusal on that route keep the page set, and a page anywhere else that
+ * happened to carry the header keeps it too. Not keyed on the response's class: a future `BinaryFileResponse` must not
+ * quietly get the page set.
+ */
+it('sends a file\'s headers only from the download route, and only with the file', function (): void {
+    $file = static fn (): Response => response('bytes', 200, ['Content-Disposition' => 'attachment; filename=a.pdf']);
+    $page = static fn (): Response => response('<p>page</p>');
+    $area = [ResolveSiteFromRequest::class, SetSiteLocale::class];
+
+    Route::get('{readerSite}/account/probe-file', $file)->middleware([...$area, ReaderArea::class.':download']);
+    Route::get('{readerSite}/account/probe-page', $page)->middleware([...$area, ReaderArea::class.':download']);
+    Route::get('{readerSite}/account/probe-elsewhere', $file)->middleware([...$area, ReaderArea::class]);
+
+    $served = $this->readerGet('/golfdom/account/probe-file')->assertOk();
+
+    foreach (ReaderArea::FILE_HEADERS as $name => $value) {
+        $served->assertHeader($name, $value);
+    }
+
+    foreach (['/golfdom/account/probe-page', '/golfdom/account/probe-elsewhere'] as $path) {
+        $response = $this->readerGet($path)->assertOk();
+
+        foreach (ReaderArea::HEADERS as $name => $value) {
+            $response->assertHeader($name, $value);
+        }
+
+        $response->assertHeaderMissing('Cross-Origin-Resource-Policy');
+    }
+
+    // Served wherever a reader can sign in, and nowhere else: `download` is `sign-in`'s mode.
+    ReaderFixture::mode($this->world['golfdom'], 'off');
+    $this->readerGet('/golfdom/account/probe-file')->assertNotFound();
+
+    expect(ReaderArea::FILE_HEADERS)->toBe([
+        'Cache-Control' => 'no-store, private',
+        'Referrer-Policy' => 'no-referrer',
+        'X-Content-Type-Options' => 'nosniff',
+        'X-Robots-Tag' => 'noindex',
+        'Content-Security-Policy' => "default-src 'none'; sandbox; frame-ancestors 'none'",
+        'Cross-Origin-Resource-Policy' => 'same-origin',
     ]);
 });

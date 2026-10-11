@@ -685,6 +685,7 @@ media_files
   width, height   int nullable
   duration_ms     int nullable        -- null in v1.0: probing video needs a binary the floor cannot assume
   created_at
+  reader_entitlement string(100) nullable -- the entitlement a reader needs to download it (ADR-041, 2026-10-11)
 ```
 
 > ⚠️ **Amended 2026-09-25 by ADR-042 decision 5 (Adam, decision 8, 2026-09-25):** `path` is unique
@@ -704,6 +705,11 @@ media_files
 > private* alone *— one file from its page, or a selection from its list as *Make selected public* and *Make selected
 > private*, each file through the same switch (amended 2026-10-01, ADR-042 decision 34)* — and with it — where a JPEG made public is stripped of its location — `checksum` and `size_bytes`,
 > rewritten in the same statement. Every model door still refuses all three.
+
+> ⚠️ **Amended 2026-10-11 by ADR-041 decisions 1 and 2:** `reader_entitlement` is the entitlement a reader needs to
+> download the file — one name, or null for a file offered to no reader. It is written after creation by *Offer to
+> readers*, *Change* and *Stop offering* alone, through the same door as `visibility`, and only on a private file kept
+> to one site; every model door refuses it, and no row is created with it set.
 
 A "media picker" field is therefore just **`relation` constrained to media entry types**. No new storage strategy, no second permission model, no parallel search index.
 

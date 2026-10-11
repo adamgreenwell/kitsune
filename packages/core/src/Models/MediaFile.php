@@ -13,10 +13,12 @@ namespace Kitsune\Core\Models;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
+use Kitsune\Core\Tenancy\Contracts\RefusesInsertedRows;
 use League\Flysystem\WhitespacePathNormalizer;
 use RuntimeException;
 use Throwable;
@@ -41,7 +43,8 @@ use Throwable;
  * the query builder under its own lock; *Make public* and *Make private* write `visibility`, and for a JPEG made public
  * `checksum` and `size_bytes` with the bytes it strips, below the model under the same lock (`MediaVisibility`). Every
  * other column is what `store()` wrote, every model door still refuses all of them, and `columnsFixedAtCreation()` says
- * why each one stays so.
+ * why each one stays so. *And `reader_entitlement`, written by *Offer to readers* through the same one writer (ADR-041
+ * decision 1, Adam, 2026-10-11); no row is created offered.*
  *
  * ⚠️ A PATH IS WRITTEN AS THE DISKS READ IT, AND IS ONE ROW'S (Adam, decision 8, 2026-09-25). Custody acts on a file by
  * its path on every disk, so a path must name this file and no other row's. `media_files_path_unique` refuses a second
@@ -67,10 +70,11 @@ use Throwable;
  * @property int|null $width
  * @property int|null $height
  * @property int|null $duration_ms
+ * @property string|null $reader_entitlement
  * @property CarbonInterface $created_at
  */
 #[Unscoped]
-class MediaFile extends Model implements FixesColumnsAtCreation
+class MediaFile extends Model implements FixesColumnsAtCreation, RefusesInsertedRows
 {
     use EnforcesScope;
 
@@ -129,6 +133,24 @@ class MediaFile extends Model implements FixesColumnsAtCreation
         });
     }
 
+    /**
+     * ⚠️ NO ROW IS CREATED OFFERED: *Offer to readers* decides from the locked rows that a file is private and kept to one
+     * site, and a row stored offered would skip both (ADR-041 decision 2). `ScopedBuilder` asks it of every row an
+     * Eloquent insert carries — `create()`, a quiet save, `insert()`, `insertGetId()`, `insertOrIgnore()` and an upsert's
+     * insert half — keyed by column as the database writes it, and refuses a subquery insert, whose rows it cannot read.
+     * `DB::table()` stays out of reach, the boundary the builder states. Not a `creating` listener: the builder already
+     * runs on every path the listener does, and a listener is skipped by the quiet ones (review).
+     */
+    public static function refuseInsertedRow(array $row): void
+    {
+        if (($row['reader_entitlement'] ?? null) !== null) {
+            throw new RuntimeException(
+                'Refusing to store a media file offered to readers: a file is offered only by Offer to readers, which '
+                .'decides that it is private and kept to one site (ADR-041 decisions 1 and 2). Nothing was written.',
+            );
+        }
+    }
+
     /** @return BelongsTo<Entry, $this> */
     public function entry(): BelongsTo
     {
@@ -154,11 +176,26 @@ class MediaFile extends Model implements FixesColumnsAtCreation
             'height' => 'it was read from the bytes when they were stored.',
             'duration_ms' => 'it was read from the bytes when they were stored.',
             'created_at' => 'it records when the file was stored.',
+            'reader_entitlement' => 'only Offer to readers, Change and Stop offering write it, below the model and under '
+                .'custody\'s lock, after deciding that the file is private and kept to one site (ADR-041 decisions 1 and 2).',
         ];
     }
 
     public function isPublic(): bool
     {
         return $this->visibility === 'public';
+    }
+
+    /**
+     * The entitlement a reader needs to download this file, or null when it is offered to no one (ADR-041 decision 1).
+     *
+     * ⚠️ A STORED VALUE THAT IS NOT A NAME IS NO OFFER. Only the writer stores one, and it refuses anything else; a value
+     * written below it would otherwise reach `holds()` and decide who downloads a file.
+     */
+    public function readerEntitlement(): ?string
+    {
+        $name = $this->getAttribute('reader_entitlement');
+
+        return is_string($name) && EntitlementName::isName($name) ? $name : null;
     }
 }

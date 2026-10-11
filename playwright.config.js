@@ -105,6 +105,20 @@ module.exports = defineConfig({
             dependencies: ['setup', 'setup-reader'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },
+        /*
+         * The reader's download route — ADR-041 (decisions 1–4, Adam, 2026-10-11): an owner offers a file from its page,
+         * in both directions, and readers fetch it from the site.
+         *
+         * ⚠️ NO storageState, as `skeleton`'s reader specs have none: every reader in it starts as a stranger and signs
+         * in through the form. The two owners are opened from the states `setup` and `setup-rtl` saved — never signed in
+         * here, since Filament allows five admin sign-ins a minute and the setups spend them.
+         */
+        {
+            name: 'reader-downloads',
+            testMatch: /reader-downloads\.spec\.js/,
+            dependencies: ['setup', 'setup-rtl'],
+            use: { ...devices['Desktop Chrome'] },
+        },
         {
             name: 'admin-reader',
             testMatch: /permissions\.spec\.js/,

@@ -27,6 +27,7 @@ use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
+use Kitsune\Core\Tenancy\Contracts\RefusesInsertedRows;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
@@ -300,10 +301,70 @@ class ScopedBuilder extends Builder
     private function guardEveryInsertedRow(array $values): void
     {
         foreach (self::insertRows($values) as $row) {
-            $this->refuseAmbiguousColumns($row);
-            $this->refuseDetachedScopeKeys($row);
-            $this->refuseDetachedInsert('insert', $row);
-            $this->checkWrittenSettings($row);
+            $this->guardInsertedRow($row, 'insert');
+        }
+    }
+
+    /**
+     * The per-row insert guards for one row — `insertGetId()`'s one, and each of a multi-row call's.
+     *
+     * ⚠️ ONE METHOD FOR BOTH (ADR-041 review): `insertGetId()` ran these four inline, so a fifth added to the loop above —
+     * a model's own `RefusesInsertedRows` — reached `insert()` and `insertOrIgnore()` and missed it, and a quiet save and
+     * `createQuietly()` with it (measured).
+     *
+     * @param  array<mixed>  $row
+     */
+    private function guardInsertedRow(array $row, string $method): void
+    {
+        $this->refuseAmbiguousColumns($row);
+        $this->refuseDetachedScopeKeys($row);
+        $this->refuseDetachedInsert($method, $row);
+        $this->checkWrittenSettings($row);
+        $this->askTheModel($row);
+    }
+
+    /**
+     * A model's own refusal of a row (`RefusesInsertedRows`), asked of the row as the database will write it.
+     *
+     * ⚠️ BY THE COLUMN, NOT THE KEY (ADR-041 review): SQLite, MySQL and MariaDB read `READER_ENTITLEMENT` as
+     * `reader_entitlement`, so the model is handed the row keyed by `bareColumn()`. `refuseAmbiguousColumns()` has
+     * already refused a row naming one column twice, so folding cannot merge two values.
+     *
+     * @param  array<mixed>  $row
+     */
+    private function askTheModel(array $row): void
+    {
+        $model = $this->getModel();
+
+        if (! $model instanceof RefusesInsertedRows) {
+            return;
+        }
+
+        $folded = [];
+
+        foreach ($row as $column => $value) {
+            $folded[$this->bareColumn((string) $column)] = $value;
+        }
+
+        $model::refuseInsertedRow($folded);
+    }
+
+    /**
+     * Refuse a subquery insert into a model that refuses rows itself: its rows are whatever the subquery returns, so
+     * the model's refusal cannot be asked of them — inside the escape hatch too, which decides scope, not a row's
+     * content (ADR-041 review).
+     */
+    private function refuseUnaskableInsert(string $method): void
+    {
+        $model = $this->getModel();
+
+        if ($model instanceof RefusesInsertedRows) {
+            throw new RuntimeException(sprintf(
+                '%s cannot be written by %s(): the rows come from a subquery, so its own refusal of a row cannot be '
+                .'asked of them. Select the rows, then save them.',
+                $model::class,
+                $method,
+            ));
         }
     }
 
@@ -395,6 +456,7 @@ class ScopedBuilder extends Builder
         $this->refuseBulkCreate('insertUsing', always: true);
 
         $this->refuseSubqueryInsert('insertUsing');
+        $this->refuseUnaskableInsert('insertUsing');
 
         return parent::insertUsing($columns, $query);
     }
@@ -408,6 +470,7 @@ class ScopedBuilder extends Builder
         $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
 
         $this->refuseSubqueryInsert('insertOrIgnoreUsing');
+        $this->refuseUnaskableInsert('insertOrIgnoreUsing');
 
         return parent::insertOrIgnoreUsing($columns, $query);
     }
@@ -446,10 +509,7 @@ class ScopedBuilder extends Builder
          * sites guarded the keys and the fourth delegated straight to the parent — the shape of gap
          * this whole issue is about, one method along again.
          */
-        $this->refuseAmbiguousColumns($values);
-        $this->refuseDetachedScopeKeys($values);
-        $this->refuseDetachedInsert('insertGetId', $values);
-        $this->checkWrittenSettings($values);
+        $this->guardInsertedRow($values, 'insertGetId');
 
         return parent::insertGetId($values, $sequence);
     }
@@ -1100,6 +1160,8 @@ class ScopedBuilder extends Builder
         foreach (self::insertRows($values) as $row) {
             $this->refuseAmbiguousColumns($row);
             $this->checkWrittenSettings($row);
+            // The insert half creates rows, so a model's own refusal is asked of them here too (ADR-041 review).
+            $this->askTheModel($row);
         }
 
         if (is_array($update) && ! array_is_list($update)) {

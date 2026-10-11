@@ -228,7 +228,10 @@ entitlements page's names — and serves the sign-in pages at `{prefix}/account`
 `ReaderRoutes::register()` in the host's `routes/web.php`. A site serves them while its `reader_accounts` setting is
 `sign-in` or `open` (`off` by default). Sign-up (`open` only) and recovery mail a link from `reader_tokens`; it works
 once, for an hour, on the site that mailed it, and outside `local` and `testing` both pages answer 503 until mail can
-reach a reader. No reader account event is audited, and nothing logs an address.
+reach a reader. No reader account event is audited, and nothing logs an address. A private file kept to one site can be
+offered to readers who hold one entitlement there (`media_files.reader_entitlement`, *Offer to readers*); a holder signs
+in and downloads it from `{prefix}/account/downloads/{id}`, and everyone else gets one 404 after the same work, whatever
+the reason (ADR-041 decisions 1–4).
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. One mechanism covers all three URL strategies — a path prefix is just a `base_url` of `https://example.com/fr`.
 

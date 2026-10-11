@@ -13,7 +13,11 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Support\Facades\Route;
+use Kitsune\Core\Http\Middleware\IsolateDownload;
+use Kitsune\Core\Http\Middleware\ReaderArea;
+use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
+use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Http\MiddlewarePriority;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 
@@ -93,4 +97,32 @@ it('leaves what a provider set on the router alone — a group\'s middleware, an
     expect($router->getMiddlewareGroups()['web'])->toContain('App\\Http\\Middleware\\HostSecurityHeaders')
         ->and($router->getMiddleware()['auth'])->toBe('App\\Http\\Middleware\\HostAuthenticate')
         ->and($router->middlewarePriority)->toContain(ResolveSiteFromRequest::class);
+});
+
+/*
+ * ⚠️ A DOWNLOAD'S DOOR, IN ITS ORDER (ADR-041). The priority list sorts the resolver and nothing else here, so the order
+ * is the route's own — and it is the order that matters: `IsolateDownload` before `RequireReader`, so a request from
+ * another site is answered before the reader is read, and `ReaderArea` before both, so a site that is off says nothing.
+ */
+it('runs a download\'s door in its order: the site, its locale, the area, isolation, then the reader', function (string $uri): void {
+    $order = array_values(array_filter(
+        priorityOrder($uri),
+        static fn (string $middleware): bool => in_array($middleware, [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class, IsolateDownload::class, RequireReader::class], true),
+    ));
+
+    expect($order)->toBe([ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class, IsolateDownload::class, RequireReader::class]);
+})->with([
+    'the page' => ['/golfdom/account/downloads/4821'],
+    'the file' => ['/golfdom/account/downloads/4821/file'],
+    'the page at a root' => ['/account/downloads/4821'],
+    'the file at a root' => ['/account/downloads/4821/file'],
+]);
+
+it('gives the download\'s area the parameter that sends a file\'s headers', function (): void {
+    app(HttpKernel::class);
+
+    $route = app('router')->getRoutes()->match(Request::create('/golfdom/account/downloads/4821/file'));
+
+    expect(app('router')->gatherRouteMiddleware($route))->toContain(ReaderArea::class.':download')
+        ->not->toContain(ReaderArea::class);
 });

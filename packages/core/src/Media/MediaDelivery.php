@@ -30,12 +30,15 @@ use Kitsune\Core\Models\Site;
  * a controller that authorises first. ADR-041 records the cost of the second one plainly: at the ADR-027 floor,
  * bytes through PHP is the expensive path, and it is the default.
  *
- * ⚠️ THE PRIVATE URL IS A PANEL URL, AND THAT IS THE HONEST SHAPE RATHER THAN A SHORTCUT. ADR-041 leaves
+ * ⚠️ THE PRIVATE URL IS A PANEL URL, AND THAT IS THE HONEST SHAPE RATHER THAN A SHORTCUT. ~~ADR-041 leaves
  * *what* is authorised deliberately open: today the only question core can answer is the entry's own
- * permissions — a STAFF question. `/admin/{site}/media/{id}` is a place a reader can never be, so the staff path
- * never pretends to be the reader path. ADR-040's entitlements have landed and make the reader's question
- * expressible (`EntitlementCheck::holds()`); the reader path is a SECOND route with its own context source and that
- * question, still owed inside v1.0, and this one does not have to change to make room for it.
+ * permissions — a STAFF question.~~ The staff path answers the staff question — the entry's own permissions — and
+ * the reader's is answered on its own route since ADR-041 decisions 1–4. `/admin/{site}/media/{id}` is a place a
+ * reader can never be, so the staff path never pretends to be the reader path. ADR-040's entitlements made the reader's question expressible
+ * (`EntitlementCheck::holds()`), and the reader path is a SECOND route with its own context source and that
+ * question: `{prefix}/account/downloads/{id}` (ADR-041 decisions 1–4, Adam, 2026-10-11 — `Readers\DownloadController`
+ * and `MediaStream`). This one did not change to make room for it, beyond its key check moving to `MediaStream::key()`;
+ * the reader's route alone offers a UTF-8 filename (`readerFilenameFor()`) and streams in chunks.
  *
  * ⚠️ AND IT IS REGISTERED THROUGH `KitsunePanel`, NOT THROUGH A ROUTE FILE. `skeleton/routes/web.php` records
  * the rule — core registers no routes, because a host application's URL space is its own. The panel is the
@@ -281,6 +284,45 @@ final class MediaDelivery
 
         if ($stem === '') {
             $stem = 'file';
+        }
+
+        $extension = pathinfo((string) $file->path, PATHINFO_EXTENSION);
+
+        return $extension === '' ? $stem : $stem.'.'.$extension;
+    }
+
+    /**
+     * The name a READER's download is offered under — ADR-041's reader route alone (decisions 1–4, Adam, 2026-10-11): the
+     * title as typed, in any script, sent as `filename*` with `filenameFor()`'s slug as the ASCII fallback. A Hebrew or a
+     * Japanese title slugs away to `2026.pdf` or `file.pdf` (measured), a poor thing to hand somebody who paid for it.
+     *
+     * ⚠️ WHAT IS LEFT OF THE TITLE IS TEXT, NOT INSTRUCTIONS TO A FILE SYSTEM OR A RENDERER:
+     *
+     * - every format character (`\p{Cf}`) is removed, bidi controls included — WebKit kept U+202E in the saved name
+     *   `invoice\u{202E}fdp.exe.pdf` where Chromium put `_` (measured), and a right-to-left override makes a downloads
+     *   list show the end of a name as its middle. A joiner goes with them, which a name can spare;
+     * - every other control (`\p{Cc}`) is removed too, NUL included, and a line break or tab becomes a space;
+     * - the characters a file system or `makeDisposition()` refuses — `/ \ % " < > : | ? *` — become spaces, so
+     *   `before/after` stays two words rather than a 500;
+     * - ⚠️ A DOT BECOMES A SPACE, so no extension survives inside the title: `invoice.pdf.exe` is offered as
+     *   `invoice pdf exe.pdf`, never as anything ending `.exe.` with another extension behind it;
+     * - spaces are collapsed and trimmed, and the title is cut at 100 characters.
+     *
+     * The extension is the stored path's, which core generated — never the title's. A title with nothing left is the
+     * slug's name, `file.pdf` at worst.
+     */
+    public static function readerFilenameFor(Entry $entry, MediaFile $file): string
+    {
+        $fallback = self::filenameFor($entry, $file);
+        $title = mb_scrub((string) $entry->title, 'UTF-8');
+
+        $title = (string) preg_replace('/[\/\\\\%"<>:|?*.\p{Z}\t\n\v\f\r\x{85}]+/u', ' ', $title);
+        $title = (string) preg_replace('/[\p{Cc}\p{Cf}]+/u', '', $title);
+        $stem = trim((string) preg_replace('/ {2,}/', ' ', $title));
+        $stem = trim(mb_substr($stem, 0, 100, 'UTF-8'));
+
+        if ($stem === '') {
+            return $fallback;
         }
 
         $extension = pathinfo((string) $file->path, PATHINFO_EXTENSION);

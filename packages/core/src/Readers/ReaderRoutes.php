@@ -12,10 +12,12 @@ namespace Kitsune\Core\Readers;
 
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Controllers\Readers\AccountController;
+use Kitsune\Core\Http\Controllers\Readers\DownloadController;
 use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
 use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
 use Kitsune\Core\Http\Controllers\Readers\SignInController;
 use Kitsune\Core\Http\Controllers\Readers\SignOutController;
+use Kitsune\Core\Http\Middleware\IsolateDownload;
 use Kitsune\Core\Http\Middleware\ReaderArea;
 use Kitsune\Core\Http\Middleware\RequireGuest;
 use Kitsune\Core\Http\Middleware\RequireReader;
@@ -59,9 +61,20 @@ final class ReaderRoutes
         $area = [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class];
         // ⚠️ IN PLACE OF `ReaderArea`, never beside it, or the gate runs twice: sign-up's pages need mode `open`.
         $open = [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class.':open'];
+        /*
+         * ⚠️ A FILE OFFERED TO READERS (ADR-041 decisions 1–4): `ReaderArea:download` in place of `ReaderArea`, so a file's
+         * bytes get headers of their own; then `IsolateDownload`, which answers a request from another site before the
+         * reader or the file is read; then `RequireReader`. In that order — measured in `MiddlewarePriorityTest`, since
+         * the kernel's priority list sorts only the resolver.
+         *
+         * ⚠️ NO `where()` ON THE ID. A route that refused `abc` would not 404 it: the skeleton's catch-all, a fallback too,
+         * would answer its 200 placeholder (AGENTS.md §6). The id reaches `MediaStream::key()`, which refuses it.
+         */
+        $download = [ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class.':download', IsolateDownload::class, RequireReader::class];
 
         foreach (['', '{'.self::SITE_PARAMETER.'}/'] as $at) {
             $account = $at.ReaderLinks::SEGMENT;
+            $offered = $account.ReaderLinks::DOWNLOADS.'/{'.DownloadController::PARAMETER.'}';
             $routes = [
                 Route::get($account.ReaderLinks::REGISTER, [LinkRequestController::class, 'showRegister'])
                     ->middleware([...$open, RequireGuest::class]),
@@ -87,6 +100,10 @@ final class ReaderRoutes
                     ->middleware([...$area, RequireGuest::class]),
                 Route::post($at.ReaderLinks::SEGMENT.ReaderLinks::SIGN_OUT, SignOutController::class)
                     ->middleware($area),
+                Route::get($offered, [DownloadController::class, 'show'])
+                    ->middleware($download),
+                Route::get($offered.ReaderLinks::FILE, [DownloadController::class, 'file'])
+                    ->middleware($download),
             ];
 
             foreach ($routes as $route) {

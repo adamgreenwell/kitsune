@@ -736,6 +736,29 @@ it('warns that a strict session cookie stops a link clicked in a webmail page, a
     expect(readersRun(['action' => 'status'])[1])->not->toContain('SameSite');
 });
 
+/*
+ * ⚠️ UNDER `none`, ANOTHER SITE'S PAGE SENDS A READER'S SESSION WITH WHAT IT EMBEDS (ADR-041). A file offered to readers
+ * answers what a browser marks as from elsewhere before anything is read (`IsolateDownload`), and sends nothing another
+ * site may embed (`Cross-Origin-Resource-Policy`) — but a browser that marks nothing is not refused, so the operator is
+ * told what the setting costs.
+ */
+it('warns that a session sent to every site lets another site ask about a reader\'s downloads, and says nothing for lax', function (): void {
+    config(['session.same_site' => 'none']);
+
+    expect(explode("\n", readersRun(['action' => 'status'])[1])[3])
+        ->toBe('Sessions: SameSite is none (SESSION_SAME_SITE), so another site\'s page sends a reader\'s session with what it asks of this one. A file offered to readers refuses what the browser marks as coming from elsewhere, but a browser that marks nothing could show that page whether its visitor holds the file. lax, Laravel\'s default, sends the session only when a reader follows a link.');
+
+    config(['session.same_site' => 'None']);
+
+    expect(readersRun(['action' => 'status'])[1])->toContain('Sessions: SameSite is none');
+
+    foreach (['lax', null, 'strict'] as $value) {
+        config(['session.same_site' => $value]);
+
+        expect(readersRun(['action' => 'status'])[1])->not->toContain('SameSite is none');
+    }
+});
+
 it('reads staging as an environment where mail must reach a reader, on the status line too', function (): void {
     app()->detectEnvironment(static fn (): string => 'staging');
     config(['app.env' => 'staging', 'mail.default' => 'log']);

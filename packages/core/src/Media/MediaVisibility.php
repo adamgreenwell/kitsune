@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\MediaFile;
@@ -45,6 +46,12 @@ use Throwable;
  * before the commit; publication then finds the recorded checksum on the private disk and copies nothing else. So a
  * JPEG is made public only once it is settled — its row naming the private disk, its copy there, and no other copy at
  * its path on any disk custody asks — or an original left beside it could be the copy a later fallback publishes.
+ *
+ * ⚠️ AND A FILE OFFERED TO READERS — ADR-041 decisions 1 and 2 (Adam, 2026-10-11) — THROUGH THE SAME DOOR. *Offer to
+ * readers* writes the entitlement a reader needs in `reader_entitlement`, by `writeRow()`, under the same lock and guard:
+ * only a private file kept to one site is offered, a public one is never offered, and an offered one is not made public
+ * until the offer stops. Its audit row names the action and the entry, never the entitlement (ADR-040: no audit row
+ * holds a reader or what they hold).
  */
 final class MediaVisibility
 {
@@ -58,6 +65,13 @@ final class MediaVisibility
     public const MADE_PUBLIC = 'media.made_public';
 
     public const MADE_PRIVATE = 'media.made_private';
+
+    /** The audit actions for *Offer to readers*, targeting the entry — never naming the entitlement (ADR-041 decision 1). */
+    public const OFFERED = 'media.offered_to_readers';
+
+    public const OFFER_CHANGED = 'media.reader_offer_changed';
+
+    public const OFFER_STOPPED = 'media.reader_offer_stopped';
 
     /**
      * Whether a user may change the visibility of a file of this type: whoever may publish it (decision 32). A null user is
@@ -115,6 +129,11 @@ final class MediaVisibility
                 /** @var stdClass $file */
                 if ($file->visibility === 'public') {
                     return self::UNCHANGED;
+                }
+
+                // ⚠️ AN OFFERED FILE STAYS PRIVATE (ADR-041 decision 2): public, everyone would have what readers hold.
+                if (($file->reader_entitlement ?? null) !== null) {
+                    throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OFFERED, 'public');
                 }
 
                 $config = self::config();
@@ -283,6 +302,85 @@ final class MediaVisibility
 
             throw $failure;
         }
+    }
+
+    /**
+     * Offer an entry's file to readers who hold `$name` on its site, or change the name it is offered for — ADR-041
+     * decisions 1 and 2. Nothing moves: the file stays private, where it is.
+     *
+     * @return string `SWITCHED`, or `UNCHANGED` when it is already offered for that name
+     *
+     * @throws MediaVisibilityRefused in words an editor is shown
+     * @throws RuntimeException for anything else, whose message is not for an editor
+     */
+    public static function offer(Entry $entry, string $name): string
+    {
+        $connection = $entry->getConnection();
+        $id = self::keyOf($entry, $connection, 'offered to readers');
+
+        // Before the lock: a name the writer would refuse costs no lock and reads no row.
+        if (! EntitlementName::isName($name)) {
+            throw new MediaVisibilityRefused($id, MediaVisibilityRefused::NOT_A_NAME, MediaVisibilityRefused::TO_OFFER);
+        }
+
+        self::refuseWithoutOrg($id, 'offered to readers');
+
+        return MediaCustody::locked($connection, $id, static function (?stdClass $locked, ?stdClass $file) use ($connection, $entry, $id, $name): string {
+            $row = self::guard($connection, $entry, $id, $file, MediaVisibilityRefused::TO_OFFER);
+
+            /** @var stdClass $file */
+            if ($file->visibility !== 'private') {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::PUBLIC_FILE, MediaVisibilityRefused::TO_OFFER);
+            }
+
+            // ⚠️ FROM THE LOCKED ROW: a file shared with the org's sites would open on each for whoever holds the name there.
+            if ($row->site_id === null) {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::SHARED, MediaVisibilityRefused::TO_OFFER);
+            }
+
+            $was = $file->reader_entitlement ?? null;
+
+            if ($was === $name) {
+                return self::UNCHANGED;
+            }
+
+            self::writeRow($connection, $id, 'private', readerEntitlement: $name);
+            app(Auditor::class)->recordOrFail($was === null ? self::OFFERED : self::OFFER_CHANGED, $entry);
+
+            return self::SWITCHED;
+        });
+    }
+
+    /**
+     * Stop offering an entry's file to readers — ADR-041 decision 1. Whoever already downloaded it keeps their copy.
+     *
+     * ⚠️ NOT REFUSED FOR A PUBLIC OR SHARED FILE: an offer written below the model on one is cleared, never kept.
+     *
+     * @return string `SWITCHED`, or `UNCHANGED` when it was offered to no one
+     *
+     * @throws MediaVisibilityRefused in words an editor is shown
+     * @throws RuntimeException for anything else, whose message is not for an editor
+     */
+    public static function stopOffering(Entry $entry): string
+    {
+        $connection = $entry->getConnection();
+        $id = self::keyOf($entry, $connection, 'offered to no reader');
+
+        self::refuseWithoutOrg($id, 'offered to no reader');
+
+        return MediaCustody::locked($connection, $id, static function (?stdClass $locked, ?stdClass $file) use ($connection, $entry, $id): string {
+            self::guard($connection, $entry, $id, $file, MediaVisibilityRefused::TO_STOP);
+
+            /** @var stdClass $file */
+            if (($file->reader_entitlement ?? null) === null) {
+                return self::UNCHANGED;
+            }
+
+            self::writeRow($connection, $id, (string) $file->visibility, readerEntitlement: null);
+            app(Auditor::class)->recordOrFail(self::OFFER_STOPPED, $entry);
+
+            return self::SWITCHED;
+        });
     }
 
     /**
@@ -503,10 +601,13 @@ final class MediaVisibility
     }
 
     /**
-     * ⚠️ THE ONE WRITE OF `visibility`, `checksum` AND `size_bytes` AFTER CREATION — ADR-042 decision 32. Below the model,
-     * as `kitsune:media-types --force` writes `is_media`, because every model door refuses them; under custody's lock,
-     * which every caller holds. Nothing below the model checks a value, so this does, and the write must land on exactly
-     * the one row locked. A test reads the source for any other write naming these columns.
+     * ⚠️ THE ONE WRITE OF `visibility`, `checksum` AND `size_bytes` AFTER CREATION — ADR-042 decision 32 — AND OF
+     * `reader_entitlement` (ADR-041 decision 1). Below the model, as `kitsune:media-types --force` writes `is_media`,
+     * because every model door refuses them; under custody's lock, which every caller holds. Nothing below the model checks
+     * a value, so this does, and the write must land on exactly the one row locked. A test reads the source for any other
+     * write naming these columns.
+     *
+     * @param  string|false|null  $readerEntitlement  the name to offer the file for, null to stop, false to leave it
      */
     private static function writeRow(
         Connection $connection,
@@ -515,16 +616,22 @@ final class MediaVisibility
         ?string $disk = null,
         ?string $checksum = null,
         ?int $sizeBytes = null,
+        string|false|null $readerEntitlement = false,
     ): void {
         if (! in_array($visibility, MediaFile::VISIBILITIES, true)
             || ($checksum !== null && preg_match('/^[0-9a-f]{64}$/', $checksum) !== 1)
             || ($sizeBytes !== null && $sizeBytes < 0)
             || (($checksum === null) !== ($sizeBytes === null))
-            || $disk === '') {
+            || $disk === ''
+            || (is_string($readerEntitlement) && ($visibility !== 'private' || ! EntitlementName::isName($readerEntitlement)))) {
             throw new LogicException(sprintf('Refusing to write entry %d\'s file row: the values are not a file\'s (ADR-042 decision 32).', $entryId));
         }
 
         $columns = ['visibility' => $visibility];
+
+        if ($readerEntitlement !== false) {
+            $columns['reader_entitlement'] = $readerEntitlement;
+        }
 
         if ($disk !== null) {
             $columns['disk'] = $disk;

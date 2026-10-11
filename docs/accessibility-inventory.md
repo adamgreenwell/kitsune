@@ -40,6 +40,8 @@ find packages/core/src packages/core/resources skeleton/app skeleton/resources -
 find packages/core/src packages/core/resources skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 1 file
 ```
 
+*Amended 2026-10-11:* ten views, not nine — a reader's download page joined them (ADR-041 decisions 1–4).
+
 ⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1. Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
 
 Kitsune authors ~~**one** Blade view~~ *the welcome page and a reader's pages (ADR-037, as built, 2026-10-07)* and ~~**zero** lines of JavaScript~~ *one
@@ -73,6 +75,16 @@ any Filament page (measured) — the new check asserts the table container scrol
 drawn at the start of the line under RTL, as the media tiles' line was before its `dir="auto"`, on this page and every
 other with an intro of core's; and 200 % zoom on this page is not measured. Owed: §5's screen-reader pass, now with the
 new column (item 5).
+
+*Amended 2026-10-11 (ADR-041 decisions 1–4, files offered to readers):* a media entry's page gains *Offer to readers*,
+*Change offer* and *Stop offering* — Filament's own actions and dialog, offered by keyboard alone and scanned by axe
+with the dialog open, LTR and in the Arabic admin (`reader-downloads.spec.js`). The name field is `dir="ltr"`, with
+spelling, capitals and correction off, and its error says the whole rule. Two choices of core's own: the reader link
+has a real *Copy reader link* button, focusable and named, confirmed in Filament's `role="status"` notification —
+`copyable()` would have made it a click-only span with a tooltip; and the File section's notes are plain text with
+`dir="auto"`, not entries whose hidden label read a component's name aloud ("Media file reader not a reader", measured).
+Inherited and recorded: a disabled action's reason is Filament's tooltip on an `aria-disabled` button; and the older
+*Link* entry beside them still has that hidden label.
 
 *Amended 2026-10-09 (ADR-042 decisions 39–42, the media list's tiles):* a media type's list is core's own markup inside
 Filament's card grid, with inline Alpine: a private tile's script of about 40 lines, the same bytes on every tile with no
@@ -135,7 +147,8 @@ That is a real result and it is a *narrow* one. Axe evaluates machine-detectable
 ### Built — a reader's pages (ADR-037, as built, 2026-10-07)
 
 Core's own Blade views, so nothing is inherited: sign-in, the account page and a notice, at `{prefix}/account` under
-each site — and, since 2026-10-09, sign-up, recovery, "check your email" and choosing a password from a mailed link.
+each site — and, since 2026-10-09, sign-up, recovery, "check your email" and choosing a password from a mailed link;
+and, since 2026-10-11, a file offered to readers (ADR-041).
 What they do, and what checks it:
 
 | | Evidence |
@@ -149,6 +162,7 @@ What they do, and what checks it:
 | The sign-in page's links to recovery and sign-up come after its button, in a list, each a 44 px target | `ReaderPagesTest` |
 | A link that does not work, and a page closed for want of mail, say why and offer a link onward, with no form | `SignUpTest`, `RecoveryTest`, `ReaderMailTest` |
 | Reflow at 320 px, light and dark — a long address wraps anywhere, since a browser will not break one at `@` or `.` (review) | `reader-mail.spec.js`, on every new page and refusal, with a long address that has no hyphen |
+| A file offered to readers: one `<h1>`, the owner's title in the site's language (`lang`), `dir="auto"` and isolated, an untitled file's in words; its format and size; one link whose word, *Open* or *Download*, says what the browser will do; every refusal one notice that offers *Your account* (2026-10-11) | `ReaderDownloadTest`; axe on the page and the notice, LTR and RTL, in `reader-downloads.spec.js` |
 
 Still owed here, as for the admin: a screen-reader pass (§5), and 200 % zoom, which no spec measures yet; reflow at
 320 px is measured on the new pages only.
@@ -321,5 +335,9 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    row named by its address, one with no account, and one that could not be read. Record whether the *Email address*
    header is announced with each cell, whether an address is spelled sensibly, and whether the intro's three sentences
    make the page's state clear before the table.
+6. **Download a file offered to readers with NVDA and VoiceOver** (*added 2026-10-11, ADR-041 decisions 1–4*) — sign
+   in from the link, hear the page's title and its one link, and download; then the refusal notice. And offer a file
+   from its media page: whether the dialog's warning about location is heard, and whether *Copy reader link*'s
+   confirmation is announced.
 
 Until those happen, the honest claim is the one at the top of this document: no detectable failures, on a surface that is almost entirely inherited. That is a good starting position and it is not a conformance statement, and ADR-018 is explicit that a boilerplate conformance claim is exactly what this project will not make.
