@@ -421,12 +421,13 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       key, as `audit_log` references an actor *— the table, the guard, the doors and export and erasure are built
       ([ADR-040, amended](decision-log.md)); ~~the owner's page is the second half~~ and the owner's page,
       `/admin/{site}/entitlements`, where comps are given and a source revoked (amended 2026-10-07)*
-- [ ] **Reader accounts** ([ADR-037](decision-log.md)) *— moved from v1.1 on 2026-10-06, ahead of commerce* —
+- [x] **Reader accounts** ([ADR-037](decision-log.md)) *— moved from v1.1 on 2026-10-06, ahead of commerce* —
       their own guard, provider and model, provided by the host (the skeleton's, for a stock install);
       registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for
       every row of the one that exists. Before commerce, because gated content, a paid course and a subscription
-      site all need a reader who can sign in. *Sign-in landed 2026-10-07; sign-up and recovery by email 2026-10-09
-      (ADR-037, amended). Left: readers named on the owner's entitlements page.*
+      site all need a reader who can sign in. *Sign-in landed 2026-10-07; sign-up and recovery by email 2026-10-09;
+      ~~Left: readers named on the owner's entitlements page.~~ readers named on the owner's entitlements page, where
+      the operator shows them, 2026-10-10 (ADR-037, amended; decisions 1–3).*
 - [ ] **The reader's download route** ([ADR-041](decision-log.md)): a second, public route that asks
       `EntitlementCheck::holds()`
 - [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.

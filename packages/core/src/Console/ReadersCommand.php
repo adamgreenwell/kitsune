@@ -19,6 +19,7 @@ use Kitsune\Core\Auth\ReaderGuardFault;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderAccounts;
+use Kitsune\Core\Readers\ReaderAddresses;
 use Kitsune\Core\Readers\ReaderErasure;
 use Kitsune\Core\Readers\ReaderExport;
 use Kitsune\Core\Readers\ReaderLinks;
@@ -38,7 +39,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 /**
  * Reader accounts, for whoever runs the installation — ADR-037, as built, and ADR-020's export and erasure of one
  * reader. The operator is the data controller (ADR-020), so this, and no admin page yet, is where a reader is found,
- * exported or erased, and where a site's sign-in is switched on.
+ * exported or erased, where a site's sign-in is switched on, and where owners are let see readers' addresses on the
+ * entitlements page (ADR-037 decision 1).
  *
  * ⚠️ AN ADDRESS IS NEVER AN OPTION. It is asked at a prompt on a terminal, or read from the first line of standard input
  * (at most 4,096 bytes) — never from an argument, which other local users read through `ps` and which shell history
@@ -52,26 +54,26 @@ final class ReadersCommand extends Command
 {
     use ReadsWrittenKeys;
 
-    private const ACTIONS = ['status', 'mode', 'find', 'export', 'erase'];
+    private const ACTIONS = ['status', 'mode', 'addresses', 'find', 'export', 'erase'];
 
     private const INHERIT = 'inherit';
 
     protected $signature = 'kitsune:readers
-        {action : status, mode, find, export or erase}
-        {value? : For mode — off, sign-in, open or inherit}
+        {action : status, mode, addresses, find, export or erase}
+        {value? : For mode — off, sign-in, open or inherit; for addresses — hidden, shown or inherit}
         {--org= : The organisation\'s slug}
-        {--site= : For mode — the site\'s handle; without it, the organisation\'s own setting}
+        {--site= : For mode — the site\'s handle; without it, the organisation\'s own setting. Addresses are the organisation\'s alone}
         {--reader= : For export and erase — the reader\'s identifier, instead of their address on standard input}
         {--force : Confirm erase, which deletes}';
 
-    protected $description = 'Report whether readers can sign in, set where they may, and find, export or erase one reader (ADR-037)';
+    protected $description = 'Report whether readers can sign in, set where they may and whether owners see their addresses, and find, export or erase one reader (ADR-037)';
 
     public function handle(Context $context, ReaderGuard $guard, ReaderAccounts $accounts): int
     {
         $action = $this->argument('action');
 
         if (! in_array($action, self::ACTIONS, true)) {
-            return $this->refuse('Refusing: kitsune:readers has five actions — status, mode, find, export and erase. Nothing was read or written.');
+            return $this->refuse('Refusing: kitsune:readers has six actions — status, mode, addresses, find, export and erase. Nothing was read or written.');
         }
 
         $slug = $this->option('org');
@@ -86,6 +88,15 @@ final class ReadersCommand extends Command
 
         if ($action === 'mode' && ! in_array($this->argument('value'), [...array_column(ReaderMode::cases(), 'value'), self::INHERIT], true)) {
             return $this->refuse('Refusing: a site\'s reader accounts are off, sign-in or open — or inherit, to use the level above. Nothing was written.');
+        }
+
+        if ($action === 'addresses' && ! in_array($this->argument('value'), [...array_column(ReaderAddresses::cases(), 'value'), self::INHERIT], true)) {
+            return $this->refuse('Refusing: readers\' addresses are hidden or shown to an organisation\'s owners — or inherit, to use the platform\'s default. Nothing was written.');
+        }
+
+        // ⚠️ THE ORGANISATION'S ALONE (`SettingsGuard::READER_ADDRESSES`): a reader is the org's, so no site can hide one.
+        if ($action === 'addresses' && is_string($this->option('site')) && $this->option('site') !== '') {
+            return $this->refuse('Refusing: readers\' addresses are shown or hidden for a whole organisation, whose readers they are — a site\'s owners could name the same readers on a sibling\'s page. Leave --site off. Nothing was written.');
         }
 
         if ($action === 'erase' && ! $this->option('force')) {
@@ -105,7 +116,8 @@ final class ReadersCommand extends Command
 
             return match ($action) {
                 'status' => $this->status($guard, $accounts, $org),
-                'mode' => $this->mode($org),
+                'mode' => $this->setting($org, SettingsGuard::READER_ACCOUNTS, 'Reader accounts'),
+                'addresses' => $this->setting($org, SettingsGuard::READER_ADDRESSES, 'Readers\' addresses'),
                 default => $this->forReader($accounts, $org, $action),
             };
         } catch (RuntimeException $refused) {
@@ -157,12 +169,25 @@ final class ReadersCommand extends Command
 
             foreach (Site::query()->orderBy('handle')->get() as $site) {
                 $resolved = $resolver->resolve($site, SettingsGuard::READER_ACCOUNTS);
+                $addresses = $resolver->resolve($site, SettingsGuard::READER_ADDRESSES);
 
+                // Whether addresses are shown, and where that comes from — never an address.
                 $this->line(sprintf(
-                    'Site [%s]: %s (%s)%s.',
+                    'Site [%s]: %s (%s); addresses %s owners (%s)%s.',
                     $site->handle,
                     $accounts->mode($site)->value,
                     $resolved?->describe() ?? 'platform default',
+                    match (true) {
+                        ! $accounts->canName() => 'cannot be shown to',
+                        $accounts->addresses($site) => 'shown to',
+                        default => 'hidden from',
+                    },
+                    match (true) {
+                        ! $accounts->canName() => 'this installation\'s reader accounts cannot name readers',
+                        // Written below Eloquent past `SettingsGuard`: it counts for nothing, and is not the site's choice.
+                        $addresses !== null && ! in_array($addresses->origin, ['org', 'default'], true) => 'a value stored below the organisation is ignored — the setting is the organisation\'s',
+                        default => $addresses?->describe() ?? 'platform default',
+                    },
                     match (true) {
                         $site->canonical_host === null => ' — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one',
                         ReaderLinks::origin($site) === null => ' — no link can be mailed from it, because '.($site->canonical_host === '' ? 'it has no host of its own' : 'its address names no scheme').'; kitsune:site address gives it one',
@@ -175,7 +200,14 @@ final class ReadersCommand extends Command
         return $guardFault !== ReaderGuardFault::NotDeclared && $fault !== null ? self::FAILURE : self::SUCCESS;
     }
 
-    private function mode(Org $org): int
+    /**
+     * `mode` and `addresses`: one platform key at the org — or, for `mode`, at one of its sites — written through
+     * `SettingsWriter`, so audited as every key is, and `inherit` a revert, because absent means inherit (ADR-022).
+     *
+     * ⚠️ THE SITE IS FOUND WITHIN THE ORG. The org is in context and `Site` is org-scoped, so `golfdom`, a handle two
+     * organisations may each have, names this org's alone.
+     */
+    private function setting(Org $org, string $setting, string $label): int
     {
         $value = (string) $this->argument('value');
         $handle = $this->option('site');
@@ -192,12 +224,17 @@ final class ReadersCommand extends Command
         $writer = app(SettingsWriter::class);
 
         if ($value === self::INHERIT) {
-            $writer->revert($scope, SettingsGuard::READER_ACCOUNTS);
+            $writer->revert($scope, $setting);
         } else {
-            $writer->set($scope, SettingsGuard::READER_ACCOUNTS, $value);
+            $writer->set($scope, $setting, $value);
         }
 
-        $this->line(sprintf('Reader accounts on [%s]: %s.', $scope instanceof Site ? $scope->handle : $org->slug, $value));
+        $this->line(sprintf('%s on [%s]: %s.', $label, $scope instanceof Site ? $scope->handle : $org->slug, $value));
+
+        // Written, and said to have no effect yet where it has none (review): the page shows identifiers until then.
+        if ($setting === SettingsGuard::READER_ADDRESSES && ! app(ReaderAccounts::class)->canName()) {
+            $this->line('This installation\'s reader accounts cannot name readers yet, so the entitlements page shows identifiers until they can — kitsune:readers status says why.');
+        }
 
         return self::SUCCESS;
     }

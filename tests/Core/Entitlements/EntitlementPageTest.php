@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use App\Models\Reader;
 use Carbon\CarbonImmutable;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Field;
@@ -40,6 +41,7 @@ use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Settings\SiteTimezone;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
@@ -193,6 +195,48 @@ function pageEntitlementQueries(Closure $read): array
 }
 
 /**
+ * The queries a read runs on every connection — heard on the dispatcher they share, where the query log above is the
+ * default connection's alone, and a host's readers may live on another (ADR-037, as built).
+ *
+ * @return list<array{query: string, bindings: array<int, mixed>, connection: ?string}>
+ */
+function pageEntitlementHeard(Closure $read): array
+{
+    $heard = [];
+    $listening = true;
+
+    // ⚠️ SWITCHED OFF, NOT REMOVED: the dispatcher forgets an event's listeners only all together.
+    DB::listen(static function (QueryExecuted $query) use (&$heard, &$listening): void {
+        if ($listening) {
+            $heard[] = ['query' => $query->sql, 'bindings' => $query->bindings, 'connection' => $query->connectionName];
+        }
+    });
+
+    try {
+        $read();
+    } finally {
+        $listening = false;
+    }
+
+    return $heard;
+}
+
+/** Whether any query names a readers table — the skeleton's `readers` or the fixtures' `test_readers`. */
+function pageEntitlementReadsReaders(array $queries): bool
+{
+    return array_filter($queries, static fn (array $query): bool => str_contains($query['query'], 'readers')) !== [];
+}
+
+/** The page's opening sentence, exactly as its first component carries it. */
+function pageEntitlementIntro(): string
+{
+    $page = entitlementsPage();
+    $intro = $page->content(Schema::make($page))->getComponents()[0];
+
+    return $intro instanceof Text ? (string) $intro->getContent() : get_debug_type($intro);
+}
+
+/**
  * A row's history as its modal renders it — a table of change, when and by whom, oldest first, read from the HTML.
  *
  * @return list<array{0: string, 1: string, 2: string}>
@@ -306,7 +350,7 @@ it('says why, and lists and offers nothing, without a usable reader guard', func
     Fx::forget();
 
     $components = null;
-    $queries = pageEntitlementQueries(static function () use (&$components): void {
+    $queries = pageEntitlementHeard(static function () use (&$components): void {
         $page = entitlementsPage();
         $components = $page->content(Schema::make($page))->getComponents();
         expect(pageEntitlementHeaderActions($page))->toBe([]);
@@ -316,24 +360,108 @@ it('says why, and lists and offers nothing, without a usable reader guard', func
         ->and($components[0])->toBeInstanceOf(EmptyState::class)
         ->and((string) $components[0]->getDescription())->toBe('Nothing can be listed or given here, because this installation declares no reader guard (kitsune.readers.guard). Until whoever runs this installation fixes it, every check answers no.')
         ->and(array_filter($components, static fn ($component): bool => $component instanceof EmbeddedTable))->toBe([])
-        ->and(array_filter($queries, static fn (array $query): bool => str_contains($query['query'], 'entitlements')))->toBe([]);
+        ->and(array_filter($queries, static fn (array $query): bool => str_contains($query['query'], 'entitlements')))->toBe([])
+        ->and(pageEntitlementReadsReaders($queries))->toBeFalse();
 
     // And a read a browser calls by name lists nothing either: Livewire hands its value back.
     $page = entitlementsPage();
     $id = (string) Entitlement::query()->value('id');
 
-    expect(pageEntitlementRows($page))->toBe([])
-        ->and($page->getAllTableRecordsCount())->toBe(0)
-        ->and($page->getTableRecord($id))->toBeNull();
+    $queries = pageEntitlementHeard(static function () use ($page, $id): void {
+        expect(pageEntitlementRows($page))->toBe([])
+            ->and($page->getAllTableRecordsCount())->toBe(0)
+            ->and($page->getTableRecord($id))->toBeNull();
+    });
 
-    // With a guard: the table, and Comp.
+    // Nor does it ask the readers table about anyone.
+    expect(pageEntitlementReadsReaders($queries))->toBeFalse();
+
+    // With a guard: the table, and Comp — and, the fixture's model being no reader account, the sentence that says so.
     Fx::declareReaders();
     $page = entitlementsPage();
     $components = $page->content(Schema::make($page))->getComponents();
 
     expect($components[2])->toBeInstanceOf(EmbeddedTable::class)
+        ->and((string) $components[0]->getContent())->toBe('Who may reach what on Main, from which source, and until when. Readers are shown by their identifier: this installation\'s reader accounts cannot name them here.')
         ->and((string) $components[1]->getContent())->toBe('A reader holds an entitlement while any of its sources is live.')
         ->and(array_map(static fn (Action $action): string => $action->getName(), pageEntitlementHeaderActions($page)))->toBe(['comp']);
+});
+
+/* 3a. What the page says of readers' addresses — ADR-037 decisions 1 and 2. */
+it('says in one whole sentence whether readers are named, hidden by the operator, or cannot be named here', function (): void {
+    $opening = static fn (string $site): string => "Who may reach what on {$site}, from which source, and until when.";
+    $hidden = ' Readers are shown by their identifier: their addresses appear here once whoever runs this installation turns them on.';
+    $columns = static fn (): array => array_keys(entitlementsPage()->getTable()->getVisibleColumns());
+
+    // The fixture's model is no reader account, so nobody can be named, whatever is switched on.
+    $this->org->settings = ['reader_addresses' => 'shown'];
+    $this->org->save();
+
+    expect(pageEntitlementIntro())->toBe($opening('Main').' Readers are shown by their identifier: this installation\'s reader accounts cannot name them here.')
+        ->and($columns())->not->toContain('reader_address');
+
+    // The skeleton's own reader, as the platform ships the switch: hidden.
+    $this->org->settings = [];
+    $this->org->save();
+    Fx::declareReaders(Reader::class);
+    // Declaring a guard forgets the built ones, `web`'s user with them.
+    Auth::guard('web')->setUser($this->owner);
+    Fx::forget();
+
+    expect(pageEntitlementIntro())->toBe($opening('Main').$hidden)
+        ->and($columns())->not->toContain('reader_address');
+
+    // A value nothing could have stored — below Eloquent, past `SettingsGuard` — fails closed to identifiers.
+    DB::table('orgs')->where('id', $this->org->getKey())->update(['settings' => json_encode(['reader_addresses' => 'SHOWN'])]);
+    SettingsResolver::forgetEverywhere();
+
+    expect(pageEntitlementIntro())->toBe($opening('Main').$hidden)
+        ->and($columns())->not->toContain('reader_address');
+
+    // Shown for the org: the opening alone, and the address beside the identifier.
+    $this->org->settings = ['reader_addresses' => 'shown'];
+    $this->org->save();
+
+    expect(pageEntitlementIntro())->toBe($opening('Main'))
+        ->and($columns())->toBe(['reader_id', 'reader_address', 'entitlement', 'source', 'state', 'expires_at', 'changed_at']);
+
+    // The org's alone: a sibling site names the same readers, so no site can be kept apart from the switch …
+    $apart = ['handle' => 'other', 'slug' => 'acme-other', 'name' => 'Other', 'locale' => 'en'];
+
+    expect(static fn () => Site::create([...$apart, 'settings' => ['reader_addresses' => 'hidden']]))
+        ->toThrow(RuntimeException::class, 'Refusing [reader_addresses] on Site (new): it is set for a whole organisation, whose readers they are — never for a site group or a site, where a sibling would name the same readers. Set it on the organisation instead.');
+
+    // … and a sibling's page shows them as the org's does.
+    $sibling = Site::create($apart);
+    PanelTenancy::moveTo($sibling);
+
+    expect(pageEntitlementIntro())->toBe($opening('Other'))
+        ->and($columns())->toBe(['reader_id', 'reader_address', 'entitlement', 'source', 'state', 'expires_at', 'changed_at']);
+
+    // Cross-site, from the attacker's side: a site's own `shown`, written below Eloquent past `SettingsGuard`, names
+    // nobody under an org that hides them — a site's value is no switch, whichever way it reads.
+    $this->org->settings = [];
+    $this->org->save();
+    DB::table('sites')->where('id', $sibling->getKey())->update(['settings' => json_encode(['reader_addresses' => 'shown'])]);
+    SettingsResolver::forgetEverywhere();
+    $resolved = app(SettingsResolver::class)->resolve($sibling, 'reader_addresses');
+
+    // ⚠️ The control: the site's `shown` is what resolves, so the hidden page is its origin's doing, not a lost write.
+    expect([$resolved?->value, $resolved?->origin])->toBe(['shown', 'site'])
+        ->and(pageEntitlementIntro())->toBe($opening('Other').$hidden)
+        ->and($columns())->not->toContain('reader_address');
+
+    // Cross-org: another org's own site, its owner signed in, sees none of this org's switch, shown again.
+    $this->org->settings = ['reader_addresses' => 'shown'];
+    $this->org->save();
+    $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+    app(Context::class)->setOrg($rival);
+    $rivalSite = Site::create(['handle' => 'main', 'slug' => 'rival-main', 'name' => 'Rival main', 'locale' => 'en']);
+    PanelTenancy::moveTo($rivalSite);
+    Fx::owner('owner@rival.test');
+
+    expect(pageEntitlementIntro())->toBe($opening('Rival main').$hidden)
+        ->and($columns())->not->toContain('reader_address');
 });
 
 /* 4. The rows. */
@@ -871,10 +999,11 @@ it('costs a fixed count of queries, whatever is stored', function (): void {
     Entitlements::canAccess();
     SiteTimezone::current();
     $page = entitlementsPage();
-    $columns = ['reader_id', 'entitlement', 'source', 'state', 'expires_at', 'changed_at'];
+    // The address column too, hidden here: its cell asks nothing of its own.
+    $columns = ['reader_id', 'reader_address', 'entitlement', 'source', 'state', 'expires_at', 'changed_at'];
     $shown = 0;
 
-    $queries = pageEntitlementQueries(static function () use ($page, $columns, &$shown): void {
+    $queries = pageEntitlementHeard(static function () use ($page, $columns, &$shown): void {
         foreach (pageEntitlementRows($page) as $row) {
             $shown++;
 
@@ -884,14 +1013,20 @@ it('costs a fixed count of queries, whatever is stored', function (): void {
         }
     });
 
-    // The count and the page, and nothing per row — each leading with the site and the org as plain equalities, the
-    // index prefix every engine plans from (without them SQLite scans the table on `SiteScope`'s OR, ADR-040 M3).
+    // The count and the page, on any connection, and nothing per row — each leading with the site and the org as plain
+    // equalities, the index prefix every engine plans from (without them SQLite scans the table on `SiteScope`'s OR,
+    // ADR-040 M3). None asks the readers table: the fixture's model can name nobody (ADR-037, as built).
     expect($shown)->toBe(25)
-        ->and($queries)->toHaveCount(2);
+        ->and($queries)->toHaveCount(2)
+        ->and(pageEntitlementReadsReaders($queries))->toBeFalse();
 
     foreach ($queries as $query) {
         expect(str_replace(['"', '`'], '', $query['query']))->toContain('where entitlements.site_id = ? and entitlements.org_id = ?');
     }
+
+    // And the size it pages at is the one size the select offers, and the one it starts on (ADR-037 decision 3).
+    expect($page->getTable()->getPaginationPageOptions())->toBe([Entitlements::PER_PAGE])
+        ->and($page->getTable()->getDefaultPaginationPageOption())->toBe(Entitlements::PER_PAGE);
 });
 
 /* 16. A failed read. */
@@ -964,7 +1099,8 @@ it('says nothing has been given only when no filter narrows the rows', function 
             ->and($description($page))->toBeNull();
     }
 
-    // The source filter's help is true of it: a comp is shown as "Comp", which is no source.
+    // Each filter's help is true of it: the Reader filter takes the identifier, never the address shown beside it, and
+    // a comp is shown as "Comp", which is no source.
     $help = static function (string $name): string {
         $field = collect(entitlementsPage()->getTable()->getFilter($name)->getSchemaComponents())->first();
 
@@ -977,7 +1113,8 @@ it('says nothing has been given only when no filter narrows the rows', function 
         return '';
     };
 
-    expect($help('reader'))->toBe('Exactly as shown in the table.')
+    expect($help('reader'))->toBe('The reader\'s identifier, exactly as shown in the Reader column.')
+        ->and($help('entitlement'))->toBe('Exactly as shown in the table.')
         ->and($help('source'))->toBe('Exactly as stored, such as commerce.order:4821. For comps, use Comps only.');
 });
 
@@ -1057,10 +1194,15 @@ it('keeps every stored value out of attributes and markup', function (): void {
 
     $source = (string) file_get_contents((new ReflectionClass(Entitlements::class))->getFileName());
 
-    foreach (['HtmlString', '->html(', '->markdown(', '->tooltip(', '{!!'] as $sink) {
+    // `copyable()` writes its state into an `x-on:click` through `Js::from()`, and `url()` into an `href` (ADR-037, as built).
+    foreach (['HtmlString', '->html(', '->markdown(', '->tooltip(', '{!!', '->copyable(', '->url('] as $sink) {
         expect(str_contains($source, $sink))->toBeFalse("the page reaches {$sink}");
     }
 
-    // Every one of Filament's attribute bags: extraAttributes, extraCellAttributes, extraModalWindowAttributes …
-    expect(preg_match('/extra\w*Attributes\s*\(/i', $source))->toBe(0);
+    // Every one of Filament's attribute bags: extraAttributes, extraCellAttributes, extraModalWindowAttributes … — but
+    // the address column's one static direction (ADR-037 decision 2): exactly that literal, once, and nothing else.
+    $direction = "->extraAttributes(['dir' => 'auto'])";
+
+    expect(substr_count($source, $direction))->toBe(1)
+        ->and(preg_match('/extra\w*Attributes\s*\(/i', str_replace($direction, '', $source)))->toBe(0);
 });

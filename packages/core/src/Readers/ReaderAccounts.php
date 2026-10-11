@@ -84,6 +84,32 @@ final class ReaderAccounts
     }
 
     /**
+     * Whether the site's owners see readers' addresses (ADR-037 decision 1): `shown` as its organisation stores it or as
+     * the platform's default, and hidden for anything else — absent, a value written past `SettingsGuard`, or one a site
+     * or site group holds below Eloquent, which `SettingsGuard` refuses (the key is the org's alone) — so the page fails
+     * closed to identifiers.
+     */
+    public function addresses(Site $site): bool
+    {
+        $resolved = $this->settings->resolve($site, SettingsGuard::READER_ADDRESSES);
+
+        return $resolved !== null
+            && in_array($resolved->origin, ['org', 'default'], true)
+            && $resolved->value === ReaderAddresses::Shown->value;
+    }
+
+    /**
+     * Whether readers can be named by their address here: an account model whose auth identifier is its key, so the
+     * row a key finds is the reader the identifier stands for. A token guard over the same model cannot (`model()`).
+     */
+    public function canName(): bool
+    {
+        $model = $this->model();
+
+        return $model !== null && (new $model)->getAuthIdentifierName() === (new $model)->getKeyName();
+    }
+
+    /**
      * A read or write of the host's reader table, failing with its SQLSTATE alone.
      *
      * ⚠️ A `QueryException`'s message interpolates its bindings, and a reader query binds an address or a reader's key,
@@ -107,11 +133,15 @@ final class ReaderAccounts
     /** A failure on the host's reader table, as its SQLSTATE alone. */
     public static function refusal(PDOException $e): RuntimeException
     {
-        $state = isset($e->errorInfo[0]) && is_string($e->errorInfo[0])
+        return new RuntimeException(sprintf('The readers table could not be read or written (SQLSTATE %s).', self::sqlstate($e)));
+    }
+
+    /** A database failure's SQLSTATE, and nothing of its message, which can carry the query's bindings. */
+    public static function sqlstate(PDOException $e): string
+    {
+        return isset($e->errorInfo[0]) && is_string($e->errorInfo[0])
             ? $e->errorInfo[0]
             : (preg_match('/SQLSTATE\[(\w{5})\]/', $e->getMessage(), $match) === 1 ? $match[1] : (string) $e->getCode());
-
-        return new RuntimeException("The readers table could not be read or written (SQLSTATE {$state}).");
     }
 
     /**

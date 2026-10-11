@@ -217,10 +217,14 @@ Rows are deleted only by the org's hard delete, a site's delete once nothing liv
 export` hands a reader's back. It is never an entry type, and v1.1's generated REST API never exposes it. An owner sees
 a site's rows, gives a comp and revokes one source on one page, `/admin/{site}/entitlements`, which lists nothing while
 no usable reader guard is declared and puts no reader's identifier in an address or the session (ADR-040, the page).
+Where the operator shows them — `kitsune:readers addresses`, per organisation, `hidden` by default — each row names its
+reader's address in a column beside the identifier, read once for the page and kept nowhere; the page holds at 25 rows
+(ADR-037 decisions 1–3).
 
 **A reader's identity is the host's and their front door is core's** (ADR-037, as built). The skeleton ships the
-`readers` table, `App\Models\Reader` and the `readers` guard; core reaches the row only through
-`ReaderAccount`'s five methods, and serves the sign-in pages at `{prefix}/account` under each site's prefix, placed by
+`readers` table, `App\Models\Reader` and the `readers` guard; core reads and writes the row through `ReaderAccount`'s
+five methods, and otherwise only finds it by its key within the org — the guard's `canonical()`, an export, and the
+entitlements page's names — and serves the sign-in pages at `{prefix}/account` under each site's prefix, placed by
 `ReaderRoutes::register()` in the host's `routes/web.php`. A site serves them while its `reader_accounts` setting is
 `sign-in` or `open` (`off` by default). Sign-up (`open` only) and recovery mail a link from `reader_tokens`; it works
 once, for an hour, on the site that mailed it, and outside `local` and `testing` both pages answer 503 until mail can

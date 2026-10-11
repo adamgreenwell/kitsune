@@ -11,7 +11,13 @@ declare(strict_types=1);
 namespace Kitsune\Core\Settings;
 
 use DateTimeZone;
+use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Readers\ReaderAddresses;
 use Kitsune\Core\Readers\ReaderMode;
+use LogicException;
 use RuntimeException;
 
 /**
@@ -42,6 +48,20 @@ final class SettingsGuard
     public const READER_ACCOUNTS = 'reader_accounts';
 
     /**
+     * A key the platform itself reads: whether owners see readers' addresses on the entitlements page (ADR-037 decision
+     * 1) — `hidden` or `shown`. Written by the operator's console alone; anything else reads as `hidden`.
+     *
+     * ⚠️ THE ORGANISATION'S ALONE, never a site group's or a site's. A reader is the org's, and Comp takes any reader of
+     * it, so a site set to `shown` named a reader who held nothing there, and a site set to `hidden` beside a `shown`
+     * sibling hid nothing from an owner of both — the identifiers are the same on both pages (measured, review). A
+     * switch that claimed to hide what it did not would be worse than none.
+     */
+    public const READER_ADDRESSES = 'reader_addresses';
+
+    /** The keys only an organisation, or the configured defaults, may hold. */
+    private const ORG_ONLY = [self::READER_ADDRESSES];
+
+    /**
      * Why a bulk write may not name `settings` — the sentence `ScopedBuilder` quotes when it refuses one, through
      * each holder's `columnsRequiringModelSave()`.
      */
@@ -53,8 +73,9 @@ final class SettingsGuard
      * Refuse a settings map that is not one.
      *
      * @param  string  $holder  who holds the map, for the message — "Site 3", "the configured defaults"
+     * @param  'default'|'org'|'site_group'|'site'  $level  the level it holds it at, as `Resolved::$origin` names them
      */
-    public static function check(mixed $settings, string $holder): void
+    public static function check(mixed $settings, string $holder, string $level = 'default'): void
     {
         if ($settings === null) {
             return;
@@ -93,6 +114,43 @@ final class SettingsGuard
                 is_string($settings[self::READER_ACCOUNTS]) ? '"'.$settings[self::READER_ACCOUNTS].'"' : get_debug_type($settings[self::READER_ACCOUNTS]),
             ));
         }
+
+        foreach (self::ORG_ONLY as $key) {
+            if (array_key_exists($key, $settings) && ! in_array($level, ['default', 'org'], true)) {
+                throw new RuntimeException(sprintf(
+                    'Refusing [%s] on %s: it is set for a whole organisation, whose readers they are — never for a site '
+                    .'group or a site, where a sibling would name the same readers. Set it on the organisation instead.',
+                    $key,
+                    $holder,
+                ));
+            }
+        }
+
+        // `ReaderAddresses`' values, the one list of them.
+        if (array_key_exists(self::READER_ADDRESSES, $settings)
+            && (! is_string($settings[self::READER_ADDRESSES]) || ReaderAddresses::tryFrom($settings[self::READER_ADDRESSES]) === null)) {
+            throw new RuntimeException(sprintf(
+                'Refusing [reader_addresses] on %s: it is hidden or shown, and %s is neither. To inherit instead, '
+                .'revert the key rather than storing an empty one.',
+                $holder,
+                is_string($settings[self::READER_ADDRESSES]) ? '"'.$settings[self::READER_ADDRESSES].'"' : get_debug_type($settings[self::READER_ADDRESSES]),
+            ));
+        }
+    }
+
+    /**
+     * The level a holder stores its settings at, as `Resolved::$origin` names them.
+     *
+     * @return 'org'|'site_group'|'site'
+     */
+    public static function levelOf(Model $holder): string
+    {
+        return match (true) {
+            $holder instanceof Org => 'org',
+            $holder instanceof SiteGroup => 'site_group',
+            $holder instanceof Site => 'site',
+            default => throw new LogicException(sprintf('%s holds no settings (ADR-022).', $holder::class)),
+        };
     }
 
     /**

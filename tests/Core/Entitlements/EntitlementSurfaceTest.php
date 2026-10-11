@@ -18,6 +18,7 @@ use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Filament\AuditActors;
 use Kitsune\Core\Filament\Pages\Entitlements;
+use Kitsune\Core\Filament\ReaderNames;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
@@ -45,7 +46,7 @@ function entitlementSourceFiles(string $under): array
 }
 
 it('marks every symbol it adds @internal', function (): void {
-    $symbols = [Entitlement::class, ReaderGuard::class, ReaderGuardFault::class, EntitlementsCommand::class, Entitlements::class, AuditActors::class];
+    $symbols = [Entitlement::class, ReaderGuard::class, ReaderGuardFault::class, EntitlementsCommand::class, Entitlements::class, AuditActors::class, ReaderNames::class];
 
     foreach (entitlementSourceFiles('Entitlements') as $file) {
         $symbols[] = 'Kitsune\\Core\\Entitlements\\'.basename($file, '.php');
@@ -92,6 +93,7 @@ it('keeps every reader identifier and every source out of a stack trace', functi
     'the row read: the reader' => [EntitlementWriter::class, 'lockedRow', 'stored'],
     'the row read: the source' => [EntitlementWriter::class, 'lockedRow', 'source'],
     'the page\'s comp: the reader' => [Entitlements::class, 'giveComp', 'reader'],
+    'the page\'s names: the readers' => [ReaderNames::class, 'of', 'ids'],
 ]);
 
 /**
@@ -161,7 +163,7 @@ it('prints neither the reader nor the source in a refusal\'s trace, under PHP\'s
 it('logs, reports and dispatches nothing', function (): void {
     $core = dirname(__DIR__, 3).'/packages/core/src/';
 
-    foreach ([...entitlementSourceFiles('Entitlements'), $core.'Auth/ReaderGuard.php', $core.'Auth/ReaderGuardFault.php', $core.'Console/EntitlementsCommand.php', $core.'Models/Entitlement.php', $core.'Filament/Pages/Entitlements.php', $core.'Filament/AuditActors.php'] as $file) {
+    foreach ([...entitlementSourceFiles('Entitlements'), $core.'Auth/ReaderGuard.php', $core.'Auth/ReaderGuardFault.php', $core.'Console/EntitlementsCommand.php', $core.'Models/Entitlement.php', $core.'Filament/Pages/Entitlements.php', $core.'Filament/AuditActors.php', $core.'Filament/ReaderNames.php'] as $file) {
         $source = (string) file_get_contents($file);
 
         foreach (['Log::', 'logger(', 'report(', 'dump(', 'dd(', 'event(', 'dispatch(', 'Event::'] as $needle) {
@@ -197,4 +199,41 @@ it('reaches the writer from the owner\'s page alone, and the export from nowhere
             expect(str_contains($source, 'EntitlementWriter'))->toBeFalse(basename($file).' reaches EntitlementWriter');
         }
     }
+});
+
+/**
+ * ⚠️ KEPT FOR ONE REQUEST, AND NOWHERE ELSE (ADR-037, as built). Livewire writes a component's public properties into
+ * the page, and a static one outlives the request in a long-lived worker (AGENTS.md §13) — so the page keeps what it
+ * reads in two private instance properties of its own, one holding the addresses and the other the identifiers they
+ * were read for, and the class that reads them holds none at all.
+ */
+it('holds readers\' addresses in no static and no public property', function (): void {
+    // What a class declares itself. Reflection reports a trait's properties as the class's own, so each one a trait the
+    // class uses brings — Filament's table state, public by design and counted by the page's own test — is left out.
+    $own = static function (string $class): array {
+        $reflection = new ReflectionClass($class);
+        $found = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            $name = $property->getName();
+
+            if ($property->getDeclaringClass()->getName() === $class
+                && array_filter($reflection->getTraits(), static fn (ReflectionClass $trait): bool => $trait->hasProperty($name)) === []) {
+                $found[$name] = ($property->isStatic() ? 'static ' : '').($property->isPublic() ? 'public' : ($property->isProtected() ? 'protected' : 'private'));
+            }
+        }
+
+        return $found;
+    };
+
+    $page = $own(Entitlements::class);
+
+    // None of the page's own is public, static or not: nothing it declares reaches the snapshot.
+    expect(array_filter($page, static fn (string $kind): bool => str_ends_with($kind, 'public')))->toBe([])
+        // The page's static properties are Filament's configuration, each redeclared; the memo is the page's own.
+        ->and(array_filter($page, static fn (string $kind): bool => str_starts_with($kind, 'static ')))
+        ->toBe(['slug' => 'static protected', 'shouldRegisterNavigation' => 'static protected'])
+        ->and($page['namesFor'] ?? null)->toBe('private')
+        ->and($page['names'] ?? null)->toBe('private')
+        ->and($own(ReaderNames::class))->toBe([]);
 });

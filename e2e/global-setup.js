@@ -2,7 +2,7 @@
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BLOG_OWNER, seedReaderGrant } = require('./accounts');
+const { BLOG_OWNER, plantCrossOrgRows, seedReaderGrant } = require('./accounts');
 
 /*
  * Rebuilds the skeleton's database before the browser suite runs.
@@ -84,6 +84,22 @@ module.exports = async () => {
      * first reader gets a producer's grant the page did not make; anything but a grant stops the run here.
      */
     seedReaderGrant();
+
+    /*
+     * ⚠️ AND GOLFDOM MEDIA'S OWNERS SEE READERS' ADDRESSES (ADR-037 decision 1): switched on by the operator's console,
+     * the one thing that writes it, for the org alone — Rival keeps the platform's `hidden`, and `entitlements.spec.js`
+     * opens both. Then Rival's reader is planted on both orgs' sites, here rather than in that spec, so the scans that
+     * run before it (`accessibility.spec.js`) and after it (`rtl.spec.js`) meet a row that names nobody too.
+     */
+    const addresses = execFileSync('php', ['artisan', 'kitsune:readers', 'addresses', 'shown', '--org=golfdom-media', '--no-interaction'], {
+        cwd: skeleton, encoding: 'utf8',
+    });
+
+    if (! addresses.includes('Readers\' addresses on [golfdom-media]: shown.')) {
+        throw new Error(`global-setup: readers' addresses were not shown on golfdom-media:\n${addresses}`);
+    }
+
+    plantCrossOrgRows();
 
     /*
      * ⚠️ THE BLOG BLUEPRINT, APPLIED BY ITS COMMAND — Phase 5, ADR-039. Not by the seeder: what `blog-blueprint.spec.js`
