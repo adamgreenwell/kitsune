@@ -438,8 +438,11 @@ describe('a file rewritten in place', function (): void {
         $temporary = MediaBytes::toTemporary('bytes-source', 'media/1/2026/09/photo.png', $this->hash);
 
         try {
+            // ⚠️ REAL PATHS ON BOTH SIDES. On macOS `/var` is a link to `/private/var`: `tempnam()` answers with the
+            // resolved directory and `sys_get_temp_dir()` with TMPDIR as set, so the same directory compared unequal
+            // (measured 2026-10-10). The claim is that the copy lands in the system's temporary directory, not a spelling.
             expect(file_get_contents($temporary))->toBe('the bytes of a photo')
-                ->and(dirname($temporary))->toBe(rtrim(sys_get_temp_dir(), '/'))
+                ->and(realpath(dirname($temporary)))->toBe(realpath(sys_get_temp_dir()))
                 ->and(basename($temporary))->toStartWith(MediaBytes::TEMPORARY_PREFIX.getmypid().'-');
         } finally {
             unlink($temporary);
