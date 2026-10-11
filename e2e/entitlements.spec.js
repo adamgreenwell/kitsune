@@ -3,7 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
-const { READERS, seedReaderGrant } = require('./accounts');
+const { CROSS_ORG, READERS, plantCrossOrgRows, seedReaderGrant } = require('./accounts');
 
 /*
  * The entitlements page — ADR-040, entitlements' second half: who holds what on a site, from which source, until when
@@ -17,6 +17,10 @@ const { READERS, seedReaderGrant } = require('./accounts');
  * through the console's own door, and `seedReaderGrant()` grants again.
  *
  * This session is Golfdom's owner. The refusal for a member who is not one is `permissions.spec.js`'s.
+ *
+ * ⚠️ AND GOLFDOM MEDIA SHOWS READERS' ADDRESSES (ADR-037 decisions 1–3): `global-setup.js` switched them on for that org
+ * alone and planted Rival's reader 4 on both orgs' sites, so the Reader column is the identifier and the one beside it
+ * the address — or words saying why there is none. Cells are matched whole: `subscriber@…` is inside `rival-subscriber@…`.
  */
 
 const SITE = 'golfdom';
@@ -26,6 +30,9 @@ const RIVAL_READER = READERS.rival.id;
 // Printable ASCII with no space: an id the guard's grammar admits, and one that would close an unescaped attribute.
 const HOSTILE = 'e2e"onfocus=window.__kp=1//';
 const HOSTILE_NAME = 'e2e.hostile-id';
+const ADDRESS = READERS.golfdom.email;
+const RIVAL_ADDRESS = READERS.rival2.email;
+const NO_ACCOUNT = 'No account in this organisation';
 
 function artisan(...args) {
     return execFileSync('php', ['artisan', ...args], { cwd: path.join(__dirname, '..', 'skeleton'), encoding: 'utf8' }).trim();
@@ -57,6 +64,74 @@ function rowId(reader, entitlement, source) {
 function rowCount() {
     return Number(tinker("echo DB::table('entitlements')->count();"));
 }
+
+/** Rows for reader 1 on Golfdom, below Eloquent, each under its own entitlement and one plant source; idempotent. */
+function plantMany(count, source) {
+    tinker(GOLFDOM
+        + ` foreach (range(1, ${count}) as $i) { DB::table('entitlements')->insertOrIgnore(['org_id' => $site->org_id, 'site_id' => $site->id, 'reader_id' => '${READER}',`
+        + ` 'entitlement' => sprintf('e2e.page-%02d', $i), 'source' => '${source}', 'changed_at' => now('UTC')->format('Y-m-d H:i:s')]); }`);
+}
+
+/** A row on Golfdom's French edition — the same org, another site — below Eloquent. */
+function plantOnSibling(reader, entitlement, source) {
+    tinker("$site = DB::table('sites')->where('slug', 'golfdom-fr')->first();"
+        + ` DB::table('entitlements')->insertOrIgnore(['org_id' => $site->org_id, 'site_id' => $site->id, 'reader_id' => '${reader}',`
+        + ` 'entitlement' => '${entitlement}', 'source' => '${source}', 'changed_at' => now('UTC')->format('Y-m-d H:i:s')]);`);
+}
+
+function removePlanted(source) {
+    tinker(`DB::table('entitlements')->where('source', '${source}')->delete();`);
+}
+
+/**
+ * Everywhere a page could carry a string: every text node, every attribute of every element — `wire:snapshot` and
+ * `wire:effects` among them — and each Livewire component's snapshot as the script holds it.
+ */
+async function foundIn(page, needle) {
+    return page.evaluate((text) => {
+        const hits = [];
+        const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if ((node.textContent || '').includes(text)) {
+                hits.push(`text in <${node.parentElement?.tagName.toLowerCase()}>`);
+            }
+        }
+
+        for (const element of document.querySelectorAll('*')) {
+            for (const attribute of element.attributes) {
+                if (attribute.value.includes(text)) {
+                    hits.push(`${attribute.name} on <${element.tagName.toLowerCase()}>`);
+                }
+            }
+        }
+
+        for (const component of window.Livewire?.all() ?? []) {
+            if ((component.snapshotEncoded || '').includes(text)) {
+                hits.push(`the snapshot of ${component.name}`);
+            }
+        }
+
+        return hits;
+    }, needle);
+}
+
+/**
+ * Call this page's own Livewire component — the one holding the table — as a browser can, `set` a property or a method
+ * by name, and answer with the rows a page then holds, read once the update has answered.
+ */
+async function wire(page, method, ...args) {
+    return page.evaluate(async ([name, params]) => {
+        const id = document.querySelector('.fi-ta').closest('[wire\\:id]').getAttribute('wire:id');
+        const component = window.Livewire.all().find((candidate) => candidate.id === id);
+        await component.$wire[name](...params);
+
+        return { perPage: component.$wire.get('tableRecordsPerPage'), rows: document.querySelectorAll('.fi-ta-row').length };
+    }, [method, args]);
+}
+
+/** The table's column headings, in order. */
+const headings = (page) => page.locator('.fi-ta-table thead th').evaluateAll((ths) => ths.map((th) => (th.textContent || '').trim()).filter((text) => text !== ''));
 
 const rows = (page) => page.locator('.fi-ta-row');
 const orderRow = (page) => rows(page).filter({ hasText: 'e2e.order:1' });
@@ -153,6 +228,8 @@ test.beforeAll(() => {
     seedReaderGrant();
     removeHostile();
     plantHostile();
+    // Already there from `global-setup.js`; idempotent, so a spec run alone meets it too.
+    plantCrossOrgRows();
 });
 
 test.afterAll(() => removeHostile());
@@ -167,12 +244,50 @@ test('is linked from an owner\'s sidebar, and shows the producer\'s row it did n
     expect(response?.status()).toBe(200);
     await expect(page.getByText('A reader holds an entitlement while any of its sources is live.', { exact: true })).toBeVisible();
 
+    // The sentence for a page that names readers, whole: not the one for an operator who has not shown them.
+    await expect(page.getByText('Who may reach what on Golfdom, from which source, and until when.', { exact: true })).toBeVisible();
+    expect((await headings(page)).slice(0, 3)).toEqual(['Reader', 'Email address', 'Entitlement']);
+
     const row = orderRow(page);
     await expect(row).toHaveCount(1);
     await expect(row.locator('td').nth(0)).toHaveText(READER);
+    await expect(row.locator('td').nth(1)).toHaveText(ADDRESS);
+    // Its own direction, whatever the chrome's: an address read right to left is drawn back to front (ADR-037).
+    await expect(row.locator('td').nth(1).locator('[dir="auto"]')).toHaveText(ADDRESS);
     await expect(row).toContainText('course.advanced-php');
     await expect(row.locator('.fi-badge')).toHaveText('Live');
     await expect(row).toContainText('No end');
+});
+
+test('names no reader of another org: Rival\'s reader on this site reads as no account here, and their address is nowhere in the page or on the wire', async ({ page }) => {
+    const bodies = [];
+    page.on('response', (response) => {
+        if (new URL(response.url()).pathname.startsWith('/admin') || new URL(response.url()).pathname.startsWith('/livewire')) {
+            bodies.push(response.text().catch(() => ''));
+        }
+    });
+
+    await page.goto(PAGE);
+
+    const row = rows(page).filter({ hasText: CROSS_ORG.golfdom.entitlement });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('td').nth(0)).toHaveText(READERS.rival2.id);
+    await expect(row.locator('td').nth(1)).toHaveText(NO_ACCOUNT);
+
+    // And again after an update, which carries the snapshot and the table back over the wire.
+    await wire(page, '$refresh');
+    await expect(row.locator('td').nth(1)).toHaveText(NO_ACCOUNT);
+
+    // ⚠️ THE SCAN FINDS AN ADDRESS THAT IS THERE — reader 1's, once, as the text of their one row and in no attribute or
+    // snapshot — so its empty answer for Rival's means something.
+    const golfdom = await foundIn(page, ADDRESS);
+    expect(golfdom.filter((hit) => hit.startsWith('text '))).toHaveLength(1);
+    expect(golfdom.filter((hit) => ! hit.startsWith('text '))).toEqual([]);
+    expect(await foundIn(page, RIVAL_ADDRESS)).toEqual([]);
+
+    const sent = await Promise.all(bodies);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    expect(sent.filter((body) => body.includes(RIVAL_ADDRESS))).toEqual([]);
 });
 
 test('tells the producer\'s row\'s history, granted by the system, as a table with no serious WCAG violations', async ({ page }) => {
@@ -275,6 +390,51 @@ test('is per site', async ({ page }) => {
     await expect(rows(page)).toHaveCount(0);
 });
 
+test('names a reader on the site they hold something on, and on no other site of the org', async ({ page }) => {
+    const sibling = { entitlement: 'e2e.sibling-only', source: 'e2e.plant:5' };
+    plantOnSibling(READERS.golfdom2.id, sibling.entitlement, sibling.source);
+
+    try {
+        // Reader 2 holds nothing on Golfdom yet (`beforeAll` erased them; the keyboard test comps them later).
+        await page.goto(PAGE);
+        await expect(rows(page).filter({ hasText: sibling.entitlement })).toHaveCount(0);
+        expect(await foundIn(page, READERS.golfdom2.email)).toEqual([]);
+
+        // The control: the same org's switch shows them on the site where the row is.
+        await page.goto('/admin/golfdom-fr/entitlements');
+        const row = rows(page).filter({ hasText: sibling.entitlement });
+        await expect(row).toHaveCount(1);
+        await expect(row.locator('td').nth(0)).toHaveText(READERS.golfdom2.id);
+        await expect(row.locator('td').nth(1)).toHaveText(READERS.golfdom2.email);
+    } finally {
+        removePlanted(sibling.source);
+    }
+});
+
+test('shows Rival\'s owner identifiers alone: Golfdom Media\'s switch is not Rival\'s', async ({ browser }) => {
+    const rival = await browser.newContext({ storageState: '.playwright/admin-rival-auth.json' });
+
+    try {
+        const rivalPage = await rival.newPage();
+        expect((await rivalPage.goto('/admin/rival-golfdom/entitlements'))?.status()).toBe(200);
+        await expect(rivalPage.getByText(
+            'Who may reach what on Rival Golfdom, from which source, and until when. Readers are shown by their identifier: their addresses appear here once whoever runs this installation turns them on.',
+            { exact: true },
+        )).toBeVisible();
+        expect(await headings(rivalPage)).not.toContain('Email address');
+
+        // Reader 4 is Rival's own, and still only an identifier here.
+        const row = rows(rivalPage).filter({ hasText: CROSS_ORG.rival.entitlement });
+        await expect(row).toHaveCount(1);
+        await expect(row.locator('td').nth(0)).toHaveText(READERS.rival2.id);
+        await expect(row.locator('td').nth(1)).toHaveText(CROSS_ORG.rival.entitlement);
+        expect(await foundIn(rivalPage, RIVAL_ADDRESS)).toEqual([]);
+        await expect(rivalPage.locator('body')).not.toContainText(NO_ACCOUNT);
+    } finally {
+        await rival.close();
+    }
+});
+
 test('is this org\'s alone', async ({ page, browser }) => {
     expect((await page.request.get('/admin/rival-golfdom/entitlements')).status()).toBe(404);
 
@@ -341,6 +501,8 @@ test('keeps a stored id with a quote in it as text', async ({ page }) => {
     const row = rows(page);
     await expect(row).toHaveCount(1);
     await expect(row.locator('td').nth(0)).toHaveText(HOSTILE);
+    // An identifier no reader can have names nobody, in words — and as text, like the identifier beside it.
+    await expect(row.locator('td').nth(1)).toHaveText(NO_ACCOUNT);
     expect(await page.locator('[onfocus]').count()).toBe(0);
 
     for (const name of ['History', 'Revoke']) {
@@ -392,4 +554,41 @@ test('opens from a link, and never acts from one', async ({ page }) => {
     await expect(field(form, 'Reader')).toHaveValue('');
     await expect(field(form, 'Entitlement')).toHaveValue('');
     expect(rowCount()).toBe(before);
+});
+
+test('is served no-store, so no cache keeps the page a reader\'s address is on', async ({ page }) => {
+    const response = await page.goto(PAGE);
+
+    expect(response?.status()).toBe(200);
+    // ⚠️ LIVEWIRE'S, AND RELIED ON: its back-button middleware sends `no-store` on every page that renders a component —
+    // the dashboard's GET carries the same value (measured) — so core adds no header of its own. This fails if it stops.
+    expect(response?.headers()['cache-control']).toContain('no-store');
+    expect(response?.headers()['cache-control']).toContain('private');
+});
+
+test('holds at 25 rows whatever the browser asks for', async ({ page }) => {
+    const source = 'e2e.plant:4';
+    plantMany(30, source);
+
+    try {
+        const total = Number(tinker(GOLFDOM + " echo DB::table('entitlements')->where('site_id', $site->id)->count();"));
+        // More than a page, and less than two: the second page's count then differs from the first's.
+        expect(total).toBeGreaterThan(25);
+        expect(total).toBeLessThan(50);
+
+        await page.goto(PAGE);
+        await expect(rows(page)).toHaveCount(25);
+
+        // The control: what a page holds is read once the update has answered — the second page's rows, not the first's.
+        expect((await wire(page, 'gotoPage', 2)).rows).toBe(total - 25);
+
+        // ⚠️ THE PROPERTY TAKES WHAT IS ASKED — it reads back as asked — and the page still holds 25.
+        expect(await wire(page, 'set', 'tableRecordsPerPage', 10000)).toEqual({ perPage: 10000, rows: 25 });
+        expect(await wire(page, 'set', 'tableRecordsPerPage', 'all')).toEqual({ perPage: 'all', rows: 25 });
+
+        // Filament keeps what was asked in the session, which every later test of this project shares: put it back.
+        await wire(page, 'set', 'tableRecordsPerPage', 25);
+    } finally {
+        removePlanted(source);
+    }
 });

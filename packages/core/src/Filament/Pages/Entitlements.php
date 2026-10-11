@@ -52,6 +52,7 @@ use Kitsune\Core\Entitlements\EntitlementSource;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Entitlements\GrantOutcome;
 use Kitsune\Core\Filament\AuditActors;
+use Kitsune\Core\Filament\ReaderNames;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entitlement;
@@ -81,7 +82,12 @@ use RuntimeException;
  * writer's doors, chains nothing: the two a render makes, and the four a browser can call by name though this table
  * selects nothing (review). The fifth, a group's keys, fails before any query on a table with no grouping.
  *
- * ⚠️ A READER IS SHOWN BY IDENTIFIER until reader accounts name them (ADR-040).
+ * ⚠️ ~~A READER IS SHOWN BY IDENTIFIER until reader accounts name them (ADR-040).~~ A READER IS SHOWN BY IDENTIFIER, and
+ * beside it their address where the operator shows them (ADR-037 decisions 1 and 2, Adam, 2026-10-10): one read for
+ * the page's readers (`ReaderNames`), held in a private memo for the request and kept nowhere else; the address only
+ * in its own column, as text. The page holds at 25 rows whatever a browser asks (decision 3). Its GET is `no-store`
+ * already: Livewire's back-button middleware sends it on every page that renders a component (measured), and
+ * `e2e/entitlements.spec.js` fails if it ever stops.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
@@ -104,6 +110,18 @@ final class Entitlements extends Page implements HasTable
 
     // Navigation is explicit (`KitsunePanel::navigation()`), and hidden until a usable reader guard is declared.
     protected static bool $shouldRegisterNavigation = false;
+
+    /** Rows a page shows, whatever a browser asks for (ADR-037 decision 3). */
+    public const PER_PAGE = 25;
+
+    /*
+     * ⚠️ PRIVATE, SO NEVER IN THE SNAPSHOT. Livewire serialises a component's public properties into the page and back;
+     * these hold readers' addresses for this request alone, and the identifiers the addresses were read for.
+     */
+    private ?string $namesFor = null;
+
+    /** @var array<string, array{0: string, 1: ?string}> */
+    private array $names = [];
 
     /** What a history row's action reads as; any other is shown as stored. */
     private const ACTIONS = [
@@ -153,8 +171,15 @@ final class Entitlements extends Page implements HasTable
             ]);
         }
 
+        $site = app(Context::class)->site();
+
         return $schema->components([
-            Text::make(__('kitsune::entitlements.intro', ['site' => (string) app(Context::class)->site()?->name])),
+            // One whole sentence per state, never two joined: a translation reorders a sentence, not a seam.
+            Text::make(__(match ($site !== null ? ReaderNames::state($site) : ReaderNames::UNAVAILABLE) {
+                ReaderNames::SHOWN => 'kitsune::entitlements.intro',
+                ReaderNames::HIDDEN => 'kitsune::entitlements.intro_hidden',
+                default => 'kitsune::entitlements.intro_unavailable',
+            }, ['site' => (string) $site?->name])),
             Text::make(__('kitsune::entitlements.holds'))->color('gray'),
             EmbeddedTable::make(),
         ]);
@@ -178,6 +203,16 @@ final class Entitlements extends Page implements HasTable
                 ->when(app(ReaderGuard::class)->fault() !== null, static fn (Builder $query): Builder => $query->whereRaw('0 = 1')))
             ->columns([
                 TextColumn::make('reader_id')->label(__('kitsune::entitlements.column.reader')),
+                /*
+                 * ⚠️ ITS OWN COLUMN, AS TEXT (decision 2): the identifier stays exactly what the Reader filter and Comp
+                 * take, and an address is an attribute, not the identity (ADR-037). `dir="auto"` is static and the one
+                 * extra attribute on the page: under the Arabic admin, `12345@gmail.com` read in the chrome's direction
+                 * is drawn `gmail.com@12345` (measured).
+                 */
+                TextColumn::make('reader_address')->label(__('kitsune::entitlements.column.address'))
+                    ->visible(static fn (): bool => self::namesState() === ReaderNames::SHOWN)
+                    ->state(static fn (Entitlement $record, HasTable $livewire): ?string => $livewire instanceof self ? $livewire->addressLine($record->reader_id) : null)
+                    ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('entitlement')->label(__('kitsune::entitlements.column.entitlement')),
                 TextColumn::make('source')->label(__('kitsune::entitlements.column.source'))
                     ->formatStateUsing(static fn (string $state, Entitlement $record): string => $record->isComp() ? __('kitsune::entitlements.source.comp') : $state),
@@ -199,8 +234,9 @@ final class Entitlements extends Page implements HasTable
             ->recordActions([self::historyAction(), self::revokeAction()])
             ->toolbarActions([])
             ->defaultSort('changed_at', 'desc')
-            ->paginated([25])
-            ->defaultPaginationPageOption(25)
+            // The one size the page holds at (`paginateTableQuery()`), so the select never offers another.
+            ->paginated([self::PER_PAGE])
+            ->defaultPaginationPageOption(self::PER_PAGE)
             // Under a filter, "nothing has been given" would be false of the site: the answer is only that nothing matches.
             ->emptyStateHeading(static fn (HasTable $livewire): string => __(self::narrowed($livewire) ? 'kitsune::entitlements.empty.filtered' : 'kitsune::entitlements.empty.heading'))
             ->emptyStateDescription(static fn (HasTable $livewire): ?string => self::narrowed($livewire) ? null : __('kitsune::entitlements.empty.description'));
@@ -241,7 +277,7 @@ final class Entitlements extends Page implements HasTable
     private static function filters(CarbonImmutable $now): array
     {
         return [
-            self::exact('reader', 'reader_id', 'exact', static fn (string $value): ?string => app(ReaderGuard::class)->key($value)),
+            self::exact('reader', 'reader_id', 'reader_help', static fn (string $value): ?string => app(ReaderGuard::class)->key($value)),
             self::exact('entitlement', 'entitlement', 'exact', static fn (string $value): ?string => EntitlementName::isName($value) ? $value : null),
             // Not "as shown": the column shows a comp as "Comp", which is no source — comps have their own toggle (review).
             self::exact('source', 'source', 'source_help', static fn (string $value): ?string => EntitlementSource::isSource($value) ? $value : null),
@@ -312,7 +348,75 @@ final class Entitlements extends Page implements HasTable
      */
     public function getTableRecords(): Collection|Paginator|CursorPaginator
     {
-        return self::mapped(fn (): Collection|Paginator|CursorPaginator => $this->unmappedTableRecords());
+        // ⚠️ BEFORE ANY READ: Livewire lets a browser call this by name, and it reads readers' addresses.
+        abort_unless(self::canAccess(), 403);
+
+        $records = self::mapped(fn (): Collection|Paginator|CursorPaginator => $this->unmappedTableRecords());
+
+        if (self::namesState() === ReaderNames::SHOWN) {
+            /*
+             * ⚠️ EAGER, ONCE: the page's readers in one read, before any cell asks. Read from a cell's closure instead,
+             * the identifiers rode in Filament's own stack frames (measured), and each cell would ask again.
+             */
+            $ids = [];
+
+            foreach ($records instanceof Paginator || $records instanceof CursorPaginator ? $records->items() : $records->all() as $record) {
+                if ($record instanceof Entitlement) {
+                    $ids[] = (string) $record->reader_id;
+                }
+            }
+
+            $for = implode("\0", $ids);
+
+            if ($for !== $this->namesFor) {
+                $this->names = ReaderNames::of($ids);
+                $this->namesFor = $for;
+            }
+        }
+
+        return $records;
+    }
+
+    /**
+     * ⚠️ HELD AT 25 (decision 3). `tableRecordsPerPage` is a public property a browser can set, and Filament clamps it
+     * nowhere: 10,000 or `all` would list every identified reader with their address in one response (measured). The
+     * count and the page are still the two reads a render makes.
+     *
+     * @param  Builder<Model>  $query
+     * @return Paginator<array-key, Model>|CursorPaginator<array-key, Model>
+     */
+    protected function paginateTableQuery(Builder $query): Paginator|CursorPaginator
+    {
+        return $query->paginate(
+            perPage: self::PER_PAGE,
+            pageName: $this->getTablePaginationPageName(),
+            total: $query->toBase()->getCountForPagination(),
+        )->onEachSide(0);
+    }
+
+    /** Whether this site's page names readers (`ReaderNames::state()`), or why not. */
+    private static function namesState(): string
+    {
+        $site = app(Context::class)->site();
+
+        return $site !== null ? ReaderNames::state($site) : ReaderNames::UNAVAILABLE;
+    }
+
+    /**
+     * What the address column says for one identifier: the address, or words that are true of it. Nothing when the
+     * identifier was not read — a false "no account" would be worse than an empty cell.
+     */
+    private function addressLine(string $readerId): ?string
+    {
+        [$found, $value] = $this->names[$readerId] ?? [null, null];
+
+        return match ($found) {
+            ReaderNames::NAMED => $value,
+            ReaderNames::NONE => __('kitsune::entitlements.address.none'),
+            ReaderNames::UNSHOWN => __('kitsune::entitlements.address.unshown'),
+            ReaderNames::UNREAD => __('kitsune::entitlements.address.unread', ['state' => (string) $value]),
+            default => null,
+        };
     }
 
     /**

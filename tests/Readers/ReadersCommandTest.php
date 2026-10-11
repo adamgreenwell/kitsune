@@ -15,12 +15,14 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderErasure;
 use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Settings\SettingsWriter;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
+use Kitsune\Core\Tests\Fixtures\KeyNotIdentifierReader;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\ShoutingReader;
 use Kitsune\Core\Tests\Fixtures\TestReader;
@@ -68,7 +70,7 @@ function readersRun(array $parameters, string $stdin = ''): array
 
 it('refuses an action it does not have', function (): void {
     expect(readersRun(['action' => 'delete']))
-        ->toBe([1, 'Refusing: kitsune:readers has five actions — status, mode, find, export and erase. Nothing was read or written.']);
+        ->toBe([1, 'Refusing: kitsune:readers has six actions — status, mode, addresses, find, export and erase. Nothing was read or written.']);
 });
 
 it('needs an organisation for everything but status, and names one it cannot find', function (string $action): void {
@@ -130,12 +132,12 @@ it('lists each site\'s mode and where it comes from', function (): void {
 
     expect($status)->toBe(0)
         ->and(array_slice(explode("\n", $output), 4))->toBe([
-            'Site [admin-only]: open (inherited from the organisation) — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one.',
-            'Site [golfdom]: open (inherited from the organisation).',
-            'Site [golfdom-fr]: sign-in (set on this site).',
+            'Site [admin-only]: open (inherited from the organisation); addresses hidden from owners (platform default) — it has no public address yet, so no reader page can be reached; kitsune:site address gives it one.',
+            'Site [golfdom]: open (inherited from the organisation); addresses hidden from owners (platform default).',
+            'Site [golfdom-fr]: sign-in (set on this site); addresses hidden from owners (platform default).',
         ]);
 
-    expect(readersRun(['action' => 'status', '--org' => 'rival'])[1])->toContain('Site [rival]: off (platform default).');
+    expect(readersRun(['action' => 'status', '--org' => 'rival'])[1])->toContain('Site [rival]: off (platform default); addresses hidden from owners (platform default).');
 });
 
 // ---- mode -----------------------------------------------------------------------------------------------------------
@@ -166,6 +168,282 @@ it('refuses a mode it does not have, and a site the org does not have', function
         ->and(readersRun(['action' => 'mode', 'value' => 'open', '--org' => 'golfdom', '--site' => 'rival']))
         ->toBe([1, 'Refusing: [golfdom] has no site with the handle [rival]. Nothing was written.'])
         ->and($this->world['sites']['rival']->fresh()->settings)->toBeNull();
+});
+
+// ---- addresses ------------------------------------------------------------------------------------------------------
+
+/**
+ * Every settings change audited so far, oldest first, as the action, the org it is filed under and its target.
+ *
+ * @return list<array{0: string, 1: string, 2: string, 3: string}>
+ */
+function readersSettingsAudit(): array
+{
+    return DB::table('audit_log')
+        ->whereIn('action', [SettingsWriter::SET, SettingsWriter::REVERTED])
+        ->orderBy('id')
+        ->get(['action', 'org_id', 'target_type', 'target_id'])
+        ->map(static fn (object $row): array => [(string) $row->action, (string) $row->org_id, (string) $row->target_type, (string) $row->target_id])
+        ->all();
+}
+
+/** The stored settings of an org or a site, read below every scope — what the row holds, whoever owns it. */
+function readersStored(string $table, mixed $id): mixed
+{
+    $settings = DB::table($table)->where('id', $id)->value('settings');
+
+    return $settings === null ? null : json_decode((string) $settings, true, 512, JSON_THROW_ON_ERROR);
+}
+
+it('needs an organisation to set addresses, and names one it cannot find', function (): void {
+    expect(readersRun(['action' => 'addresses', 'value' => 'shown']))->toBe([1, 'Refusing: addresses needs --org=<slug>. Nothing was read or written.'])
+        ->and(readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'nowhere']))
+        ->toBe([1, 'Refusing: no organisation has the slug [nowhere]. Nothing was read or written.'])
+        ->and(readersSettingsAudit())->toBe([]);
+});
+
+it('shows an organisation\'s readers\' addresses to its owners and hides them again, audited as any settings change is', function (): void {
+    $golfdom = $this->world['golfdom'];
+    ReaderFixture::mode($golfdom, 'open');
+    $target = [(string) $golfdom->getKey(), $golfdom->getMorphClass(), (string) $golfdom->getKey()];
+
+    expect(readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']))->toBe([0, 'Readers\' addresses on [golfdom]: shown.'])
+        // Beside the mode, which it leaves as it was.
+        ->and(readersStored('orgs', $golfdom->getKey()))->toBe(['reader_accounts' => 'open', 'reader_addresses' => 'shown'])
+        ->and(readersSettingsAudit())->toBe([[SettingsWriter::SET, ...$target]])
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['golfdom']))->toBeTrue()
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['golfdom-fr']))->toBeTrue();
+
+    // ⚠️ The other org, from its side: nothing of golfdom's choice reaches it.
+    expect(readersStored('orgs', $this->world['rival']->getKey()))->toBeNull()
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['rival']))->toBeFalse()
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['shop']))->toBeFalse();
+
+    expect(readersRun(['action' => 'addresses', 'value' => 'hidden', '--org' => 'golfdom']))->toBe([0, 'Readers\' addresses on [golfdom]: hidden.'])
+        ->and(readersStored('orgs', $golfdom->getKey()))->toBe(['reader_accounts' => 'open', 'reader_addresses' => 'hidden'])
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['golfdom']))->toBeFalse();
+
+    expect(readersRun(['action' => 'addresses', 'value' => 'inherit', '--org' => 'golfdom']))->toBe([0, 'Readers\' addresses on [golfdom]: inherit.'])
+        ->and(readersStored('orgs', $golfdom->getKey()))->toBe(['reader_accounts' => 'open'])
+        ->and(readersSettingsAudit())->toBe([[SettingsWriter::SET, ...$target], [SettingsWriter::SET, ...$target], [SettingsWriter::REVERTED, ...$target]]);
+
+    // A revert of a key nothing holds changes nothing, so nothing is recorded.
+    expect(readersRun(['action' => 'addresses', 'value' => 'inherit', '--org' => 'golfdom']))->toBe([0, 'Readers\' addresses on [golfdom]: inherit.'])
+        ->and(readersSettingsAudit())->toHaveCount(3);
+});
+
+/**
+ * The refusal of a site: an address setting is the organisation's alone.
+ *
+ * @return array{0: int, 1: string}
+ */
+function readersSiteRefused(): array
+{
+    return [1, 'Refusing: readers\' addresses are shown or hidden for a whole organisation, whose readers they are — a site\'s owners could name the same readers on a sibling\'s page. Leave --site off. Nothing was written.'];
+}
+
+/**
+ * The refusal of a value the switch does not have.
+ *
+ * @return array{0: int, 1: string}
+ */
+function readersValueRefused(): array
+{
+    return [1, 'Refusing: readers\' addresses are hidden or shown to an organisation\'s owners — or inherit, to use the platform\'s default. Nothing was written.'];
+}
+
+it('refuses a site before it looks for the organisation, and writes nothing — a handle the org has, one only another org has, or one none has', function (string $org, string $handle, string $value): void {
+    $fr = $this->world['sites']['golfdom-fr'];
+    // A site holding a setting of its own, which the refusal leaves as it was.
+    ReaderFixture::mode($fr, 'sign-in');
+    readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']);
+    $audited = readersSettingsAudit();
+
+    expect(readersRun(['action' => 'addresses', 'value' => $value, '--org' => $org, '--site' => $handle]))->toBe(readersSiteRefused())
+        // Before the organisation is looked for: a slug no organisation has is not what it says.
+        ->and(readersRun(['action' => 'addresses', 'value' => $value, '--org' => 'nowhere', '--site' => $handle]))->toBe(readersSiteRefused())
+        ->and(readersSettingsAudit())->toBe($audited)
+        ->and(readersStored('sites', $fr->getKey()))->toBe(['reader_accounts' => 'sign-in'])
+        ->and(readersStored('sites', $this->world['sites']['golfdom']->getKey()))->toBeNull()
+        ->and(readersStored('sites', $this->world['sites']['rival']->getKey()))->toBeNull()
+        ->and(readersStored('sites', $this->world['sites']['shop']->getKey()))->toBeNull()
+        ->and(readersStored('orgs', $this->world['golfdom']->getKey()))->toBe(['reader_addresses' => 'shown'])
+        ->and(readersStored('orgs', $this->world['rival']->getKey()))->toBeNull()
+        // Every site still reads its own organisation's choice.
+        ->and(app(ReaderAccounts::class)->addresses($fr))->toBeTrue()
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['golfdom']))->toBeTrue()
+        ->and(app(ReaderAccounts::class)->addresses($this->world['sites']['shop']))->toBeFalse();
+})->with([
+    'a site of the org' => ['golfdom', 'golfdom-fr'],
+    // ⚠️ From the other side: rival naming golfdom's site.
+    'another org\'s site' => ['rival', 'golfdom-fr'],
+    'a handle only another org has' => ['golfdom', 'shop'],
+    'a handle no site has' => ['golfdom', 'nowhere'],
+])->with(['shown', 'hidden', 'inherit']);
+
+it('refuses a value it does not have before anything else it would refuse, and writes nothing', function (?string $value): void {
+    $parameters = $value === null ? ['action' => 'addresses'] : ['action' => 'addresses', 'value' => $value];
+
+    expect(readersRun([...$parameters, '--org' => 'golfdom']))->toBe(readersValueRefused())
+        // Before a site is refused, and before the organisation is looked for.
+        ->and(readersRun([...$parameters, '--org' => 'golfdom', '--site' => 'golfdom-fr']))->toBe(readersValueRefused())
+        ->and(readersRun([...$parameters, '--org' => 'nowhere']))->toBe(readersValueRefused())
+        ->and(DB::table('orgs')->whereNotNull('settings')->count())->toBe(0)
+        ->and(DB::table('sites')->whereNotNull('settings')->count())->toBe(0)
+        ->and(readersSettingsAudit())->toBe([]);
+})->with([
+    'none' => [null],
+    'empty' => [''],
+    'upper case' => ['SHOWN'],
+    'title case' => ['Shown'],
+    'padded' => [' shown'],
+    'another word' => ['visible'],
+    'true' => ['true'],
+    'one' => ['1'],
+    'a mode\'s word' => ['open'],
+    'off' => ['off'],
+]);
+
+it('keeps the two switches apart: a mode is not an address setting, nor the reverse, and only a mode is set on a site', function (): void {
+    $mode = 'Refusing: a site\'s reader accounts are off, sign-in or open — or inherit, to use the level above. Nothing was written.';
+
+    expect(readersRun(['action' => 'addresses', 'value' => 'sign-in', '--org' => 'golfdom']))->toBe(readersValueRefused())
+        ->and(readersRun(['action' => 'mode', 'value' => 'shown', '--org' => 'golfdom']))->toBe([1, $mode])
+        ->and(readersRun(['action' => 'mode', 'value' => 'hidden', '--org' => 'golfdom', '--site' => 'golfdom-fr']))->toBe([1, $mode])
+        ->and(readersSettingsAudit())->toBe([]);
+
+    // The same site, each switch its own way: a mode is set on it, and an address setting is refused there.
+    expect(readersRun(['action' => 'mode', 'value' => 'open', '--org' => 'golfdom', '--site' => 'golfdom-fr']))->toBe([0, 'Reader accounts on [golfdom-fr]: open.'])
+        ->and(readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom', '--site' => 'golfdom-fr']))->toBe(readersSiteRefused())
+        ->and(readersStored('sites', $this->world['sites']['golfdom-fr']->getKey()))->toBe(['reader_accounts' => 'open'])
+        ->and(readersStored('orgs', $this->world['golfdom']->getKey()))->toBeNull()
+        ->and(readersSettingsAudit())->toHaveCount(1);
+});
+
+it('says on each site\'s line whether owners see addresses and where that comes from — and never an address', function (): void {
+    $rivalReader = ReaderFixture::reader($this->world['rival'], 'rival-subscriber@kitsune.test');
+    EntitlementFixture::plant($this->world['sites']['golfdom'], (string) $this->reader->getKey(), 'course.advanced-php');
+    EntitlementFixture::plant($this->world['sites']['rival'], (string) $rivalReader->getKey(), 'course.advanced-php');
+    // A site's own mode, beside its organisation's addresses.
+    ReaderFixture::mode($this->world['sites']['golfdom-fr'], 'sign-in');
+    readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']);
+
+    [$status, $output] = readersRun(['action' => 'status', '--org' => 'golfdom']);
+
+    expect($status)->toBe(0)
+        ->and(array_slice(explode("\n", $output), 4))->toBe([
+            'Site [golfdom]: off (platform default); addresses shown to owners (inherited from the organisation).',
+            'Site [golfdom-fr]: sign-in (set on this site); addresses shown to owners (inherited from the organisation).',
+        ]);
+
+    // ⚠️ The other org, from its side: golfdom's choice is not on its lines.
+    [$status, $rival] = readersRun(['action' => 'status', '--org' => 'rival']);
+
+    expect($status)->toBe(0)
+        ->and(array_slice(explode("\n", $rival), 4))->toBe([
+            'Site [rival]: off (platform default); addresses hidden from owners (platform default).',
+            'Site [shop]: off (platform default); addresses hidden from owners (platform default).',
+        ]);
+
+    readersRun(['action' => 'addresses', 'value' => 'hidden', '--org' => 'golfdom']);
+    $outputs = [$output, $rival, $hidden = readersRun(['action' => 'status', '--org' => 'golfdom'])[1]];
+
+    expect(array_slice(explode("\n", $hidden), 4))->toBe([
+        'Site [golfdom]: off (platform default); addresses hidden from owners (inherited from the organisation).',
+        'Site [golfdom-fr]: sign-in (set on this site); addresses hidden from owners (inherited from the organisation).',
+    ]);
+
+    readersRun(['action' => 'addresses', 'value' => 'inherit', '--org' => 'golfdom']);
+    $outputs[] = $inherited = readersRun(['action' => 'status', '--org' => 'golfdom'])[1];
+
+    expect(array_slice(explode("\n", $inherited), 4))->toBe([
+        'Site [golfdom]: off (platform default); addresses hidden from owners (platform default).',
+        'Site [golfdom-fr]: sign-in (set on this site); addresses hidden from owners (platform default).',
+    ]);
+
+    // A platform default of shown, said as one.
+    config(['kitsune.settings.reader_addresses' => 'shown']);
+    app()->forgetScopedInstances();
+    $outputs[] = $default = readersRun(['action' => 'status', '--org' => 'golfdom'])[1];
+
+    expect(array_slice(explode("\n", $default), 4))->toBe([
+        'Site [golfdom]: off (platform default); addresses shown to owners (platform default).',
+        'Site [golfdom-fr]: sign-in (set on this site); addresses shown to owners (platform default).',
+    ]);
+
+    // Readers with grants on these sites, and not one address, nor any part of one, on any line.
+    foreach ($outputs as $printed) {
+        expect(str_contains($printed, '@'))->toBeFalse($printed)
+            ->and(str_contains($printed, 'subscriber'))->toBeFalse($printed);
+    }
+});
+
+it('says hidden on the status line for any address setting a site holds — a value only a write below Eloquent could leave', function (string $stored): void {
+    readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']);
+    // Below Eloquent, as only a hand-written query could: `SettingsGuard` refuses it on every save, whatever its value.
+    DB::table('sites')->where('id', $this->world['sites']['golfdom-fr']->getKey())->update(['settings' => json_encode(['reader_addresses' => $stored])]);
+
+    expect(array_slice(explode("\n", readersRun(['action' => 'status', '--org' => 'golfdom'])[1]), 4))->toBe([
+        'Site [golfdom]: off (platform default); addresses shown to owners (inherited from the organisation).',
+        // Not "set on this site": the site chose nothing, since the setting is the organisation's (review).
+        'Site [golfdom-fr]: off (platform default); addresses hidden from owners (a value stored below the organisation is ignored — the setting is the organisation\'s).',
+    ]);
+})->with([
+    'a word nothing stores' => ['SHOWN'],
+    // ⚠️ Even the organisation's own word: a site's value is not read.
+    'shown' => ['shown'],
+    'hidden' => ['hidden'],
+]);
+
+it('says addresses cannot be shown on each site\'s line where this installation\'s reader accounts cannot name readers, even with the org set to shown', function (array $config, int $exit): void {
+    readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']);
+
+    // ⚠️ The control: the skeleton's reader can be named, so what follows is the accounts' doing, not the organisation's.
+    expect(array_slice(explode("\n", readersRun(['action' => 'status', '--org' => 'golfdom'])[1]), 4))->toBe([
+        'Site [golfdom]: off (platform default); addresses shown to owners (inherited from the organisation).',
+        'Site [golfdom-fr]: off (platform default); addresses shown to owners (inherited from the organisation).',
+    ]);
+
+    config($config);
+    // A new process, as a deploy that changed its configuration would run: no guard built yet.
+    ReaderFixture::forget();
+
+    [$status, $output] = readersRun(['action' => 'status', '--org' => 'golfdom']);
+
+    expect($status)->toBe($exit)
+        ->and(array_slice(explode("\n", $output), 4))->toBe([
+            'Site [golfdom]: off (platform default); addresses cannot be shown to owners (this installation\'s reader accounts cannot name readers).',
+            'Site [golfdom-fr]: off (platform default); addresses cannot be shown to owners (this installation\'s reader accounts cannot name readers).',
+        ])
+        // The organisation's choice stands, for when they can be named.
+        ->and(readersStored('orgs', $this->world['golfdom']->getKey()))->toBe(['reader_addresses' => 'shown']);
+})->with([
+    'a reader model identified by another column than its key' => [['auth.providers.readers.model' => KeyNotIdentifierReader::class], 0],
+    'a token guard over the skeleton\'s reader' => [['auth.guards.readers.driver' => 'token'], 1],
+    'a model without the contract' => [['auth.providers.readers.model' => TestReader::class], 1],
+    'no guard declared' => [['kitsune.readers.guard' => null], 0],
+]);
+
+it('says, when it writes the address setting, that it has no effect yet where readers cannot be named', function (array $config): void {
+    config($config);
+    ReaderFixture::forget();
+
+    foreach (['shown', 'hidden', 'inherit'] as $value) {
+        expect(readersRun(['action' => 'addresses', 'value' => $value, '--org' => 'golfdom']))->toBe([0, implode("\n", [
+            "Readers' addresses on [golfdom]: {$value}.",
+            'This installation\'s reader accounts cannot name readers yet, so the entitlements page shows identifiers until they can — kitsune:readers status says why.',
+        ])]);
+    }
+
+    // Written all the same, for when they can be named.
+    expect(readersStored('orgs', $this->world['golfdom']->getKey()))->toBeNull();
+})->with([
+    'a reader model identified by another column than its key' => [['auth.providers.readers.model' => KeyNotIdentifierReader::class]],
+    'a token guard over the skeleton\'s reader' => [['auth.guards.readers.driver' => 'token']],
+]);
+
+it('says nothing more when it writes the address setting where readers can be named', function (): void {
+    expect(readersRun(['action' => 'addresses', 'value' => 'shown', '--org' => 'golfdom']))->toBe([0, "Readers' addresses on [golfdom]: shown."]);
 });
 
 // ---- find -----------------------------------------------------------------------------------------------------------
@@ -442,8 +720,8 @@ it('names each site no link can be mailed from, and why', function (): void {
     $lines = explode("\n", readersRun(['action' => 'status', '--org' => 'rival'])[1]);
 
     expect(array_slice($lines, 4))->toBe([
-        'Site [rival]: off (platform default) — no link can be mailed from it, because it has no host of its own; kitsune:site address gives it one.',
-        'Site [shop]: off (platform default) — no link can be mailed from it, because its address names no scheme; kitsune:site address gives it one.',
+        'Site [rival]: off (platform default); addresses hidden from owners (platform default) — no link can be mailed from it, because it has no host of its own; kitsune:site address gives it one.',
+        'Site [shop]: off (platform default); addresses hidden from owners (platform default) — no link can be mailed from it, because its address names no scheme; kitsune:site address gives it one.',
     ]);
 });
 

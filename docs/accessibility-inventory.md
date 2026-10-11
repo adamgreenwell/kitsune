@@ -60,6 +60,20 @@ badge says its word, so colour is never the only cue. Scanned with the Comp moda
 keyboard alone, and in the accessibility and RTL scans (`entitlements.spec.js`, `accessibility.spec.js`,
 `rtl.spec.js`). Inherited and recorded: the same grey placeholder elsewhere in the admin, where Filament draws it.
 
+*Amended 2026-10-10 (ADR-037 decisions 1–3, readers named):* where the operator shows them, the entitlements page has an
+*Email address* column beside *Reader* — Filament's own text column, the address as text, with a static `dir="auto"`,
+since an address reads left to right and core's words are English: in an RTL paragraph `12345@gmail.com` is drawn
+`gmail.com@12345` (measured with the system's text layout), and with it the cell's first character is drawn left of its
+last under the Arabic admin (measured in Chromium, `rtl.spec.js`, which fails without it). The intro says in one whole sentence whether addresses are shown, hidden by the operator, or cannot be
+named here, and every cell that holds no address says why in words, never by colour or emptiness alone. A 255-byte
+address is a 2,119.75 px cell, which Filament's table container scrolls inside the page at 320, 390 and 1,280 px; the
+page itself never scrolls sideways. Scanned by axe with the new column and its words, LTR and RTL. Inherited and
+recorded: `.fi-layout` is `overflow-x: clip`, so the RTL scan's "does not overflow horizontally" checks cannot fail on
+any Filament page (measured) — the new check asserts the table container scrolls instead; the intro's full stop is
+drawn at the start of the line under RTL, as the media tiles' line was before its `dir="auto"`, on this page and every
+other with an intro of core's; and 200 % zoom on this page is not measured. Owed: §5's screen-reader pass, now with the
+new column (item 5).
+
 *Amended 2026-10-09 (ADR-042 decisions 39–42, the media list's tiles):* a media type's list is core's own markup inside
 Filament's card grid, with inline Alpine: a private tile's script of about 40 lines, the same bytes on every tile with no
 value of PHP's in it, and three attributes and a badge on a public tile. Its own conformance, each measured in Chromium:
@@ -303,5 +317,9 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    after its grant is revoked, and signed out. Record what is heard: whether the description and the live region are
    both spoken, how "unavailable" sounds once a tile is shown, and whether a refusal heard after focus has moved on
    makes sense without naming its file.
+5. **Read the entitlements page's addresses with NVDA and VoiceOver** (*added 2026-10-10, ADR-037 decisions 1–3*) — a
+   row named by its address, one with no account, and one that could not be read. Record whether the *Email address*
+   header is announced with each cell, whether an address is spelled sensibly, and whether the intro's three sentences
+   make the page's state clear before the table.
 
 Until those happen, the honest claim is the one at the top of this document: no detectable failures, on a surface that is almost entirely inherited. That is a good starting position and it is not a conformance statement, and ADR-018 is explicit that a boilerplate conformance claim is exactly what this project will not make.

@@ -1,4 +1,6 @@
 // @ts-check
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 
@@ -90,6 +92,92 @@ const geometry = (selectors) => {
         boxes,
     };
 };
+
+function tinker(code) {
+    return execFileSync('php', ['artisan', 'tinker', '--execute', code], { cwd: path.join(__dirname, '..', 'skeleton'), encoding: 'utf8' }).trim();
+}
+
+/** Golfdom Media's org and Golfdom's site, below Eloquent. */
+const GOLFDOM = "$site = DB::table('sites')->where('slug', 'golfdom')->first();";
+
+/**
+ * A reader in Golfdom Media for each address, and a row on Golfdom for each under its own entitlement — below Eloquent,
+ * as a host could have stored them; idempotent on each table's unique key.
+ */
+function plantAddresses(pairs) {
+    for (const [address, entitlement] of pairs) {
+        const printed = tinker(GOLFDOM
+            + ` DB::table('readers')->insertOrIgnore(['org_id' => $site->org_id, 'email' => '${address}', 'created_at' => now('UTC'), 'updated_at' => now('UTC')]);`
+            + ` $id = DB::table('readers')->where('org_id', $site->org_id)->where('email', '${address}')->value('id');`
+            + ` DB::table('entitlements')->insertOrIgnore(['org_id' => $site->org_id, 'site_id' => $site->id, 'reader_id' => (string) $id,`
+            + ` 'entitlement' => '${entitlement}', 'source' => 'e2e.plant:6', 'changed_at' => now('UTC')->format('Y-m-d H:i:s')]);`
+            + ` echo DB::table('entitlements')->where('site_id', $site->id)->where('reader_id', (string) $id)->where('entitlement', '${entitlement}')->count();`);
+
+        if (printed !== '1') {
+            throw new Error(`rtl.spec: the reader for ${entitlement} was not planted:\n${printed}`);
+        }
+    }
+}
+
+function removeAddresses(addresses) {
+    tinker(GOLFDOM
+        + " DB::table('entitlements')->where('source', 'e2e.plant:6')->delete();"
+        + ` DB::table('readers')->where('org_id', $site->org_id)->whereIn('email', ${JSON.stringify(addresses).replace(/"/g, "'")})->delete();`);
+}
+
+/** The address column's own element in the row for one entitlement — the one carrying `dir`, as Filament renders it. */
+const addressCell = (page, entitlement) => page.locator('.fi-ta-row').filter({ hasText: entitlement }).locator('td').nth(1).locator('[dir="auto"]');
+
+/**
+ * Run in the page against an address cell: where its address's first and last characters are drawn and, when asked to
+ * reach them, whether the cell cuts any of it, how the nearest box that it is wider than scrolls, and whether each end
+ * can be scrolled into the viewport there.
+ */
+function drawnAddress(el, [text, reach]) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+
+    while (node !== null && ! (node.textContent || '').includes(text)) {
+        node = walker.nextNode();
+    }
+
+    const start = (node.textContent || '').indexOf(text);
+    const ends = [start, start + text.length - 1];
+    const at = (offset) => {
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.setEnd(node, offset + 1);
+
+        return range.getClientRects()[0];
+    };
+    const drawn = { first: at(ends[0]).left, last: at(ends[1]).left };
+
+    if (! reach) {
+        return drawn;
+    }
+
+    let scroller = el.parentElement;
+
+    while (scroller !== null && scroller.scrollWidth <= scroller.clientWidth) {
+        scroller = scroller.parentElement;
+    }
+
+    const seen = [];
+
+    for (const offset of scroller === null ? [] : ends) {
+        const box = scroller.getBoundingClientRect();
+        scroller.scrollBy({ left: at(offset).left - (box.left + box.width / 2), behavior: 'instant' });
+        const after = at(offset);
+        seen.push(after.left >= Math.max(box.left, 0) && after.right <= Math.min(box.right, window.innerWidth));
+    }
+
+    return {
+        ...drawn,
+        cut: el.scrollWidth > el.clientWidth,
+        scroller: scroller === null ? null : (scroller.closest('.fi-ta') !== null ? getComputedStyle(scroller).overflowX : `outside the table: ${scroller.className}`),
+        seen,
+    };
+}
 
 test.describe('the admin renders right-to-left (ADR-018)', () => {
     for (const [name, url] of PAGES) {
@@ -267,6 +355,59 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
         );
 
         expect(blocking).toEqual([]);
+    });
+
+    /*
+     * ⚠️ A READER'S ADDRESS READS IN ITS OWN DIRECTION — ADR-037 decision 2, the address column. Under the Arabic admin a
+     * cell that takes the chrome's direction draws an address back to front: with its `dir` taken off in this browser,
+     * `12345@kitsune.test`'s `1` was drawn right of its last `t` (measured). And the longest address a reader can have —
+     * 255 bytes, `64@63.62.61.e` — must be readable whole at a phone's width and a desktop's.
+     *
+     * ⚠️ LAST, AND PUT BACK: both readers and their rows are planted below Eloquent in Golfdom Media and removed after,
+     * so no scan above meets them and a run after this one starts as this one did.
+     */
+    test('a reader\'s address reads left to right in its own cell under RTL, and the longest one can be read whole at any width', async ({ page }) => {
+        const digits = '12345@kitsune.test';
+        const longest = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(62)}.${'d'.repeat(61)}.e`;
+        expect(Buffer.byteLength(longest)).toBe(255);
+
+        plantAddresses([[digits, 'e2e.rtl-digits'], [longest, 'e2e.rtl-longest']]);
+
+        try {
+            await page.goto(`/admin/${SITE}/entitlements`);
+            await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+
+            const cell = addressCell(page, 'e2e.rtl-digits');
+            await expect(cell).toHaveText(digits);
+            expect(await cell.evaluate((el) => getComputedStyle(el).direction)).toBe('ltr');
+
+            // Where the first character and the last are drawn, not what the DOM holds: `1` left of `t`.
+            const drawn = await cell.evaluate(drawnAddress, [digits, false]);
+            expect(drawn.first).toBeLessThan(drawn.last);
+
+            for (const width of [320, 390, 1280]) {
+                await page.setViewportSize({ width, height: 844 });
+                await page.goto(`/admin/${SITE}/entitlements`);
+
+                const longestCell = addressCell(page, 'e2e.rtl-longest');
+                await expect(longestCell).toHaveText(longest);
+
+                const { scrollWidth, clientWidth } = await page.evaluate(geometry, LANDMARKS);
+                expect(scrollWidth, `the page at ${width}px`).toBeLessThanOrEqual(clientWidth);
+
+                /*
+                 * ⚠️ AND THE ADDRESS CAN BE READ, which the line above cannot show alone: Filament's `.fi-layout` is
+                 * `overflow-x: clip` (measured at all three widths), so a page whose table pushed past the edge is cut
+                 * there rather than widened. So: the cell cuts nothing of its address, the width it takes is scrolled
+                 * by the table's own container, and each end of the address can be scrolled into the viewport.
+                 */
+                const { cut, scroller, seen } = await longestCell.evaluate(drawnAddress, [longest, true]);
+
+                expect({ cut, scroller, seen }, `the address at ${width}px`).toEqual({ cut: false, scroller: 'auto', seen: [true, true] });
+            }
+        } finally {
+            removeAddresses([digits, longest]);
+        }
     });
 });
 

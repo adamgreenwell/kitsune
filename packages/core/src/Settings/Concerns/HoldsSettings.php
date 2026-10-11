@@ -47,7 +47,7 @@ trait HoldsSettings
     public static function bootHoldsSettings(): void
     {
         static::saving(static function (self $model): void {
-            SettingsGuard::check(self::settingsThisSaveLeaves($model), class_basename($model).' '.($model->getKey() ?? '(new)'));
+            SettingsGuard::check(self::settingsThisSaveLeaves($model), class_basename($model).' '.($model->getKey() ?? '(new)'), SettingsGuard::levelOf($model));
         });
     }
 

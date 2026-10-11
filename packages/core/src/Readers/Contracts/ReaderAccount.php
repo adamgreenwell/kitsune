@@ -13,8 +13,9 @@ namespace Kitsune\Core\Readers\Contracts;
 /**
  * What core asks of the host's reader model — ADR-037, as built: the host owns a reader's identity (its guard, provider,
  * model and table), and core owns the front door (sign-in, and later sign-up and recovery). Core reads and writes the
- * host's row through these five methods only, as ADR-039's `ProvisionsMembership` lets core create the first owner
- * without naming the host's columns.
+ * host's row through these five methods, as ADR-039's `ProvisionsMembership` lets core create the first owner without
+ * naming the host's columns; otherwise it only finds a row by its key within the org — `ReaderGuard::canonical()`,
+ * `ReaderExport::find()` and the entitlements page's `ReaderNames` — and reads it back through these methods.
  *
  * Every method runs with the reader's org in Context. An address arrives normalised (`EmailAddress::normalise()`:
  * lower-case ASCII), and a password arrives already hashed: core never hands the host a plain password.

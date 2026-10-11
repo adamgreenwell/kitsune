@@ -53,6 +53,10 @@ return [
         // SAYS OTHERWISE, per org or per site (`kitsune:readers mode`): a stock install serves no reader page, and a
         // host map that drops the key reads as `off` too.
         'reader_accounts' => 'off',
+        // Whether owners see readers' addresses on the entitlements page (ADR-037 decision 1): `hidden` or `shown`.
+        // ⚠️ `hidden` UNTIL THE OPERATOR SAYS OTHERWISE (`kitsune:readers addresses`), who is the data controller
+        // (ADR-020); nothing in the admin writes it, and a host map that drops the key reads as `hidden` too.
+        'reader_addresses' => 'hidden',
     ],
 
     /*

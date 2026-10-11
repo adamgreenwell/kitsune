@@ -17,7 +17,11 @@ declare(strict_types=1);
 return [
     'title' => 'Entitlements',
     'navigation' => 'Entitlements',
-    'intro' => 'Who may reach what on :site, from which source, and until when. Readers are shown by their identifier until reader accounts arrive.',
+    // ADR-037 decision 1 (Adam, 2026-10-10): one whole sentence for each — readers named, hidden by the operator, or
+    // a reader model that cannot name them here.
+    'intro' => 'Who may reach what on :site, from which source, and until when.',
+    'intro_hidden' => 'Who may reach what on :site, from which source, and until when. Readers are shown by their identifier: their addresses appear here once whoever runs this installation turns them on.',
+    'intro_unavailable' => 'Who may reach what on :site, from which source, and until when. Readers are shown by their identifier: this installation\'s reader accounts cannot name them here.',
     'holds' => 'A reader holds an entitlement while any of its sources is live.',
     'fault' => [
         'heading' => 'No reader can be told apart yet',
@@ -30,6 +34,8 @@ return [
     ],
     'column' => [
         'reader' => 'Reader',
+        // ADR-037 decision 2 (Adam, 2026-10-10): its own column, beside the identifier.
+        'address' => 'Email address',
         'entitlement' => 'Entitlement',
         'source' => 'Source',
         'state' => 'State',
@@ -38,6 +44,12 @@ return [
     ],
     'source' => [
         'comp' => 'Comp',
+    ],
+    // What the address column says when it shows no address — each true in every case it covers (ADR-037, as built).
+    'address' => [
+        'none' => 'No account in this organisation',
+        'unshown' => 'An account in this organisation, whose stored address cannot be shown',
+        'unread' => 'Could not be read (SQLSTATE :state) — tell whoever runs this installation',
     ],
     'state' => [
         'live' => 'Live',
@@ -54,6 +66,8 @@ return [
         'comps' => 'Comps only',
         'state' => 'State',
         'exact' => 'Exactly as shown in the table.',
+        // Its own words since addresses can be shown beside it (review): the filter takes the identifier, never an address.
+        'reader_help' => 'The reader\'s identifier, exactly as shown in the Reader column.',
         'source_help' => 'Exactly as stored, such as commerce.order:4821. For comps, use Comps only.',
     ],
     'comp' => [

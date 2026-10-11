@@ -1192,6 +1192,32 @@ org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR me
 
 `locked_keys`, this entry's open question, is still open; nothing in this key needs it.
 
+### Amendment — a third platform key, `reader_addresses`, the organisation's alone, 2026-10-10
+
+**Status:** Amended · ADR-037 decision 1, as built
+
+`reader_addresses` decides whether an organisation's owners see each reader's address beside their identifier on the
+entitlements page (ADR-037 decision 1, Adam): `hidden` or `shown`.
+
+- **Default `hidden`**, in core's `config/kitsune.php` `settings`: a fresh install names no reader until the operator,
+  the data controller (ADR-020), runs `kitsune:readers addresses shown --org=<slug>`. Nothing in the admin writes it.
+- **The organisation's alone — the first key that is.** A reader is the org's (ADR-037: one identity per org), and Comp
+  takes any reader of the org, so a value per site claimed a protection it did not give: a site set to `shown` named a
+  reader who held nothing there, once comped, and a site set to `hidden` beside a `shown` sibling hid nothing from an
+  owner of both, since a reader's identifier is the same on both pages (measured, review). `SettingsGuard::check()` takes
+  the holder's level now, and refuses the key on a site group or a site — *"Refusing [reader_addresses] on {holder}: it
+  is set for a whole organisation, whose readers they are — never for a site group or a site, where a sibling would name
+  the same readers. Set it on the organisation instead."* — and `kitsune:readers addresses` refuses `--site`.
+- **Written** through `SettingsWriter`, audited `settings.set` / `settings.reverted` as every key is; `inherit` is a
+  revert, to the platform's default.
+- **Refused on write** by `SettingsGuard` at every door `timezone` is: any value but those two words.
+- **Read as `hidden`** whenever it is anything else: a value written below Eloquent, a host `settings` map that dropped
+  the key, or a value a site or site group holds below Eloquent, which resolution would otherwise let override the
+  org's — only a value resolved from the organisation or the platform default counts.
+
+Resolution itself is unchanged — every level may still override every other key. `locked_keys`, this entry's open
+question, is the general form of a key a lower level may not hold; this one was decided ahead of it, by the guard.
+
 ---
 
 ## ADR-023 — Governance: stated BDFL, with binding commitments and a disclosed conflict
@@ -2995,7 +3021,7 @@ product that does not ship.
 
 ## ADR-037 — A reader is not a panel user, and gets a guard of their own
 
-**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)** · **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity and core owns the front door** · **Amended 2026-10-09 — reader accounts, second part, as built: sign-up and recovery by email**; see the end of this entry
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it** *(registration, sign-in and recovery since moved to v1.0 — amended below)* · **Amended 2026-10-06 — the reader-guard declaration landed in v1.0 with ADR-040's entitlements, and reader accounts move into v1.0, ahead of commerce (Adam, 2026-10-06)** · **Amended 2026-10-07 — reader accounts, first part, as built: the host owns a reader's identity and core owns the front door** · **Amended 2026-10-09 — reader accounts, second part, as built: sign-up and recovery by email** · **Amended 2026-10-10 — reader accounts, third part, as built: readers named on the owner's entitlements page, where the operator shows them (Adam, decisions 1–3)**; see the end of this entry
 
 Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
 for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
@@ -3333,6 +3359,139 @@ The floor's `file` cache store counts without a lock, as the first part says of 
 already made the first part's four edits gets sign-up and recovery with `composer update` and a migration, and the
 pages stay closed until mail can reach a reader. **Deferred, still:** remember-me and "sign out everywhere",
 self-service, an owner's Readers page and invitations, a breached-password list and a second factor.
+
+⚠️ **Amended 2026-10-10 — reader accounts, third part, as built: readers named on the owner's entitlements page.**
+
+**Adam's decisions 1–3 (2026-10-10).** The entry's first numbered decisions; the answers above stay dated and
+unnumbered, so these are not #181's "answer 1".
+
+1. **The operator decides whether owners see readers' addresses, and they start hidden** (Adam, decision 1). A platform
+   key, `reader_addresses` — `hidden` or `shown`, `hidden` by default — written by `kitsune:readers addresses
+   {shown|hidden|inherit} --org=<slug>` and by nothing in the admin (ADR-022, amended): the operator is the data
+   controller (ADR-020), and a row can imply special-category data (ADR-040). Rejected: the switch on by default, and
+   every owner with no switch.
+2. **The address has a column of its own** (decision 2), *Email address*, beside *Reader*, which stays the identifier
+   the filter and Comp take — "email is an attribute rather than the identity" (above). Rejected: the address under
+   the identifier, or over it, in one cell.
+3. **The page holds at 25 rows** (decision 3), whatever a browser asks. `tableRecordsPerPage` is a public property
+   Filament does not clamp, and 10,000 or `all` listed every row in one response (measured, *M6*) — with addresses
+   shown, every identified reader's. ADR-040's R2 is struck.
+
+**Defaults taken, for Adam to overrule.**
+- **The switch is the organisation's alone** — narrowed by review from the design's "per org or site", and measured. A
+  reader is the org's and Comp takes any reader of it, so a site set to `shown` named, once comped, a reader who held
+  nothing there; and a site set to `hidden` beside a `shown` sibling hid nothing from an owner of both, since the
+  identifiers are the same on both pages. `SettingsGuard` refuses the key on a site group or a site, the console
+  refuses `--site`, and a value a lower level holds below Eloquent reads as hidden.
+- The filter, Comp and every modal take and show identifiers only. An address in them would make the admin a second
+  door from an address to a reader, beside `kitsune:readers find`, and an owner's Readers page is deferred by name.
+- An address is shown in its one stored spelling, `EmailAddress::normalise()`, or not at all.
+- `dir="auto"` on the column, the page's one extra attribute: in an RTL paragraph `12345@gmail.com` is drawn
+  `gmail.com@12345` (*M8*).
+- The site's `reader_accounts` mode does not matter: identity is per org, and the mode governs the public front door.
+- **No header of core's.** The page's GET is `no-store` already: Livewire's back-button middleware sends
+  `no-cache, must-revalidate, no-store, max-age=0, private` on every page that renders a component — the dashboard's
+  too — and replaces any header a route sets (*M9*). The design's own middleware for it was built, measured to change
+  nothing, and removed; `entitlements.spec.js` fails if Livewire stops sending it.
+
+**What a row says.** *Reader* is the identifier as stored, unchanged. Beside it, where addresses are shown, one of four
+things, each true wherever it is said: the address, lower-case ASCII; *No account in this organisation* — another
+org's reader, one the host deleted, or an identifier no reader can have (`007`, `e2e"onfocus=…`); *An account in this
+organisation, whose stored address cannot be shown* — a value the host wrote that is no address a reader could have
+signed up with (`Ü`, U+202E, `"`); or *Could not be read (SQLSTATE …) — tell whoever runs this installation*, when the
+readers table refused — the rows, Revoke and Comp still work. A row the page has not read for says nothing, never "No
+account". The intro says in one whole sentence which state the page is in: addresses shown; hidden, "once whoever
+runs this installation turns them on"; or the installation's reader accounts "cannot name them here" — a model without
+the contract, a token guard, or a model whose identifier is not its key. The Reader filter's help says it takes the
+identifier "exactly as shown in the Reader column" (review: "as shown in the table" read as either column).
+`kitsune:readers status` says on each site's line whether owners see addresses and where that comes from, or that they
+cannot be shown; and `addresses` says so when it writes a value that cannot take effect yet (review).
+
+**The read.** One query for the page's readers, in `getTableRecords()`, before any cell asks — `ReaderNames::of()`.
+Each identifier goes through `userKey()` and back and must store back exactly, so a never-key costs no query: on an
+integer key `whereKey()` casts `'007'` to 7 and the hostile id to 0 (*M1*), and on a string key ` 1` and `café` pass
+`userKey()` and only the way back refuses them. The query is fenced by `org_id`; the row's written `org_id` is read
+back; a row is kept only when its key is its auth identifier; and it is named by the exact stored string, so a table
+that finds `ABC` as `abc` names neither by the other. A refusal is caught as a `PDOException` alone and shown as its
+SQLSTATE; anything else a host throws goes through. A 403 for anyone but an owner comes before any read, because
+Livewire lets a browser call the method by name. What the read returns lives in two private properties for the
+request — never in the snapshot, a static, a cache, the session or a log — so an erasure has no copy to miss. Three
+queries a render when shown — the count, the page, the readers — and two otherwise, none on the readers table.
+
+**Measured.** Taken where this slice was built: PHP 8.5.10, this Mac — SQLite in memory, PostgreSQL 17 and MariaDB
+10.11 in containers, Chromium under the Playwright suite — not on stage. *M1* — `whereKey(['007', '5abc'])` on the
+skeleton's reader is `… in (7, 5)` with no bindings, and the hostile id alone `… in (0)`; `userKey()` refuses all
+three, and `userKeys()` answers the integer `1` for `'1'`, so rows are mapped back by the stored string. *M2* —
+`normalise()` accepts 255 bytes and refuses 256 (egulias' too-long is a warning; Laravel's `max:255` counts
+characters), and refuses `"`, `<`, U+202E and `Ü`, each of which the skeleton's model stores unchanged when the host
+writes it. *M3* — a page whose identifiers are all never-keys runs two queries and none on the readers table. *M4* —
+read from a cell's closure, the reader's identifier stood in four of Filament's stack frames; read eagerly, in none,
+once a render. *M5* — no `@` in `json_encode(getTableRecords())`, in any row's attributes or in the session; Filament
+does keep the page's column labels and page size in the session, no reader data. *M6* — `tableRecordsPerPage` set to
+10,000 or `all` rendered every row before the clamp (30 of 30) and 25 after it, in PHP and in the browser. *M7* — a
+255-byte address is a 2,119.75 px cell, which Filament's table container scrolls — 2,904 px inside 288 at 320 px wide,
+inside 358 at 390, inside 896 at 1,280 — while the page itself never scrolls sideways: `.fi-layout` is
+`overflow-x: clip`. *M8* — with `dir="auto"`, under RTL, the cell's computed direction is `ltr` and its first character
+is drawn left of its last, in Chromium; with it removed, `rtl.spec.js` fails. That an RTL paragraph draws
+`12345@gmail.com` as `gmail.com@12345` was measured in the design round with the system's own text layout, not a
+browser. *M9* — `Cache-Control` on the page's GET and on
+the dashboard's is the same, Livewire's, with or without a route middleware of core's. *M10* — the cost, by ADR-040's method: 25,000 readers in the org, 25,000 rows on the
+site and as many on a sibling, a fresh page's read and every address cell, the median of seven warm runs. With
+addresses hidden it is 12.5 ms on SQLite 3.53, 6.9 on PostgreSQL 17 and 28.0 on MariaDB 10.11, against 10.7, 5.9 and
+26.1 for `main`'s read alone; shown, 15.0, 11.3 and 36.8, of which the readers query is 1.2, 2.4 and 0.8 ms. Without
+statistics, SQLite and PostgreSQL find the 25 readers through the org's `(org_id, email)` index rather than the primary
+key, so that query grows with the org's readers; after `ANALYZE` it is 0.04 ms on both. The rest is PHP —
+`normalise()` builds a validator for each address, about 1.1 ms for 25. MariaDB's difference is inflated by the host's
+scheduling: its fastest runs differ by 3–5 ms. Host figures, not the floor's; accepted, as ADR-040's were.
+
+**What the suites prove.** Forty-three mutations of the PHP, each a guard removed in turn in a copy of the
+tree, and all forty-three fail a test — one only once the review's last test was added: a row the page never read for
+answered "No account" instead of nothing. By family, and what catches it:
+- **Keys** (3): the round trip dropped, raw identifiers handed to `whereKey()`, the chunk removed — the never-key tests,
+  integer and string, and the chunked read (`EntitlementNamesTest`).
+- **Fences** (4) and **the gate** (1): the SQL `org_id`, the written `org_id`, the key-is-the-identifier check per row
+  and per class, and the accounts' model swapped for the guard's — the cross-org test under a host that sheds the
+  scope and one whose builder drops every org predicate, the asked-directly test, and `status` under a token guard
+  (`EntitlementNamesTest`, `ReadersCommandTest`).
+- **Map-back** (1) and **spelling** (1): a folded key, and `normalise()` dropped — the folding table and the host-written
+  addresses.
+- **Degrading** (6): either catch removed or widened to `Throwable`, "unread" shown as "none", the message shown for
+  the SQLSTATE — the missing table, the second connection, a refused read with Revoke still working, and a host's
+  accessor that fails in the database and one that fails otherwise.
+- **Access** (2), **the clamp** (2) and **the memo** (4): the 403 removed or moved after the read; the clamp removed, or
+  the select's sizes set apart from it; the memo removed, keyed by a constant, public or static.
+- **The switch** (5) and **the setting** (5): the read or the column under `hidden`, the default flipped, `addresses()`
+  loosened or blind to where a value came from; `SettingsGuard`'s value check, its org-only check, a site read as an
+  org, and either door's level not passed (`EntitlementNamesTest`, `ReaderModeSettingTest`).
+- **The console** (5), **markup** (2) and **words** (2): `--site` and the value refusals, `status` and the setter's
+  words where nobody can be named or a site's value is ignored; `dir` removed or `copyable()` added; the intro's
+  sentence swapped, and the unread row's words.
+
+Six mutations of what a browser sees fail a spec, in the main tree after review: the column never shown, shown while
+hidden, `dir` removed, the clamp removed, the hidden intro swapped, and an address shown as "no account"
+(`entitlements.spec.js`, `rtl.spec.js`). The fences and `normalise()` are the PHP suite's alone: the browser runs the
+skeleton's own scoped model, with lower-case seeds.
+
+**Named residuals.** The wrong person: a host that re-issues identifiers or swaps its reader model names the wrong
+person, and nothing stored detects it — ADR-040's re-issue residual, with a name on it now. Comp by identifier: once
+addresses are shown, an owner can comp identifiers one by one and read each address that appears; every comp is
+audited and leaves a row, and the switch limits it to the organisations the operator chose — which is why it is the
+organisation's alone. A value typed into the Reader filter rides the Livewire snapshot twice, even when refused
+(measured), so an address typed there travels though it matches nothing. A failed names read is seen only by the
+owner, because the page may not log; its words say who to tell. The page loads whole reader rows, password hash
+included, for one render; the skeleton's `$hidden` keeps them out of any serialisation. A host's `$with` or a lazy
+`readerEmail()` adds queries; only the skeleton's count is pinned. A host keyed by PostgreSQL `uuid` with a planted
+row that is not one would fail its whole chunk (22P02), and show that chunk as unread — expected, not measured.
+`ReaderGuard::canonical()` looks a reader up by key and answers its auth identifier, so on a model whose identifier is
+not its key it can misfile a comp (measured in the design round); the page names nobody there, and the fix belongs with
+the writer. An imported address the host never verified is shown as a verified one is.
+
+**Upgrades.** `composer update` alone: no migration, and nothing in the skeleton changes — `App\Models\Reader` already
+implements `ReaderAccount`. Addresses stay hidden until the operator runs `kitsune:readers addresses shown
+--org=<slug>`; an installation whose reader model lacks the contract, or whose identifier is not its key, keeps
+identifiers, and its page and `status` say so. **Deferred, still:** an owner's Readers page and invitations — which now
+also covers finding a reader, or comping one, by address — self-service, remember-me and "sign out everywhere", a
+breached-password list and a second factor.
 
 ---
 
@@ -4690,7 +4849,8 @@ MySQL 8.4 on the CI leg only.
 
 **Owed, and named:** the reader's download route (ADR-041, inside v1.0); a batch form of the check, with its first
 consumer, a catalogue; `reinstate()` for a producer's source, with commerce's dispute path; the `erasure_log` replay;
-naming readers rather than ids on the owner's page, with reader accounts; and a staff preview path, if a consumer wants
+~~naming readers rather than ids on the owner's page, with reader accounts;~~ *(landed 2026-10-10, ADR-037 decisions 1–3:
+an address beside the identifier, where the operator shows them)*; and a staff preview path, if a consumer wants
 one. Two sources granted at the same moment on two connections are not driven concurrently by a test — one process
 cannot block twice — and rest on each decision reading only its own row, which a test of the writer's source and the
 two-sources tests pin.
@@ -4773,8 +4933,9 @@ refused comp keeps its form open; and "who" has one set of words, shared with th
 URL to a member and to a demoted owner on their next request, 404 across orgs, and its sidebar link hidden by the same
 rule and while the installation has no usable reader guard. One row per source, as stored — reader, entitlement,
 source (a comp shown as *Comp*), a state badge that says its word (*Live*, *Lapsed*, *Revoked*, from the model's own
-`isLiveAt()`), when it ends and when it last changed, both in the site's timezone. The newest change first. A reader is
-shown by identifier until reader accounts name them. **With no usable reader guard (answer 1)** it shows the guard's
+`isLiveAt()`), when it ends and when it last changed, both in the site's timezone. The newest change first. ~~A reader is
+shown by identifier until reader accounts name them.~~ *A reader is shown by identifier, and beside it, where the
+operator shows them, by their address (ADR-037 decisions 1 and 2, 2026-10-10).* **With no usable reader guard (answer 1)** it shows the guard's
 own sentence and nothing else — no table, no Comp, and no row from a read a browser calls by name, which Livewire
 would hand back (review) — because every check answers no while the fault lasts, so a row badged *Live* would
 contradict the door, and a revoke would be refused; `kitsune:entitlements export` still reads the rows. ⚠️ The table's query names the site and the org itself: Filament's tenancy scope is registered per resource, never
@@ -4818,17 +4979,21 @@ through the panel's own membership-scoped user model, building no class a row na
 - ⚠️ **No stored value in an attribute or in markup.** A reader's identifier is any printable ASCII, `"` and `<`
   included; Filament merges an action's extra attributes unescaped, and `__()` escapes none of its parameters. So the
   page puts no stored value in an attribute — no `extra…Attributes`, tooltip, `HtmlString` or markdown — names row
-  actions by their visible label, and shows the reader's identifier only in its column. A stored `e2e"onfocus=…` renders
+  actions by their visible label, and shows the reader's identifier only in its column. *A reader's address, where
+  shown, is in its own column alone, as text; that column carries the page's one extra attribute, a static
+  `dir="auto"`, and `copyable()` and `url()` join the swept sinks (ADR-037, as built, 2026-10-10).* A stored `e2e"onfocus=…` renders
   as text in the browser, with nothing injected, in the table and in both of its modals.
 - ⚠️ **Every read that binds a filter's value carries its SQLSTATE alone**, as the writer's doors do: the count and the
   page a render makes, the row an action resolves, and four selection and count reads that nothing on the page calls
   and a browser can call by name (review) — a `QueryException` or a `DeadlockException` interpolates its bindings into
-  the message the exception handler logs. Each is a trait alias the page overrides, and the reflection test pins the
+  the message the exception handler logs. *The read of the page's readers is the one that degrades instead of failing:
+  each row it could not read says so with its SQLSTATE alone, and the rows, Revoke and Comp stay (ADR-037, as built).* Each is a trait alias the page overrides, and the reflection test pins the
   list.
 - Every public method the page adds is static; its instance methods are Filament's own.
 - `giveComp()`'s reader is `#[\SensitiveParameter]`; the other handlers take the row.
 
-**The cost.** A render is two queries — the count and the page — whatever is stored, and one over `0 = 1` for a filter
+**The cost.** A render is two queries — the count and the page — whatever is stored, *three where addresses are shown,
+the third reading the page's readers by key and org (ADR-037, as built, 2026-10-10)*, and one over `0 = 1` for a filter
 nothing could match; History is one query, and one more when it names a person. The count is fixed and the cost is not:
 the newest-first sort reads the site's rows through the unique index's prefix. Measured through the page's own reads at
 25,000 rows on the site and as many on a sibling, the median of seven: 14.6 ms unfiltered and 1.4 ms filtered by
@@ -4837,15 +5002,20 @@ floor's. Accepted for v1.0; a `(site_id, changed_at)` index is the fix if a site
 
 **Residuals, named.** R1: a link — `?tableAction=revoke&tableActionRecord=…` — opens Revoke's confirmation for a row of
 this site, as for every confirmed table action in the admin; the owner must still confirm, and a link to Comp opens an
-empty form. R2: `tableRecordsPerPage` is a public property Filament does not clamp, shared by every admin table; it is
-owner-only here, and one page clamping alone would be a second rule. R3: the cost above. R4: the picker's repeated and
+empty form. ~~R2: `tableRecordsPerPage` is a public property Filament does not clamp, shared by every admin table; it is
+owner-only here, and one page clamping alone would be a second rule.~~ *R2 is struck: this page holds at 25 whatever a
+browser asks (ADR-037 decision 3, Adam, 2026-10-10), since with addresses shown one response would otherwise list every
+identified reader's address. Every other admin table still takes the browser's size.* R3: the cost above. R4: the picker's repeated and
 skipped hour, `SiteTime`'s, already stated. And Filament's own table placeholder is drawn below WCAG AA's contrast, so
 an absent end is ordinary text through `SiteTime::columnOr()` instead (measured by axe).
 
 **The surface, all `@internal`, appended to the first half's list:** `Filament\Pages\Entitlements`;
 `Filament\AuditActors`; `SiteTime::columnOr()`; `EntitlementRefused::$mayHaveApplied`; the page route
 `{panel}/{site}/entitlements`; the translation namespaces `kitsune::entitlements` and `kitsune::audit`. CONTRIBUTING
-gains no exception. ~~The browser suite's reader guard is `kitsune/e2e-reader-guard`, under `e2e/` — a reader model, its
+gains no exception. *Appended 2026-10-10 (ADR-037, as built), all `@internal`: `Filament\ReaderNames`;
+`Readers\ReaderAddresses`; `ReaderAccounts::addresses()`, `::canName()` and `::sqlstate()`;
+`SettingsGuard::READER_ADDRESSES` and `::levelOf()`, and `check()`'s level; `Entitlements::PER_PAGE`; the platform key
+`reader_addresses` and `kitsune:readers addresses`. CONTRIBUTING still gains no exception: `ReaderAccount` did not grow.* ~~The browser suite's reader guard is `kitsune/e2e-reader-guard`, under `e2e/` — a reader model, its
 table, the guard and a seed — which no release, package split or floor benchmark copies, and which the skeleton's own
 reader model replaces when reader accounts arrive.~~ *The browser suite's readers are the skeleton's own
 `App\Models\Reader` (ADR-037, as built, 2026-10-07): `DatabaseSeeder` makes readers 1–4 and `e2e/accounts.js`
@@ -4891,6 +5061,11 @@ browser calls by name, which Livewire hands back — the query now lists nothing
   and a link that opens and never acts;
 - `permissions.spec.js`: the copy-editor refused at the URL and given no link, the viewer refused; the accessibility,
   RTL and off-host page lists.
+- *Amended 2026-10-10 (ADR-037, as built): `EntitlementNamesTest`, for readers named on this page — see ADR-037's third
+  amendment for what it and the browser specs prove; `EntitlementPageTest`'s cost and fault tests now count queries on
+  every connection, not the default one alone, and it pins the three intro sentences, the reader filter's own help and
+  the one page size; `EntitlementSurfaceTest` adds `ReaderNames` to the swept files and finds no public or static
+  property holding names.*
 
 ---
 

@@ -198,7 +198,7 @@ class ScopedBuilder extends Builder
                 $map = json_last_error() === JSON_ERROR_NONE ? $decoded : $value;
             }
 
-            SettingsGuard::check($map, class_basename($model).' '.($model->getKey() ?? '(new)'));
+            SettingsGuard::check($map, class_basename($model).' '.($model->getKey() ?? '(new)'), SettingsGuard::levelOf($model));
         }
     }
 
