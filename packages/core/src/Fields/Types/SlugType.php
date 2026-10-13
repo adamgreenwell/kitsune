@@ -153,12 +153,13 @@ final class SlugType extends BaseFieldType
             // an update checked the row against itself, so saving a page
             // without touching its slug reported the slug as already taken.
             Rule::scopedUnique(Entry::class, 'slug', $config->record?->getKey(), function ($query) use ($config): void {
-                // Falls back to the record's own type, so the constraint
-                // survives a path with no bound type — matching what the
-                // static form already did.
-                $typeId = app()->bound(EntryType::class)
-                    ? app(EntryType::class)->getKey()
-                    : $config->record?->entry_type_id;
+                // The explicitly supplied record, including a prospective create, is authoritative.
+                // A page binding is only the fallback for a caller that has no record type yet.
+                $typeId = $config->record?->entry_type_id;
+
+                if ($typeId === null && app()->bound(EntryType::class)) {
+                    $typeId = app(EntryType::class)->getKey();
+                }
 
                 if ($typeId !== null) {
                     $query->where('entry_type_id', $typeId);

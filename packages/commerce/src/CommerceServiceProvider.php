@@ -11,7 +11,10 @@ declare(strict_types=1);
 namespace Kitsune\Commerce;
 
 use Filament\Navigation\NavigationItem;
+use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
 use Kitsune\Commerce\Filament\CurrencyResource;
+use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
@@ -21,12 +24,22 @@ use Kitsune\Core\Modules\ModuleServiceProvider;
  *
  * @internal First-party only; no extension contract before v1.2.
  *
- * Sellables are org-owned, listings are site-owned. No content type, public route or payment client is installed.
+ * Sellables are org-owned, listings are site-owned. Storefront is applied explicitly into each org.
+ * No public route or payment client is installed.
  */
 final class CommerceServiceProvider extends ModuleServiceProvider
 {
     protected function registerModule(): void
     {
+        $this->app->make(BlueprintRegistry::class)->register(new StorefrontBlueprint);
+        $this->app->make(AdminSurface::class)->resource(ProductResource::class)->navigationItem(
+            NavigationItem::make('Products')
+                ->label(fn (): string => __('commerce::catalogue.products'))
+                ->group(fn (): string => __('commerce::catalogue.storefront'))
+                ->icon('heroicon-o-shopping-bag')
+                ->url(fn (): string => ProductResource::getUrl())
+                ->visible(fn (): bool => ProductResource::canAccess()),
+        );
         $this->app->make(AdminSurface::class)->resource(CurrencyResource::class)->navigationItem(
             NavigationItem::make('Catalogue currency')
                 ->label(fn (): string => __('commerce::catalogue.currency_title'))

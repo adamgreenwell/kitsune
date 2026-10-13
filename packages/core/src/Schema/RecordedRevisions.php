@@ -124,4 +124,11 @@ final class RecordedRevisions
     {
         return count($this->byEntry);
     }
+
+    /** Abandon a failed combined save, including a create whose inserted key never reached its caller. @internal */
+    public function discard(): void
+    {
+        $this->byEntry = [];
+        $this->open = false;
+    }
 }

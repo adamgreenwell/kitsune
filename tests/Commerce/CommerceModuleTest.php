@@ -12,6 +12,7 @@ use Illuminate\Database\Migrations\Migrator;
 use Kitsune\Commerce\CommerceCustody;
 use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Filament\CurrencyResource;
+use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Core\Models\EntryType;
@@ -91,8 +92,8 @@ it('registers enabled commerce on a headless host without needing a panel or ser
 
     expect(app()->getProviders(CommerceServiceProvider::class))->toHaveCount(1)
         ->and(Module::isEnabled(COMMERCE_MODULE))->toBeTrue()
-        ->and(app(AdminSurface::class)->resources())->toBe([CurrencyResource::class])
-        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(1);
+        ->and(app(AdminSurface::class)->resources())->toBe([ProductResource::class, CurrencyResource::class])
+        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(2);
 });
 
 it('does not boot commerce when disabled before the next application boot', function (): void {
