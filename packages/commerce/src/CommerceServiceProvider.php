@@ -10,7 +10,10 @@ declare(strict_types=1);
 
 namespace Kitsune\Commerce;
 
+use Filament\Navigation\NavigationItem;
+use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Core\Models\Module;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
 
 /**
@@ -18,12 +21,28 @@ use Kitsune\Core\Modules\ModuleServiceProvider;
  *
  * @internal First-party only; no extension contract before v1.2.
  *
- * This foundation ships no business models, tables, content types, routes or payment client. Its empty
- * scoping declaration is checked against that footprint, not a promise that future models need no scope.
- * Sellables and their site listings arrive in the next slice, with their actual scope declarations.
+ * Sellables are org-owned, listings are site-owned. No content type, public route or payment client is installed.
  */
 final class CommerceServiceProvider extends ModuleServiceProvider
 {
+    protected function registerModule(): void
+    {
+        $this->app->make(AdminSurface::class)->resource(CurrencyResource::class)->navigationItem(
+            NavigationItem::make('Catalogue currency')
+                ->label(fn (): string => __('commerce::catalogue.currency_title'))
+                ->group(fn (): string => __('commerce::catalogue.storefront'))
+                ->icon('heroicon-o-currency-dollar')
+                ->url(fn (): string => CurrencyResource::getUrl())
+                ->visible(fn (): bool => CurrencyResource::canAccess()),
+        );
+    }
+
+    protected function bootModule(): void
+    {
+        $this->loadViewsFrom(__DIR__.'/../resources/views', 'commerce');
+        $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'commerce');
+    }
+
     public function migrationPath(): string
     {
         return __DIR__.'/../database/migrations';

@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Currency\Currencies;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -104,7 +105,7 @@ class ScopedBuilder extends Builder
         $this->guardScopeKeys($values);
         $this->refuseFixedColumns($values);
         $this->refusePerRowColumns($values);
-        $this->checkWrittenSettings($values);
+        $this->checkWrittenConfiguration($values);
 
         return $this->forgettingResolvedSettings(parent::update($values));
     }
@@ -149,8 +150,11 @@ class ScopedBuilder extends Builder
     }
 
     /**
-     * Refuse a settings map this write would store that ADR-022's guard refuses — judged on the value handed to
-     * the database, not on the value some listener saw earlier.
+     * Check host-owned configuration at the final write: supported Org currency (ADR-040), and the settings map
+     * ADR-022's guard accepts. Neither check stands down inside withoutScopeBecause().
+     *
+     * Currency has no unchecked expression or JSON-path door: it is one scalar selection, never SQL or a map.
+     * The settings-specific limits below remain unchanged.
      *
      * ⚠️ THE CHECK HAS TO BE THE LAST THING BEFORE THE WRITE, AND A LISTENER WAS NOT. `HoldsSettings` validates
      * in a `saving` listener registered when the model boots, and listeners run in registration order — so a
@@ -172,9 +176,27 @@ class ScopedBuilder extends Builder
      *
      * @param  array<array-key, mixed>  $values
      */
-    private function checkWrittenSettings(array $values): void
+    private function checkWrittenConfiguration(array $values): void
     {
         $model = $this->getModel();
+
+        // Currency is host-owned configuration, so it stays checked without an optional module or model events.
+        // The database may additionally retain the selected value through a module's foreign-key witness.
+        if ($model instanceof Org) {
+            foreach ($values as $written => $value) {
+                if ($this->bareColumn((string) $written) !== 'currency') {
+                    continue;
+                }
+
+                if (str_contains((string) $written, '->') || $value instanceof Expression
+                    || ($value !== null && ! Currencies::supports($value))) {
+                    throw new RuntimeException(
+                        'Org currency must be null or an explicit supported uppercase ISO 4217 code. '
+                        .'An expression or JSON path cannot select a currency.',
+                    );
+                }
+            }
+        }
 
         if (! in_array(HoldsSettings::class, class_uses_recursive($model), true)) {
             return;
@@ -319,7 +341,7 @@ class ScopedBuilder extends Builder
         $this->refuseAmbiguousColumns($row);
         $this->refuseDetachedScopeKeys($row);
         $this->refuseDetachedInsert($method, $row);
-        $this->checkWrittenSettings($row);
+        $this->checkWrittenConfiguration($row);
         $this->askTheModel($row);
     }
 
@@ -352,11 +374,19 @@ class ScopedBuilder extends Builder
     /**
      * Refuse a subquery insert into a model that refuses rows itself: its rows are whatever the subquery returns, so
      * the model's refusal cannot be asked of them — inside the escape hatch too, which decides scope, not a row's
-     * content (ADR-041 review).
+     * content (ADR-041 review). An Org currency also needs a concrete value to check, even in the escape hatch.
+     *
+     * @param  list<string>  $columns
      */
-    private function refuseUnaskableInsert(string $method): void
+    private function refuseUnaskableInsert(string $method, array $columns): void
     {
         $model = $this->getModel();
+
+        if ($model instanceof Org && in_array('currency', array_map($this->bareColumn(...), $columns), true)) {
+            throw new RuntimeException(
+                'Org currency cannot be written from a subquery: select an explicit supported currency instead.',
+            );
+        }
 
         if ($model instanceof RefusesInsertedRows) {
             throw new RuntimeException(sprintf(
@@ -456,7 +486,7 @@ class ScopedBuilder extends Builder
         $this->refuseBulkCreate('insertUsing', always: true);
 
         $this->refuseSubqueryInsert('insertUsing');
-        $this->refuseUnaskableInsert('insertUsing');
+        $this->refuseUnaskableInsert('insertUsing', $columns);
 
         return parent::insertUsing($columns, $query);
     }
@@ -470,7 +500,7 @@ class ScopedBuilder extends Builder
         $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
 
         $this->refuseSubqueryInsert('insertOrIgnoreUsing');
-        $this->refuseUnaskableInsert('insertOrIgnoreUsing');
+        $this->refuseUnaskableInsert('insertOrIgnoreUsing', $columns);
 
         return parent::insertOrIgnoreUsing($columns, $query);
     }
@@ -1078,8 +1108,17 @@ class ScopedBuilder extends Builder
         // ⚠️ AND THE SETTINGS CHECK, which the two refusals above do not replace: they stand down inside
         // `withoutScopeBecause()`, and the `$extra` of an increment is a plain assignment that can carry a whole
         // `settings` map. Without this, `increment('id', 0, ['settings' => …])` stored a refused timezone there —
-        // Codex found it on #127, after `checkWrittenSettings()` had been added to every other write but these.
-        $this->checkWrittenSettings($values);
+        // Codex found it on #127, after `checkWrittenConfiguration()` had been added to every other write but these.
+        $this->checkWrittenConfiguration($values);
+    }
+
+    /** @param list<string> $columns */
+    private function refuseOrgCurrencyArithmetic(array $columns): void
+    {
+        if ($this->getModel() instanceof Org
+            && in_array('currency', array_map($this->bareColumn(...), $columns), true)) {
+            throw new RuntimeException('Org currency cannot be changed by arithmetic; select a supported currency.');
+        }
     }
 
     /**
@@ -1088,6 +1127,7 @@ class ScopedBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->refuseOrgCurrencyArithmetic([(string) $column]);
         $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
         return $this->forgettingResolvedSettings(parent::increment($column, $amount, $extra));
@@ -1099,6 +1139,7 @@ class ScopedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->refuseOrgCurrencyArithmetic([(string) $column]);
         $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
         return $this->forgettingResolvedSettings(parent::decrement($column, $amount, $extra));
@@ -1110,6 +1151,7 @@ class ScopedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->refuseOrgCurrencyArithmetic(array_keys($columns));
         $this->guardArithmetic([...$columns, ...$extra]);
 
         return $this->forgettingResolvedSettings(parent::incrementEach($columns, $extra));
@@ -1121,6 +1163,7 @@ class ScopedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->refuseOrgCurrencyArithmetic(array_keys($columns));
         $this->guardArithmetic([...$columns, ...$extra]);
 
         return $this->forgettingResolvedSettings(parent::decrementEach($columns, $extra));
@@ -1159,14 +1202,14 @@ class ScopedBuilder extends Builder
          */
         foreach (self::insertRows($values) as $row) {
             $this->refuseAmbiguousColumns($row);
-            $this->checkWrittenSettings($row);
+            $this->checkWrittenConfiguration($row);
             // The insert half creates rows, so a model's own refusal is asked of them here too (ADR-041 review).
             $this->askTheModel($row);
         }
 
         if (is_array($update) && ! array_is_list($update)) {
             $this->refuseAmbiguousColumns($update);
-            $this->checkWrittenSettings($update);
+            $this->checkWrittenConfiguration($update);
         }
 
         /*

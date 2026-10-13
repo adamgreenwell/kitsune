@@ -75,6 +75,10 @@ Sign in as `alpha@kitsune.test` with the password `password`. The seeded organis
 second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
 the scoping kernel is only visible when there are two orgs to keep apart.
 
+For the complete browser suite, prepare a disposable skeleton with `composer skeleton:commerce` before
+`composer test:e2e`. The suite explicitly installs and enables optional commerce for its currency chooser tests;
+the default application requirements above remain unchanged.
+
 Readers — the people a site's paid or members-only content is for — are not staff and never reach the admin
 ([ADR-037](docs/decision-log.md)). The seeded reader `subscriber@kitsune.test` signs in at
 `http://127.0.0.1:8000/golfdom/account/sign-in` with the password `correct-horse-battery-staple`; Rival has a reader
@@ -217,6 +221,7 @@ only the first command passes locally while failing CI on any skeleton change.
 The browser suite needs Node and a browser binary, and it starts its own server:
 
 ```bash
+composer skeleton:commerce             # disposable browser app with the optional catalogue installed
 npm ci
 npx playwright install chromium
 npx playwright test

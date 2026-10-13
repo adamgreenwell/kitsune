@@ -11,9 +11,9 @@ declare(strict_types=1);
 namespace Kitsune\Core\Modules;
 
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use Kitsune\Core\Models\Module;
 use Throwable;
 
 /**
@@ -23,10 +23,10 @@ use Throwable;
  * extension API at v1.2 — everything still reachable then is a permanent obligation, so this is reachable by
  * nothing outside core.
  *
- * ⚠️ IT RUNS IN `boot()`, NEVER IN `register()`. Core touches no database in `register()` today, and a registry
- * read there turns a transient connection failure into an admin that has quietly lost every module's features
- * — while telling that apart from a fresh install with no table breaks the install path. ADR-038 records the
- * decision; this is where it is kept.
+ * ⚠️ IT RUNS AT APPLICATION BOOTING, NEVER DURING PROVIDER REGISTRATION. Core's register() schedules the
+ * callback without reading the database. When it fires every normal provider has registered its bindings,
+ * and enabled modules join the provider list before Laravel starts booting it. Filament consumes module
+ * resources during its own boot, so registering them after that walk is too late (ADR-038, amended).
  *
  * ⚠️ AND A DATABASE THAT CANNOT ANSWER IS A DECLINE, NOT A CRASH — corrected by running it. A missing `modules`
  * table means "nothing installed yet" and is a silent skip. An unreachable database was originally NOT caught,
@@ -89,7 +89,10 @@ final class ModuleKernel
                 return [];
             }
 
-            return Module::query()
+            // This installation-wide bootstrap precedes DatabaseServiceProvider::boot(), which attaches
+            // Eloquent's connection resolver. The database manager is already bound during registration.
+            // Modules are genuinely global; this read introduces no Org/Site scope bypass.
+            return DB::table('modules')
                 ->where('is_enabled', true)
                 ->pluck('version', 'handle')
                 ->all();

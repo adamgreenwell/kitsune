@@ -12,8 +12,10 @@ namespace Kitsune\Core\Modules;
 
 use Closure;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Foundation\CachesRoutes;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migrator;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Event;
 use Kitsune\Core\Events\Modules\ModuleDisabled;
 use Kitsune\Core\Events\Modules\ModuleEnabled;
@@ -201,7 +203,7 @@ final class ModuleLifecycle
 
     public static function enable(Application $app, string $handle): string
     {
-        $receipt = self::receipt($handle);
+        self::receipt($handle);
         $manifest = self::manifest($handle);
 
         /*
@@ -210,22 +212,9 @@ final class ModuleLifecycle
          */
         self::verify($manifest, $handle);
 
-        if ($receipt->version !== self::version($handle)) {
-            throw new RuntimeException(sprintf(
-                '%s records %s and Composer reports %s. Run `kitsune:module upgrade %s` first.',
-                $handle,
-                $receipt->version,
-                self::version($handle),
-                $handle,
-            ));
-        }
-
-        if ($receipt->is_enabled) {
+        if (! self::switchTo($app, $handle, true, self::version($handle))) {
             return "{$handle} is already enabled.";
         }
-
-        $receipt->is_enabled = true;
-        $receipt->save();
 
         Event::dispatch(new ModuleEnabled($handle));
 
@@ -234,14 +223,9 @@ final class ModuleLifecycle
 
     public static function disable(Application $app, string $handle): string
     {
-        $receipt = self::receipt($handle);
-
-        if (! $receipt->is_enabled) {
+        if (! self::switchTo($app, $handle, false)) {
             return "{$handle} is already disabled.";
         }
-
-        $receipt->is_enabled = false;
-        $receipt->save();
 
         Event::dispatch(new ModuleDisabled($handle));
 
@@ -255,6 +239,8 @@ final class ModuleLifecycle
         $version = self::version($handle);
 
         if ($receipt->version === $version) {
+            self::invalidateRouteCache($app);
+
             return "{$handle} is already at {$version}.";
         }
 
@@ -263,11 +249,90 @@ final class ModuleLifecycle
 
         self::migrate($app, self::provider($app, $manifest));
 
-        $was = $receipt->version;
-        $receipt->version = $version;
-        $receipt->save();
+        $was = '';
+        self::withinTransaction($receipt->getConnection(), function () use ($app, $handle, $version, &$was): void {
+            $locked = self::lockedReceipt($handle);
+            $was = $locked->version;
+            self::invalidateRouteCache($app);
+            $locked->version = $version;
+
+            if (! $locked->save() || self::lockedReceipt($handle)->version !== $version) {
+                throw new RuntimeException("{$handle}'s upgrade receipt could not be saved; the upgrade was refused.");
+            }
+        });
 
         return "Upgraded {$handle} from {$was} to {$version}.";
+    }
+
+    /**
+     * Cache deletion precedes the receipt write. A failed deletion leaves the switch unchanged; a later SQL or
+     * commit failure leaves an uncached application that rebuilds routes from the old receipt on its next boot.
+     * A repeat also clears the cache, so retrying repairs a previously stale route set without another event.
+     */
+    private static function switchTo(Application $app, string $handle, bool $enabled, ?string $expectedVersion = null): bool
+    {
+        $changed = false;
+        self::withinTransaction((new Module)->getConnection(), function () use ($app, $handle, $enabled, $expectedVersion, &$changed): void {
+            $receipt = self::lockedReceipt($handle);
+
+            if ($expectedVersion !== null && $receipt->version !== $expectedVersion) {
+                throw new RuntimeException(sprintf(
+                    '%s records %s and Composer reports %s. Run `kitsune:module upgrade %s` first.',
+                    $handle, $receipt->version, $expectedVersion, $handle,
+                ));
+            }
+
+            self::invalidateRouteCache($app);
+
+            if ($receipt->is_enabled === $enabled) {
+                return;
+            }
+
+            $receipt->is_enabled = $enabled;
+
+            if (! $receipt->save() || self::lockedReceipt($handle)->is_enabled !== $enabled) {
+                throw new RuntimeException("{$handle}'s enabled switch could not be saved; the change was refused.");
+            }
+
+            $changed = true;
+        });
+
+        return $changed;
+    }
+
+    private static function lockedReceipt(string $handle): Module
+    {
+        return Module::query()->useWritePdo()->where('handle', $handle)->lockForUpdate()->first()
+            ?? throw new RuntimeException("{$handle} is not installed. Run `kitsune:module install {$handle}`.");
+    }
+
+    private static function invalidateRouteCache(Application $app): void
+    {
+        if (! $app instanceof CachesRoutes) {
+            return;
+        }
+
+        $path = $app->getCachedRoutesPath();
+        /** @var Filesystem $files */
+        $files = $app->make('files');
+        clearstatcache(true, $path);
+
+        if ($files->exists($path) || is_link($path)) {
+            try {
+                $deleted = $files->delete($path);
+            } catch (Throwable $failure) {
+                throw new RuntimeException('The module change was refused because its route cache could not be cleared. Check cache-directory permissions and retry.', previous: $failure);
+            }
+
+            clearstatcache(true, $path);
+
+            if (! $deleted || $files->exists($path) || is_link($path)) {
+                throw new RuntimeException('The module change was refused because its route cache could not be cleared. Check cache-directory permissions and retry.');
+            }
+        }
+
+        // Laravel memoizes this independently of the file; a stale true must not survive successful invalidation.
+        $app->instance('routes.cached', false);
     }
 
     public static function uninstall(Application $app, string $handle): string

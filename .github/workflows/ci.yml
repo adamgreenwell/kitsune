@@ -224,7 +224,8 @@ jobs:
       # url does not exist is a hard error, not a warning, so it must never
       # ship in the published package.
       - name: Install the skeleton
-        run: composer skeleton:install --no-interaction
+        # Optional commerce is installed for its browser coverage; the published skeleton remains core-only.
+        run: composer skeleton:commerce --no-interaction
 
       - uses: actions/setup-node@v4
         with:

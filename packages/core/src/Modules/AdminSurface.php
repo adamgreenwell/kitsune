@@ -31,13 +31,17 @@ use Filament\Navigation\NavigationItem;
  * subjects its permission vocabulary cannot even name (`Permissions::ACTIONS` has one subject, `entry`, and a
  * module's own subject is a v1.2 question).
  *
- * ⚠️ AND FILLING IT IS IN TIME, WHICH WAS MEASURED RATHER THAN ASSUMED. Three designs believed a module's
+ * ⚠️ FILLING IT MUST PRECEDE FILAMENT'S OWN BOOT. Three designs believed a module's
  * resources had to be registered before the host's panel provider ran. `Filament\PanelProvider::register()`
  * registers a CLOSURE, which the facade defers through `$app->resolving(PanelRegistry::class, …)`, so
- * `KitsunePanel::apply()` runs when the registry is first RESOLVED — after every provider has registered and
- * booted, and therefore after the kernel's `booted()` callback has registered every enabled module. Measured
- * on Filament v5.7.8: `panel()` had not run after `app()->register()` and the provider's `boot()`, and had run
- * after `app(PanelRegistry::class)`.
+ * `KitsunePanel::apply()` runs when the registry is first RESOLVED. The original Filament v5.7.8 probe measured
+ * that `panel()` had not run after `app()->register()` and the provider's `boot()`, and had run after
+ * `app(PanelRegistry::class)`. Its inference — "after every provider has registered and booted, and therefore
+ * after the kernel's booted callback" — did not exercise a complete application boot and was wrong.
+ * Filament v5.10.1 resolves the registry and enumerates resource routes during its own provider boot: measured
+ * with one resource in this surface, only core's three on the panel, and no commerce route. The kernel now
+ * fills this surface at application booting, before the provider walk; ModuleBootOrderTest pins the complete
+ * fresh-process boot as well as disabled and headless cases (ADR-038, amended).
  *
  * ⚠️ AND A SLUG CORE ALREADY HOLDS IS NOT A MODULE'S. A module resource slugged `credentials` or `entitlements`
  * collides with core's page of that name (ADR-040): Filament registers a panel's pages before its resources, and a later

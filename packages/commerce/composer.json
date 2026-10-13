@@ -15,7 +15,7 @@
     "extra": {
         "kitsune": {
             "provider": "Kitsune\\Commerce\\CommerceServiceProvider",
-            "scoping": []
+            "scoping": ["org", "site"]
         }
     },
     "minimum-stability": "dev",
