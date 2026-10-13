@@ -8,12 +8,14 @@
 # Stage runs it from deploy/stage-deploy.sh and alpha runs it from Forge's deploy script, unchanged, so what stage
 # rehearses is what alpha runs (issue #111). Activation is not its job: it ends by saying the release is ready.
 #
-# Every input arrives in the environment, and every one is required, so nothing here guesses which server it is on:
+# Inputs arrive in the environment. The first four are required, so nothing guesses which server it is on:
 #
 #   DEPLOY_SHA    the full 40-character commit being released; the checkout must be exactly that commit
 #   SITE_ROOT     the site's root: the shared .env and storage/ live there, and this release is under releases/
 #   PHP_BIN       the PHP binary, e.g. php8.5 on stage and $FORGE_PHP on Forge
 #   COMPOSER_BIN  Composer's file, always run as "$PHP_BIN" "$COMPOSER_BIN" so it resolves on that PHP
+#   KITSUNE_INSTALL_COMMERCE  optional: 1 adds the package to this release; 0 (the default) leaves it absent.
+#                           Installing never installs or enables the module receipt. Keep the choice in every deploy.
 #
 # ⚠️ WHAT IT DOES, in the order it does it:
 #
@@ -30,7 +32,8 @@
 #      unpublished — core is, since #8 — but because a release pinned to DEPLOY_SHA must install THAT commit's code
 #      rather than whatever Packagist resolves at deploy time (ADR-035, amended 2026-09-17). A glob rather than
 #      packages/core so a first-party MODULE resolves the same way, on the same reasoning (ADR-038).
-#   7. Installs runtime dependencies with --no-scripts, then proves core was copied. ⚠️ Composer's scripts would run
+#   7. Installs runtime dependencies with --no-scripts, then proves the first-party sources were copied and an
+#      opted-in commerce package has the same Composer version as core. ⚠️ Composer's scripts would run
 #      package:discover, which boots Laravel before anything has proved the .env parses, and Laravel prints
 #      phpdotenv's message for a malformed line to stderr. That message quotes the value: a password, into the log.
 #   8. Audits the installed runtime packages for security advisories.
@@ -126,188 +129,19 @@ sha_re='^[0-9a-f]{40}$'
 # Run one of the checks below through the application itself. The PHP arrives on stdin, so its first argument is the
 # mode. Refusals are collected and printed one per line, and none of them quotes a value that could be a secret.
 check_the_app() {
-  "$PHP_BIN" -- "$1" <<'PHP'
-<?php
-
-declare(strict_types=1);
-
-$mode = $argv[1] ?? '';
-$root = (string) getcwd();
-$refusals = [];
-
-function release_refuse(string $reason): void
-{
-    $GLOBALS['refusals'][] = $reason;
-}
-
-function release_finish(): never
-{
-    foreach ($GLOBALS['refusals'] as $reason) {
-        fwrite(STDERR, "Refusing to release: {$reason}\n");
-    }
-
-    exit($GLOBALS['refusals'] === [] ? 0 : 1);
-}
-
-if (! in_array($mode, ['syntax', 'environment', 'serving'], true)) {
-    release_refuse("there is no check named [{$mode}]");
-    release_finish();
-}
-
-if (! is_file($root.'/skeleton/vendor/autoload.php')) {
-    release_refuse('skeleton/vendor/autoload.php is missing, so nothing was installed');
-    release_finish();
-}
-
-require $root.'/skeleton/vendor/autoload.php';
-
-if ($mode === 'syntax') {
-    // skeleton/.env is the link Laravel loads, so it is what gets parsed.
-    $contents = is_readable($root.'/skeleton/.env') ? file_get_contents($root.'/skeleton/.env') : false;
-
-    if ($contents === false) {
-        release_refuse('skeleton/.env cannot be read');
-        release_finish();
-    }
-
-    $parser = new Dotenv\Parser\Parser;
-
-    try {
-        $parser->parse($contents);
-    } catch (Throwable) {
-        // ⚠️ THE PARSER'S MESSAGE QUOTES THE VALUE IT CHOKED ON, so it is never printed. The line is found instead:
-        // the entry that breaks parsing starts on the line after the longest prefix of lines that still parses, and a
-        // quoted value spanning several lines counts as one entry, because a prefix ending inside it does not parse.
-        $lines = preg_split('/\r\n|\n|\r/', $contents) ?: [];
-        $parsed = 0;
-
-        foreach (array_keys($lines) as $index) {
-            try {
-                $parser->parse(implode("\n", array_slice($lines, 0, $index + 1)));
-                $parsed = $index + 1;
-            } catch (Throwable) {
-                // Not this prefix.
-            }
-        }
-
-        release_refuse('the shared .env is not valid dotenv syntax at the entry starting on line '.($parsed + 1)
-            .'. The parser\'s own message is withheld, because it quotes the value');
-    }
-
-    if ($GLOBALS['refusals'] === []) {
-        echo "The shared .env parses.\n";
-    }
-
-    release_finish();
-}
-
-try {
-    $app = require $root.'/skeleton/bootstrap/app.php';
-    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-    $kernel->bootstrap();
-} catch (Throwable $e) {
-    release_refuse(sprintf(
-        'the application did not boot: %s at %s:%d. Its message is withheld, because it can quote configuration; '
-        .'run artisan in %s to read it',
-        $e::class,
-        $e->getFile(),
-        $e->getLine(),
-        $root.'/skeleton',
-    ));
-    release_finish();
-}
-
-// What Laravel loaded, not what .env says: duplicate keys, `export` prefixes and quotes resolve as the framework
-// resolves them, and a variable in the deploy process's environment wins over .env, as it will when this serves.
-$config = $app->make('config');
-
-if ($config->get('app.env') !== 'production') {
-    release_refuse('APP_ENV must be production, and the app loads '.json_encode($config->get('app.env')));
-}
-
-if ($config->get('app.debug') !== false) {
-    release_refuse('APP_DEBUG must be false: debug pages show the environment to anyone who triggers an error');
-}
-
-if (! is_string($config->get('app.url')) || ! str_starts_with($config->get('app.url'), 'https://')) {
-    release_refuse('APP_URL must start with https://, and the app loads '.json_encode($config->get('app.url')));
-}
-
-if ($config->get('session.secure') !== true) {
-    release_refuse('SESSION_SECURE_COOKIE must be true, so the session cookie is never sent over plain HTTP');
-}
-
-if ($config->get('database.default') !== 'pgsql') {
-    release_refuse('DB_CONNECTION must be pgsql (an absent one falls back to SQLite), and the app loads '
-        .json_encode($config->get('database.default')));
-}
-
-// ⚠️ STRICTER THAN laravel_cloud(), which fires only on '1': any LARAVEL_CLOUD is refused, because nothing on these
-// servers has a reason to set it. On '1' Laravel runs its Cloud bootstrappers and changes how scheduled commands handle
-// output, and it would trust every proxy if the skeleton's explicit trustProxies() list did not replace that (ADR-034).
-if (array_key_exists('LARAVEL_CLOUD', $_ENV) || array_key_exists('LARAVEL_CLOUD', $_SERVER) || getenv('LARAVEL_CLOUD') !== false) {
-    release_refuse('LARAVEL_CLOUD is set, and it must not be, in any form: nothing on these servers sets it');
-}
-
-try {
-    $app->make('encrypter');
-} catch (Throwable $e) {
-    release_refuse('APP_KEY does not make a working encrypter ('.$e::class.')');
-}
-
-if ($mode === 'serving') {
-    // Once config is cached, .env is not read again, so the checks above judged the cached config.
-    if (! $app->configurationIsCached()) {
-        release_refuse('the configuration was not cached ('.$app->getCachedConfigPath().' is missing)');
-    }
-
-    if (! $app->routesAreCached()) {
-        release_refuse('the route table was not cached ('.$app->getCachedRoutesPath().' is missing)');
-    }
-
-    if (! $app->eventsAreCached()) {
-        release_refuse('the event map was not cached ('.$app->getCachedEventsPath().' is missing)');
-    }
-
-    // ⚠️ THE CACHE STEPS ARE A LIST, AND A VENDOR CAN GROW IT. `optimize` runs every task a provider registers; this
-    // script runs them by name instead, so a task it has never heard of is refused rather than silently skipped.
-    $known = [
-        'filament' => 'filament:optimize', // skipped on purpose: docs/architecture.md, Filament item 7
-        'blade-icons' => 'icons:cache',    // run by name
-    ];
-
-    foreach (Illuminate\Support\ServiceProvider::$optimizeCommands as $key => $command) {
-        if (($known[$key] ?? null) !== $command) {
-            release_refuse("a provider registers the optimize task [{$key}] => [{$command}], which deploy/release.sh neither "
-                .'runs nor deliberately skips. Decide which it should be, then add it to the cache steps or the known list');
-        }
-    }
-
-    if ($GLOBALS['refusals'] === []) {
-        try {
-            $status = $kernel->handle(Illuminate\Http\Request::create('/up'))->getStatusCode();
-        } catch (Throwable $e) {
-            $status = $e::class;
-        }
-
-        if ($status !== 200) {
-            release_refuse("/up answered {$status} instead of 200, so this release does not serve");
-        }
-    }
-}
-
-if ($GLOBALS['refusals'] === []) {
-    echo "The {$mode} check passed.\n";
-}
-
-release_finish();
-PHP
+  # A saved source file avoids a measured Bash 5.3/macOS heredoc pipe hang above a few KiB. PHP still reads
+  # the check on stdin, so nothing changes about its arguments, application cwd or pre-boot redaction boundary.
+  "$PHP_BIN" -- "$1" "$install_commerce" <"$(dirname "${BASH_SOURCE[0]}")/release-check.php"
 }
 
 # 1. Refuse before anything is written.
 for input in DEPLOY_SHA SITE_ROOT PHP_BIN COMPOSER_BIN; do
   [[ -n "${!input:-}" ]] || refuse "$input is required"
 done
+
+install_commerce=${KITSUNE_INSTALL_COMMERCE-0}
+[[ "$install_commerce" == 0 || "$install_commerce" == 1 ]] \
+  || refuse "KITSUNE_INSTALL_COMMERCE must be 0 or 1"
 
 [[ -z "${LARAVEL_CLOUD+set}" ]] || refuse "LARAVEL_CLOUD is set in the deploy environment, and it must not be, in any form"
 [[ "$(id -u)" != 0 ]] || refuse "never run as root: what it creates in the shared storage would be unwritable by PHP-FPM"
@@ -320,6 +154,10 @@ release=$(pwd -P)
 [[ "$release" == "$site_root/releases/"?* ]] || refuse "run from a release directory under $site_root/releases, not $release"
 [[ -f skeleton/artisan && -f skeleton/composer.json && -f packages/core/composer.json ]] \
   || refuse "$release is not the root of a Kitsune checkout"
+
+if [[ "$install_commerce" == 1 ]]; then
+  [[ -f packages/commerce/composer.json ]] || refuse "this checkout contains no kitsune/commerce package"
+fi
 
 [[ "$DEPLOY_SHA" =~ $sha_re ]] || refuse "DEPLOY_SHA must be a full 40-character lowercase commit hash"
 head=$(git rev-parse HEAD 2>/dev/null || true)
@@ -374,6 +212,12 @@ ln -s "$site_root/storage" skeleton/storage
 # repository so the release installs the core of the commit it is pinned to, which step 7 then proves.
 "$PHP_BIN" "$composer_bin" config -d skeleton repositories.kitsune-packages '{"type":"path","url":"../packages/*","options":{"symlink":false}}'
 
+# Commerce stays absent from the default skeleton. This changes only the fresh release's manifest after the clean check;
+# the module remains uninstalled and disabled until the operator deliberately uses kitsune:module.
+if [[ "$install_commerce" == 1 ]]; then
+  "$PHP_BIN" "$composer_bin" require -d skeleton 'kitsune/commerce:@dev' --no-update --no-scripts --no-interaction
+fi
+
 # 7. Runtime dependencies, with Forge's documented flags plus --no-scripts (see the header).
 "$PHP_BIN" "$composer_bin" install -d skeleton --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts
 [[ -f skeleton/vendor/kitsune/core/composer.json && ! -L skeleton/vendor/kitsune/core ]] \
@@ -385,6 +229,8 @@ for kitsune_package in skeleton/vendor/kitsune/*; do
   [[ -e "$kitsune_package" ]] || continue
   [[ ! -L "$kitsune_package" ]] || refuse "$kitsune_package was symlinked rather than copied into the release"
 done
+
+check_the_app packages
 
 # 8. Known advisories block the release. --abandoned is explicit, so the policy does not depend on Composer's version.
 "$PHP_BIN" "$composer_bin" audit -d skeleton --no-dev --abandoned=report

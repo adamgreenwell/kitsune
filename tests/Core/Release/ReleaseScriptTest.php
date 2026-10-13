@@ -46,12 +46,23 @@ beforeEach(function (): void {
         'skeleton/.gitignore',
         'skeleton/bootstrap/cache/.gitignore',
         'packages/core/composer.json',
+        'packages/core/.gitattributes',
+        'packages/person/composer.json',
+        'packages/commerce/composer.json',
         ...explode("\n", releaseGit($repo, 'ls-files', 'skeleton/storage')),
     ];
 
     foreach ($copied as $path) {
         File::ensureDirectoryExists(dirname($this->release.'/'.$path));
         File::copy($repo.'/'.$path, $this->release.'/'.$path);
+    }
+
+    foreach (['core', 'person', 'commerce'] as $package) {
+        File::ensureDirectoryExists($this->release.'/packages/'.$package.'/src');
+        File::put($this->release.'/packages/'.$package.'/src/marker.php', "<?php
+
+return 'the checkout';
+");
     }
 
     $fixtures = [
@@ -300,14 +311,55 @@ function releasePhpStub(): string
           mkdir -p skeleton/vendor/kitsune
           [[ "${STUB_NO_AUTOLOAD:-}" == 1 ]] || cp "$STUB_AUTOLOAD" skeleton/vendor/autoload.php
 
-          if [[ "${STUB_CORE_SYMLINK:-}" == 1 ]]; then
-            ln -s ../../../packages/core skeleton/vendor/kitsune/core
-          else
-            mkdir skeleton/vendor/kitsune/core
-            cp packages/core/composer.json skeleton/vendor/kitsune/core/composer.json
+          for package in core person commerce; do
+            [[ "$package" != commerce || "${KITSUNE_INSTALL_COMMERCE:-0}" == 1 ]] || continue
+            [[ "${STUB_MISSING_PACKAGE:-}" != "$package" ]] || continue
+
+            if [[ "${STUB_PACKAGE_SYMLINK:-}" == "$package" || ( "$package" == core && "${STUB_CORE_SYMLINK:-}" == 1 ) ]]; then
+              ln -s ../../../packages/"$package" skeleton/vendor/kitsune/"$package"
+            else
+              cp -R packages/"$package" skeleton/vendor/kitsune/"$package"
+              # Composer's real path mirror excludes archive-control metadata.
+              rm -f skeleton/vendor/kitsune/"$package"/.gitattributes
+            fi
+
+            if [[ "${STUB_CHANGED_PACKAGE:-}" == "$package" ]]; then
+              echo changed > skeleton/vendor/kitsune/"$package"/src/marker.php
+            fi
+
+            if [[ "${STUB_EXTRA_PACKAGE:-}" == "$package" ]]; then
+              echo extra > skeleton/vendor/kitsune/"$package"/src/extra.php
+            fi
+
+            if [[ "${STUB_NESTED_LINK_PACKAGE:-}" == "$package" ]]; then
+              ln -s ../../../../../packages/"$package"/src skeleton/vendor/kitsune/"$package"/nested
+            fi
+          done
+
+          mkdir -p skeleton/vendor/composer
+          if [[ "${STUB_NO_INVENTORY:-}" != 1 ]]; then
+            "$STUB_REAL_PHP" -r '
+              $packages = [];
+              foreach (["core", "person", "commerce"] as $short) {
+                if (! is_dir("skeleton/vendor/kitsune/".$short)) { continue; }
+                $packages[] = [
+                  "name" => "kitsune/".$short,
+                  "version" => getenv("STUB_MISMATCH_PACKAGE") === $short ? "dev-mismatch" : "dev-main",
+                  "dist" => ["type" => "path", "url" => getenv("STUB_WRONG_SOURCE_PACKAGE") === $short ? "../elsewhere/".$short : "../packages/".$short],
+                ];
+              }
+              file_put_contents("skeleton/vendor/composer/installed.json", json_encode(["packages" => $packages]));
+            '
           fi
 
           : > skeleton/composer.lock
+        elif [[ "$1" == require ]]; then
+          [[ "${STUB_REQUIRE_NOOP:-}" != 1 ]] || exit 0
+          "$STUB_REAL_PHP" -r '
+            $manifest = json_decode(file_get_contents("skeleton/composer.json"), true);
+            $manifest["require"]["kitsune/commerce"] = "@dev";
+            file_put_contents("skeleton/composer.json", json_encode($manifest));
+          '
         fi
         ;;
       skeleton/artisan)
@@ -377,6 +429,7 @@ it('runs every step in order, and nothing else', function (): void {
             /* ADR-038: a glob, so a first-party MODULE resolves from this checkout exactly as core does. */
             'composer config -d skeleton repositories.kitsune-packages {"type":"path","url":"../packages/*","options":{"symlink":false}}',
             'composer install -d skeleton --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts',
+            'php check packages',
             'composer audit -d skeleton --no-dev --abandoned=report',
             'php check syntax',
             'php check environment',
@@ -789,3 +842,55 @@ it('refuses an app that does not boot, and withholds the exception message', fun
         ->and(array_slice(releaseLog($this->dir), -1))->toBe(['php check environment'])
         ->and(releaseCalls($this->dir, 'artisan'))->toBe([]);
 });
+
+it('leaves commerce absent unless this release explicitly opts in', function (): void {
+    $run = releaseRun($this->dir);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and(is_dir($this->release.'/skeleton/vendor/kitsune/commerce'))->toBeFalse()
+        ->and(releaseCalls($this->dir, 'composer require'))->toBe([]);
+});
+
+it('copies an opted-in commerce package and verifies its version before booting', function (): void {
+    $run = releaseRun($this->dir, ['KITSUNE_INSTALL_COMMERCE' => '1']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and(is_link($this->release.'/skeleton/vendor/kitsune/commerce'))->toBeFalse()
+        ->and(File::get($this->release.'/skeleton/vendor/kitsune/commerce/src/marker.php'))
+        ->toBe(File::get($this->release.'/packages/commerce/src/marker.php'))
+        ->and(releaseCalls($this->dir, 'composer require'))->toBe([
+            'composer require -d skeleton kitsune/commerce:@dev --no-update --no-scripts --no-interaction',
+        ]);
+
+    $calls = releaseLog($this->dir);
+    expect(array_search('php check packages', $calls, true))
+        ->toBeLessThan(array_search('php check syntax', $calls, true));
+});
+
+it('refuses an invalid commerce choice before touching the release', function (string $choice): void {
+    $run = releaseRun($this->dir, ['KITSUNE_INSTALL_COMMERCE' => $choice]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('KITSUNE_INSTALL_COMMERCE must be 0 or 1')
+        ->and(releaseLog($this->dir))->toBe([])
+        ->and(is_link($this->release.'/skeleton/storage'))->toBeFalse();
+})->with(['', 'true', 'yes', '2', '1; touch anything']);
+
+it('refuses incomplete or mismatched commerce package installation before Laravel boots', function (array $failure, string $reason): void {
+    $run = releaseRun($this->dir, ['KITSUNE_INSTALL_COMMERCE' => '1', ...$failure]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($reason)
+        ->and(releaseCalls($this->dir, 'artisan'))->toBe([]);
+})->with([
+    'not installed' => [['STUB_MISSING_PACKAGE' => 'commerce'], 'kitsune/commerce'],
+    'missing existing person' => [['STUB_MISSING_PACKAGE' => 'person'], 'kitsune/person is required but was not installed'],
+    'no-op require and missing commerce' => [['STUB_REQUIRE_NOOP' => '1', 'STUB_MISSING_PACKAGE' => 'commerce'], 'kitsune/commerce was requested but was not installed'],
+    'symlinked' => [['STUB_PACKAGE_SYMLINK' => 'commerce'], 'symlinked rather than copied'],
+    'another version' => [['STUB_MISMATCH_PACKAGE' => 'commerce'], 'do not have the same Composer version'],
+    'another source' => [['STUB_WRONG_SOURCE_PACKAGE' => 'commerce'], 'was not copied from this checkout'],
+    'changed source file' => [['STUB_CHANGED_PACKAGE' => 'commerce'], "does not contain this checkout's package files"],
+    'no inventory' => [['STUB_NO_INVENTORY' => '1'], 'inventory or skeleton manifest could not be read'],
+    'extra file' => [['STUB_EXTRA_PACKAGE' => 'commerce'], 'contains a link or a file outside'],
+    'nested link' => [['STUB_NESTED_LINK_PACKAGE' => 'commerce'], 'contains a link or a file outside'],
+]);

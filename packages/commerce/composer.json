@@ -1,0 +1,23 @@
+{
+    "name": "kitsune/commerce",
+    "description": "The optional first-party catalogue and commerce module for Kitsune.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "self.version"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\Commerce\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\Commerce\\CommerceServiceProvider",
+            "scoping": []
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
