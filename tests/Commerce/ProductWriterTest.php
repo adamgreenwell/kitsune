@@ -175,7 +175,11 @@ it('refuses incomplete malformed duplicate foreign and media product receipts', 
     $receipt->save();
 
     if ($failure === 'float ID') {
+        // MySQL treats JSON integer N and double N.0 as equal on UPDATE and keeps the existing integer.
+        // Clear it first so this fixture really stores a float; the resolver judges persisted data.
+        DB::table('blueprints')->where('id', $receipt->getKey())->update(['manifest' => null]);
         DB::table('blueprints')->where('id', $receipt->getKey())->update(['manifest' => json_encode($manifest, JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR)]);
+        expect(Blueprint::receiptFor('storefront')->manifest['entry_types'][0]['id'])->toBe((float) $this->type->getKey());
     }
 
     $before = productState();
