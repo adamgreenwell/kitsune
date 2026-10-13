@@ -182,7 +182,7 @@ it('records whether each type is media, as declared, in a type row of exactly th
     $manifest = Blueprint::receiptFor('fixture')->manifest;
 
     foreach ($manifest['entry_types'] as $row) {
-        expect(array_keys($row))->toEqualCanonicalizing(['handle', 'id', 'outcome', 'name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media', 'fields']);
+        expect(array_keys($row))->toEqualCanonicalizing(['handle', 'id', 'outcome', 'name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media', 'accepts', 'fields']);
     }
 
     expect(array_column($manifest['entry_types'], 'is_media', 'handle'))->toBe(['library' => true, 'note' => false]);

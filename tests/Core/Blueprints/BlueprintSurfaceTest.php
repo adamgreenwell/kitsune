@@ -66,13 +66,14 @@ it('declares a role by handle, name, grants and collision policy alone', functio
         ->and((new ReflectionClass(RoleDeclaration::class))->isReadOnly())->toBeTrue();
 });
 
-/** ⚠️ AN ENTRY TYPE CARRIES NO ORG, NO SETTINGS, NO SYSTEM FLAG AND NO SUBJECT — and `isMedia` arrived by decision (ADR-039, the DAM). */
+/** ⚠️ NO ORG, GENERAL SETTINGS, SYSTEM FLAG OR SUBJECT — media and formats arrived separately by decision. */
 it('declares an entry type by these parameters alone, media off unless declared', function (): void {
     $constructor = new ReflectionMethod(EntryTypeDeclaration::class, '__construct');
 
     expect(array_map(fn (ReflectionParameter $parameter): string => $parameter->getName(), $constructor->getParameters()))
-        ->toBe(['handle', 'name', 'pluralName', 'fields', 'icon', 'description', 'ordering', 'onCollision', 'isMedia'])
+        ->toBe(['handle', 'name', 'pluralName', 'fields', 'icon', 'description', 'ordering', 'onCollision', 'isMedia', 'accepts'])
         ->and($constructor->getParameters()[8]->getDefaultValue())->toBeFalse()
+        ->and($constructor->getParameters()[9]->getDefaultValue())->toBeNull()
         ->and((new ReflectionClass(EntryTypeDeclaration::class))->isFinal())->toBeTrue()
         ->and((new ReflectionClass(EntryTypeDeclaration::class))->isReadOnly())->toBeTrue();
 });
