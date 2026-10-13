@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "14b7dd010efbfffd66337672803ab4a3",
+    "content-hash": "9d87d0981ea73e82f6a2a71b11a694b1",
     "packages": [],
     "packages-dev": [
         {
@@ -2707,8 +2707,41 @@
             "time": "2026-07-23T11:41:37+00:00"
         },
         {
+            "name": "kitsune/commerce",
+            "version": "dev-feat/commerce-catalogue",
+            "dist": {
+                "type": "path",
+                "url": "packages/commerce",
+                "reference": "56b4327c8c601085904852acc1e7598df43762e8"
+            },
+            "require": {
+                "kitsune/core": "self.version",
+                "php": "^8.4"
+            },
+            "type": "library",
+            "extra": {
+                "kitsune": {
+                    "provider": "Kitsune\\Commerce\\CommerceServiceProvider",
+                    "scoping": []
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kitsune\\Commerce\\": "src/"
+                }
+            },
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "The optional first-party catalogue and commerce module for Kitsune.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
             "name": "kitsune/core",
-            "version": "dev-main",
+            "version": "dev-feat/commerce-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
@@ -2760,7 +2793,7 @@
         },
         {
             "name": "kitsune/fixture-module",
-            "version": "dev-main",
+            "version": "dev-feat/commerce-catalogue",
             "dist": {
                 "type": "path",
                 "url": "tests/Core/Fixtures/Packages/module-fixture",
@@ -2791,7 +2824,7 @@
         },
         {
             "name": "kitsune/person",
-            "version": "dev-main",
+            "version": "dev-feat/commerce-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/person",
@@ -2824,7 +2857,7 @@
         },
         {
             "name": "kitsune/svg-sanitizer",
-            "version": "dev-main",
+            "version": "dev-feat/commerce-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/svg-sanitizer",
@@ -12802,6 +12835,7 @@
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {
+        "kitsune/commerce": 20,
         "kitsune/core": 20,
         "kitsune/fixture-module": 20,
         "kitsune/person": 20,

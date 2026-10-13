@@ -311,15 +311,14 @@ final class ModuleLifecycle
         });
 
         /*
-         * ⚠️ THE SCHEMA GOES LAST AND OUTSIDE, which is the opposite order from before and the only one that
-         * is recoverable.
+         * ⚠️ THE SCHEMA GOES LAST AND OUTSIDE, which avoids a receipt claiming tables already removed.
          *
          * `reset()` is DDL, so it cannot join the transaction above without implicitly committing it on MySQL
          * and MariaDB — the same trade install makes in the other direction. Running it after means a failure
-         * there leaves tables behind with NO receipt and no data, which `kitsune:module install` can walk
-         * back into: the migrator records what it rolled back as it goes, so a re-install re-runs whatever
-         * survived. Running it BEFORE the receipt delete, as this did, left the receipt instead — and a
-         * receipt for a module whose tables are gone is the state nothing can recover from.
+         * there leaves tables behind with NO receipt. A fully rolled-back migration can be installed again,
+         * but a multi-statement down() that commits partial DDL and then throws may remain recorded against a
+         * damaged schema. Reinstall is not a universal repair (ADR-038, corrected 2026-10-13); take a backup
+         * and establish the module's recovery procedure before destructive teardown.
          */
         $path = $provider->migrationPath();
 

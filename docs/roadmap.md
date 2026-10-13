@@ -435,7 +435,14 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       ADR-036's chat service is the second consumer *— done: the store (#177) and its admin,
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
-      sellable record referencing it; money is integer minor units, one currency per org
+      ~~sellable record referencing it~~ *site listing linking the site's own content to an org-owned sellable*;
+      money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
+      1–5: catalogue first; price and finite/untracked stock shared across sites; each site's own description and
+      images; a supported currency list with currency-specific minor units. The optional package and lifecycle
+      foundation is built in [#189](https://github.com/adamgreenwell/kitsune/issues/189); catalogue storage,
+      administration and public reads remain unbuilt.
+      [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
+      [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant
       of record. The seam is extracted when a second provider exists, not before (Standing Principle #11)
 - [ ] **Webhooks persisted before they are processed**, verified, idempotent, processed inline with a replay
