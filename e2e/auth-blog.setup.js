@@ -2,6 +2,7 @@
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
 const { BLOG_OWNER } = require('./accounts');
+const { waitForAdminPassword } = require('./admin-sign-in');
 
 /*
  * Signs in the ~~two~~ ~~three~~ five people the blueprints' browser tests need — Phase 5, ADR-039: Blog's owner and
@@ -26,6 +27,7 @@ const { BLOG_OWNER } = require('./accounts');
  */
 async function signIn(page, email, password, file) {
     await page.goto('/admin/login');
+    await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill(email);
     await page.locator('input[type="password"]').fill(password);
