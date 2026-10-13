@@ -3689,7 +3689,22 @@ This is the third time this ADR has been amended in two days, and all three are 
 
 ⚠️ **And the fix for it needed three corrections of its own, found by review before it merged — recorded because each is the same shape a fourth time.** The transaction was opened with the `DB` facade, which resolves the DEFAULT connection, while the receipt and a module's own writes go through their models' — `Site::save()` and `SettingsWriter` had both already been corrected from exactly that, so this is a lesson the log holds and the code repeated. The "no DDL in `install()`" rule was published as a requirement and enforced by nothing, which is this ADR's own confessed failure committed one docblock along; the hook is now asked of the ENGINE — was a transaction open when it was entered and closed when it returned — and the refusal names DDL, with the framework's commit error kept as the cause, because it cannot be thrown from inside the transaction it describes. And `uninstall()` kept the hazard install had just lost, in the direction that destroys data: its teardown and receipt now commit together, and the schema reset moved AFTER them, because a failed reset leaving tables with no receipt is recoverable by re-installing while a receipt for a module whose tables are gone is not.
 
-⚠️ **The lifecycle's transaction is not available to a caller who already holds one, and that is a limitation rather than a bug.** On MySQL and MariaDB a module's migrations commit an enclosing transaction implicitly while Laravel's counter keeps counting it, so `install()` called inside a caller's transaction emits a savepoint against a connection holding none and fails with SQLSTATE 1305. Nothing in this repository does it, the failure is loud rather than silent, and the CLI — where installs actually happen — runs at transaction level 0. Stated here on the precedent of ADR-021's batched site moves rather than guarded, because the guard would have to refuse every install under `RefreshDatabase` and so could not be written.
+⚠️ **Corrected 2026-10-13, during the commerce foundation review — reinstall is not a universal DDL repair.**
+The preceding amendment's reason for ordering schema reset last stands, but its recovery claim is too broad.
+Laravel records a rollback only after that migration's `down()` returns. On MySQL and MariaDB, an earlier
+statement in a multi-statement `down()` can commit DDL before a later statement throws; the migration can then
+remain recorded against a partly removed schema, with no receipt. Reinstall may skip that recorded migration.
+This is a source-derived residual, not a failure reproduced on a live installation. Commerce #189 has no production
+migrations or teardown writes, so it does not encounter it; a later destructive migration needs a tested recovery
+procedure, a backup and quiescent writers rather than a promise that reinstall always repairs it.
+[#264](https://github.com/adamgreenwell/kitsune/issues/264) tracks reproduction and recovery.
+
+The verifier's scope-attribute, trait and manifest checks also do not inspect migrated column nullability or
+scope-leading indexes. Such schema claims remain requirements on a module's migration and engine tests;
+commerce's empty manifest proves no business-model schema. #190 must assert its real org/site columns and indexes
+on every engine rather than treating manifest verification as that proof.
+
+⚠️ **The lifecycle's transaction is not available to a caller who already holds one, and that is a limitation rather than a bug.** On MySQL and MariaDB a module's migrations commit an enclosing transaction implicitly while Laravel's counter keeps counting it, ~~so `install()` called inside a caller's transaction emits a savepoint against a connection holding none and fails with SQLSTATE 1305. Nothing in this repository does it, the failure is loud rather than silent~~ *but `withinTransaction()` now detects the stale counter and runs the work unprotected, preserving the module's own refusal rather than replacing it with a savepoint error (corrected 2026-10-13 from the current source)*. The CLI — where installs actually happen — runs at transaction level 0 and opens a real transaction. An enclosing caller's transaction is already lost after DDL; the fallback cannot restore it or promise hook/receipt atomicity in that state. Stated here on the precedent of ADR-021's batched site moves rather than refusing every install under `RefreshDatabase`.
 
 ---
 
@@ -4222,7 +4237,7 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -4319,9 +4334,13 @@ code lives on the org. An org selling in two currencies uses two orgs until mult
 amount that matters — what was charged — is captured on the order line at purchase time and never re-derived
 from a catalogue that may since have changed.
 
-**A product is a content entry plus a sellable record that references it.** Title, description and images are
+~~**A product is a content entry plus a sellable record that references it.** Title, description and images are
 an entry type the Storefront blueprint provisions, edited by the people who edit everything else and carrying
-revisions, relations and permissions for free. Price, SKU and stock are a commerce row pointing at that entry.
+revisions, relations and permissions for free. Price, SKU and stock are a commerce row pointing at that entry.~~
+*Amended 2026-10-13, catalogue decisions 2 and 5 below: an org owns one sellable's price, SKU and stock; each
+site owns its product content, connected to that sellable through a site listing. The Storefront blueprint
+still provisions the content type, and its entries still carry revisions, relations and permissions. The
+cardinality changes so that two sites can describe the same thing differently without duplicating its stock.*
 ⚠️ **Product images need no new concept**: ADR-016 already decided media are entries with a companion
 `media_files` table, and a picker is a `relation` constrained to media types — so an image on a product is a
 relation field, and the only thing missing is the bytes.
@@ -5070,6 +5089,187 @@ browser calls by name, which Livewire hands back — the query now lists nothing
   every connection, not the default one alone, and it pins the three intro sentences, the reader filter's own help and
   the one page size; `EntitlementSurfaceTest` adds `ReaderNames` to the swept files and finds no public or static
   property holding names.*
+
+---
+
+**Amended 2026-10-13 — the catalogue-first design, before implementation.**
+
+~~Commerce has not been implemented.~~ *The package foundation is built below; the catalogue remains unbuilt.*
+This amendment records the next delivery order and the five answers Adam
+gave while reconciling the handoff, repository, Git history and new
+[Kitsune Roadmap board](https://github.com/users/adamgreenwell/projects/15). The source roadmap and this log
+remain authoritative; issues break the work into slices rather than change its architecture.
+
+**Adam, catalogue decision 1 — catalogue first.** Deliver products, prices and stock before carts, orders,
+then Stripe and persisted webhooks. The first example was a $20 course, not a restriction to courses or USD.
+
+**Adam, catalogue decision 2 — shared price and stock.** Sites of one org sell against the same price and
+stock balance. The sellable belongs to the org; a site listing does not copy those values. This does not
+change entitlement ownership: a purchase on one site grants access on that site only, as ADR-037 and this
+entry already require.
+
+**Adam, catalogue decision 3 — a supported currency list.** The operator chooses a supported currency for
+the org, and amounts use that currency's minor units. Do not assume two decimal places. The existing
+one-currency-per-org and integer-money decisions stand.
+
+**Adam, catalogue decision 4 — finite or untracked stock.** A book can have ten copies; a course can have
+no stock limit. Confirmed-payment decrement, no reservations and the oversell refund path remain the later
+payment slice's work.
+
+**Adam, catalogue decision 5 — each site's own content.** Sites share the price and stock, while each site
+has its own product description and images. Content is a site-specific entry, not an org-shared entry with
+one title and description for every brand.
+
+**Defaults taken, for Adam to overrule.** These are implementation proposals, not additional answers:
+
+- An org-scoped sellable holds SKU, integer price and stock. A site-scoped listing connects it to that site's
+  product entry; both new models declare their scope and use `EnforcesScope`. A foreign-org sellable, another
+  site's entry or an org-shared entry cannot satisfy the listing's references.
+- One listing per site and sellable, and one sellable per site product entry. Listings begin unlisted.
+  Public admission also requires published, undeleted content and a type enabled on the resolved site.
+- Reuse the entry's slug for the catalogue address. General theme discovery and template hierarchy stay in
+  v1.1; the first catalogue uses a small module-owned view and an explicitly delegated host route space.
+- Owners manage sellables, stock and listings. Ordinary entry permissions continue to govern site content.
+  The form warns that a shared price or stock change affects every site selling that sellable. No new public
+  permission subject or extension contract is introduced before v1.2.
+- A null stock quantity means untracked; a nonnegative integer means finite, including zero. SKU is unique
+  within the org; its canonical spelling and case policy must be recorded before the storage guard lands.
+- Currency remains on the org, as decided above. Require its explicit selection before saving a price, and
+  refuse changing it while sellables exist; never relabel or convert existing integers. First-price creation
+  and currency changes must share a lock. Probe the actual instance, quiet and bulk write paths, including
+  disabled-module behavior, before choosing the final guard implementation.
+- Use verified currency-to-minor-unit metadata and parse human amount strings without floats. Excess
+  precision, negative amounts, unsupported codes and overflow are refusals, not coercions. A PHP integer
+  cast that truncates a float does not meet this entry's no-float promise.
+- Draft product content may be incomplete. Listing it must report missing required public content; a
+  private image relation never becomes publicly deliverable merely because a product is listed.
+
+**The first implementation slices.** The [catalogue design issue](https://github.com/adamgreenwell/kitsune/issues/188)
+is in progress. It precedes [the commerce package and lifecycle](https://github.com/adamgreenwell/kitsune/issues/189),
+[shared sellable storage](https://github.com/adamgreenwell/kitsune/issues/190),
+[Storefront and administration](https://github.com/adamgreenwell/kitsune/issues/191), and
+[catalogue reads with the batch entitlement check](https://github.com/adamgreenwell/kitsune/issues/192).
+Each is a reviewable boundary, not a claim that the catalogue is usable after only the package scaffold.
+The cart, order, payment and webhook issues follow; export, retention, refunds and credential obligations
+remain explicit first-money gates rather than optional polish.
+
+**Observed before #189, not a runtime measurement.** ~~`packages/commerce` does not exist.~~ *The foundation
+below adds it.* The worked module, `packages/person`, deliberately ships no model or migration; commerce must exercise the
+kernel's migration and scope-manifest paths. `Org` has no currency column. `EntitlementCheck` exposes only
+`holds(string)`, so the batch operation is still owed. `RoleResource` opts out of Filament's site relationship
+because its model is org-scoped; an org-scoped sellable resource needs the same distinction. Per-site content lets the
+catalogue reuse the existing entry editor rather than change its creation or shared-row behavior.
+
+**What catalogue implementation must prove.** ~~No commerce tests or measurements exist yet.~~ *The foundation
+checks below exist; they do not prove a catalogue.* The storage/admin slice
+must prove different content on sibling sites with identical shared price and stock; explicit listing with
+no cross-site or cross-org disclosure; refusal of foreign or org-shared content references; owner-only
+commerce writes alongside ordinary content permissions; exact minor-unit conversion and no float write
+door; finite zero and untracked stock; currency-change versus first-price concurrency; a coherent content
+revision with image relations; lifecycle with actual catalogue data; and browser navigation outside
+`/c/{type}`. The public slice adds domain, root and nested-prefix routes, cached-route behavior, private-image
+refusal, and a measured bounded query count for batch access checks. Mutations and measurements belong in
+each as-built amendment once the corresponding code exists.
+
+**Amended 2026-10-13 — the commerce foundation, as built (#189).**
+
+The package exists, without a catalogue yet. `kitsune/commerce` declares its module provider and an empty scope
+manifest because it has no models. There is no Laravel auto-discovery provider. The kernel owns installation,
+upgrade and the enabled switch, and receives the tracked, currently empty migration directory. No placeholder
+business table, entry type, route, admin resource, payment library or public API is introduced. `self.version`
+requires the matching core version. Sellables, currency, per-site listings and the first $20 course belong to
+#190–#192; none is implied by installing this foundation.
+
+**Custody before destruction.** The module's uninstall hook checks every table in the module-owned `commerce_`
+namespace on the receipt's write connection, including a configured table prefix. It reads existence, not customer
+payloads, without applying an org, site or soft-delete filter. A retained row in another org, in the trash, or in
+a future commerce table refuses uninstall and leaves the receipt intact. A schema or row-query failure also
+refuses. A table merely containing `commerce` elsewhere in its name is not claimed. SQLite folds ASCII name case;
+MySQL and MariaDB query their write server's `lower_case_table_names` setting and fold only when it does. A
+case-sensitive server does not claim another installation whose prefix differs only in case. A folded MySQL or
+MariaDB server with a non-ASCII configured prefix explicitly refuses teardown, including an empty installation:
+identifier folding is not PHP or SQL lowercasing, so a guessed normalization could overlook retained rows. This
+is a supported-operation limitation, not a claim to have proved that the module owns no rows;
+[#263](https://github.com/adamgreenwell/kitsune/issues/263) tracks physical ownership support. PostgreSQL asks the write
+session for `current_schemas(false)` rather than trusting the configured search path, then qualifies each table's
+schema so an empty table earlier in the path cannot hide one with retained rows later in it. Schemas outside the
+effective path are not swept.
+
+These are defaults chosen within #189, not further answers from Adam. All later module-owned tables must use
+that namespace. Core has no general retained-commerce-data policy, and this hook does not invent one: it refuses
+until the operator resolves the records. Disable commerce, stop active writers and take a backup before teardown;
+disabling does not unload an already-running process, and an existence check is not a concurrent write fence.
+The hook runs before receipt deletion or migration rollback. The kernel's partial-DDL recovery limitation is
+recorded in ADR-038 rather than described as a universal reinstall guarantee.
+
+**Optional installation, without raising the floor.** Root development dependencies include the module.
+`composer skeleton:commerce` temporarily adds it to the development skeleton, invokes the existing setup and
+restores the original manifest after success or failure; an earlier `.orig` backup is refused. Like the existing
+setup, it generates an application key and therefore belongs only on a disposable development skeleton.
+`KITSUNE_INSTALL_COMMERCE=1` opts a pinned monorepo release into the package; the default is `0`, and other values
+are refused before side effects. Every deployment must preserve that choice. Package presence never installs or
+enables a receipt. Before Laravel boots, release admission checks required first-party packages, their checkout
+path origins, matching core/commerce versions, copied bytes, nested links and extra files. Composer intentionally
+omits `.gitattributes` archive metadata from its path mirror; that exact omission is allowed. The PHP admission
+code lives in a saved file because the former heredoc input hung under this Mac's Bash 5.3.
+
+The [installation and publication runbook](commerce-publication.md) distinguishes local path resolution from
+external Composer availability. The split workflow still publishes core only. Mirrors, Packagist registration,
+tags, public releases and any host deployment remain separate work; no external availability is claimed here.
+No Redis, worker, container, Node runtime or payment service is required by the module.
+
+**Measured.** On this Mac, PHP 8.5.10: the module/custody and existing lifecycle group passed 39 tests / 164 assertions
+in 0.72 s. The packaging and release group passed 87 / 338 in 49.68 s; the final archive-metadata adjustment's
+focused group passed 10 / 32 in 14.40 s. A real `composer skeleton:commerce` completed in 12.26 s, restored the
+manifest byte for byte with no `.orig` left, and the real SQLite operator lifecycle installed disabled, enabled,
+disabled and uninstalled without business tables or accounts. Offline Composer accepted a matching 0.4.0 pair
+and refused commerce 0.4.0 with core 0.4.1. A separate real-manifest Composer resolution mirrored core, commerce
+and person as ordinary directories, all at the same version, and passed copied-source admission in 0.243 s.
+PostgreSQL 17.11 passed the same lifecycle/custody group plus four effective-schema probes: 43 / 177 in 2.21 s.
+The probes cover a configured/effective-path disagreement, a retained table behind an empty shadow, unrelated
+schema exclusion and a mixed-case connection prefix; all generated schemas were removed afterward.
+The final module/custody group with engine-prefix tests passed on MySQL 8.4.7, `lower_case_table_names=0`
+(24 / 99), and MariaDB 11.4.2, setting `1` (24 / 104). The corresponding SQLite group passed 20 / 89 with four
+engine-specific skips; this excludes the existing lifecycle group and four PostgreSQL probes counted above.
+A MariaDB 11.4.2 identifier probe demonstrated why Unicode normalization is refused: `İ` folds to `i`, `ΟΣ` to
+`οσ`, and `ẞ` stays `ẞ`; PHP lowercasing disagrees with the first two and SQL `LOWER` disagrees with the last.
+The full `composer ci` gate passed 6,703 tests / 31,935 assertions, with 38 skips,
+in 663.61 s; Pint, PHPStan and separate skeleton formatting passed. This used PHP 8.5.10, macOS system Bash 3.2
+and `COMPOSER_PROCESS_TIMEOUT=0`. Homebrew Bash 5.3.15 timed out an existing probe-log test at 60 s; the same
+case passed under system Bash in 0.63 s. The default five-minute Composer timeout also cannot hold this suite.
+The full Playwright regression passed 312 tests in 6.9 min, after the PHP suite, including navigation, reader
+downloads, permissions, RTL and accessibility checks; its republished assets are not part of the change.
+These are local probes, not a deployed-host or published-package acceptance.
+
+**What the suites prove.** `CommerceModuleTest` exercises discovery, a scope manifest with no models, refusal of
+provider registration outside the kernel, disabled and headless boots, the migration-path handoff, stale-receipt
+upgrade, enabled-uninstall refusal and the complete operator command sequence. `CommerceCustodyTest` exercises
+other-org and no-context rows, trash, an unknown future table, empty-first table order, unowned names, table
+prefixes and folded case, schema/row-query failures, last-row resolution and an empty read replica. Its tables
+are test fixtures only. `CommerceMySqlCustodyTest` exercises exact retained rows, case-sensitive prefix isolation,
+folded ASCII prefix admission and the explicit non-ASCII refusal, including no retained rows. `CommercePackagingTest` and `ReleaseScriptTest` exercise optional installation, restoration,
+backup refusal, exact version resolution and release admission. The two saved PHP setup/admission files and the
+module sources are included in PHPStan. There is no new page or route shape to test in a browser; the existing
+browser suite remains the regression gate for the host and module navigation.
+
+Mutation checks ran in isolated copies, never the working source. All ten lifecycle/custody changes were caught:
+omitting the custody hook or migration path, reading the replica, losing prefix or case handling, claiming a name
+by substring, checking only the first table, excluding trash, or swallowing row/schema failures. The tests named
+above fail on their corresponding case. Three additional engine mutations were caught: unconditional folding on MySQL setting `0`, no folding on
+MariaDB setting `1`, and removal of the non-ASCII refusal (both retained and empty cases fail).
+Both PostgreSQL changes were caught too: reverting to configured schemas
+fails three probes, and omitting schema qualification fails the two shadow-table probes. Packaging tested nineteen
+distinct changes: seventeen produced behavior failures, one changed only refusal wording while a second fence
+still refused, and one root-link fence removal survived because the shell fence remained. Removing both link
+fences was caught. The packaging cases challenge version coupling, manifest restore and backup cleanup/refusal,
+default/opt-in/invalid choices, missing packages, copied origin, version, bytes, extra files and nested links.
+Missing-person and no-op-require cases independently challenge the two package-presence fences; no safe overlap
+is claimed as a production bypass.
+
+**Reserved for the later slices.** This round does not choose tax or shipping scope, guest purchasing,
+fixed-term start/stacking, Stripe timeout or unknown-outcome behavior, invoice retention periods, or refund
+and dispute policy. Their issue acceptance names the decision gate; settle each before its dependent
+money-moving code, without holding the catalogue behind questions it cannot yet encounter.
 
 ---
 
