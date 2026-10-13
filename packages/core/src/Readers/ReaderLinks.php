@@ -45,6 +45,11 @@ final class ReaderLinks
 
     public const RESET = '/reset';
 
+    /** A file offered to readers (ADR-041 decisions 1–4): its page at `/downloads/{id}`, and its bytes at `…/{id}/file`. */
+    public const DOWNLOADS = '/downloads';
+
+    public const FILE = '/file';
+
     /** A reader page's path on this site: its prefix (lower-case, as stored), `/account`, then the page. */
     public static function path(Site $site, string $page = self::HOME): string
     {
@@ -87,6 +92,24 @@ final class ReaderLinks
         }
 
         return $scheme.'://'.$host.self::port($scheme, $parts['port'] ?? null);
+    }
+
+    /** The page of a file offered to readers on this site, by its entry's id — what an owner shares (ADR-041 decision 3). */
+    public static function download(Site $site, int $entryId): string
+    {
+        return self::path($site, self::DOWNLOADS.'/'.$entryId);
+    }
+
+    /** That file's bytes, which the page's one button links to. */
+    public static function downloadFile(Site $site, int $entryId): string
+    {
+        return self::path($site, self::DOWNLOADS.'/'.$entryId.self::FILE);
+    }
+
+    /** The page's absolute URL, for an owner to paste anywhere — or null when the site has no address of its own yet. */
+    public static function absoluteDownload(Site $site, int $entryId): ?string
+    {
+        return self::absolute($site, self::DOWNLOADS.'/'.$entryId);
     }
 
     /** A page's absolute URL for a mail, with its secret as the one query parameter — or null when there is no origin. */

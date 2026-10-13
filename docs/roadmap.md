@@ -428,8 +428,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       site all need a reader who can sign in. *Sign-in landed 2026-10-07; sign-up and recovery by email 2026-10-09;
       ~~Left: readers named on the owner's entitlements page.~~ readers named on the owner's entitlements page, where
       the operator shows them, 2026-10-10 (ADR-037, amended; decisions 1–3).*
-- [ ] **The reader's download route** ([ADR-041](decision-log.md)): a second, public route that asks
-      `EntitlementCheck::holds()`
+- [x] **The reader's download route** ([ADR-041](decision-log.md)): a second, public route that asks
+      `EntitlementCheck::holds()` *— landed 2026-10-11 (ADR-041 decisions 1–4): a private file kept to one site,
+      offered to readers who hold one entitlement there, downloaded from a page under the site's `/account`*
 - [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
       ADR-036's chat service is the second consumer *— done: the store (#177) and its admin,
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*

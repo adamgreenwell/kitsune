@@ -49,6 +49,7 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaBulkRemoval;
+use Kitsune\Core\Filament\MediaReaderActions;
 use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -250,6 +251,9 @@ class EntryResource extends Resource
      * and only on a media type's page for a saved entry: every other type's edit and view pages ask nothing of
      * `media_files`. Filament builds them twice in a request — when the form is filled or validated, and again when the
      * section renders, since `getChildSchema()` never caches — so a media entry's page reads the row twice.
+     *
+     * ⚠️ AND WHO MAY DOWNLOAD IT AS A READER — ADR-041 decisions 1–4 (`MediaReaderActions::fileLines()`), from the same
+     * row: no second read of it. Only a file offered to readers asks whether reader accounts are on for this site.
      */
     private static function fileSection(): Section
     {
@@ -292,6 +296,8 @@ class EntryResource extends Resource
                     TextEntry::make('media_file_link')->hiddenLabel()->state(__('kitsune::media.file.open'))
                         ->url($url, shouldOpenInNewTab: true)
                         ->hidden($url === null),
+                    // Whether readers are offered it, its reader link, and what an owner should know (ADR-041 decisions 1–4).
+                    ...MediaReaderActions::fileLines($record, $file),
                 ];
             })
             ->columns(2);

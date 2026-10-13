@@ -12,10 +12,12 @@ use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\PasswordRefusal;
 use Kitsune\Core\Auth\PasswordRules;
 use Kitsune\Core\Console\ReadersCommand;
+use Kitsune\Core\Http\Middleware\IsolateDownload;
 use Kitsune\Core\Http\Middleware\ReaderArea;
 use Kitsune\Core\Http\Middleware\RequireGuest;
 use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\MiddlewarePriority;
+use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Readers\ReaderRoutes;
@@ -54,7 +56,7 @@ function surfaceFiles(string ...$paths): array
 /** @return list<class-string> */
 function surfaceSymbols(): array
 {
-    $symbols = [EmailAddress::class, PasswordRules::class, PasswordRefusal::class, ReadersCommand::class, ReaderArea::class, RequireReader::class, RequireGuest::class, MiddlewarePriority::class, ReaderToken::class];
+    $symbols = [EmailAddress::class, PasswordRules::class, PasswordRefusal::class, ReadersCommand::class, ReaderArea::class, RequireReader::class, RequireGuest::class, MiddlewarePriority::class, ReaderToken::class, IsolateDownload::class, MediaStream::class];
 
     foreach (surfaceFiles('packages/core/src/Readers', 'packages/core/src/Http/Controllers/Readers') as $file) {
         $relative = substr($file, strlen(dirname(__DIR__, 2).'/packages/core/src/'), -4);
@@ -64,13 +66,15 @@ function surfaceSymbols(): array
     return $symbols;
 }
 
-/** The files the front door is made of: core's reader code and the skeleton's reader. */
+/** The files the front door is made of: core's reader code, the reader's download (ADR-041), and the skeleton's reader. */
 function surfaceDoorFiles(): array
 {
     return surfaceFiles(
         'packages/core/src/Readers',
         'packages/core/src/Http/Controllers/Readers',
         'packages/core/src/Http/Middleware/ReaderArea.php',
+        'packages/core/src/Http/Middleware/IsolateDownload.php',
+        'packages/core/src/Media/MediaStream.php',
         'packages/core/src/Http/Middleware/RequireReader.php',
         'packages/core/src/Http/Middleware/RequireGuest.php',
         'packages/core/src/Console/ReadersCommand.php',
@@ -96,8 +100,9 @@ function surfaceCode(string $file): string
 it('marks every symbol it adds @internal, but the contract and the routes line', function (): void {
     $symbols = surfaceSymbols();
 
-    // Not vacuous: the sweep found the controllers and the sessions.
-    expect($symbols)->toContain('Kitsune\\Core\\Http\\Controllers\\Readers\\SignInController', 'Kitsune\\Core\\Readers\\ReaderSessions', ReaderAccount::class, ReaderRoutes::class);
+    // Not vacuous: the sweep found the controllers and the sessions, and the reader's download (ADR-041).
+    expect($symbols)->toContain('Kitsune\\Core\\Http\\Controllers\\Readers\\SignInController', 'Kitsune\\Core\\Readers\\ReaderSessions', ReaderAccount::class, ReaderRoutes::class)
+        ->toContain('Kitsune\\Core\\Http\\Controllers\\Readers\\DownloadController', IsolateDownload::class, MediaStream::class);
 
     $public = array_values(array_filter($symbols, static fn (string $symbol): bool => ! str_contains((string) (new ReflectionClass($symbol))->getDocComment(), '@internal')));
 
@@ -144,7 +149,7 @@ it('keeps an address, a password, a key and a connection out of a stack trace', 
     expect(array_values(array_unique($bare)))->toBe([]);
 });
 
-it('never ends a staff session, asks the default guard or logs anything but one line about the mailer', function (): void {
+it('never ends a staff session, asks the default guard or logs anything but the mailer\'s line and a download\'s two', function (): void {
     $found = [];
     $logs = [];
 
@@ -160,11 +165,39 @@ it('never ends a staff session, asks the default guard or logs anything but one 
         $logs[basename($file)] = substr_count($source, 'Log::');
     }
 
-    // ⚠️ ONE LOG LINE, IN `ReaderMail`, and it names only the mailer: a mail that cannot be sent after the response.
+    // ⚠️ ONE LOG LINE IN `ReaderMail`, and it names only the mailer: a mail that cannot be sent after the response. And
+    // TWO IN `MediaStream` (ADR-041): a file's bytes missing, naming the file; a database refusal, naming its SQLSTATE.
+    // None names a reader — and no controller logs at all.
     expect($found)->toBe([])
-        ->and(array_filter($logs))->toBe(['ReaderMail.php' => 1])
+        ->and(array_filter($logs))->toBe(['MediaStream.php' => 2, 'ReaderMail.php' => 1])
         ->and(surfaceCode(dirname(__DIR__, 2).'/packages/core/src/Readers/ReaderMail.php'))
-        ->toContain("Log::warning(sprintf('A reader email could not be made or sent through the mailer [%s]; the address, the link and the error are not logged.', \$mailer));");
+        ->toContain("Log::warning(sprintf('A reader email could not be made or sent through the mailer [%s]; the address, the link and the error are not logged.', \$mailer));")
+        ->and(surfaceCode(dirname(__DIR__, 2).'/packages/core/src/Media/MediaStream.php'))
+        ->toContain("Log::warning(sprintf('A reader\\'s download could not be answered: the database refused (SQLSTATE %s). The reader, the file and the entitlement are not logged.', \$state));")
+        ->toContain("Log::warning(sprintf('Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this entry was refused and its compensation failed, the only copy is on the private disk, where kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, or says what will (ADR-042 decision 5). Otherwise the file was removed outside Kitsune.', (string) \$file->disk, (string) \$file->path, (string) \$entry->getKey(), (string) \$entry->getKey()));");
+});
+
+/*
+ * ⚠️ A READER'S DOWNLOAD ASKS ONE QUESTION, OF ONE DOOR (ADR-041, ADR-040): `EntitlementCheck::holds()`. A staff grant,
+ * an owner's role or a policy is the admin's question, and an owner holds nothing here unless granted — so the route's
+ * files name no gate, no permission and no guard of their own.
+ */
+it('asks a download\'s question of the entitlement check alone — never a gate, a permission or a guard', function (): void {
+    $root = dirname(__DIR__, 2).'/packages/core/src/';
+    $found = [];
+
+    foreach (['Http/Controllers/Readers/DownloadController.php', 'Http/Middleware/IsolateDownload.php', 'Media/MediaStream.php'] as $file) {
+        $source = surfaceCode($root.$file);
+
+        foreach (['Gate::', 'Permissions::', 'Auth::', 'auth(', '->can(', 'authorize(', 'policy(', 'withTrashed(', 'withoutGlobalScope'] as $needle) {
+            if (str_contains($source, $needle)) {
+                $found[] = basename($file).': '.$needle;
+            }
+        }
+    }
+
+    expect($found)->toBe([])
+        ->and(substr_count(surfaceCode($root.'Http/Controllers/Readers/DownloadController.php'), '$this->check->holds('))->toBe(1);
 });
 
 it('keeps the skeleton\'s reader files to core\'s public reader surface — they are frozen at create-project', function (): void {
@@ -196,7 +229,7 @@ it('keeps the skeleton\'s reader files to core\'s public reader surface — they
 it('opens every reader view with the licence, within its first 400 bytes', function (): void {
     $views = glob(dirname(__DIR__, 2).'/packages/core/resources/views/readers/*.blade.php') ?: [];
 
-    expect($views)->toHaveCount(8);
+    expect($views)->toHaveCount(9);
 
     foreach ($views as $view) {
         $source = (string) file_get_contents($view);

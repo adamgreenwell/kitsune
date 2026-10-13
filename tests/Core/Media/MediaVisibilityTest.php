@@ -603,6 +603,14 @@ describe('what is refused', function (): void {
         'the strip refused' => [function (): Entry {
             return visStored(LocatedJpeg::unremovable(), 'shared.jpg');
         }, 'public', '', 'cannot be removed with certainty'],
+        // ADR-041 decision 2: a file offered to readers stays private until the offer stops — a located JPEG kept as uploaded.
+        'offered to readers' => [function (): Entry {
+            $entry = visStored(LocatedJpeg::photo(true), siteOnly: true);
+            MediaVisibility::offer($entry, 'course.advanced-php');
+            RefusingDisk::forgetLog();
+
+            return $entry;
+        }, 'public', MediaVisibilityRefused::OFFERED, 'Stop offering it first'],
     ]);
 
     /* The private bytes swapped between the keeper's hash and the read: the copy read is proved, or nothing is made of it. */

@@ -64,6 +64,8 @@ it('refuses to change a column fixed at creation, at every door', function (stri
         'width', 'height' => 7,
         'duration_ms' => 5,
         'created_at' => now()->subYear(),
+        // ADR-041 decision 1: an offer is written by *Offer to readers* alone, below the model.
+        'reader_entitlement' => 'course.advanced-php',
     };
     $id = $this->file->getKey();
 
@@ -86,7 +88,7 @@ it('refuses to change a column fixed at creation, at every door', function (stri
     expect($write)->toThrow(RuntimeException::class, "[{$column}] is fixed when MediaFile is created");
 
     expect((array) DB::table('media_files')->where('id', $id)->first())->toBe($this->stored);
-})->with(['entry_id', 'path', 'checksum', 'mime', 'size_bytes', 'visibility', 'width', 'height', 'duration_ms', 'created_at'])
+})->with(['entry_id', 'path', 'checksum', 'mime', 'size_bytes', 'visibility', 'width', 'height', 'duration_ms', 'created_at', 'reader_entitlement'])
     ->with(['the instance', 'a quiet save', 'a bulk update', 'the escape hatch']);
 
 /** The control: the one column custody moves is still written, by a bulk update and by the instance. */
@@ -116,12 +118,78 @@ it('refuses the columns the visibility switch writes at every model door', funct
         'an increment\'s extra columns' => fn () => MediaFile::query()->whereKey($id)->increment('width', 0, ['checksum' => str_repeat('0', 64)]),
         'an upsert\'s update half, in the escape hatch' => fn () => MediaFile::withoutScopeBecause('a test of the fixed columns', fn ($query) => $query
             ->upsert([[...$this->stored, 'visibility' => 'private']], ['id'], ['visibility'])),
+        // ADR-041 decision 1: the offer's column, in the same forms.
+        'a qualified bulk update of the offer' => fn () => MediaFile::query()->whereKey($id)->update(['media_files.reader_entitlement' => 'course.advanced-php']),
+        'an increment\'s extra columns, the offer' => fn () => MediaFile::query()->whereKey($id)->increment('width', 0, ['reader_entitlement' => 'course.advanced-php']),
+        'an upsert\'s update half naming the offer, in the escape hatch' => fn () => MediaFile::withoutScopeBecause('a test of the fixed columns', fn ($query) => $query
+            ->upsert([[...$this->stored, 'reader_entitlement' => 'course.advanced-php']], ['id'], ['reader_entitlement'])),
     };
 
-    expect($write)->toThrow(RuntimeException::class, 'is fixed when MediaFile is created');
+    // An upsert naming the offer carries it in its insert half too, which is refused first, as a row created offered
+    // (`RefusesInsertedRows`); the update half's refusal stays pinned by the bulk and arithmetic doors above.
+    expect($write)->toThrow(RuntimeException::class, str_contains($door, 'naming the offer')
+        ? 'Refusing to store a media file offered to readers'
+        : 'is fixed when MediaFile is created');
 
     expect((array) DB::table('media_files')->where('id', $id)->first())->toBe($this->stored);
-})->with(['a qualified bulk update', 'an increment of the size', 'an increment\'s extra columns', 'an upsert\'s update half, in the escape hatch']);
+})->with([
+    'a qualified bulk update', 'an increment of the size', 'an increment\'s extra columns', 'an upsert\'s update half, in the escape hatch',
+    'a qualified bulk update of the offer', 'an increment\'s extra columns, the offer', 'an upsert\'s update half naming the offer, in the escape hatch',
+]);
+
+/*
+ * ADR-041 decision 2: no row is created offered. *Offer to readers* decides from the locked rows that a file is private and
+ * kept to one site; a row stored offered would skip both. Every Eloquent door that creates refuses, and writes nothing.
+ *
+ * ⚠️ THE QUIET ONES TOO (review, 2026-10-11): `saveQuietly()` and `createQuietly()` on a new row run no listener, and the
+ * builder's `insert()`, `insertGetId()` and `insertOrIgnore()` none either — measured storing the offer as given — so
+ * `ScopedBuilder` asks `MediaFile::refuseInsertedRow()` of every row they carry (`RefusesInsertedRows`), and of an
+ * upsert's insert half; by column, so another case of the name is the same column (SQLite, MySQL and MariaDB read it
+ * so); and refuses a subquery insert outright, whose rows it cannot read. `DB::table()` stays out of reach, the boundary
+ * the builder states.
+ */
+it('refuses to create a file row offered to readers', function (string $door): void {
+    // The other entry's row taken away below the model, so its entry is one a new row could be created for.
+    DB::table('media_files')->where('id', $this->other->getKey())->delete();
+    $row = [...array_diff_key($this->stored, ['id' => true]), 'entry_id' => $this->other->entry_id, 'path' => 'media/offered/new.png', 'reader_entitlement' => 'course.advanced-php'];
+    $count = DB::table('media_files')->count();
+
+    $write = match ($door) {
+        'create' => fn () => MediaFile::create($row),
+        'a new instance, saved' => fn () => (new MediaFile($row))->save(),
+        'forceCreate' => fn () => MediaFile::query()->forceCreate($row),
+        'a new instance, saved quietly' => fn () => (new MediaFile($row))->saveQuietly(),
+        'createQuietly' => fn () => MediaFile::createQuietly($row),
+        'the builder\'s insert' => fn () => MediaFile::query()->insert($row),
+        'the builder\'s insertGetId' => fn () => MediaFile::query()->insertGetId($row),
+        'the builder\'s insertOrIgnore' => fn () => MediaFile::query()->insertOrIgnore([$row]),
+        'the name in upper case' => fn () => MediaFile::query()->insertGetId([...array_diff_key($row, ['reader_entitlement' => true]), 'READER_ENTITLEMENT' => 'course.advanced-php']),
+        'the name in mixed case, qualified' => fn () => MediaFile::query()->insert([...array_diff_key($row, ['reader_entitlement' => true]), 'media_files.Reader_Entitlement' => 'course.advanced-php']),
+        'an upsert\'s insert half, in the escape hatch' => fn () => MediaFile::withoutScopeBecause('a test of the offer at creation', static fn ($query) => $query
+            ->upsert([$row], ['path'], ['mime'])),
+        'the builder\'s insertUsing' => fn () => MediaFile::withoutScopeBecause('a test of the offer at creation', static fn ($query) => $query
+            ->insertUsing(array_keys($row), DB::query()->selectRaw(implode(', ', array_fill(0, count($row), '?')), array_values($row)))),
+        'the builder\'s insertOrIgnoreUsing' => fn () => MediaFile::withoutScopeBecause('a test of the offer at creation', static fn ($query) => $query
+            ->insertOrIgnoreUsing(array_keys($row), DB::query()->selectRaw(implode(', ', array_fill(0, count($row), '?')), array_values($row)))),
+    };
+
+    // A subquery's rows cannot be read, so the builder refuses the insert itself, in its own words.
+    expect($write)->toThrow(RuntimeException::class, str_contains($door, 'Using')
+        ? 'the rows come from a subquery, so its own refusal of a row cannot be asked of them'
+        : 'Refusing to store a media file offered to readers');
+
+    expect(DB::table('media_files')->count())->toBe($count)
+        ->and(DB::table('media_files')->where('path', 'media/offered/new.png')->exists())->toBeFalse();
+})->with(['create', 'a new instance, saved', 'forceCreate', 'a new instance, saved quietly', 'createQuietly', 'the builder\'s insert', 'the builder\'s insertGetId', 'the builder\'s insertOrIgnore', 'the name in upper case', 'the name in mixed case, qualified', 'an upsert\'s insert half, in the escape hatch', 'the builder\'s insertUsing', 'the builder\'s insertOrIgnoreUsing']);
+
+/* The control: the same row with no offer is created, and reads as offered to no one. */
+it('creates a file row offered to no one', function (): void {
+    DB::table('media_files')->where('id', $this->other->getKey())->delete();
+    $file = MediaFile::create([...array_diff_key($this->stored, ['id' => true]), 'entry_id' => $this->other->entry_id, 'path' => 'media/offered/new.png']);
+
+    expect(DB::table('media_files')->where('id', $file->getKey())->value('reader_entitlement'))->toBeNull()
+        ->and($file->readerEntitlement())->toBeNull();
+});
 
 /*
  * ...and below the model, one method writes them: a second writer anywhere in core fails here, so the lift stays "for that
@@ -129,7 +197,7 @@ it('refuses the columns the visibility switch writes at every model door', funct
  * a decrement of one. A below-model upsert or a whole-row rewrite spans lines this reads one at a time, and is left to
  * review (review of decision 32).
  */
-it('writes visibility, checksum and size_bytes after creation in one method alone', function (): void {
+it('writes visibility, checksum, size_bytes and reader_entitlement after creation in one method alone', function (): void {
     $writers = [];
     $raw = [];
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(dirname(__DIR__, 3).'/packages/core/src', FilesystemIterator::SKIP_DOTS));
@@ -144,13 +212,13 @@ it('writes visibility, checksum and size_bytes after creation in one method alon
         foreach ($lines as $i => $line) {
             // A string that sets one of them is SQL written by hand.
             foreach ([...(preg_match_all('/\'[^\']*\'|"[^"]*"/', $line, $strings) > 0 ? $strings[0] : [])] as $string) {
-                if (preg_match('/\bset\b.*(?<![\w.])["`]?(visibility|checksum|size_bytes)["`]?\s*=/i', $string) === 1) {
+                if (preg_match('/\bset\b.*(?<![\w.])["`]?(visibility|checksum|size_bytes|reader_entitlement)["`]?\s*=/i', $string) === 1) {
                     $raw[] = basename((string) $file).':'.($i + 1);
                 }
             }
 
-            $named = preg_match('/[\'"](?:\w+\.)?(visibility|checksum|size_bytes)[\'"]\s*(=>|\]\s*=(?!=))/', $line) === 1;
-            $arithmetic = preg_match('/\b(?:increment|decrement)(?:Each)?\(\s*\[?\s*[\'"](?:\w+\.)?(visibility|checksum|size_bytes)[\'"]/', $line) === 1;
+            $named = preg_match('/[\'"](?:\w+\.)?(visibility|checksum|size_bytes|reader_entitlement)[\'"]\s*(=>|\]\s*=(?!=))/', $line) === 1;
+            $arithmetic = preg_match('/\b(?:increment|decrement)(?:Each)?\(\s*\[?\s*[\'"](?:\w+\.)?(visibility|checksum|size_bytes|reader_entitlement)[\'"]/', $line) === 1;
 
             if (! $named && ! $arithmetic) {
                 continue;
@@ -188,7 +256,8 @@ it('writes visibility, checksum and size_bytes after creation in one method alon
             'MediaFile::columnsFixedAtCreation()',
             // The row as `store()` creates it.
             'MediaLibrary::write()',
-            // The switch, below the model, under custody's lock — ADR-042 decision 32.
+            // The switch, below the model, under custody's lock — ADR-042 decision 32; and the offer to readers, ADR-041
+            // decision 1, through the same method.
             'MediaVisibility::writeRow()',
         ]);
 

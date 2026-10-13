@@ -494,6 +494,25 @@ it('answers 404 for an id larger than the key column can hold', function (): voi
     $this->actingAs($this->user)->get('/test-media/t/9223372036854775807')->assertNotFound();
 });
 
+/**
+ * ⚠️ A TRASHED ENTRY'S FILE IS NOT SERVED, and nothing asserted it — the gap the reader's route design found (ADR-041, D5).
+ * `SoftDeletes` leaves the row out of the scoped query, so it is the 404 an unknown id gets; a later change that loaded
+ * the entry `withTrashed()` would serve a file its owner had put in the trash.
+ */
+it('answers 404 for a file whose entry is in the trash, even to a granted user', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType);
+
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertOk();
+
+    $entry->delete();
+
+    expect(Entry::withTrashed()->whereKey($entry->getKey())->value('deleted_at'))->not->toBeNull();
+
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertNotFound();
+});
+
 /** `007` and `7` must not be two URLs for one file. */
 it('refuses a padded id rather than resolving it to the same file', function (): void {
     $this->role->grant('entry.image.view');

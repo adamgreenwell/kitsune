@@ -52,6 +52,9 @@ use Throwable;
  * every selection on a media list shares (`BulkSelection`). One notification, Kitsune's alone, says what became of each
  * file, escaped (decision 7). Who may is asked of the list's type, as Upload asks it: a bulk action has no record, and
  * the list holds only that type's entries.
+ *
+ * ⚠️ *MAKE PUBLIC* WAITS FOR AN OFFER TO STOP — ADR-041 decision 2. A file offered to readers is shown *Make public*
+ * disabled, saying why; *Offer to readers* and its two siblings are `MediaReaderActions`, beside these on the same pages.
  */
 final class MediaVisibilityActions
 {
@@ -80,8 +83,16 @@ final class MediaVisibilityActions
             ->databaseTransaction(false)
             ->visible(static fn (Entry $record): bool => self::visibilityOf($record) === 'private')
             ->authorize(static fn (Entry $record): bool => self::mayAct($record))
-            ->disabled(static fn (Entry $record): bool => ! EntryResource::can('publish', $record))
-            ->tooltip(static fn (Entry $record): ?string => EntryResource::can('publish', $record) ? null : self::needsPublish())
+            /*
+             * ⚠️ AND DISABLED WHILE THE FILE IS OFFERED TO READERS, SAYING WHY — ADR-041 decision 2. The switch refuses
+             * it (`MediaVisibilityRefused::OFFERED`); the page says so before anyone ticks the acknowledgement.
+             */
+            ->disabled(static fn (Entry $record): bool => ! EntryResource::can('publish', $record) || MediaReaderActions::isOffered($record))
+            ->tooltip(static fn (Entry $record): ?string => match (true) {
+                ! EntryResource::can('publish', $record) => self::needsPublish(),
+                MediaReaderActions::isOffered($record) => __('kitsune::media.readers.offered_not_public'),
+                default => null,
+            })
             ->modalHeading(static fn (Entry $record): string => __('kitsune::media.visibility.make_public_heading', ['title' => self::titleOf($record)]))
             ->modalDescription(static fn (Entry $record): ?string => $record->site_id === null ? __('kitsune::media.visibility.shared_public') : null)
             ->modalSubmitActionLabel(__('kitsune::media.visibility.make_public'))
@@ -91,7 +102,7 @@ final class MediaVisibilityActions
              * (`lang/en/media.php`), and they claim what `MediaLocation::STRIPPED` strips and no more. Unticked is a
              * validation error, and the handler asks again.
              */
-            ->schema(static fn (Entry $record): ?array => EntryResource::can('publish', $record) ? [
+            ->schema(static fn (Entry $record): ?array => EntryResource::can('publish', $record) && ! MediaReaderActions::isOffered($record) ? [
                 Checkbox::make('public_confirmed')
                     ->label(__('kitsune::media.visibility.public_confirm'))
                     ->helperText(__('kitsune::media.visibility.public_warning'))

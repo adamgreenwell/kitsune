@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDelivery;
+use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
@@ -28,11 +29,12 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * ADR-041 records what that costs at the ADR-027 floor and takes it anyway, because Kitsune is a fail-closed
  * house and a leaked gated download is worse than a slow product image.
  *
- * ⚠️ THE QUESTION IT ASKS IS THE STAFF ONE, AND THAT IS ADR-041's DELIBERATE GAP MADE VISIBLE. `EntryPolicy`
+ * ⚠️ THE QUESTION IT ASKS IS THE STAFF ONE ~~, AND THAT IS ADR-041's DELIBERATE GAP MADE VISIBLE~~ — the reader's has a
+ * route of its own since ADR-041 decisions 1–4. `EntryPolicy`
  * resolves `entry.{type_handle}.view` against grants that are keyed per ORG (`Permissions::held()` keys on
  * `[$userId, $orgId]`, and even ownership is an `is_owner` role row inside one org). "This reader paid for
  * this download" was not expressible when this was written; ADR-040's entitlements now make it so —
- * `EntitlementCheck::holds()` — and the reader's download route that asks it is still owed, inside v1.0.
+ * `EntitlementCheck::holds()` — and the reader's download route asks it (`Readers\DownloadController`, ADR-041).
  *
  * ⚠️ NO ROUTE-MODEL BINDING, AND THE ORDER OF THE PIPELINE IS WHY. `SubstituteBindings` sits in the panel's
  * OUTER middleware group and `SetKitsuneContext` in the tenant group nested inside it, so bindings resolve
@@ -65,16 +67,11 @@ final class MediaDownloadController
         $media = (string) $request->route('media');
 
         /*
-         * ⚠️ DIGITS ARE NOT ENOUGH, AND THE ENGINES DISAGREE ABOUT WHAT HAPPENS NEXT — AGENTS.md invariant 5.
-         * `/media/999999999999999999999999` satisfies `[0-9]+` and reaches `whereKey()`, where PostgreSQL
-         * refuses to coerce it to the `bigint` key and raises SQLSTATE 22003, which surfaces as a 500 rather
-         * than the 404 every other unknown id gets. MySQL and MariaDB return no rows and say nothing, and
-         * SQLite agrees with them — so a suite that skipped PostgreSQL would call this fixed.
-         *
-         * The bound is the COLUMN's, not PHP's: `PHP_INT_MAX` happens to match on a 64-bit build and would
-         * silently narrow this on a 32-bit one, which is the kind of agreement that holds until it does not.
+         * ⚠️ DIGITS ARE NOT ENOUGH, AND THE ENGINES DISAGREE ABOUT WHAT HAPPENS NEXT — AGENTS.md invariant 5. An id of
+         * twenty-four nines satisfies `[0-9]+` and would reach `whereKey()`, where PostgreSQL raises SQLSTATE 22003 — a 500.
+         * `MediaStream::key()` holds the bound, as text against the column's, for this route and the reader's alike.
          */
-        if (! self::namesARepresentableKey($media)) {
+        if (MediaStream::key($media) === null) {
             abort(404);
         }
 
@@ -156,24 +153,5 @@ final class MediaDownloadController
             MediaDelivery::headersFor($file),
             MediaDelivery::dispositionFor($file),
         );
-    }
-
-    /**
-     * Could the primary key column hold this, as a string of digits?
-     *
-     * Compared as text against the signed 64-bit maximum every engine Kitsune supports uses for a `bigint`
-     * key, so the answer does not depend on PHP's own word size. Leading zeros are refused rather than
-     * trimmed: `007` and `7` would otherwise be two URLs for one file.
-     */
-    private static function namesARepresentableKey(string $media): bool
-    {
-        $max = '9223372036854775807';
-
-        if ($media === '' || ($media !== '0' && $media[0] === '0')) {
-            return false;
-        }
-
-        return strlen($media) < strlen($max)
-            || (strlen($media) === strlen($max) && strcmp($media, $max) <= 0);
     }
 }

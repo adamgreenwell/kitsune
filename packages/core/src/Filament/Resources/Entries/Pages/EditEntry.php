@@ -16,6 +16,7 @@ use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
 use Kitsune\Core\Filament\MediaDeletionNotice;
+use Kitsune\Core\Filament\MediaReaderActions;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 
@@ -33,12 +34,12 @@ class EditEntry extends EditRecord
     /**
      * A refused delete — its file could not leave the web — is a notification naming the entry, not a 500
      * (`MediaDeletionNotice`, ADR-042 decision 5). A media entry's file is made public or private here, as on View
-     * (decision 32).
+     * (decision 32), and offered to readers (ADR-041 decision 1).
      *
      * @return array<int, mixed>
      */
     protected function getHeaderActions(): array
     {
-        return [...MediaVisibilityActions::all(), DeleteAction::make()->using(MediaDeletionNotice::deleteOne(...))];
+        return [...MediaVisibilityActions::all(), ...MediaReaderActions::all(), DeleteAction::make()->using(MediaDeletionNotice::deleteOne(...))];
     }
 }

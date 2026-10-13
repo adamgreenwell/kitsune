@@ -32,11 +32,22 @@ use Symfony\Component\HttpFoundation\Response;
  * 3. the path is inside a panel's URL space;
  * 4. reader accounts cannot work here (`ReaderAccounts::fault()` — the console says why);
  * 5. the site's mode does not serve these pages: `off` serves none, `sign-in` all but sign-up, and `open` all of them —
- *    the route says which it needs (`ReaderArea:open` for sign-up).
+ *    the route says which it needs (`ReaderArea:open` for sign-up, `ReaderArea:download` for a file offered to readers,
+ *    which a site serves wherever a reader can sign in).
  *
  * Then `Auth::shouldUse()` the reader guard, so on a reader route `auth()->user()`, `Permissions::currentUser()` and any
  * audit actor are the reader or nobody — never a staff user riding the same session. And on the way out, headers for a
  * page that holds a form for a password: never cached, never framed, never a referrer, no script.
+ *
+ * ⚠️ A FILE'S BYTES GET HEADERS OF THEIR OWN — ADR-041, the reader's download route (decisions 1–4, Adam, 2026-10-11).
+ * `FILE_HEADERS` in place of `HEADERS`, and only where both say it is a file: the route asked for `download`, and the
+ * answer carries `Content-Disposition`. The landing page, a refusal's notice and a guest's redirect keep the page set.
+ * Not split on the response's class, which would quietly give a future `BinaryFileResponse` the page set. Sandboxed,
+ * because a file is never a document of this site; `frame-ancestors`, because `sandbox` alone lets another site frame it;
+ * and `Cross-Origin-Resource-Policy`, so another site's `<img>` or `<video>` gets nothing even when the browser sends the
+ * reader's session — which `SameSite=none` would let it. `sandbox` is never on the page set: it blocks a form's POST in
+ * Chromium and WebKit (measured), the sign-in, sign-up, recovery and account pages hold one, and the page set is one
+ * set for every reader page.
  *
  * ⚠️ `{readerSite}` IS UNTRUSTED INPUT (AGENTS.md §6): it is compared, never looked up.
  *
@@ -57,6 +68,16 @@ final class ReaderArea
         'Content-Security-Policy' => "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     ];
 
+    /** @var array<string, string> what a file offered to readers is sent with, in place of `HEADERS` */
+    public const FILE_HEADERS = [
+        'Cache-Control' => 'no-store, private',
+        'Referrer-Policy' => 'no-referrer',
+        'X-Content-Type-Options' => 'nosniff',
+        'X-Robots-Tag' => 'noindex',
+        'Content-Security-Policy' => "default-src 'none'; sandbox; frame-ancestors 'none'",
+        'Cross-Origin-Resource-Policy' => 'same-origin',
+    ];
+
     /**
      * The request attribute a reader page's query leaves behind once it is taken off the request: the hash of its `token`,
      * or null. Present only when the request had a query — `LinkUseController` reads it, and nothing reads the query.
@@ -68,7 +89,10 @@ final class ReaderArea
         private readonly ReaderAccounts $accounts,
     ) {}
 
-    /** @param  string  $pages  `sign-in` for every page a signing-in site serves; `open` for sign-up's */
+    /**
+     * @param  string  $pages  `sign-in` for every page a signing-in site serves; `open` for sign-up's; `download` for a
+     *                         file offered to readers — served as `sign-in` is, and sent with `FILE_HEADERS` when it is one
+     */
     public function handle(Request $request, Closure $next, string $pages = 'sign-in'): Response
     {
         // ⚠️ A LINK'S SECRET LEAVES THE REQUEST BEFORE ANYTHING HERE CAN REFUSE IT. `StartSession` writes a GET's full URL
@@ -90,15 +114,16 @@ final class ReaderArea
 
         abort_unless(match ($pages) {
             'open' => $mode->signsUp(),
-            'sign-in' => $mode->signsIn(),
+            'sign-in', 'download' => $mode->signsIn(),
             default => false,
         }, 404);
 
         Auth::shouldUse((string) $this->accounts->guardName());
 
         $response = $next($request);
+        $headers = $pages === 'download' && $response->headers->has('Content-Disposition') ? self::FILE_HEADERS : self::HEADERS;
 
-        foreach (self::HEADERS as $name => $value) {
+        foreach ($headers as $name => $value) {
             $response->headers->set($name, $value);
         }
 

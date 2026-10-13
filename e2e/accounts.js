@@ -7,6 +7,9 @@
  * `kitsune:blueprint apply --owner-password-stdin`, so it has to pass the first owner's rules (fifteen characters at
  * least), and it is never an argument or an environment variable, as the command requires of any real one.
  */
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
@@ -80,10 +83,106 @@ function plantCrossOrgRows() {
     }
 }
 
+/*
+ * The file a reader downloads — ADR-041, the reader's download route (decisions 1–4, Adam, 2026-10-11): a private PDF
+ * kept to Golfdom alone, offered for `club.rules-2026`, which reader 1 holds there from `e2e.order:2`. Reader 2 holds
+ * nothing of it, and Rival's readers are another org's. A title in French, so the download's name is sent as
+ * `filename*` and arrives as typed, not as its ASCII slug.
+ */
+const DOWNLOAD = {
+    title: 'Règles du parcours 2026',
+    filename: 'Règles du parcours 2026.pdf',
+    entitlement: 'club.rules-2026',
+    source: 'e2e.order:2',
+};
+
+/**
+ * The PDF's bytes, the same on every call: a spec hashes them to know what a download must be, without asking the server
+ * that served it. Longer than two of `MediaStream`'s 256 KiB chunks, so a download that arrives whole went round its loop
+ * three times.
+ */
+function downloadBytes() {
+    const line = '% Kitsune e2e: a reader\'s download, longer than one 256 KiB chunk.\n';
+
+    return Buffer.from(`%PDF-1.4\n${line.repeat(9000)}1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n`, 'latin1');
+}
+
+/**
+ * Golfdom's offered PDF and reader 1's grant of its name — stored once, offered by `MediaVisibility::offer()` as Golfdom's
+ * owner (the audited door an editor's *Offer to readers* uses), and granted with nobody signed in, as `seedReaderGrant()`
+ * grants. Idempotent: a file already there is offered again (unchanged), and a grant already live is unchanged — so it is
+ * also the reset a spec runs after `entitlements.spec.js` has erased reader 1's rows, or after its own owner stopped the
+ * offer.
+ *
+ * ⚠️ ON THE GLOBAL `image` TYPE, AS `media-tiles.spec.js` STORES ITS PDF: Golfdom Media has no other media type, and
+ * one more would put a link in every sidebar a dozen specs read. The type's list of formats (ADR-042 decision 33) is set
+ * aside below the model for the one store and put back whatever happens.
+ *
+ * ⚠️ MADE OLD, BELOW THE MODEL, as `media-tiles.spec.js` makes its tile states: the image list sorts by when each entry
+ * changed, ten a page, and specs that look for `Course map` or `Golfdom logo` on its unsearched first page must not find
+ * this file in their place. An offer writes `media_files` alone, so it stays old.
+ *
+ * ⚠️ REFUSED UNLESS IT IS AS THE SPEC ASSUMES — private, kept to Golfdom, offered for the name, granted — so a wrong
+ * fixture is a setup failure rather than a download test that proves nothing.
+ *
+ * @returns {{ id: string, sha256: string, size: number }}
+ */
+function seedReaderDownload() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kitsune-download-e2e-'));
+    const source = path.join(dir, 'rules.pdf');
+    fs.writeFileSync(source, downloadBytes());
+
+    try {
+        const printed = execFileSync('php', ['artisan', 'tinker', '--execute', [
+            '$c = app(Kitsune\\Core\\Tenancy\\Context::class);',
+            "$org = Kitsune\\Core\\Models\\Org::query()->where('slug', 'golfdom-media')->firstOrFail();",
+            '$c->forget()->setOrg($org);',
+            "$site = Kitsune\\Core\\Models\\Site::query()->where('slug', 'golfdom')->firstOrFail();",
+            '$c->setSite($site);',
+            "auth()->setUser(App\\Models\\User::query()->where('email', 'alpha@kitsune.test')->firstOrFail());",
+            `$id = DB::table('entries')->where('org_id', $org->id)->where('site_id', $site->id)->where('title', '${DOWNLOAD.title}')->whereNull('deleted_at')->value('id');`,
+            "$stored = 'kept';",
+            'if ($id === null) {',
+            "$type = Kitsune\\Core\\Models\\EntryType::withoutScopeBecause('a browser-test fixture', fn ($q) => $q->where('handle', 'image')->whereNull('org_id')->firstOrFail());",
+            "$settings = DB::table('entry_types')->where('id', $type->id)->value('settings');",
+            "DB::table('entry_types')->where('id', $type->id)->update(['settings' => null]);",
+            `try { $id = Kitsune\\Core\\Media\\MediaLibrary::store('${source.replace(/['\\]/g, '\\$&')}', 'rules.pdf', $type, 'private', '${DOWNLOAD.title}', true)->getKey(); }`,
+            "finally { DB::table('entry_types')->where('id', $type->id)->update(['settings' => $settings]); }",
+            "DB::table('entries')->where('id', $id)->update(['updated_at' => '2001-01-01 00:00:00']);",
+            "$stored = 'stored'; }",
+            `$offered = Kitsune\\Core\\Media\\MediaVisibility::offer(Kitsune\\Core\\Models\\Entry::query()->findOrFail($id), '${DOWNLOAD.entitlement}');`,
+            'auth()->forgetUser();',
+            `$granted = app(Kitsune\\Core\\Entitlements\\EntitlementWriter::class)->grant('${READERS.golfdom.id}', '${DOWNLOAD.entitlement}', '${DOWNLOAD.source}', null)->name;`,
+            "$f = DB::table('media_files')->where('entry_id', $id)->first();",
+            "echo json_encode(['id' => (string) $id, 'stored' => $stored, 'offered' => $offered, 'granted' => $granted, 'visibility' => $f->visibility,",
+            "'mime' => $f->mime, 'gate' => $f->reader_entitlement, 'site' => (int) DB::table('entries')->where('id', $id)->value('site_id') === (int) $site->id,",
+            "'sha256' => hash('sha256', (string) Storage::disk($f->disk)->get($f->path)), 'size' => (int) $f->size_bytes]);",
+        ].join(' ')], { cwd: path.join(__dirname, '..', 'skeleton'), encoding: 'utf8' }).trim();
+
+        const seeded = JSON.parse(printed);
+        const expected = crypto.createHash('sha256').update(downloadBytes()).digest('hex');
+
+        if (! ['stored', 'kept'].includes(seeded.stored)
+            || ! ['switched', 'unchanged'].includes(seeded.offered)
+            || ! ['Granted', 'Unchanged'].includes(seeded.granted)
+            || seeded.visibility !== 'private' || seeded.mime !== 'application/pdf' || seeded.gate !== DOWNLOAD.entitlement
+            || seeded.site !== true || seeded.sha256 !== expected || seeded.size !== downloadBytes().length) {
+            throw new Error(`seedReaderDownload: Golfdom's offered PDF is not as the specs assume:\n${printed}`);
+        }
+
+        return { id: seeded.id, sha256: seeded.sha256, size: seeded.size };
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
 module.exports = {
     BLOG_OWNER: { email: 'blog-owner@kitsune.test', password: 'inkwell-first-owner-e2e' },
     CROSS_ORG,
+    DOWNLOAD,
     READERS,
+    downloadBytes,
     plantCrossOrgRows,
+    seedReaderDownload,
     seedReaderGrant,
 };

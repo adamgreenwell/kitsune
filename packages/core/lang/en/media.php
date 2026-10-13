@@ -145,6 +145,66 @@ return [
             'already_private_count' => '{1} One was already private, and was left as it was.|[2,*] :count were already private, and were left as they were.',
         ],
     ],
+    /*
+     * *Offer to readers*, *Change offer* and *Stop offering*, and the File section's lines about them — ADR-041
+     * decisions 1–4 (Adam, 2026-10-11).
+     *
+     * ⚠️ DECISION 4, SAID PLAINLY: an offered file is served as it is stored here — a private file is never opened
+     * (ADR-042 decision 30) — so a photo keeps any location it still holds. Not "as uploaded": a JPEG made public at some
+     * point lost its GPS coordinates then (`MediaVisibility::makePublic()` makes the stripped copy the file on the private
+     * disk, and making it private again keeps that copy), so the words claim neither that anything is removed nor that
+     * the upload's bytes are what readers get. `as_stored` says it in the dialog, and `file.as_stored` in the File section.
+     *
+     * ⚠️ AN INSTRUCTION ONLY TO WHOEVER CAN FOLLOW IT. The File section is shown to whoever may view the entry, and only
+     * whoever may publish the type has *Stop offering*: `file.malformed` and `file.not_served` say "Stop offering" to
+     * them, and their `_others` forms name who can.
+     */
+    'readers' => [
+        'offer' => 'Offer to readers',
+        'change' => 'Change offer',
+        'stop' => 'Stop offering',
+        'offer_heading' => 'Offer ":title" to readers',
+        'change_heading' => 'Change which readers may download ":title"',
+        'stop_heading' => 'Stop offering ":title" to readers',
+        'name' => 'Entitlement',
+        'name_help' => 'Readers signed in on this site who hold this entitlement can download the file. Write it exactly as it is granted: two lower-case words joined by a dot, such as course.advanced-php.',
+        'not_a_name' => 'This is not an entitlement name. It is two lower-case words joined by a dot, such as course.advanced-php, made of letters, digits and single hyphens, the first word starting with a letter, at most 100 characters.',
+        'as_stored' => 'Readers get this file as it is stored here: a photo keeps any location it still holds (a JPEG made public at some point lost its GPS coordinates then), and any other file keeps whatever it holds. If that should not reach readers, upload a copy without it and offer that instead.',
+        'change_warning' => 'Readers who hold only the entitlement it is offered for now will no longer be able to download it.',
+        'stop_warning' => 'Its reader link stops opening it for everyone. Whoever has already downloaded it keeps their copy.',
+        'offer_submit' => 'Offer',
+        'change_submit' => 'Change',
+        'stop_submit' => 'Stop offering',
+        'shared' => 'Only a file kept to this site can be offered to readers, and this one is shared with every site in the organisation. Upload it to this site alone to offer it.',
+        'public' => 'Only a private file can be offered to readers: anyone can already download a public one. Make it private first.',
+        'offered_not_public' => 'It is offered to readers, so it stays private: making it public would give it to everyone. Stop offering it first.',
+        'offered' => '":title" is offered to readers',
+        'changed' => 'The offer of ":title" was changed',
+        'offered_body' => 'Readers signed in on this site who hold :name can download it from its reader link, shown with the file.',
+        'already_offered' => '":title" was already offered for that entitlement. Nothing was changed.',
+        'not_offered' => '":title" was not offered to readers',
+        'not_changed' => 'The offer of ":title" was not changed',
+        'stopped' => '":title" is no longer offered to readers',
+        'stopped_body' => 'Its reader link no longer opens it. Whoever has already downloaded it keeps their copy.',
+        'already_stopped' => '":title" was not offered to readers. Nothing was changed.',
+        'not_stopped' => '":title" is still offered to readers',
+        'file' => [
+            'readers' => 'Readers',
+            'not_offered' => 'Not offered',
+            'malformed' => 'Not offered: what is stored is not an entitlement name. Stop offering clears it.',
+            'malformed_others' => 'Not offered: what is stored is not an entitlement name. Whoever may publish this type can clear it with Stop offering.',
+            'link' => 'Reader link',
+            'copy' => 'Copy reader link',
+            'copied' => 'Reader link copied',
+            'not_copied' => 'The reader link could not be copied. Select it and copy it instead.',
+            'path_only' => 'This site has no address of its own, so this is the link\'s path. Add it to the address readers use, or give the site one with kitsune:site address.',
+            'not_served' => 'No reader can download it: only a private file kept to this site is served to readers. Stop offering it.',
+            'not_served_others' => 'No reader can download it: only a private file kept to this site is served to readers. Whoever may publish this type can stop offering it.',
+            'accounts_off' => 'Reader accounts are off on this site, so no reader can sign in to download it until they are turned on. kitsune:readers status says why.',
+            'not_a_reader' => 'Your admin account is not a reader account: the link asks you to sign in as a reader, and opens the file only for one who holds the entitlement.',
+            'as_stored' => 'Readers get it as it is stored here, with any location it holds.',
+        ],
+    ],
     // Words any bounded selection uses — decisions 34, 35 and 36; `awaiting_line` only where it holds media.
     'selection' => [
         'quoted' => '":title"',

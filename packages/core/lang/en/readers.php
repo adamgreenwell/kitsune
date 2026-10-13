@@ -103,6 +103,19 @@ return [
         'title' => 'Your account',
         'signed_in_as' => 'Signed in as :email.',
     ],
+    // A file offered to readers (ADR-041). Nothing here invites anyone to pay: a refusal is one notice for every cause,
+    // and an outage is an error, never an offer.
+    'download' => [
+        'title' => 'Download',
+        // The page's heading for a file whose title is empty, or only space: never a heading with nothing in it.
+        'untitled' => 'Untitled file',
+        // `:format` is the file's extension in capitals (PDF), `:size` its size (2.1 MB).
+        'includes' => ':format file, :size',
+        'open' => 'Open',
+        'download' => 'Download',
+        'missing' => 'This download isn\'t available to this account. The link may be wrong or out of date, or the file may have been taken down. If you think you should have it, contact :site.',
+        'unavailable' => 'Downloads can\'t be checked right now, so nothing was opened. Nothing has changed on your account. Please try again in a few minutes.',
+    ],
     'field' => [
         'password_missing' => 'Enter your password.',
         'email' => 'Enter an email address, like name@example.com.',

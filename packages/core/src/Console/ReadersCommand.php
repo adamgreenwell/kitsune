@@ -158,6 +158,12 @@ final class ReadersCommand extends Command
             $this->line('Sessions: SameSite is strict (SESSION_SAME_SITE), so a mailed link opened from a webmail page arrives without its session and answers 410; pasted into the address bar it works. lax, Laravel\'s default, works both ways.');
         }
 
+        // ⚠️ ADR-041's reader downloads: under `none`, another site's page sends the reader's session with what it embeds.
+        // `IsolateDownload` refuses what a browser marks as from elsewhere; a browser that marks nothing is not refused.
+        if (strtolower((string) config('session.same_site')) === 'none') {
+            $this->line('Sessions: SameSite is none (SESSION_SAME_SITE), so another site\'s page sends a reader\'s session with what it asks of this one. A file offered to readers refuses what the browser marks as coming from elsewhere, but a browser that marks nothing could show that page whether its visitor holds the file. lax, Laravel\'s default, sends the session only when a reader follows a link.');
+        }
+
         $passwords = PasswordRules::misconfiguration();
 
         $this->line($passwords === null
