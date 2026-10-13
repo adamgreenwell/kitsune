@@ -1,6 +1,7 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
+const { waitForAdminPassword } = require('./admin-sign-in');
 
 const authFile = path.join(__dirname, '..', '.playwright', 'admin-rtl-auth.json');
 
@@ -19,6 +20,7 @@ const authFile = path.join(__dirname, '..', '.playwright', 'admin-rtl-auth.json'
  */
 setup('authenticate as the Arabic-preferring editor', async ({ page }) => {
     await page.goto('/admin/login');
+    await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill('alpha-rtl@kitsune.test');
     await page.locator('input[type="password"]').fill('password');

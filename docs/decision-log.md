@@ -3586,10 +3586,50 @@ Filament v5.7.8:
 | after `app()->register()` and the provider's `boot()` | `register entered`, `register returned`, `boot` | **no** |
 | after `app(PanelRegistry::class)` | … plus `panel() BODY RAN` | **yes** |
 
-So `KitsunePanel::apply()` runs when the registry is first **resolved**, strictly after every provider has registered
-and booted, and a module may fill the seam in either. Measured beside it: a second `->resources([…])` call **appends**
+So `KitsunePanel::apply()` runs when the registry is first **resolved**, ~~strictly after every provider has registered
+and booted, and a module may fill the seam in either~~ *the full-application ordering was not established by this
+isolated provider probe; corrected below*. Measured beside it: a second `->resources([…])` call **appends**
 rather than replaces — `$this->resources[] = $resource`, with only the `modelResources` lookup reset. AGENTS.md §15
 is the reason this is a table and not a paragraph of reasoning.
+
+⚠️ **Corrected 2026-10-13, by #190's first real module resource on Filament 5.10.1 in the skeleton.** Filament's service provider
+resolves `PanelRegistry` during its own boot, and its package routes enumerate the panel's resources before core's
+`booted()` kernel callback. The previous probe manually booted only a panel provider and therefore omitted the
+provider that resolves the registry. With commerce enabled, the measured surface held `CurrencyResource`, the real
+panel still held only core's three resources, and `route:list --path=storefront` returned `[]`. Rendering the new
+owner's sidebar threw a missing-route error, while its direct currency URL returned 404. The PHP seam tests had
+manually called the kernel before constructing a panel and passed, exactly the boundary AGENTS.md §9 warns about.
+
+The kernel registration moves to an application `booting()` callback declared from core's `register()`: all
+providers have registered their bindings, and module providers append before Laravel begins its provider boot
+walk. Their ordinary `boot()` then runs after core's boot, with core's field types ready. Register hooks declare
+bindings and admin contributions; code needing booted services belongs in the boot hook. No database query occurs
+inside core's `register()` itself. The prior `booted()` choice avoided appending during an active walk; the new
+choice retains that requirement by appending before the walk. A fresh-application regression and browser navigation
+must exercise the actual ordering, rather than manually arranging the seam's consumers again.
+The installation-wide receipt read uses the already-registered database manager directly: Eloquent's connection
+resolver is attached later by `DatabaseServiceProvider::boot()`. An initial booting probe that still used
+`Module::query()` declined every module with a null resolver, so this prerequisite was measured too. `modules`
+is global, and this bootstrap introduces no Org or Site query bypass. Module register hooks do not query models
+before that resolver and dispatcher exist; ordinary model work belongs after boot.
+
+**Cached routes are part of a module switch.** The first resource also exposed a deployment case: a route cache
+built with commerce disabled contains no currency route. Merely enabling the receipt then adds the sidebar link
+on the next boot while Laravel keeps loading that old cache. Enable, disable and upgrade now invalidate the actual
+cache path, including idempotent retries; no-op retries emit no duplicate switch event. The lifecycle locks and
+reloads the receipt, clears and checks the cache before changing it, checks the save and stored result, then emits
+the existing event after success. A failed deletion, exception or claimed deletion that leaves the file present
+refuses the receipt change. A later SQL failure may leave the cache absent, which is safe: a fresh boot builds its
+routes from the unchanged receipt. Laravel's separate `routes.cached` memo is reset too.
+
+`ModuleRouteCacheTest` uses real `route:cache` and fresh processes to prove disabled-cache → enable → route present,
+and enabled-cache → disable → route absent. It also proves a stale enabled receipt can leave an old cached URI
+while the kernel declines the provider. Commerce's page requires the registered provider and exact current receipt
+version as well as owner authority, so that URI does not admit it. A switch takes effect at the next application
+boot; it does not rebuild the current process or restart persistent workers. Operators serialize switches with
+deployment and cache generation, restart persistent workers and optionally build a fresh cache afterward; the
+[commerce operations guide](commerce-operations.md) records those boundaries. No distributed cache-build fence
+or transaction over filesystem and database is claimed.
 
 **What it does not claim.** Dependency resolution is Composer's, and the kernel adds none — the roadmap line asking
 for it is **amended** rather than satisfied. Load order is registration order and is explicitly **not** a contract, so
@@ -5265,6 +5305,93 @@ fences was caught. The packaging cases challenge version coupling, manifest rest
 default/opt-in/invalid choices, missing packages, copied origin, version, bytes, extra files and nested links.
 Missing-person and no-op-require cases independently challenge the two package-presence fences; no safe overlap
 is claimed as a production bypass.
+
+**Amended 2026-10-13 — shared catalogue storage defaults (#190).**
+
+These settle the storage choices left open above; they are implementation defaults, not further answers from Adam.
+`Sellable` owns one org's SKU, price and stock, with no content-entry reference. `Listing` connects it to one site's
+own entry. An org has no default currency. A SKU is 1–64 ASCII characters, beginning with an uppercase letter or
+digit and continuing with uppercase letters, digits, periods, underscores or hyphens. Lowercase is refused rather
+than folded; `(org_id, sku)` is unique. This makes SKU equality independent of database collation.
+
+Prices and finite stock are canonical decimal integer strings at PHP boundaries, stored as signed BIGINT in SQL,
+with range `0..9223372036854775807`. Zero-price products and zero finite stock are allowed; null stock alone means
+untracked. Decimal human input is parsed by concatenating digits, never by floating-point scaling or locale parsing.
+Excess precision is refused even when the excess digits are zero. String representation keeps the database range
+independent of PHP's integer width; no 64-bit-only platform requirement is introduced. The exact parser, formatter,
+100-byte human-input limit and pinned 155-currency registry are described in [currency maintenance](commerce-currencies.md).
+Currency metadata support does not imply processor eligibility.
+
+**Currency ownership and the disabled-module boundary.** Core owns nullable `Org.currency`, its supported-code
+metadata and final ORM write validation: currency is host-owned configuration, already placed on Org by this ADR,
+and the guard must remain active without optional commerce code. Commerce owns every product, listing and business
+writer. Each sellable carries a derived currency witness, with a composite foreign key to `orgs(id, currency)` and
+RESTRICT on updates and deletion. It is not a separately selectable product currency. A retained sellable prevents
+currency replacement or clearing at the database, including quiet, bulk and raw writes while commerce is disabled.
+The currency writer and product writer reload and lock the same Org row. Each writer price also carries the
+caller's expected currency; a stale quote is refused under that lock, so input parsed for USD cannot become JPY
+merely because the currency change won the race. Removing the final sellable permits an
+explicit new selection; no integer is converted or relabelled. Future orders must retain their own witness before
+that slice ships; this catalogue has no orders and does not claim an order-retention policy. Core rollback requires
+uninstalling dependent module schema first, as the foreign key requires.
+
+**Listing lifetime.** One listing per `(site_id, sellable_id)` and `(site_id, entry_id)`; availability starts false.
+Creating one never lists a sibling site. Listing references and ownership are immutable: remove it before relinking.
+Physical deletion is explicit, through the owner/system writer, with restrictive parent foreign keys rather than
+cascades. Remove listings before removing a sellable or force-deleting its entry/site/org. Trashing or moving content
+does not erase commerce records: normal reads hide incoherent or deleted endpoints, and the owning site's removal
+path can still clear the retained listing. Each read also compares the org and all reference endpoints, because
+SiteScope's own-site branch does not compare `org_id`; planted foreign-org/site or shared-entry references are refused
+by the write guard and excluded from reads. Raw query-builder writes remain below the ORM trust boundary.
+
+**Write authority and this slice's admin surface.** The audited `CatalogueWriter` and currency writer require an
+owner of the current org, or a trusted system caller with no actor, and an enabled module. Every browser entry point
+requires a signed-in owner; null is not a browser authorization. Direct evented model saves remain trusted internal
+code, but validate scope, references, exact raw amounts and identity again immediately before SQL. Bulk, quiet,
+upsert and arithmetic catalogue writes are refused, including inside a scope escape hatch. Stock changes here set
+an absolute balance; payment decrement and oversell handling still belong to the payment/inventory slice.
+The only new admin surface is the org's supported currency chooser at `storefront/currency`, registered through
+ADR-038's existing internal resource seam. Product/content administration remains #191, public admission #192.
+
+**Storage, as built and measured.** `CatalogueTest` covers both scope declarations, two sites sharing price/stock
+with different entries and availability, foreign and shared references planted below the writers, coordinated
+foreign-org references, stale parent/identity changes, immutable relinking, exact signed-BIGINT bounds, finite zero
+and untracked stock, floats before casts, bulk/quiet/arithmetic escape-hatch refusals, and cancelled saves/audits.
+`OrgCurrencyTest` exercises supported selection, owner/system authority, stale context reload, atomic audit
+refusal, and the real foreign-key freeze with no registered commerce provider, including quiet, bulk and raw writes.
+The 155-currency registry and exact parser/formatter have their own offline tests. The focused group passed
+313 tests / 2,891 assertions on PostgreSQL 17.11, MySQL 8.4.7 and MariaDB 11.4.2; independent readback found all
+39 non-migration fixture tables empty on each engine. The SQLite default needs no services.
+
+Eight actual level-zero races passed, both orderings on SQLite 3.53.4 and those three server engines. The server
+probes observed the competing transaction's lock wait before releasing the first writer. SQLite refused the
+competing deferred write as busy and recovered its transaction state. Price-first retained its USD witness and
+refused the currency retry; currency-first refused the stale USD quote and accepted an explicit fresh KWD quote.
+Every final/retry connection returned to level 0 with PDO outside a transaction. The two SQLite races are permanent
+default-suite tests, with temporary applications/files and no Python or Docker dependency. Server probe databases
+and the three owned containers were removed. Currency/amount source was unchanged throughout those races.
+
+Catalogue custody is tested with real rows on every engine. Empty teardown that must retain the site's content and
+Org currency runs at actual level zero on isolated SQLite files. Its initial wrapped MySQL test committed host rows
+when DROP TABLE ended the wrapper; splitting it from the wrapped retention test removed that measured leak. Generic
+empty lifecycle commands still exercise real teardown on the engine legs. `ModuleBootOrderTest` and
+`ModuleRouteCacheTest` exercise fresh applications, real cached-route transitions, failure readback and declined
+providers; their focused lifecycle group passed 45 tests / 208 assertions. The currency chooser's targeted browser
+run passed 8 tests including sign-in setup, sibling-site sharing, independent orgs, non-owner refusal, retained-price
+freeze, navigation outside `/c/{type}` and axe. Its section heading keeps notification headings in order.
+
+Isolated mutations caught all twelve currency/parser changes and fourteen of fifteen catalogue guard changes.
+Removing direct listing-org equality alone survived through the site-parent org fence; removing both anchors was
+caught by the coordinated planted-reference test. Post-observer raw values, bulk/quiet bypasses, every parent/trash
+fence, stale quotes, cancelled audits, valid relinking and stale identity checks were challenged. Two fresh boot
+mutants reproduced missing routes: restoring `booted()` registration, and restoring the premature Eloquent receipt
+read. No working source was mutated in place.
+
+The full local `composer ci` gate passed 7,017 tests / 34,924 assertions, with 38 skips, in 694.90 s, plus PHPStan,
+root Pint and separate skeleton Pint. The full Playwright regression passed all 316 tests in 6.9 minutes against
+the disposable commerce-enabled skeleton and Filament 5.10.1. The PHP gate used PHP 8.5.10, system Bash 3.2 and
+`COMPOSER_PROCESS_TIMEOUT=0` as in the foundation's measured environment. Database round trips were measured on 64-bit PHP; 32-bit driver source was
+checked separately, not claimed as an end-to-end runtime qualification. No release or deployed-host proof is implied.
 
 **Reserved for the later slices.** This round does not choose tax or shipping scope, guest purchasing,
 fixed-term start/stacking, Stripe timeout or unknown-outcome behavior, invoice retention periods, or refund

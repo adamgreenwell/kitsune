@@ -74,8 +74,8 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
         self::$calls[] = 'register';
 
         /*
-         * The seam, filled in registerModule() — in time because the kernel runs inside $app->booted(), and
-         * KitsunePanel::apply() does not run until PanelRegistry is first resolved.
+         * The seam is filled before the provider boot walk, before Filament resolves PanelRegistry and reads it.
+         * ModuleBootOrderTest also exercises that real fresh-application order.
          */
         $this->app->make(AdminSurface::class)
             ->resource(FixtureThingResource::class)

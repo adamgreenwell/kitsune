@@ -69,6 +69,10 @@ module.exports = async () => {
     run(['kitsune:module', 'install', 'kitsune/person', '--no-interaction']);
     run(['kitsune:module', 'enable', 'kitsune/person', '--no-interaction']);
 
+    // The optional catalogue's currency chooser is part of this browser run, never a default install choice.
+    run(['kitsune:module', 'install', 'kitsune/commerce', '--no-interaction']);
+    run(['kitsune:module', 'enable', 'kitsune/commerce', '--no-interaction']);
+
     /*
      * ⚠️ THE BROWSER SUITE'S TEST MODULE, ENABLED HERE AND NOWHERE ELSE — ADR-040's admin half. `composer
      * skeleton:install` puts it in vendor switched off; it declares three credentials so the credentials page has

@@ -11,6 +11,9 @@ declare(strict_types=1);
 use Illuminate\Database\Migrations\Migrator;
 use Kitsune\Commerce\CommerceCustody;
 use Kitsune\Commerce\CommerceServiceProvider;
+use Kitsune\Commerce\Filament\CurrencyResource;
+use Kitsune\Commerce\Models\Listing;
+use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\AdminSurface;
@@ -34,13 +37,13 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
 
     expect($manifest)->toBeInstanceOf(ModuleManifest::class)
         ->and($manifest->provider)->toBe(CommerceServiceProvider::class)
-        ->and($manifest->scoping)->toBe([])
+        ->and($manifest->scoping)->toBe(['org', 'site'])
         ->and($composer['extra']['laravel']['providers'] ?? [])->toBe([]);
 
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toBe([])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -70,10 +73,9 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(is_file($path.'/.gitkeep'))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toBe([]);
+        ->and(glob($path.'/*.php'))->toHaveCount(2);
 
-    // There is no dummy production table. The fixture module tests separately exercise real DDL.
+    // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);
     $migrator->shouldReceive('repositoryExists')->once()->andReturnTrue();
     $migrator->shouldReceive('run')->once()->with([$path])->andReturn([]);
@@ -89,8 +91,8 @@ it('registers enabled commerce on a headless host without needing a panel or ser
 
     expect(app()->getProviders(CommerceServiceProvider::class))->toHaveCount(1)
         ->and(Module::isEnabled(COMMERCE_MODULE))->toBeTrue()
-        ->and(app(AdminSurface::class)->resources())->toBe([])
-        ->and(app(AdminSurface::class)->navigationItems())->toBe([]);
+        ->and(app(AdminSurface::class)->resources())->toBe([CurrencyResource::class])
+        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(1);
 });
 
 it('does not boot commerce when disabled before the next application boot', function (): void {

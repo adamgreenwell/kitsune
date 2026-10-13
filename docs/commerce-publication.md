@@ -123,3 +123,6 @@ of public Composer availability or of a deployed host.
 
 A real opt-in development skeleton install and module lifecycle readback are additional evidence. Public package
 resolution, stage/Forge deployment and human acceptance remain separate gates, recorded only when performed.
+
+For an installed application, [commerce operations](commerce-operations.md) covers module switches, route-cache
+invalidation, persistent workers and retained catalogue data. Installation does not itself enable commerce.

@@ -1,6 +1,7 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
+const { waitForAdminPassword } = require('./admin-sign-in');
 
 /*
  * Signs in the sessions that are not owners — ADR-033.
@@ -16,6 +17,7 @@ const path = require('node:path');
  */
 async function signIn(page, email, file) {
     await page.goto('/admin/login');
+    await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill(email);
     await page.locator('input[type="password"]').fill('password');

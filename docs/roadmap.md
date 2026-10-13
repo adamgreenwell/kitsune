@@ -439,8 +439,10 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
       1–5: catalogue first; price and finite/untracked stock shared across sites; each site's own description and
       images; a supported currency list with currency-specific minor units. The optional package and lifecycle
-      foundation is built in [#189](https://github.com/adamgreenwell/kitsune/issues/189); catalogue storage,
-      administration and public reads remain unbuilt.
+      foundation is built in [#189](https://github.com/adamgreenwell/kitsune/issues/189). Shared sellables,
+      site listings, exact price/stock guards and the supported currency chooser are built in
+      [#190](https://github.com/adamgreenwell/kitsune/issues/190); product administration (#191), public reads
+      (#192), carts, orders and payments remain unbuilt.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

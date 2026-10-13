@@ -125,7 +125,7 @@ final class KitsuneServiceProvider extends ServiceProvider
         /*
          * What enabled modules add to the admin — ADR-038's `@internal` seam. A singleton because the module
          * that fills it and the panel that reads it must be looking at the same object, and bound in
-         * `register()` so it exists before the kernel registers anything in `booted()`.
+         * `register()` so it exists before the kernel registers anything at application booting.
          */
         $this->app->singleton(AdminSurface::class, static fn (): AdminSurface => new AdminSurface);
 
@@ -156,7 +156,7 @@ final class KitsuneServiceProvider extends ServiceProvider
          * Where blueprint definitions are collected — ADR-039's `@internal` seam, and the same shape as the
          * one above for the same reason: whoever registers a definition and the command that applies it must
          * be looking at the same object, and it has to exist before the kernel registers a module in
-         * `booted()`, because `registerModule()` is where a module's blueprints are declared.
+         * application booting, because `registerModule()` is where a module's blueprints are declared.
          */
         $this->app->singleton(
             BlueprintRegistry::class,
@@ -191,6 +191,20 @@ final class KitsuneServiceProvider extends ServiceProvider
          * request is handled.
          */
         $this->app->instance('kitsune.default_locale', (string) config('app.locale', 'en'));
+
+        /*
+         * Register enabled modules before Laravel starts its provider boot walk (ADR-038, amended).
+         * The callback is registered here; the database is read only when application booting begins, after
+         * every ordinary provider has registered its bindings. Appended module providers then join that walk
+         * and boot normally after core, without depending on array_walk observing a mid-walk append.
+         *
+         * Filament resolves PanelRegistry and registers resource routes during its provider boot. Waiting
+         * until application booted registers a resource after both consumers have already read AdminSurface:
+         * the module is present in the surface and its route is absent. A fresh-application test pins this order.
+         */
+        $this->app->booting(function (): void {
+            ModuleKernel::boot($this->app);
+        });
     }
 
     public function boot(): void
@@ -337,22 +351,5 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ->loadedOnRequest(),
         ], BlockDirectionPlugin::PACKAGE);
 
-        /*
-         * ⚠️ IN `boot()` RATHER THAN `register()`. ADR-038: core touches no database in `register()`, and a
-         * registry read there turns a transient connection failure into an admin that has quietly lost every
-         * module's features.
-         *
-         * ⚠️ AND INSIDE `booted()` RATHER THAN INLINE, WHICH IS NOT A STYLE CHOICE. `Application::boot()` walks
-         * its provider list with `array_walk`, so whether a provider APPENDED during that walk is itself booted
-         * depends on how the walk behaves while the array grows underneath it — and AGENTS.md §15 exists for
-         * exactly this kind of question. Rather than measure a framework internal and then depend on the answer,
-         * the registration is moved to where the behaviour is documented and unambiguous: `booted()` fires after
-         * the walk, `$this->booted` is true by then, and `Application::register()` boots a provider immediately
-         * when it is. A module is therefore registered AND booted, on a path that does not rest on an
-         * undocumented ordering. It also means a module's own bindings land with every core binding in place.
-         */
-        $this->app->booted(function (): void {
-            ModuleKernel::boot($this->app);
-        });
     }
 }

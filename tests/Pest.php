@@ -8,12 +8,15 @@
 
 declare(strict_types=1);
 
+use Kitsune\Core\Tests\CommerceTestCase;
 use Kitsune\Core\Tests\LevelZeroTestCase;
 use Kitsune\Core\Tests\ReaderTestCase;
 use Kitsune\Core\Tests\TestCase;
 use Kitsune\Core\Tests\UlidHostTestCase;
 
 uses(TestCase::class)->in(__DIR__.'/Core');
+
+uses(CommerceTestCase::class)->in(__DIR__.'/Commerce');
 
 // A host whose users carry ULIDs, run in the same process; the base test case rebuilds the schema between them (#91).
 uses(UlidHostTestCase::class)->in(__DIR__.'/UlidHost');

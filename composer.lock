@@ -2708,11 +2708,11 @@
         },
         {
             "name": "kitsune/commerce",
-            "version": "dev-feat/commerce-catalogue",
+            "version": "dev-feat/shared-products",
             "dist": {
                 "type": "path",
                 "url": "packages/commerce",
-                "reference": "56b4327c8c601085904852acc1e7598df43762e8"
+                "reference": "70a501c2dba2c9999ce55c169c182c8ece36a01a"
             },
             "require": {
                 "kitsune/core": "self.version",
@@ -2722,7 +2722,10 @@
             "extra": {
                 "kitsune": {
                     "provider": "Kitsune\\Commerce\\CommerceServiceProvider",
-                    "scoping": []
+                    "scoping": [
+                        "org",
+                        "site"
+                    ]
                 }
             },
             "autoload": {
@@ -2741,7 +2744,7 @@
         },
         {
             "name": "kitsune/core",
-            "version": "dev-feat/commerce-catalogue",
+            "version": "dev-feat/shared-products",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
@@ -2793,7 +2796,7 @@
         },
         {
             "name": "kitsune/fixture-module",
-            "version": "dev-feat/commerce-catalogue",
+            "version": "dev-feat/shared-products",
             "dist": {
                 "type": "path",
                 "url": "tests/Core/Fixtures/Packages/module-fixture",
@@ -2824,7 +2827,7 @@
         },
         {
             "name": "kitsune/person",
-            "version": "dev-feat/commerce-catalogue",
+            "version": "dev-feat/shared-products",
             "dist": {
                 "type": "path",
                 "url": "packages/person",
@@ -2857,7 +2860,7 @@
         },
         {
             "name": "kitsune/svg-sanitizer",
-            "version": "dev-feat/commerce-catalogue",
+            "version": "dev-feat/shared-products",
             "dist": {
                 "type": "path",
                 "url": "packages/svg-sanitizer",

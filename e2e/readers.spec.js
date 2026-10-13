@@ -4,6 +4,7 @@ const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const { READERS } = require('./accounts');
+const { waitForAdminPassword } = require('./admin-sign-in');
 
 /*
  * A reader signs in — ADR-037, as built: the skeleton's own readers, at core's pages under each site's prefix. The PHP
@@ -165,6 +166,7 @@ test('cannot drive a panel\'s component as a reader, even with a snapshot the pa
     const staff = await browser.newContext();
     const admin = await staff.newPage();
     await admin.goto('/admin/login');
+    await waitForAdminPassword(admin);
     await admin.locator('input[type="email"]').fill('alpha@kitsune.test');
     await admin.locator('input[type="password"]').fill('password');
     await admin.locator('form').getByRole('button', { name: 'Sign in' }).click();

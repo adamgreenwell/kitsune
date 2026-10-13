@@ -3,6 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const { READERS } = require('./accounts');
+const { waitForAdminPassword } = require('./admin-sign-in');
 const { mailMark, mailTo, mailLink } = require('./mail');
 
 /*
@@ -28,6 +29,7 @@ function artisan(...args) {
 
 async function ownerSignsIn(page) {
     await page.goto('/admin/login');
+    await waitForAdminPassword(page);
     await page.locator('input[type="email"]').fill('alpha@kitsune.test');
     await page.locator('input[type="password"]').fill('password');
     await page.locator('form').getByRole('button', { name: 'Sign in' }).click();

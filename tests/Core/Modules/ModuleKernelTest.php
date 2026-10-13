@@ -51,8 +51,8 @@ it('registers and boots an enabled module whose receipt matches what is installe
 
     /*
      * Both, and the order matters: `register` comes from the kernel's own registration, `boot` from Laravel
-     * booting the provider — which happens because the kernel runs inside `booted()`, when the application
-     * boots a provider the moment it is registered.
+     * booting the provider. This test calls the kernel on an already-booted application, where registering
+     * a provider boots it immediately; ModuleBootOrderTest also exercises the real fresh-application order.
      */
     expect(FixtureModuleServiceProvider::$calls)->toBe(['register', 'boot']);
 });

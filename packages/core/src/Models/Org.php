@@ -31,6 +31,7 @@ use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
  * @property int $id
  * @property string $name
  * @property string $slug
+ * @property string|null $currency explicit supported ISO 4217 code; null until selected
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
