@@ -4269,9 +4269,29 @@ The merge's and the finish's refusals now name the way out: an unreadable or for
 - **No admin retype**: a file uploaded into an org's own media type stays there; uploading again is the remedy.
 - **Unclassified by anything:** a file's title, which comes from its filename (`jane-doe-headshot.jpg`), and its bytes. Erasure for both is Delete forever — a core gap, not this blueprint's.
 
-**Still not enforced:** formats in the format (`accepts`), which the Storefront's product images are expected to need first; a subject nomination, which stays the owner's; field columns in the media list.
+**Still not enforced:** ~~formats in the format (`accepts`), which the Storefront's product images are expected to need first;~~ *built for Storefront, amended below*; a subject nomination, which stays the owner's; field columns in the media list.
 
 **Guidance, not code:** storage handles beginning `asset_` are this blueprint's, and an operator adding fields by hand should choose another prefix; and no first-party module may create a global `asset`, which would make this blueprint unapplicable wherever it is installed and let an org's `dam_*` grants reach its entries.
+
+### Amendment — Storefront names its initial image formats, 2026-10-13 (#191)
+
+The consumer deferred above now exists. `EntryTypeDeclaration` appends nullable `accepts`, defaulting to `null`,
+after `isMedia`. Storefront's `product_image` declares JPEG, PNG, GIF, WebP, AVIF and SVG; SVG's existing sanitizer
+requirement remains. These are implementation defaults, not additional answers from Adam. A declaration names
+only formats core's media intake supports, only on a media type. Empty, duplicate, unknown or malformed declarations
+are refused before an intent receipt is written. A null declaration retains the existing all-formats default.
+
+The applier writes `settings.accepts` only when creating a type. An owner may subsequently adapt its formats;
+reapply and `Skip` do not reset them. An additive merge compares the declaration recorded in the receipt and
+refuses a version that changes it, including dropping a formerly declared list. A type manifest always records
+`accepts`; an older manifest lacking that key is read as `null`, the only declaration its writer could have made.
+The existing media-key compatibility constant gains that one default. No table, receipt state, option, public
+symbol or extension seam is added. The core declaration remains internal before v1.2.
+
+The Storefront payload belongs to the optional commerce package and registers only when that module boots.
+Its two content types remain ordinary org-owned schema. Apply, reapply, merge, reverse, collision and recovery
+behavior use the existing applier. Tests pin the declaration surface, fresh manifests, captured pre-media receipts,
+invalid format refusal before intent, owner-adapted formats and a frozen Storefront 1.0.0 payload.
 
 ---
 
@@ -5392,6 +5412,61 @@ root Pint and separate skeleton Pint. The full Playwright regression passed all 
 the disposable commerce-enabled skeleton and Filament 5.10.1. The PHP gate used PHP 8.5.10, system Bash 3.2 and
 `COMPOSER_PROCESS_TIMEOUT=0` as in the foundation's measured environment. Database round trips were measured on 64-bit PHP; 32-bit driver source was
 checked separately, not claimed as an end-to-end runtime qualification. No release or deployed-host proof is implied.
+
+### Amendment — Product administration and the Storefront blueprint, 2026-10-13 (#191)
+
+The currency-only admin surface above describes #190. Commerce now contributes a native Filament **Products**
+resource mapped to `Sellable`, alongside that chooser. It does not register a second resource for `Entry`:
+ADR-010's model-to-resource mapping is singular, and measuring both installed Filament versions showed the first
+registered match wins. The product form embeds core's native entry fields with an Entry model, including rich text,
+relations and adapted schema; the ordinary content editor and revision history keep their existing resource.
+
+**Defaults chosen in implementation, not extra owner answers.** Registered blueprint `storefront`, version `1.0.0`,
+creates `product` (Product content) and media type `product_image` (Product images), optional rich-text
+`product_description` and optional relation `product_images` targeting that org's image type. Title and slug are
+native entry columns. The image format list is recorded in ADR-039's amendment above. It creates no role or new
+permission subject. The finished receipt's product type ID, checked against the current org and site availability,
+identifies content after an owner renames its handle. Types and fields remain adaptable org configuration.
+
+**One save, both scopes.** Create writes one shared sellable, the current site's content and a listing. Editing an
+org's product on another site creates that site's own entry and listing when absent; it never clones price or stock.
+The form explicitly warns that price and stock changes affect every selling site. Availability starts false;
+an unavailable draft may omit adapted required fields, while an available listing requires published, complete
+content. Product validation uses the current native field types and relation rules, then checks persisted values
+and a coherent revision after observers and conversion. Private image choices stay private. Public catalogue
+admission, delivery and entitlement badges still belong to #192.
+
+**Currency survives the form.** The page captures a locked currency code when mounted, displays it beside price,
+parses exact decimal input using that code and passes the same quote to the existing locked catalogue writer.
+It never silently refreshes the quote on hydration. A concurrent first currency change refuses the stale form
+without saving content or commerce rows. JPY and KWD exercise zero- and three-decimal amounts; excess precision
+is refused before any partial save.
+
+**Authority at every write door.** Products, setup, currency and listing/product removal require the current org's
+signed-in owner and a currently enabled, version-matched, registered module. A content grant alone grants no
+commerce authority. Native create, save, component-only save and raw setup calls recheck authority; malformed and
+foreign product route keys refuse. Setup uses the existing blueprint applier without wrapping its DDL recovery
+in a product transaction. Products' index remains accessible without currency or a usable content type, so setup
+and cleanup do not depend on the configuration they repair.
+
+**Native completion follows the actual commit.** Product saves use `TransactionRecovery` around the native page
+action; the service owns its nested row transaction. Filament's native halt can request rollback while swallowing
+its exception, so that intent is carried to the outer wrapper. Its saved event receives the newly returned record.
+Notifications and redirects wait for the outer commit, and failed creates restore the prior record and reset the
+native in-progress flag so the same form can retry. Isolated real Livewire page probes exercise rollback halts,
+cancelled commits, retry, notification dispatch and direct write doors without a skeleton database or external
+service. Content, relations, revision and audit failures leave no partial commerce save.
+
+**Custody stays explicit.** Removing a site's listing keeps its content, history and the shared product. The index
+offers that removal even when the site's product type is disabled. Shared-product removal refuses every retained
+listing, across sites, and keeps the former content. Blueprint reversal uses core's existing refusal and retention
+rules for entries, files and referenced schema; it never removes commerce records or currency. An orphan shared
+product can therefore survive an empty blueprint reversal, still freezing currency and uninstall, and remains
+removable from Products. Disabling commerce retains all data and refuses stale cached and Livewire write routes.
+An owner-renamed recorded type still edits through its receipt ID, but core's reverse no longer trusts that
+manifest: it reports `receipt-only`, clears the receipt and retains schema and data. Product editing then refuses,
+and a fresh setup may collide with retained types. That existing reversal rule is kept and documented explicitly.
+The operator steps and reversal boundaries are in [commerce operations](commerce-operations.md).
 
 **Reserved for the later slices.** This round does not choose tax or shipping scope, guest purchasing,
 fixed-term start/stacking, Stripe timeout or unknown-outcome behavior, invoice retention periods, or refund
@@ -7584,7 +7659,9 @@ arrives as Livewire's own "failed to upload".
 > - **Not yet:** the staging endpoint is told no type, so a file past the browser — a request built by hand — is staged,
 >   and refused by the handler; and a type declared in code cannot name its formats~~, as it cannot yet be a media type
 >   (`EntryTypeDeclaration`)~~ — a type declared in code can be a media type now (ADR-039, the DAM as built), and
->   still cannot name its formats: it accepts every format until its owner narrows it on its page.
+>   ~~still cannot name its formats: it accepts every format until its owner narrows it on its page.~~
+>   *Amended 2026-10-13 by ADR-039's Storefront slice (#191): a media declaration may now name initial formats
+>   through nullable `accepts`; an owner's later format changes remain their own. Null keeps the all-formats default.*
 
 > ⚠️ **Amended 2026-09-30 — decision 31 as built.**
 >
