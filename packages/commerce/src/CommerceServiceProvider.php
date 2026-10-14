@@ -11,13 +11,18 @@ declare(strict_types=1);
 namespace Kitsune\Commerce;
 
 use Filament\Navigation\NavigationItem;
+use Illuminate\Contracts\Events\Dispatcher;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
+use Kitsune\Commerce\Carts\CartReaderData;
+use Kitsune\Commerce\Carts\CartSessions;
+use Kitsune\Commerce\Console\CartPruneCommand;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
+use Kitsune\Core\Readers\Contracts\ModuleReaderData;
 
 /**
  * Commerce enters through the module kernel, and stays optional (ADR-040).
@@ -52,6 +57,8 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 
     protected function bootModule(): void
     {
+        $this->commands([CartPruneCommand::class]);
+        CartSessions::listen($this->app->make(Dispatcher::class));
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'commerce');
         $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'commerce');
     }
@@ -59,6 +66,11 @@ final class CommerceServiceProvider extends ModuleServiceProvider
     public function migrationPath(): string
     {
         return __DIR__.'/../database/migrations';
+    }
+
+    public function readerData(): ModuleReaderData
+    {
+        return new CartReaderData;
     }
 
     public function uninstall(): void

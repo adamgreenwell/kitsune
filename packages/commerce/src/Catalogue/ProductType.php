@@ -19,7 +19,7 @@ use Kitsune\Core\Tenancy\Context;
 /** The completed Storefront receipt identifies the adaptable product type, even after an owner renames it. @internal */
 final class ProductType
 {
-    public static function current(): ?EntryType
+    public static function current(bool $current = false): ?EntryType
     {
         $context = app(Context::class);
 
@@ -27,8 +27,10 @@ final class ProductType
             return null;
         }
 
-        $site = Site::query()->useWritePdo()->whereKey($context->siteId())->where('org_id', $context->orgId())->first();
-        $receipt = Blueprint::query()->useWritePdo()->where('handle', 'storefront')->first();
+        $site = Site::query()->useWritePdo()->whereKey($context->siteId())->where('org_id', $context->orgId())
+            ->when($current, static fn ($query) => $query->lockForUpdate())->first();
+        $receipt = Blueprint::query()->useWritePdo()->where('handle', 'storefront')
+            ->when($current, static fn ($query) => $query->lockForUpdate())->first();
         $manifest = $receipt?->manifest;
         $rows = $manifest['entry_types'] ?? null;
 
@@ -70,8 +72,27 @@ final class ProductType
         }
 
         $type = EntryType::query()->useWritePdo()->whereKey($product)->where('org_id', $context->orgId())
-            ->where('is_media', false)->first();
+            ->where('is_media', false)->when($current, static fn ($query) => $query->lockForUpdate())->first();
 
-        return $type !== null && EntryTypeAvailability::isEnabledFor($type, $site) ? $type : null;
+        return $type !== null && ($current ? self::currentlyEnabled($type, $site) : EntryTypeAvailability::isEnabledFor($type, $site)) ? $type : null;
+    }
+
+    /** The sparse hierarchy's ordinary helper can retain a host's older repeatable-read snapshot. */
+    private static function currentlyEnabled(EntryType $type, Site $site): bool
+    {
+        $rows = EntryTypeAvailability::query()->useWritePdo()->where('entry_type_id', $type->getKey())
+            ->where(function ($query) use ($site): void {
+                $query->where(fn ($query) => $query->where('scope_type', 'site')->where('scope_id', $site->getKey()))
+                    ->orWhere(fn ($query) => $query->where('scope_type', 'site_group')->where('scope_id', $site->site_group_id))
+                    ->orWhere(fn ($query) => $query->where('scope_type', 'org')->where('scope_id', $site->org_id));
+            })->lockForUpdate()->get()->keyBy(static fn (EntryTypeAvailability $row): string => $row->scope_type.':'.$row->scope_id);
+
+        foreach (['site:'.$site->getKey(), 'site_group:'.$site->site_group_id, 'org:'.$site->org_id] as $key) {
+            if ($rows->has($key)) {
+                return $rows->get($key)->is_enabled;
+            }
+        }
+
+        return true;
     }
 }
