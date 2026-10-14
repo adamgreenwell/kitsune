@@ -46,7 +46,7 @@ final class CredentialFixture
     public static function boot(): void
     {
         config(['auth.providers.users.model' => TestUser::class]);
-        config(['app.key' => self::appKey(), 'app.previous_keys' => []]);
+        config(['app.key' => self::appKey(), 'app.previous_keys' => [], 'hashing.bcrypt.rounds' => 4]);
         self::forget();
 
         app(CredentialSlots::class)->flush();
