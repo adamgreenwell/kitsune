@@ -69,7 +69,7 @@ module.exports = defineConfig({
         },
         {
             name: 'carts',
-            testMatch: /carts\.spec\.js/,
+            testMatch: /(carts|orders)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {
@@ -81,7 +81,7 @@ module.exports = defineConfig({
             // ⚠️ The UNION of both branches, not either one. #38 added `locale-persistence`
             // and #39 added `relation-picker`, and a merge that kept one silently stops
             // running the other's suite — green, and testing less than it did.
-            testMatch: /(admin|accessibility|commerce-currency|storefront-admin|credentials|dashboard|direction|entitlements|locale-persistence|person-module|relation-picker|entity-type-builder|revisions|roles)\.spec\.js/,
+            testMatch: /(orders-admin|admin|accessibility|commerce-currency|storefront-admin|credentials|dashboard|direction|entitlements|locale-persistence|person-module|relation-picker|entity-type-builder|revisions|roles)\.spec\.(?:js|ts)/,
             dependencies: ['setup', 'setup-reader'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

@@ -23,10 +23,15 @@ the same command. Repeating an already completed enable, disable or upgrade also
 An upgrade may already have applied schema migrations before cache clearing fails; its unchanged receipt continues
 to require an upgrade, so repair the filesystem problem and retry rather than editing the receipt.
 
+For a development checkout still reporting the same `dev-main` version, the existing same-version migration
+upgrade gap is tracked in [#269](https://github.com/adamgreenwell/kitsune/issues/269). Do not uninstall/reinstall to
+force these migrations when data exists. New-version upgrades and fresh installations use the module lifecycle;
+a same-version receipt is not evidence that newly added order tables have been applied.
+
 Routes reflect the new state on the next application boot. A process that has already booted keeps its providers
 and route collection; restart persistent application workers through the host's normal procedure. On a fresh owner
 session, check the dashboard and roles page as well as Products and the currency chooser. A disabled module contributes
-neither commerce resource. Old cached admin and catalogue URIs are refused unless the module is enabled,
+no commerce resources. Old cached admin and catalogue URIs are refused unless the module is enabled,
 version-matched and registered.
 
 If the host uses route caching, rebuild it after the switch has completed:
@@ -42,9 +47,9 @@ routes normally. Rebuild only after resolving the failed operation.
 ## Selecting currency and keeping catalogue data
 
 An owner selects the org's supported currency at **Storefront → Catalogue currency**. The selection applies to every
-site in the org. There is no default, and changing a selection never converts prices. Existing sellables prevent
-changing or clearing it, including while commerce is disabled. Remove their site listings and sellables explicitly
-before selecting another currency. Currency metadata support does not promise payment-provider eligibility.
+site in the org. There is no default, and changing a selection never converts prices. Existing sellables and orders prevent
+changing or clearing it, including while commerce is disabled. Remove their site listings, sales policies, sellables and retained orders explicitly
+before selecting another currency. Order snapshots retain their currency witness independently of the catalogue. Currency metadata support does not promise payment-provider eligibility.
 
 ## Setting up Storefront
 
@@ -174,7 +179,7 @@ available to remove unavailable items even when Storefront's content type has be
 Carts hold up to 20 product lines with quantities 1–99. **Add** keeps the higher existing/requested quantity;
 quantity edits replace the value and refuse a stale browser revision. Cart contents reserve no stock and the
 shown current price can change before checkout. Deleted, unpublished, unlisted or otherwise invalid listings
-stay removable as unavailable items. Checkout and payments arrive in later slices.
+stay removable as unavailable items. Payments arrive in a later slice.
 
 Anonymous carts are bound to an opaque browser secret, cached in the server session and recoverable through an
 encrypted HttpOnly cookie for 30 days. Authentication sessions keep their normal shorter lifetime; losing one
@@ -196,3 +201,56 @@ those carts and their lines before removing the account. These privacy operation
 or its receipt version is stale, without booting its provider. Restore a missing installed module package and
 repair unreadable retained schema before retrying a refused export/erasure; a partial answer is never reported
 as complete. Anonymous carts have no reader identity to export by reader key and leave through expiry cleanup.
+
+
+## Configure and prepare orders
+
+As an org owner, open **Storefront → Checkout settings**. Select whether catalogue prices include tax, and separately
+whether Shippo's quoted fee is treated as including tax. Configure explicit destination rates for each product/shipping
+tax class. Rates accept percentages with up to four decimal places; region codes take precedence over a country's
+`*` fallback. No configured rate means unavailable, rather than zero. Kitsune applies one noncompound rate, rounding
+half up once per complete line. These are operator rules, not a legal tax service or jurisdiction registry.
+
+Assign a tax class and digital/physical policy to every shared product. Digital lines use the billing destination.
+Physical lines and shipping use delivery, which defaults to billing but can be supplied separately. For physical
+products, supply a dispatch name/address, packaged dimensions, weight per unit, packaging tare and units per parcel.
+The calculator splits each SKU by that capacity, never combines different SKUs, and requests at most twenty parcels.
+Remove a sales policy explicitly before deleting its shared product. Existing orders retain their independent history.
+
+Set the **Shippo API token** on the existing Credentials page for the active test/live mode. The first quote client
+supports domestic shipments in the org currency. It creates shipment/rate requests only; it purchases no labels and
+performs no currency conversion. International customs support is tracked in [#271](https://github.com/adamgreenwell/kitsune/issues/271).
+Tests use provider fixtures. A passing test or a saved key is not live carrier qualification or deployment evidence.
+
+The host's existing `CartRoutes::register()` delegation includes `/cart/checkout` and `/cart/orders`, including each
+site's path prefix. Public orders require the enabled, current module and a resolvable public site. Checkout collects
+only contact email, billing name/address and optional delivery name/address. A quote is provisional for fifteen minutes;
+it is stored in the server session, bounded to five quotes. Shipping I/O holds no database locks. Changed prices,
+stock, policies, tax, mode or credentials require a fresh quote before an order can be prepared.
+
+**Storefront → Orders** shows immutable prepared/cancelled order snapshots for the selected site. No payment has been
+taken, no stock reserved and no entitlement granted. The buyer can cancel, download or erase an unpaid order; an owner
+can inspect, cancel or erase through the guarded admin surface. Repeating the same submission returns its original order,
+and a second prepared order for the same cart revision is refused until the first is cancelled. Cart pruning or later
+catalogue changes do not rewrite the saved snapshot. Unknown access duration remains unknown.
+
+## Guest recovery and order privacy
+
+New order preparation requires working production email, including signed-in-reader orders. Guest recovery uses that mail; reader-owned orders remain available through sign-in. A `log`/`array` transport or placeholder sender refuses preparation;
+local/testing environments may keep mail for fixtures. For guest orders, after the outermost commit, Kitsune schedules one email after
+the response without a queue. A failed mail does not undo a committed order. The original browser can still access it
+and request another link, subject to the shared mail/IP throttle. Resends replace the previous token.
+
+A guest link lasts thirty minutes and works once. A scanner's GET consumes nothing: the secret is hashed into a bounded
+session slot and the browser redirects to a clean URL; an explicit CSRF-protected confirmation grants thirty minutes
+for that exact org, site and order. Never paste links into logs or support tickets. Configure proxy/access logs to redact
+query strings on this link endpoint, as with core's reader links. The response uses private/no-store and no-referrer
+headers. A sign-in or matching email never claims a guest order; signing out clears the session proof namespace.
+
+Reader exports and account erasure include every retained reader-owned order across that org's sites, even with commerce
+disabled or its receipt stale. Missing recorded storage, inconsistent children or unknown future financial states refuse
+complete erasure rather than silently skipping rows. Guests download/erase through exact browser or email proof. Erasing
+a prepared/cancelled order removes invoice/contact/delivery data, lines and links; these states have no financial retention
+exemption. No statutory retention period is invented. A future paid-state writer must establish the explicit invoice
+retention and nonrequired-data erasure policy before it can ship. Uninstall/rollback also refuse retained order/configuration
+rows; export and explicit cleanup remain the operator's maintenance responsibility.

@@ -46,6 +46,11 @@
         button { min-block-size: 2.75rem; padding: .625rem 1rem; border: 1px solid currentColor; border-radius: .25rem; background: #1c1917; color: #fff; cursor: pointer; }
         button:disabled { cursor: default; opacity: .55; }
         button.secondary { background: transparent; color: inherit; }
+        .order-form { max-inline-size: 42rem; margin-block: 1.5rem; }
+        .order-form fieldset { border: 1px solid #78716c; border-radius: .5rem; margin-block: 1.5rem; padding: 1rem; }
+        .order-form legend { font-weight: 650; padding-inline: .5rem; }
+        .order-form p > label { display: block; margin-block-end: .25rem; }
+        .order-form input:not([type=checkbox]) { display: block; inline-size: 100%; min-block-size: 2.75rem; padding: .5rem; border: 1px solid #78716c; border-radius: .25rem; background: transparent; color: inherit; }
         .add-form { margin-block-start: 1rem; }
         .cart-items { display: grid; gap: 1rem; margin-block-start: 2rem; }
         .cart-item { display: flex; align-items: start; }

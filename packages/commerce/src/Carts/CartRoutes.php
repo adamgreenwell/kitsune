@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Route;
 use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Http\Controllers\CartController;
 use Kitsune\Commerce\Http\Middleware\CartResponse;
+use Kitsune\Commerce\Orders\OrderRoutes;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderRoutes;
 
@@ -28,6 +29,7 @@ final class CartRoutes
 
     public static function register(): void
     {
+        OrderRoutes::register();
         foreach (['root' => '', 'site' => '{'.self::SITE_PARAMETER.'}/'] as $scope => $prefix) {
             foreach (['show' => '', 'add' => '/add', 'update' => '/update', 'remove' => '/remove'] as $action => $suffix) {
                 $route = Route::match($action === 'show' ? ['GET', 'HEAD'] : ['POST'], $prefix.self::SEGMENT.$suffix, [CartController::class, $action])

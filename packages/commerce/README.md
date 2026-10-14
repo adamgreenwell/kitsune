@@ -2,8 +2,8 @@
 
 The optional first-party commerce module. It supplies org-shared products, exact integer prices and finite or
 untracked stock, per-site listings, a supported currency chooser, owner-only product administration with an
-adaptable Storefront blueprint, and an optional public catalogue with reader access badges. Carts, orders and
-Stripe payments remain later slices. ADR-040 in the monorepo records the design and delivery order.
+adaptable Storefront blueprint, an optional public catalogue with reader access badges, and saved site carts.
+It also prepares immutable unpaid orders with tax and delivery quotes; Stripe payments follow. ADR-040 in the monorepo records the design and delivery order.
 
 The module and core resolve at the same version (`kitsune/core: self.version`). Composer installing the
 package does not register its provider: only the kernel may do that, after an explicit installation and
@@ -23,10 +23,10 @@ Install leaves the module disabled. Enable takes effect when the next applicatio
 data and schema; it does not unload a provider from requests or long-running processes already in flight.
 Restart those processes after changing the switch.
 
-The module lifecycle owns its migrations for `commerce_sellables` and `commerce_listings`; ordinary
+The module lifecycle owns its catalogue, cart, calculator and order migrations; ordinary
 `artisan migrate` does not run them. Core owns the module receipt and the org's currency configuration.
 Sellables declare and enforce Org scope; listings declare and enforce Site scope, with reference-coherence
-guards. The module manifest names both scoped models. A retained sellable prevents changing or clearing
+guards. The module verifier checks every model declaration. A retained sellable or order prevents changing or clearing
 the org's currency even while commerce is disabled.
 
 Open **Storefront → Products** as an org owner, apply **Set up Storefront**, and select **Catalogue currency**.
@@ -84,5 +84,35 @@ catalogue values, reserve no stock, and retain at most 20 lines with quantities 
 same site's anonymous cart using the higher duplicate quantity. Saved reader carts survive sign-out; signed-out
 sessions start fresh. Guest ownership can recover through an encrypted HttpOnly cookie after the shorter login session expires.
 Both expire 30 days after an item change, with bounded `kitsune:cart-prune --limit=100`
-maintenance while commerce is enabled. Checkout remains a later slice. Reader export/erasure includes retained
+maintenance while commerce is enabled. The same host delegation adds checkout and order pages beneath `/cart`. Reader export/erasure includes retained
 saved carts even with commerce disabled; see the operator workflow in `docs/commerce-operations.md`.
+
+
+Owners configure **Storefront → Checkout settings** before orders can be prepared. Select explicit tax treatment
+for catalogue prices and shipping fees, add country/region rates for each tax class (including explicit zero rates),
+and assign each shared SKU a tax class and digital/physical delivery policy. An exact region code wins over the
+country's `*` fallback. Physical lines require a dispatch address and configured parcel dimensions, unit weight,
+tare and capacity. Parcels split within each SKU; Kitsune does not guess how different SKUs pack together.
+
+Physical checkout uses an encrypted **Shippo API token** for the org's active test/live credential mode. It requests
+domestic shipment rates in the org's exact currency, with at most twenty parcels; there is no FX conversion,
+customs declaration or label purchase. Missing rates/configuration or provider failures refuse checkout. Shippo
+and working email are optional commerce capabilities and do not change core's installation resource floor.
+
+`/cart/checkout` collects an email, billing name/address and optional separate delivery details. A server-session
+quote lasts fifteen minutes, with at most five saved quotes. Carrier I/O runs outside database locks; cart,
+price, stock, tax, packing and credential fingerprints are checked afterwards and at preparation. Tax rounds
+half up once per complete line using exact minor units, for inclusive or exclusive prices.
+
+Prepared orders preserve their own currency witness, product references, names, quantities, tax, quoted amounts,
+and bounded invoice/delivery details. They can be cancelled, exported or erased, and are visible under
+**Storefront → Orders** and `/cart/orders` for their current owner. Exact submission replay returns the original
+snapshot; one prepared order claims an owned cart revision. No payment, stock reservation/decrement, access grant,
+legal invoice number or confirmed amount is created. Future charged states must first add their explicit retention
+policy and verified-payment workflow.
+
+Guests receive a one-use email link lasting thirty minutes. GET does not consume it; an explicit confirmation
+POST grants thirty minutes of access to that exact order/site. The original browser's cart ownership also permits
+access. Guest email matches never attach orders to a reader. Reader export/erasure includes orders even while
+commerce is disabled; proof-backed guest export downloads the saved snapshot, while erasure removes the complete unpaid order and its links. Production
+order preparation, including signed-in readers, refuses a mail transport that only logs or keeps messages. No queue worker is required.
