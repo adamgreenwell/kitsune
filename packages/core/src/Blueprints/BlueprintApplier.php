@@ -24,6 +24,7 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\RelationType;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
@@ -89,11 +90,11 @@ final class BlueprintApplier
     /**
      * The keys of `typeRecord()`, `fieldRecord()` and `roleRecord()`, which a manifest must hold for a merge to read it.
      */
-    private const TYPE_RECORD = ['name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media'];
+    private const TYPE_RECORD = ['name', 'plural_name', 'icon', 'description', 'ordering', 'on_collision', 'is_media', 'accepts'];
 
     /**
      * Type-record keys the format gained after receipts had been written without them, each with the one value every such
-     * receipt meant — ADR-039, the DAM as built.
+     * receipt meant — ADR-039, the DAM and Storefront as built.
      *
      * ⚠️ A FACT ABOUT THE CORE THAT WROTE THE MANIFEST, NOT A GUESS. A manifest whose entry types hold no `is_media` was
      * written by a core whose `EntryTypeDeclaration` could not declare a media type, so every type it records was declared
@@ -108,8 +109,11 @@ final class BlueprintApplier
      * ordinary, and the merge writes what that version adds. The live column never moves (`guardMediaFlag()`), and the
      * manifest is a bulk-writable record the merge already trusts this far for every key (ADR-039, the merge's known
      * limits). Absence is safe because it means exactly what every earlier writer declared.
+     *
+     * `accepts` arrived with Storefront: every earlier declaration meant null, accepting all formats on a media
+     * type. This adds no live-row rewrite or comparison; the owner's current formats remain the owner's.
      */
-    private const ADDED_TO_TYPE_RECORD = ['is_media' => false];
+    private const ADDED_TO_TYPE_RECORD = ['is_media' => false, 'accepts' => null];
 
     private const FIELD_RECORD = ['type', 'label', 'pii_class', 'cardinality', 'is_indexed', 'settings', 'is_required', 'help_text', 'ordering', 'group'];
 
@@ -355,6 +359,17 @@ final class BlueprintApplier
             }
 
             $types[$type->handle] = true;
+
+            if ($type->accepts !== null) {
+                if (! $type->isMedia) {
+                    throw new InvalidArgumentException("Blueprint [{$handle}] declares accepts on non-media entry type [{$type->handle}]. Only a media type holds files.");
+                }
+
+                if (($problem = MediaFormats::problemWith($type->accepts)) !== null) {
+                    throw new InvalidArgumentException("Blueprint [{$handle}] declares accepts on [{$type->handle}] as {$problem}.");
+                }
+            }
+
             $fields = [];
 
             foreach ($type->fields as $field) {
@@ -2636,6 +2651,7 @@ final class BlueprintApplier
                 'ordering' => $declaration->ordering,
                 /* ⚠️ AT CREATION AND ONLY HERE — ADR-042 decision 1. `guardMediaFlag()` refuses it on every later save. */
                 'is_media' => $declaration->isMedia,
+                'settings' => $declaration->accepts === null ? null : [MediaFormats::SETTING => $declaration->accepts],
             ]);
 
             $outcome['created'][] = "entry type {$declaration->handle}";
@@ -2770,9 +2786,10 @@ final class BlueprintApplier
      * An entry type declaration as the manifest records it, less its handle, id, outcome and fields.
      *
      * ⚠️ `is_media` ALWAYS, NOT ONLY WHEN TRUE: the merge compares the keys a declaration emits, so a key written only for
-     * a media type would let a later version drop the flag unseen (ADR-039, the DAM as built).
+     * a media type would let a later version drop the flag unseen (ADR-039, the DAM as built). `accepts` is also
+     * always recorded, with null meaning the unrestricted formats every declaration before Storefront meant.
      *
-     * @return array{name: string, plural_name: string, icon: ?string, description: ?string, ordering: int, on_collision: string, is_media: bool}
+     * @return array{name: string, plural_name: string, icon: ?string, description: ?string, ordering: int, on_collision: string, is_media: bool, accepts: list<string>|null}
      */
     private static function typeRecord(EntryTypeDeclaration $type): array
     {
@@ -2784,6 +2801,7 @@ final class BlueprintApplier
             'ordering' => $type->ordering,
             'on_collision' => $type->onCollision->value,
             'is_media' => $type->isMedia,
+            'accepts' => $type->accepts,
         ];
     }
 

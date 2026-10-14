@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { selectValue, openSelect, callsMethod } = require('./select-control');
 
 /*
  * The media list's Upload action, driven through FilePond as an editor drives it — ADR-042 decision 3.
@@ -135,13 +136,13 @@ async function statusOfCall(page, componentName, method, params) {
 
 /** Types into a searchable select and waits for the server's answer — as `media-sharing.spec.js` does, and for its reasons. */
 async function search(page, label, term, within = page) {
-    await within.getByRole('combobox', label === null ? {} : { name: label }).first().click();
+    const input = await openSelect(within, label);
 
     const answered = page.waitForResponse(
-        (response) => response.url().includes('/livewire') && response.request().method() === 'POST',
+        (response) => callsMethod(response, 'callSchemaComponentMethod', 'getSearchResultsForJs'),
     );
 
-    await page.keyboard.type(term);
+    await input.fill(term);
     await answered;
 }
 
@@ -151,7 +152,7 @@ function translated(key, locale) {
 }
 
 /** The options in the open picker's dropdown, not the Status select's native ones. */
-const dropdownOptions = (page) => page.locator('[id^="fi-select-input-dropdown-"]:visible').getByRole('option');
+const dropdownOptions = (page) => page.locator('.fi-select-input-ctn .fi-dropdown-panel:visible').getByRole('option');
 
 /** Nothing offered, by the "no results" words in the site's language — never by an absence alone, which a pending search shows too. */
 async function expectNoOptions(page, locale) {
@@ -519,7 +520,7 @@ test.describe('a file uploaded through the panel, across sites', () => {
             await page.locator('[id="form.title"]').press('Enter');
             await page.waitForURL(/\/c\/product\/\d+$/);
             await page.goto(`${page.url()}/edit`);
-            await expect(page.getByRole('combobox', { name: /Photo/ }).first()).toContainText(shared);
+            await expect(selectValue(page, /Photo/).first()).toContainText(shared);
 
             // Neither served, offered by a picker, nor by the Attach dialog where its type is switched off.
             const { nestedNoteId, frNoteId } = media();

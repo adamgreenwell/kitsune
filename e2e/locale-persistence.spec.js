@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { callsMethod } = require('./select-control');
 
 /*
  * Does an explicitly localized admin URL survive a Livewire update?
@@ -24,7 +25,7 @@ const { test, expect } = require('@playwright/test');
  *
  * ⚠️ AND THE RESPONSE IS JSON, so non-ASCII arrives `\uXXXX`-escaped. A regex for raw
  * Arabic finds nothing in it and reads as "no Arabic", which is the same
- * measuring-the-wrong-artifact mistake one layer down. It is unescaped before matching.
+ * measuring-the-wrong-artifact mistake one layer down. The JSON response is decoded before matching.
  */
 
 /**
@@ -40,30 +41,21 @@ const { test, expect } = require('@playwright/test');
  */
 const CHROME = { en: 'Breadcrumb', ar: 'مسار التصفح' };
 
-/** The last Livewire update response for an interaction on the given URL, decoded. */
+/** The table response for this sort action, excluding background notification requests. */
 async function updateResponseFor(page, url) {
-    const bodies = [];
-    const capture = async (res) => {
-        // The endpoint is /livewire-<8 hex>/update, hashed from APP_KEY by
-        // Livewire\Mechanisms\HandleRequests\EndpointResolver — NOT the v3
-        // /livewire/update, so it is matched by shape rather than by literal.
-        if (/livewire-[0-9a-f]+\/update/.test(res.url()) && res.request().method() === 'POST') {
-            try { bodies.push(await res.text()); } catch (e) { /* a redirected body is not ours */ }
-        }
-    };
-
-    page.on('response', capture);
     await page.goto(url);
-
-    // A sortable column header is the cheapest real update: it re-renders the table
-    // component server-side, which is what carries the chrome strings.
-    await page.locator('th button, th a').first().click();
-    await expect.poll(() => bodies.length, { timeout: 10_000 }).toBeGreaterThan(0);
-    page.off('response', capture);
-
-    const raw = bodies[bodies.length - 1];
-
-    return raw.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    const [response] = await Promise.all([
+        page.waitForResponse((candidate) => callsMethod(candidate, 'sortTable')),
+        page.locator('th button, th a').first().click(),
+    ]);
+    const requested = response.request().postDataJSON().components.find((component) =>
+        component.calls.some((call) => call.method === 'sortTable'),
+    );
+    const id = JSON.parse(requested.snapshot).memo.id;
+    const body = await response.json();
+    const rendered = body.components.find((component) => JSON.parse(component.snapshot).memo.id === id);
+    expect(rendered?.effects?.html, 'the sorted table component must render its interface').toEqual(expect.any(String));
+    return rendered.effects.html;
 }
 
 test.describe('an explicitly localized admin URL survives a Livewire update', () => {

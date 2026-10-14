@@ -3,6 +3,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const { menuItem } = require('./menu');
+const { callsMethod } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 
 /*
@@ -512,10 +513,29 @@ test.describe('a private tile, pressed', () => {
             }
         });
 
-        await openStates(page);
+        // Filament's notification bootstrap reissues the session cookie. Finish it before clearing
+        // the browser's jar, or that in-flight authenticated response signs the fixture back in.
+        // Earlier views have no bootstrap, so observe the markup rather than assume a version.
+        const initializing = [];
+        const captureBootstrap = (response) => {
+            if (callsMethod(response, 'pullNotificationsFromSession')) {
+                initializing.push(response);
+            }
+        };
+        page.on('response', captureBootstrap);
+        try {
+            await openStates(page);
+            if (await page.locator('[x-init="$wire.pullNotificationsFromSession()"]').count()) {
+                await expect.poll(() => initializing.length).toBeGreaterThan(0);
+            }
+            await Promise.all(initializing.map((response) => response.finished()));
+        } finally {
+            page.off('response', captureBootstrap);
+        }
         const tile = privateTile(page, STATE.a);
         const list = page.url();
         await page.context().clearCookies();
+        expect(await page.context().cookies()).toHaveLength(0);
 
         const [answer] = await Promise.all([page.waitForResponse((r) => toRoute(r.url())), tile.button.click()]);
 

@@ -26,7 +26,7 @@ use RuntimeException;
  * and unreplaceable while a blueprint's payload may ship inside core, inside a module, or be handed to the
  * apply command. Core's own payload — Blog — is registered by core's provider, with the binding. A module fills
  * this in `registerModule()`, which is where `AdminSurface` is filled and for
- * the same reason: the kernel runs inside `$app->booted()`, so a registration made there is in time for a
+ * the same reason: the kernel runs inside `$app->booting()`, so a registration made there is in time for a
  * console command and cannot run before the receipt that authorises the module has been read.
  */
 final class BlueprintRegistry

@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { openSelect, selectValue } = require('./select-control');
 const { BLOG_OWNER } = require('./accounts');
 
 /*
@@ -44,8 +45,8 @@ async function statusOptions(page) {
 
 /** Chooses a tag in the post's Tags picker — typed, because the picker preloads nothing (see relation-picker.spec.js). */
 async function chooseTag(page, name) {
-    await page.getByRole('combobox', { name: /^Tags/ }).first().click();
-    await page.keyboard.type(name);
+    const search = await openSelect(page, /^Tags/);
+    await search.fill(name);
 
     const option = page.getByRole('option', { name }).first();
     await expect(option).toBeVisible({ timeout: 10_000 });
@@ -209,7 +210,7 @@ test.describe.serial('the Blog blueprint, applied by its command', () => {
         // ⚠️ RELOADED, because a relation is written after the entry exists (ADR-015) and the page could show a chip
         // the database never received.
         await page.reload();
-        await expect(page.locator('[id="form.relations.post_tags"]')).toContainText(TAG);
+        await expect(selectValue(page, /^Tags/).first()).toContainText(TAG);
         await expect(page.locator('select[id$="status"]')).toHaveValue('published');
 
         await page.goto(`/admin/${SITE}/c/post`);
@@ -240,7 +241,7 @@ test.describe.serial('the Blog blueprint, applied by its command', () => {
         await chooseTag(page, TAG);
         await create(page, 'post');
         await page.reload();
-        await expect(page.locator('[id="form.relations.post_tags"]')).toContainText(TAG);
+        await expect(selectValue(page, /^Tags/).first()).toContainText(TAG);
 
         // The owner's published post keeps Published, so a typo fix saves without unpublishing it (ADR-033).
         await page.goto(`/admin/${SITE}/c/post`);

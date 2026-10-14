@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { selectField, selectValue, openSelect } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 
 /*
@@ -15,26 +16,18 @@ const AxeBuilder = require('@axe-core/playwright').default;
 
 const SITE = 'golfdom';
 
-/** The picker control itself, which is where a selected value is rendered. */
-const picker = (page) => page.locator('[id="form.relations.related_articles"]');
+/** The complete field keeps its chips and remove controls together across Filament versions. */
+const picker = (page) => selectField(page, /Related articles/).first();
+const pickerValue = (page) => selectValue(page, /Related articles/).first();
 
 /**
- * Chooses an option in a Filament searchable select.
- *
- * ⚠️ Three steps, and skipping any finds nothing. The control is a `button[role="combobox"]`
- * rather than a `<select>`; clicking it reveals a search field; and the options list is
- * EMPTY until something is typed, because the picker resolves matches through
- * `getSearchResultsUsing()` rather than preloading an org's entire entry table.
- *
- * ⚠️ TYPED WITH THE KEYBOARD, not into a located input. `input[type="search"]` is Filament's
- * GLOBAL search box at the top of the page — the picker's own field is `type="text"` with
- * placeholder "Start typing to search…". Filling the first `[type=search]` typed into the
- * wrong control entirely, so no options appeared and the picker looked broken while working
- * correctly. The keyboard goes wherever focus already is.
+ * Open the named searchable picker, fill its own visible search input, and choose a server result.
+ * The opening button's role changed in Filament 5.10.2; the shared helper checks the matching
+ * search role and focus transition. Field scope keeps this distinct from the global search.
  */
 async function choose(page, term, optionPattern) {
-    await page.getByRole('combobox', { name: /Related articles/ }).first().click();
-    await page.keyboard.type(term);
+    const search = await openSelect(page, /Related articles/);
+    await search.fill(term);
 
     const option = page.getByRole('option', { name: optionPattern }).first();
     await expect(option).toBeVisible({ timeout: 10_000 });
@@ -45,8 +38,8 @@ async function choose(page, term, optionPattern) {
  * Removes every selection currently in the picker, in the form only.
  *
  * ⚠️ SCOPED TO THE PICKER, because `page.locator('[aria-label^="Remove"]')` is page-wide and
- * this form is going to grow. Filament renders the chips and their removal controls INSIDE
- * the combobox button, so scoping there cannot reach another field's controls — an unscoped
+ * this form is going to grow. Filament 5.10.2 moved chips beside the opening button, so
+ * the field wrapper keeps both versions' remove controls together — an unscoped
  * version happens to match only one control against today's seed, and would silently start
  * clearing a neighbouring field the day one is added.
  *
@@ -132,11 +125,11 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * ⚠️ RELOADED, and asserted on the CONTROL rather than the page. An in-page
          * assertion passes on state that never reached the database — which is precisely the
          * bug class here — and `getByText` does not match a value rendered inside the
-         * combobox button, which is how my first version of this failed against a working
+         * selected-value display, which is how my first version of this failed against a working
          * feature.
          */
         await page.reload();
-        await expect(picker(page)).toContainText('week 3');
+        await expect(pickerValue(page)).toContainText('week 3');
 
         await leaveClean(page);
     });
@@ -155,13 +148,13 @@ test.describe('a relation field round-trips through entry_relations', () => {
         await choose(page, 'week 4', /week 4/);
         await save(page);
         await page.reload();
-        await expect(picker(page)).toContainText('week 4');
+        await expect(pickerValue(page)).toContainText('week 4');
 
         expect(await removeSelections(page)).toBeGreaterThan(0);
 
         await save(page);
         await page.reload();
-        await expect(picker(page)).toContainText('Select an option');
+        await expect(pickerValue(page)).toContainText('Select an option');
     });
 
     test('a relation survives the CREATE path, not just edit', async ({ page }) => {
@@ -197,7 +190,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
 
         await page.goto(`/admin/${SITE}/c/article/${id}/edit`);
         await expect(picker(page)).toBeVisible();
-        await expect(picker(page)).toContainText('week 3');
+        await expect(pickerValue(page)).toContainText('week 3');
 
         /*
          * ⚠️ DELETED rather than merely cleared, because this test adds a row the seed did not
@@ -242,6 +235,8 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * this control does, and folding it in here would make this test fail for a reason it is
          * not about. Recorded separately rather than swallowed.
          */
+        const openDropdowns = page.locator('.fi-select-input-ctn .fi-dropdown-panel:visible');
+        await expect(openDropdowns).toHaveCount(1);
         await page.keyboard.press('Escape');
 
         /*
@@ -252,7 +247,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * is "nothing is open", and counting the visible ones says exactly that however many selects the
          * form grows. Same lesson as `removeSelections()` one docblock up, on the day it predicted.
          */
-        await expect(page.locator('[id^="fi-select-input-dropdown-"]:visible')).toHaveCount(0);
+        await expect(openDropdowns).toHaveCount(0);
 
         const results = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
@@ -276,7 +271,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
         // unsaved form. Asserted rather than assumed, because a stray save would pollute the
         // fixture the way it did before `leaveClean()` existed.
         await page.reload();
-        await expect(picker(page)).toContainText('Select an option');
+        await expect(pickerValue(page)).toContainText('Select an option');
     });
 
     test('an Arabic-titled target resolves right-to-left in the picker', async ({ page }) => {
@@ -292,7 +287,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
         await choose(page, 'صيانة', /صيانة الملاعب/);
         await save(page);
         await page.reload();
-        await expect(picker(page)).toContainText('صيانة الملاعب');
+        await expect(pickerValue(page)).toContainText('صيانة الملاعب');
 
         /*
          * ⚠️ MEASURED, not asserted from the attribute. `dir="auto"` can be present and
@@ -304,7 +299,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * strong directional character is Latin however Arabic the options are. Once a value
          * is chosen the placeholder is gone and the Arabic title is all that is left.
          */
-        expect(await resolvedDirection(picker(page))).toBe('rtl');
+        expect(await resolvedDirection(pickerValue(page))).toBe('rtl');
 
         await leaveClean(page);
     });

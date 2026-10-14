@@ -24,10 +24,9 @@ use Kitsune\Core\Blueprints\OnCollision;
  * sluggable, publishable" in two documents ~~and is read by nothing — it is a cast on the model and nothing
  * else~~. Declaring it would be configuring behaviour that does not exist (AGENTS.md §14). ~~It arrives in the
  * format when something reads it.~~ One key is read now — `accepts`, the formats a media type takes (ADR-042
- * decision 33) — and it still does not arrive here: a declared media type accepts every format, as one made in the
- * admin does by default, and its owner narrows it on the type's page. It arrives as its own parameter when a
- * blueprint needs to narrow it — the Storefront's product images (ADR-040) are the expected first — never as
- * `settings`, whose other three published keys are still read by nothing.
+ * decision 33). ~~It still does not arrive here: a declared media type accepts every format.~~ Storefront is now
+ * the first consumer: `accepts` declares its image formats explicitly, never through a general `settings` map.
+ * Null still takes every format, as the DAM does; an owner's later edits and an adopted type's formats are kept.
  *
  * ⚠️ `isMedia` IS DECIDED HERE, ONCE (ADR-039, the DAM as built). The apply writes it when it creates the type and
  * never again: the model locks it (`EntryType::guardMediaFlag()`), a merge refuses a version that changes it either
@@ -48,6 +47,8 @@ final readonly class EntryTypeDeclaration
      *                                    there means adopting somebody else's work under this blueprint's name
      * @param  bool  $isMedia  whether the type's entries are uploaded files (ADR-042 decision 1) — written when the
      *                         apply CREATES the type, never on one it adopts, and never changed after
+     * @param  list<string>|null  $accepts  media formats named by MediaFormats, or null for every format; media types
+     *                                      only, written on creation and recorded for additive merge comparison
      */
     public function __construct(
         public string $handle,
@@ -59,5 +60,6 @@ final readonly class EntryTypeDeclaration
         public int $ordering = 0,
         public OnCollision $onCollision = OnCollision::Fail,
         public bool $isMedia = false,
+        public ?array $accepts = null,
     ) {}
 }

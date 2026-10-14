@@ -1,8 +1,9 @@
 # kitsune/commerce
 
-The optional first-party commerce module. This first slice supplies its package and lifecycle foundation;
-it does not yet supply a catalogue, cart, orders, inventory writes or Stripe payments. ADR-040 in the monorepo
-records the design and delivery order.
+The optional first-party commerce module. It supplies org-shared products, exact integer prices and finite or
+untracked stock, per-site listings, a supported currency chooser, and owner-only product administration with an
+adaptable Storefront blueprint. Public catalogue delivery, carts, orders, stock reservation and Stripe payments
+remain later slices. ADR-040 in the monorepo records the design and delivery order.
 
 The module and core resolve at the same version (`kitsune/core: self.version`). Composer installing the
 package does not register its provider: only the kernel may do that, after an explicit installation and
@@ -22,10 +23,18 @@ Install leaves the module disabled. Enable takes effect when the next applicatio
 data and schema; it does not unload a provider from requests or long-running processes already in flight.
 Restart those processes after changing the switch.
 
-The migration directory is wired through `migrationPath()` and currently empty. No placeholder table or
-extra receipt is created: core owns the receipt. Ordinary `artisan migrate` does not run module migrations;
-the module lifecycle does. Real commerce tables arrive with sellables, and their models must then declare
-and enforce Org or Site scope and update the manifest's presently empty `scoping` list.
+The module lifecycle owns its migrations for `commerce_sellables` and `commerce_listings`; ordinary
+`artisan migrate` does not run them. Core owns the module receipt and the org's currency configuration.
+Sellables declare and enforce Org scope; listings declare and enforce Site scope, with reference-coherence
+guards. The module manifest names both scoped models. A retained sellable prevents changing or clearing
+the org's currency even while commerce is disabled.
+
+Open **Storefront → Products** as an org owner, apply **Set up Storefront**, and select **Catalogue currency**.
+One save writes the shared price and stock together with the current site's native content, relations and listing.
+The form warns that shared changes affect every selling site. Storefront creates ordinary org-owned product
+content and image types, without new roles or permission subjects. Content editors retain the ordinary entry
+editor; commerce writes require an owner. Removal and blueprint reversal keep retained data under their existing
+refusal rules. See [`docs/commerce-operations.md`](../../docs/commerce-operations.md) for the workflow and boundaries.
 
 Commerce reserves table names beginning with `commerce_`. Uninstall inspects every such table on the
 receipt's connection, past org/site context and soft deletion, and refuses if any row remains. This includes
