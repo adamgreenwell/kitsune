@@ -36,10 +36,10 @@ final class CatalogueWriter
 
     public function __construct(private readonly Context $context, private readonly Auditor $auditor) {}
 
-    public function createSellable(mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency): Sellable
+    public function createSellable(mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null): Sellable
     {
         $this->refuseWithoutAuthority();
-        $attributes = $this->sellableAttributes($sku, $priceMinor, $stock);
+        $attributes = [...$this->sellableAttributes($sku, $priceMinor, $stock), 'entitlement_name' => Sellable::entitlementNameValue($entitlementName)];
         $currency = $this->currencyQuote($currency);
 
         return $this->transaction(function () use ($attributes, $currency): Sellable {
@@ -53,11 +53,20 @@ final class CatalogueWriter
         });
     }
 
-    public function updateSellable(mixed $id, mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency): Sellable
+    /**
+     * Omitted offer metadata preserves the stored mapping for existing first-party callers; an explicit null clears
+     * it. Argument presence, including a named entitlementName argument, distinguishes the two.
+     */
+    public function updateSellable(mixed $id, mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null): Sellable
     {
         $this->refuseWithoutAuthority();
         $key = Sellable::catalogueKey($id);
         $attributes = $this->sellableAttributes($sku, $priceMinor, $stock);
+
+        if (func_num_args() >= 6) {
+            $attributes['entitlement_name'] = Sellable::entitlementNameValue($entitlementName);
+        }
+
         $currency = $this->currencyQuote($currency);
 
         return $this->transaction(function () use ($key, $attributes, $currency): Sellable {

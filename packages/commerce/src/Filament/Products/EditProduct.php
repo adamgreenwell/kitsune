@@ -50,6 +50,7 @@ final class EditProduct extends EditRecord
     {
         return ['sku' => $data['sku'], 'price' => MinorUnits::format($data['price_minor'], $this->currencyQuote),
             'stock_mode' => $data['stock'] === null ? 'untracked' : 'finite', 'stock' => $data['stock'],
+            'entitlement_name' => $data['entitlement_name'] ?? null,
             'is_available' => $this->siteListing()->is_available ?? false, 'content' => $this->contentState()];
     }
 

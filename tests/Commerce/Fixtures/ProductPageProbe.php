@@ -115,6 +115,34 @@ $commerce = ['sku' => 'BOARD', 'price_minor' => '2000', 'stock' => '5'];
 $content = ['title' => 'Board', 'slug' => 'board', 'status' => 'draft', 'values' => ['product_description' => '<p>A board</p>']];
 $form = ['sku' => 'BOARD', 'price' => '20.00', 'stock_mode' => 'finite', 'stock' => '5', 'is_available' => false, 'content' => $content];
 
+if (str_starts_with($mode, 'bad-offer-')) {
+    $updating = str_starts_with($mode, 'bad-offer-update-');
+    $malformed = match (true) {
+        str_ends_with($mode, '-array') => ['course.untrusted'],
+        str_ends_with($mode, '-bool') => true,
+        str_ends_with($mode, '-numeric') => 81234,
+    };
+
+    if ($updating) {
+        $sellable = app(ProductWriter::class)->createProduct([...$commerce, 'entitlement_name' => 'course.kept'], 'USD', $content);
+        $component = Livewire::test(EditProduct::class, ['record' => $sellable->getKey()]);
+        $form['price'] = '25.00';
+        $form['content']['title'] = 'This must not be saved';
+    } else {
+        $component = Livewire::test(CreateProduct::class);
+    }
+
+    $before = $state();
+    $component->fillForm($form)->set('data.entitlement_name', $malformed)->call($updating ? 'save' : 'create')
+        ->assertStatus(200)->assertHasFormErrors(['entitlement_name']);
+
+    echo json_encode(['unchanged' => $state() == $before, 'errors' => $component->errors(),
+        'mapping' => Sellable::query()->first()?->entitlement_name, 'level' => DB::connection()->transactionLevel(),
+        'pdo_transaction' => DB::connection()->getPdo()->inTransaction(), 'redirect' => $component->effects['redirect'] ?? null,
+        'notifications' => [...session()->get('filament.notifications', []), ...session()->get('filament.claimed_notifications', [])]], JSON_THROW_ON_ERROR);
+    exit;
+}
+
 if (str_starts_with($mode, 'denied-')) {
     match ($mode) {
         'denied-no-actor' => Auth::guard('web')->logout(),
