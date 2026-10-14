@@ -1,9 +1,9 @@
 # kitsune/commerce
 
 The optional first-party commerce module. It supplies org-shared products, exact integer prices and finite or
-untracked stock, per-site listings, a supported currency chooser, and owner-only product administration with an
-adaptable Storefront blueprint. Public catalogue delivery, carts, orders, stock reservation and Stripe payments
-remain later slices. ADR-040 in the monorepo records the design and delivery order.
+untracked stock, per-site listings, a supported currency chooser, owner-only product administration with an
+adaptable Storefront blueprint, and an optional public catalogue with reader access badges. Carts, orders and
+Stripe payments remain later slices. ADR-040 in the monorepo records the design and delivery order.
 
 The module and core resolve at the same version (`kitsune/core: self.version`). Composer installing the
 package does not register its provider: only the kernel may do that, after an explicit installation and
@@ -35,6 +35,29 @@ The form warns that shared changes affect every selling site. Storefront creates
 content and image types, without new roles or permission subjects. Content editors retain the ordinary entry
 editor; commerce writes require an owner. Removal and blueprint reversal keep retained data under their existing
 refusal rules. See [`docs/commerce-operations.md`](../../docs/commerce-operations.md) for the workflow and boundaries.
+
+The optional **Access entitlement** field names one entitlement for the shared product. Its badge is checked for
+the current reader on each site independently. Naming, changing or clearing it grants or revokes nothing and
+does not choose access duration or repeat-purchase policy.
+
+A host opts into the public catalogue by placing this call before its catch-all in `routes/web.php`:
+
+```php
+\Kitsune\Commerce\Catalogue\CatalogueRoutes::register();
+```
+
+The stock skeleton calls it only when the optional package is present. It delegates `/catalogue` under each
+site's configured host and path prefix; installation or enablement alone claims no URL. Ordinary host and panel
+routes retain precedence, and disabled, missing or stale module receipts refuse the page. This first-party
+placement call is a named exception to the pre-v1.2 public API prohibition, without a third-party extension
+contract or a stability promise in 0.x.
+
+The module-owned page shows 24 candidate slots at a time, ordered by SKU and listing ID, with Previous/Next links.
+Current schema checks can leave a page sparse rather than scan without a bound. Cards expose a bounded plain
+description, exact price, stock state and at most one eligible public image; private image URLs and arbitrary
+adapted fields stay out of the public projection. Reader badges use one bounded batch check. Responses are
+`private, no-store`, and a database failure gives a generic 503. Product detail routes, general theming and
+checkout are outside this read surface.
 
 Commerce reserves table names beginning with `commerce_`. Uninstall inspects every such table on the
 receipt's connection, past org/site context and soft deletion, and refuses if any row remains. This includes
