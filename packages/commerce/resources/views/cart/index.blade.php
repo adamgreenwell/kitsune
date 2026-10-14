@@ -8,6 +8,7 @@
 @section('content')
     <h1>{{ $t('title') }}</h1>
     <p class="intro">{{ $t('intro') }}</p>
+    <p><a href="{{ $cartPath }}/orders">{{ __('commerce::orders.orders', [], 'en') }}</a></p>
     @if ($error !== null)
         <div class="summary" role="alert" tabindex="-1" autofocus>
             <h2>{{ $t('summary_title') }}</h2>
@@ -64,6 +65,7 @@
         </div>
         <section class="cart-total" aria-label="{{ $t('total') }}">
             @if ($cart['currency'] !== null && $cart['total'] !== null && ! collect($cart['items'])->contains(fn ($item) => ! $item['available']))
+                <p><a href="{{ $cartPath }}/checkout">{{ __('commerce::orders.checkout', [], 'en') }}</a></p>
                 <h2>{{ $t('total') }}: <span dir="ltr">{{ $cart['currency'] }} {{ $cart['total'] }}</span></h2>
             @else
                 <p>{{ $t('total_unavailable') }}</p>

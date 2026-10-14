@@ -13,12 +13,17 @@ namespace Kitsune\Commerce;
 use Filament\Navigation\NavigationItem;
 use Illuminate\Contracts\Events\Dispatcher;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
-use Kitsune\Commerce\Carts\CartReaderData;
 use Kitsune\Commerce\Carts\CartSessions;
 use Kitsune\Commerce\Console\CartPruneCommand;
+use Kitsune\Commerce\Filament\CheckoutResource;
 use Kitsune\Commerce\Filament\CurrencyResource;
+use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Orders\CommerceReaderData;
+use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Credentials\CredentialSlot;
+use Kitsune\Core\Credentials\CredentialSlots;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
@@ -36,6 +41,10 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 {
     protected function registerModule(): void
     {
+        $this->app->make(CredentialSlots::class)->register(new CredentialSlot(
+            OrderQuotes::SHIPPO_SLOT, 'commerce::orders.shippo_label', 'commerce::orders.shippo_help', true,
+            ['test' => ['shippo_test_'], 'live' => ['shippo_live_']], minLength: 16, maxLength: 255,
+        ));
         $this->app->make(BlueprintRegistry::class)->register(new StorefrontBlueprint);
         $this->app->make(AdminSurface::class)->resource(ProductResource::class)->navigationItem(
             NavigationItem::make('Products')
@@ -53,6 +62,13 @@ final class CommerceServiceProvider extends ModuleServiceProvider
                 ->url(fn (): string => CurrencyResource::getUrl())
                 ->visible(fn (): bool => CurrencyResource::canAccess()),
         );
+        foreach ([CheckoutResource::class => ['Checkout settings', 'heroicon-o-calculator'], OrderResource::class => ['Orders', 'heroicon-o-document-text']] as $resource => [$label, $icon]) {
+            $this->app->make(AdminSurface::class)->resource($resource)->navigationItem(
+                NavigationItem::make($label)->label(fn (): string => $resource::getPluralModelLabel())
+                    ->group(fn (): string => __('commerce::catalogue.storefront'))->icon($icon)
+                    ->url(fn (): string => $resource::getUrl())->visible(fn (): bool => $resource::canAccess()),
+            );
+        }
     }
 
     protected function bootModule(): void
@@ -70,7 +86,7 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 
     public function readerData(): ModuleReaderData
     {
-        return new CartReaderData;
+        return new CommerceReaderData;
     }
 
     public function uninstall(): void

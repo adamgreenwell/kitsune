@@ -5667,6 +5667,80 @@ concurrent first HTTP Adds; the server-engine suite separately exercises destruc
 older repeatable-read snapshot. No test or development-host timing here substitutes for the resource-floor,
 release or deployment gates.
 
+**Amended 2026-10-14 — the order slice, decisions before implementation (#194).** Carts are merged in #270.
+Adam confirmed that guests may order without signing in; the first order slice includes built-in tax and shipping
+calculations; billing captures a name and postal address; operators configure country/region tax tables; shipping
+uses live carrier quotes from **Shippo**; guests recover access through secure email links without an account; each
+org chooses tax-inclusive or tax-exclusive catalogue prices; and delivery has its own address, defaulted to billing.
+These expand the original snapshot-only issue. This paragraph records decisions, not completed implementation.
+
+The initial calculator uses one explicit, noncompound rate for each tax class and destination: an exact region
+code takes precedence over the country's `*` fallback. Missing configuration refuses checkout; an explicit zero
+rate is different from a missing rate. Physical lines and shipping use the delivery destination, digital lines
+use billing. Operators also explicitly choose whether the quoted shipping fee includes tax. Each complete line's
+tax rounds half up in integer minor units; inclusive net is the quoted gross less that rounded tax. No jurisdictional
+rule, rate registry or worldwide country/address validation is implied by these configurable tables.
+
+Each shared SKU explicitly declares digital or physical delivery and a tax class. Physical packing is operator
+configured: unit weight, parcel dimensions, tare and units per parcel. Quantities split within that SKU's configured
+parcel capacity; different SKUs are never guessed to fit together. At most twenty parcels are requested. The first
+Shippo path supports domestic rates in the org's exact currency, with no currency conversion, customs declarations
+or label purchase. Those are separately tracked extensions. Credentials use core's encrypted, mode-specific store;
+no key, invoice address or provider failure body belongs in logs. An unavailable carrier refuses physical checkout.
+
+A provisional quote is kept in the server session for fifteen minutes, bounded to five quotes. External shipping
+I/O holds no database transaction or org/site lock. Current cart, product, stock, policy, destination, tax settings
+and credential-mode fingerprints are compared again afterwards and at preparation. The resulting **prepared** order
+is immutable quoted history, with a separate nullable confirmed amount; it is not proof of payment, an invoice
+number, a reservation, an access grant or a promise that Stripe will charge that quote. This slice permits only
+prepared-to-cancelled, while one prepared order claims an owned cart revision. An exact submission replay returns
+its original snapshot before rereading the cart; a changed selection under the same submission key refuses.
+
+Order models are read-only projections. Their authoritative workflow makes explicit, checked database writes under
+org then site locks and records payload-free audit events in the same transaction. Orders keep their own database
+currency witness after catalogue/cart removal. Catalogue entitlement mappings are captured with unknown offer terms;
+no duration or permanent access is inferred. Payment, stock changes and grants remain the verified-payment slices.
+
+Secure guest links use module-owned hashed, expiring, one-use tokens. A GET landing consumes nothing; an explicit
+CSRF-protected POST establishes a bounded grant for that exact org, site and order. Current browser ownership also
+permits access. Neither an email match nor an ordinary sign-in attaches a guest order to a reader. Reader and
+proof-backed guest export/erasure are owed from the first migration, including disabled-module reader custody.
+Prepared/cancelled orders have no invented financial-retention exception: erasure removes their complete order,
+lines, personal data and tokens. Any future charged state must gain an explicit retention policy before its writer
+ships. These choices retain the resource floor: optional physical shipping requires Shippo, guest recovery requires
+a working mail transport, and neither creates a core onboarding dependency or requires an always-on worker.
+
+**As built in the order slice.** `OrderQuotes` keeps bounded server-session quotes, `OrderWriter` owns preparation
+and both buyer/owner cancellation, and read-only order model builders refuse ORM writes. The owner-only checkout
+settings and order resources load outside dynamic content routes. `CartRoutes::register()` now delegates these
+checkout/order leaves under `/cart`, widening its existing fifth named first-party placement exception; the internal
+`OrderRoutes` class is not another public host-placement contract. `CommerceReaderData` composes retained cart and
+order custody without requiring module boot. Preparation currently uses the production mail-readiness gate for
+signed-in readers as well as guests; only guests receive recovery-token mail. An expired or used link offers a
+uniform resend at the saved contact, including from a fresh browser with no order access.
+
+Calculator configuration retains the unsigned 32-bit version domain, with bigint storage on all three engines.
+PostgreSQL's ordinary integer cannot hold that domain's maximum; engine regressions advance settings, tax rates
+and sales policies to the last version through their writers, then refuse exhaustion without changing history.
+
+A two-connection MySQL/MariaDB repeatable-read probe found that an ordinary coherence `EXISTS` can retain an older host
+transaction's Site snapshot even when the outer order query locks. The authoritative writer therefore uses the
+current Org/Site proof from `OrderLocks`, retaining SiteScope and exact stamps while bypassing only that redundant
+subquery. Single-order projection also uses current locked witnesses and children inside an enclosing transaction.
+The regression exercises real preparation, exact replay, active-cart claims, cancellation and owner erasure;
+restoring either old read path makes the corresponding readback fail. The separately observed cart-write refusal under
+the same host snapshot remains tracked in #272 rather than silently widening this slice.
+
+Local qualification passed `composer ci` with **8,121 tests / 40,061 assertions**, 40 skips, PHPStan and both Pint
+gates. The focused disposable MySQL setup/order/privacy/admin run passed **241 tests / 1,242 assertions** with ten
+engine-inapplicable skips. The PostgreSQL 17 setup/order/admin/schema/scope run passed **196 tests / 874 assertions**,
+with two SQLite-only skips. The two-connection regression passed **34 assertions each** on MySQL 8.4.7 and MariaDB
+10.6.28; its engine-only case explicitly skips in the bare-clone suite. Full Playwright passed **359 tests**.
+Native HTTP probes and separate-process SQLite preparation races exercise fresh and
+cached routes, nested site prefixes, body-only CSRF, exact replay/active-cart claims, rollback, provider I/O outside
+transactions, stale configuration, observer tampering and redacted outages. Exact-head CI evidence is recorded on
+the pull request once completed; provider and SMTP fixtures are not live qualification or deployment.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

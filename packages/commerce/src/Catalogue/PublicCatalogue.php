@@ -168,6 +168,36 @@ final class PublicCatalogue
     }
 
     /**
+     * Private order identity, separate from the public projection. Requires the caller's org/site transaction.
+     *
+     * @param  list<int>  $ids
+     * @return array<int, array<string, mixed>>
+     */
+    public function forOrders(array $ids): array
+    {
+        $products = $this->forListings($ids, current: true);
+        $listings = Listing::query()->useWritePdo()->withoutGlobalScope('catalogue_coherence')
+            ->where('org_id', $this->context->orgId())->where('site_id', $this->context->siteId())
+            ->whereIn('id', array_keys($products))->lockForUpdate()->get()->keyBy('id');
+        $sellables = Sellable::query()->useWritePdo()->where('org_id', $this->context->orgId())
+            ->whereIn('id', $listings->pluck('sellable_id'))->lockForUpdate()->get()->keyBy('id');
+        foreach ($products as $id => &$product) {
+            $listing = $listings->get($id);
+            $sellable = $listing === null ? null : $sellables->get($listing->sellable_id);
+            if ($listing === null || $sellable === null) {
+                throw new RuntimeException('The current order catalogue selection is unavailable.');
+            }
+            $product = ['listingId' => $id, 'sellableRef' => (int) $sellable->getKey(), 'entryRef' => (int) $listing->entry_id,
+                'sku' => Sellable::skuValue($sellable->getAttributes()['sku'] ?? null),
+                'entitlementName' => $sellable->getAttributes()['entitlement_name'] ?? null,
+                'title' => $product['title'], 'currency' => $product['currency'], 'priceMinor' => $product['priceMinor'], 'stock' => $product['stock']];
+        }
+        unset($product);
+
+        return $products;
+    }
+
+    /**
      * @param  Collection<int, Listing>  $candidates
      * @return list<CartProduct>
      */

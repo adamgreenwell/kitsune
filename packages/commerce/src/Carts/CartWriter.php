@@ -96,6 +96,42 @@ final class CartWriter
         ];
     }
 
+    /**
+     * A current, private checkout selection. Never accepts a submitted cart key or formatted client amount.
+     *
+     * @return array{orgId:int,siteId:int,ownerKey:string,reader:?string,cartRef:int,cartVersion:int,items:list<array<string,mixed>>}
+     */
+    public function checkout(Request $request): array
+    {
+        if ((new Cart)->getConnection()->transactionLevel() < 1) {
+            throw new CartRefused('unavailable');
+        }
+        $owner = CartOwner::current($request);
+        if ($owner === null || app(CartSessions::class)->retryPending($request)) {
+            throw new CartRefused('unavailable');
+        }
+        $cart = $this->cart($owner);
+        if ($cart === null || $cart->expires_at->lessThanOrEqualTo(CarbonImmutable::now('UTC'))) {
+            throw new CartRefused('unavailable');
+        }
+        $lines = $this->lines($cart);
+        if ($lines === []) {
+            throw new CartRefused('unavailable');
+        }
+        $products = $this->catalogue->forOrders(array_map(static fn (CartLine $line): int => (int) $line->listing_id, $lines));
+        $items = [];
+        foreach ($lines as $line) {
+            $product = $products[(int) $line->listing_id] ?? null;
+            if ($product === null || ! self::hasStock($product['stock'], (int) $line->quantity)) {
+                throw new CartRefused('unavailable');
+            }
+            $items[] = [...$product, 'quantity' => (int) $line->quantity];
+        }
+
+        return ['orgId' => $owner->orgId, 'siteId' => $owner->siteId, 'ownerKey' => $owner->key,
+            'reader' => $owner->reader, 'cartRef' => (int) $cart->getKey(), 'cartVersion' => (int) $cart->version, 'items' => $items];
+    }
+
     /** Repeated Add requests keep the greater quantity; they never increment it. */
     public function add(Request $request, mixed $listing, mixed $quantity): void
     {
