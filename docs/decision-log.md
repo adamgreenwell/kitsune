@@ -5719,6 +5719,10 @@ order custody without requiring module boot. Preparation currently uses the prod
 signed-in readers as well as guests; only guests receive recovery-token mail. An expired or used link offers a
 uniform resend at the saved contact, including from a fresh browser with no order access.
 
+Calculator configuration retains the unsigned 32-bit version domain, with bigint storage on all three engines.
+PostgreSQL's ordinary integer cannot hold that domain's maximum; engine regressions advance settings, tax rates
+and sales policies to the last version through their writers, then refuse exhaustion without changing history.
+
 A two-connection MySQL/MariaDB repeatable-read probe found that an ordinary coherence `EXISTS` can retain an older host
 transaction's Site snapshot even when the outer order query locks. The authoritative writer therefore uses the
 current Org/Site proof from `OrderLocks`, retaining SiteScope and exact stamps while bypassing only that redundant
@@ -5727,9 +5731,10 @@ The regression exercises real preparation, exact replay, active-cart claims, can
 restoring either old read path makes the corresponding readback fail. The separately observed cart-write refusal under
 the same host snapshot remains tracked in #272 rather than silently widening this slice.
 
-Local qualification passed `composer ci` with **8,119 tests / 40,040 assertions**, 40 skips, PHPStan and both Pint
+Local qualification passed `composer ci` with **8,121 tests / 40,061 assertions**, 40 skips, PHPStan and both Pint
 gates. The focused disposable MySQL setup/order/privacy/admin run passed **241 tests / 1,242 assertions** with ten
-engine-inapplicable skips. The two-connection regression passed **34 assertions each** on MySQL 8.4.7 and MariaDB
+engine-inapplicable skips. The PostgreSQL 17 setup/order/admin/schema/scope run passed **196 tests / 874 assertions**,
+with two SQLite-only skips. The two-connection regression passed **34 assertions each** on MySQL 8.4.7 and MariaDB
 10.6.28; its engine-only case explicitly skips in the bare-clone suite. Full Playwright passed **359 tests**.
 Native HTTP probes and separate-process SQLite preparation races exercise fresh and
 cached routes, nested site prefixes, body-only CSRF, exact replay/active-cart claims, rollback, provider I/O outside

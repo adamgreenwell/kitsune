@@ -377,13 +377,39 @@ it('never copies the shipping origin or configuration values into payload-free a
         ->and($audit->actor_id)->toBeNull()->and($audit->target_type)->toBe((new CommerceSettings)->getMorphClass());
 });
 
-it('refuses version exhaustion without changing the reviewed configuration', function (): void {
-    $settings = $this->writer->setSettings(commerceSetupSettings());
-    DB::table('commerce_settings')->where('id', $settings->getKey())->update(['version' => '4294967295']);
-    expect(fn () => $this->writer->setSettings([...commerceSetupSettings(), 'tax_mode' => 'inclusive'], '4294967295'))
-        ->toThrow(RuntimeException::class, 'exhausted')
-        ->and(CommerceSettings::query()->firstOrFail()->tax_mode)->toBe('exclusive');
-});
+it('round trips the unsigned version ceiling and refuses exhaustion without changing reviewed configuration', function (string $table): void {
+    $values = match ($table) {
+        'commerce_settings' => commerceSetupSettings(),
+        'commerce_tax_rates' => commerceSetupRate(),
+        'commerce_sales_policies' => commerceSetupPolicy(),
+    };
+    $row = match ($table) {
+        'commerce_settings' => $this->writer->setSettings($values),
+        'commerce_tax_rates' => $this->writer->saveTaxRate(null, $values),
+        'commerce_sales_policies' => $this->writer->setSalesPolicy($this->sellable->getKey(), $values),
+    };
+    $save = match ($table) {
+        'commerce_settings' => fn (array $values, string $version) => $this->writer->setSettings($values, $version),
+        'commerce_tax_rates' => fn (array $values, string $version) => $this->writer->saveTaxRate($row->getKey(), $values, $version),
+        'commerce_sales_policies' => fn (array $values, string $version) => $this->writer->setSalesPolicy($this->sellable->getKey(), $values, $version),
+    };
+    $changed = [...$values, ...match ($table) {
+        'commerce_settings' => ['tax_mode' => 'inclusive'],
+        'commerce_tax_rates' => ['rate_parts' => 0],
+        'commerce_sales_policies' => ['tax_class' => 'reduced'],
+    }];
+
+    // PostgreSQL has no unsigned INTEGER: every setup table must store the full admitted uint32 domain.
+    DB::table($table)->where('id', $row->getKey())->update(['version' => '4294967294']);
+    $updated = $save($changed, '4294967294');
+    expect((string) $updated->version)->toBe('4294967295')
+        ->and((string) DB::table($table)->where('id', $row->getKey())->value('version'))->toBe('4294967295')
+        ->and((string) $save($changed, '4294967295')->version)->toBe('4294967295')
+        ->and(fn () => $save($values, '4294967295'))->toThrow(RuntimeException::class, 'exhausted')
+        ->and(fn () => $save($changed, '4294967296'))->toThrow(InvalidArgumentException::class)
+        ->and($row->fresh()->only(array_keys($changed)))->toBe($updated->only(array_keys($changed)))
+        ->and(commerceSetupActions())->toHaveCount(2);
+})->with(['commerce_settings', 'commerce_tax_rates', 'commerce_sales_policies']);
 
 it('refuses retained calculator data before rollback DDL without org or module context', function (string $table): void {
     match ($table) {

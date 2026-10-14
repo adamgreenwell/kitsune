@@ -25,7 +25,8 @@ return new class extends Migration
             $table->string('shipping_tax_class', 64);
             $table->string('ship_from_name', 200)->nullable();
             $table->json('ship_from_address')->nullable();
-            $table->unsignedInteger('version')->default(1);
+            // PostgreSQL INTEGER is signed; BIGINT retains the application's full unsigned 32-bit version domain.
+            $table->unsignedBigInteger('version')->default(1);
             $table->timestamps();
             // One explicitly configured calculator per org; the only lookup is its org-leading unique key.
             $table->unique('org_id');
@@ -38,7 +39,7 @@ return new class extends Migration
             $table->string('region', 32);
             $table->string('tax_class', 64);
             $table->unsignedInteger('rate_parts');
-            $table->unsignedInteger('version')->default(1);
+            $table->unsignedBigInteger('version')->default(1);
             $table->timestamps();
             // Exact region precedes the explicit '*' fallback. No external country or rate registry is implied.
             $table->unique(['org_id', 'country', 'region', 'tax_class'], 'commerce_tax_rates_org_destination_class_unique');
@@ -56,7 +57,7 @@ return new class extends Migration
             $table->unsignedInteger('height_mm')->nullable();
             $table->unsignedInteger('tare_grams')->nullable();
             $table->unsignedSmallInteger('units_per_parcel')->nullable();
-            $table->unsignedInteger('version')->default(1);
+            $table->unsignedBigInteger('version')->default(1);
             $table->timestamps();
             // A SKU shares one tax/packing policy across its org's sites; every lookup leads with org_id.
             $table->unique(['org_id', 'sellable_id']);
