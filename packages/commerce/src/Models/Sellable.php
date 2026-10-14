@@ -17,6 +17,7 @@ use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Persistence\GuardedCatalogueBuilder;
 use Kitsune\Commerce\Persistence\GuardsCatalogueWrites;
 use Kitsune\Core\Currency\Currencies;
+use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -26,6 +27,7 @@ use RuntimeException;
 /**
  * One org-owned SKU, price and stock balance, shared by all its sites. Content belongs to each site's Listing.
  * Amounts are canonical decimal strings, never float or platform-sized integer casts. Null stock is untracked.
+ * An optional entitlement name is offer metadata shared by every listing; naming it gives nobody access.
  *
  * @internal
  *
@@ -35,6 +37,7 @@ use RuntimeException;
  * @property string $sku
  * @property string $price_minor
  * @property string|null $stock
+ * @property string|null $entitlement_name
  */
 #[OrgScoped]
 final class Sellable extends Model implements RequiresModelSave
@@ -52,7 +55,7 @@ final class Sellable extends Model implements RequiresModelSave
     /** @return array<string, string> */
     public static function columnsRequiringModelSave(): array
     {
-        return array_fill_keys(['id', 'org_id', 'currency', 'sku', 'price_minor', 'stock'], 'Catalogue values require a checked instance save.');
+        return array_fill_keys(['id', 'org_id', 'currency', 'sku', 'price_minor', 'stock', 'entitlement_name'], 'Catalogue values require a checked instance save.');
     }
 
     protected static function booted(): void
@@ -89,6 +92,7 @@ final class Sellable extends Model implements RequiresModelSave
     {
         $raw = $this->getAttributes();
         self::skuValue($raw['sku'] ?? null);
+        self::entitlementNameValue($raw['entitlement_name'] ?? null);
         MinorUnits::integer($raw['price_minor'] ?? null);
 
         if (($raw['stock'] ?? null) !== null) {
@@ -100,6 +104,16 @@ final class Sellable extends Model implements RequiresModelSave
     {
         if (! is_string($value) || preg_match('/\A[A-Z0-9][A-Z0-9._-]{0,63}\z/D', $value) !== 1) {
             throw new RuntimeException('A SKU must be 1–64 uppercase ASCII letters, digits, periods, underscores or hyphens, beginning with a letter or digit.');
+        }
+
+        return $value;
+    }
+
+    /** Exact canonical names only; absence is null, never an inferred name or a whitespace/empty-string alias. */
+    public static function entitlementNameValue(#[\SensitiveParameter] mixed $value): ?string
+    {
+        if ($value !== null && (! is_string($value) || ! EntitlementName::isName($value))) {
+            throw new RuntimeException('A product\'s entitlement name must be a canonical entitlement name or null.');
         }
 
         return $value;

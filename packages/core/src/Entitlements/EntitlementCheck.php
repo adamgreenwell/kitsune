@@ -12,6 +12,7 @@ namespace Kitsune\Core\Entitlements;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
+use InvalidArgumentException;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Tenancy\Context;
@@ -28,8 +29,8 @@ use Kitsune\Core\Tenancy\Context;
  * for whichever source sorted first.
  *
  * ⚠️ NO MEMO. A gated request costs the reader's load, once per request inside the host's guard, plus one index-prefix
- * read per call, and a grant or a revoke earlier in the same request is seen at once. Never cache the answer beyond
- * the request.
+ * read per call (`holdsMany()` reads at most 100 names together), and a grant or a revoke earlier in the same request
+ * is seen at once. Never cache the answer beyond the request.
  *
  * ⚠️ NO STAFF BYPASS. An owner holds nothing unless granted: a bypass here would repeat ADR-033's `Gate::before` mistake.
  *
@@ -41,6 +42,8 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class EntitlementCheck
 {
+    public const BATCH_LIMIT = 100;
+
     public function __construct(private readonly Context $context, private readonly ReaderGuard $readers) {}
 
     /**
@@ -82,6 +85,75 @@ final class EntitlementCheck
                 ->exists();
         } catch (QueryException $e) {
             throw EntitlementUnavailable::because($entitlement, (string) ($e->errorInfo[0] ?? $e->getCode()));
+        }
+    }
+
+    /**
+     * The same reader, site and instant for a bounded list of names, through one read of every live source.
+     *
+     * The bound counts raw items, before duplicates are coalesced. Every item must be a valid name, so output keys
+     * always contain a dot and PHP cannot turn a numeric-looking malformed name into an integer array key. Doubtful
+     * context still answers false; doubtful input is a caller error, refused before the reader guard or a query.
+     * Distinct names retain their first occurrence's order. An empty list does no work.
+     *
+     * @param  array<mixed>  $entitlements
+     * @return array<string, bool>
+     *
+     * @throws InvalidArgumentException
+     * @throws EntitlementUnavailable
+     */
+    public function holdsMany(#[\SensitiveParameter] array $entitlements): array
+    {
+        if (! array_is_list($entitlements) || count($entitlements) > self::BATCH_LIMIT) {
+            throw new InvalidArgumentException('An entitlement batch must be a list of at most 100 valid entitlement names.');
+        }
+
+        $answers = [];
+
+        foreach ($entitlements as $entitlement) {
+            if (! is_string($entitlement) || ! EntitlementName::isName($entitlement)) {
+                throw new InvalidArgumentException('An entitlement batch must be a list of at most 100 valid entitlement names.');
+            }
+
+            $answers[$entitlement] = false;
+        }
+
+        if ($answers === []) {
+            return [];
+        }
+
+        $siteId = $this->context->siteId();
+        $orgId = $this->context->orgId();
+
+        if ($siteId === null || $orgId === null) {
+            return $answers;
+        }
+
+        try {
+            // As for holds(), a failed session load carries the reader's identifier and stays inside this mapping.
+            $reader = $this->readers->current();
+
+            if ($reader === null) {
+                return $answers;
+            }
+
+            $held = Entitlement::query()
+                ->where('entitlements.site_id', $siteId)
+                ->where('entitlements.org_id', $orgId)
+                ->where('entitlements.reader_id', $reader)
+                ->whereIn('entitlements.entitlement', array_keys($answers))
+                ->liveAt(CarbonImmutable::now('UTC')->startOfSecond())
+                // Never hydrate sources, reader identifiers or one row per source: at most 100 names leave SQL.
+                ->distinct()
+                ->pluck('entitlements.entitlement');
+
+            foreach ($held as $entitlement) {
+                $answers[$entitlement] = true;
+            }
+
+            return $answers;
+        } catch (QueryException $e) {
+            throw EntitlementUnavailable::forBatch((string) ($e->errorInfo[0] ?? $e->getCode()));
         }
     }
 }

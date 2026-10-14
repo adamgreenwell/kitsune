@@ -35,6 +35,7 @@ use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Core\Currency\Currencies;
+use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
@@ -139,6 +140,13 @@ final class ProductResource extends Resource
                         ->visible(fn (Get $get): bool => $get('stock_mode') === 'finite')
                         ->required(fn (Get $get): bool => $get('stock_mode') === 'finite')
                         ->helperText(__('commerce::catalogue.stock_help')),
+                    TextInput::make('entitlement_name')->label(__('commerce::catalogue.entitlement_name'))
+                        ->maxLength(100)->extraInputAttributes(['dir' => 'ltr'])->nullable()
+                        ->rules([static fn (): \Closure => static function (string $attribute, mixed $value, \Closure $fail): void {
+                            if ($value !== null && (! is_string($value) || ! EntitlementName::isName($value))) {
+                                $fail(__('commerce::catalogue.invalid_entitlement'));
+                            }
+                        }])->helperText(__('commerce::catalogue.entitlement_help')),
                 ]),
             Section::make(__('commerce::catalogue.site_section'))
                 ->description(__('commerce::catalogue.site_help'))

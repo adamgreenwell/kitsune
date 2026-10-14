@@ -2708,7 +2708,7 @@
         },
         {
             "name": "kitsune/commerce",
-            "version": "dev-feat/storefront-admin",
+            "version": "dev-feat/public-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/commerce",
@@ -2744,7 +2744,7 @@
         },
         {
             "name": "kitsune/core",
-            "version": "dev-feat/storefront-admin",
+            "version": "dev-feat/public-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
@@ -2796,7 +2796,7 @@
         },
         {
             "name": "kitsune/fixture-module",
-            "version": "dev-feat/storefront-admin",
+            "version": "dev-feat/public-catalogue",
             "dist": {
                 "type": "path",
                 "url": "tests/Core/Fixtures/Packages/module-fixture",
@@ -2827,7 +2827,7 @@
         },
         {
             "name": "kitsune/person",
-            "version": "dev-feat/storefront-admin",
+            "version": "dev-feat/public-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/person",
@@ -2860,7 +2860,7 @@
         },
         {
             "name": "kitsune/svg-sanitizer",
-            "version": "dev-feat/storefront-admin",
+            "version": "dev-feat/public-catalogue",
             "dist": {
                 "type": "path",
                 "url": "packages/svg-sanitizer",

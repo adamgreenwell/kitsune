@@ -173,7 +173,7 @@ it('takes no reader, site, org or source from its caller', function (): void {
 
     expect(array_map(static fn (ReflectionParameter $parameter): string => $parameter->getName(), $parameters))->toBe(['entitlement'])
         ->and(array_map(static fn (ReflectionMethod $method): string => $method->getName(), (new ReflectionClass(EntitlementCheck::class))->getMethods(ReflectionMethod::IS_PUBLIC)))
-        ->toBe(['__construct', 'holds']);
+        ->toBe(['__construct', 'holds', 'holdsMany']);
 });
 
 it('gives an owner no bypass', function (): void {

@@ -80,3 +80,18 @@ it('refuses malformed and foreign product route keys before exposing a form', fu
     $result = productPageProbe($mode);
     expect($result['status'])->toBe(404)->and($result['unchanged'])->toBeTrue();
 })->with(['bad-record-key', 'foreign-record']);
+
+it('refuses forged mixed entitlement form state without a server error or any partial product write', function (string $mode, ?string $kept): void {
+    $result = productPageProbe($mode);
+
+    expect($result['unchanged'])->toBeTrue()->and($result['errors'])->toHaveKey('data.entitlement_name')
+        ->and($result['mapping'])->toBe($kept)->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse()
+        ->and($result['redirect'])->toBeNull()->and($result['notifications'])->toBe([]);
+})->with([
+    'create: array' => ['bad-offer-create-array', null],
+    'create: bool' => ['bad-offer-create-bool', null],
+    'create: numeric' => ['bad-offer-create-numeric', null],
+    'edit: array' => ['bad-offer-update-array', 'course.kept'],
+    'edit: bool' => ['bad-offer-update-bool', 'course.kept'],
+    'edit: numeric' => ['bad-offer-update-numeric', 'course.kept'],
+]);

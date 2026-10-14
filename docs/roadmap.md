@@ -443,8 +443,12 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       site listings, exact price/stock guards and the supported currency chooser are built in
       [#190](https://github.com/adamgreenwell/kitsune/issues/190). Product administration and the adaptable
       Storefront blueprint are built in [#191](https://github.com/adamgreenwell/kitsune/issues/191), with one atomic
-      save for shared commerce data and each site's native content. Public reads (#192), carts, orders and payments
-      remain unbuilt.
+      save for shared commerce data and each site's native content. The public read surface in
+      [#192](https://github.com/adamgreenwell/kitsune/issues/192) adds a host-delegated catalogue, 24 bounded candidate
+      slots per page, public images and per-site reader badges through one bounded entitlement batch. A shared
+      optional entitlement mapping grants nothing by itself. Sparse pages after schema edits, private/no-store
+      responses and generic database-outage notices keep the read boundary explicit. General theming, product
+      details, carts, orders and payments remain later work.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

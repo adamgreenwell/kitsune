@@ -5187,7 +5187,8 @@ one title and description for every brand.
   site's entry or an org-shared entry cannot satisfy the listing's references.
 - One listing per site and sellable, and one sellable per site product entry. Listings begin unlisted.
   Public admission also requires published, undeleted content and a type enabled on the resolved site.
-- Reuse the entry's slug for the catalogue address. General theme discovery and template hierarchy stay in
+- ~~Reuse the entry's slug for the catalogue address.~~ *#192 starts with a paginated catalogue list; product detail
+  addresses and their slug routing remain a later slice.* General theme discovery and template hierarchy stay in
   v1.1; the first catalogue uses a small module-owned view and an explicitly delegated host route space.
 - Owners manage sellables, stock and listings. Ordinary entry permissions continue to govern site content.
   The form warns that a shared price or stock change affects every site selling that sellable. No new public
@@ -5472,6 +5473,98 @@ The operator steps and reversal boundaries are in [commerce operations](commerce
 fixed-term start/stacking, Stripe timeout or unknown-outcome behavior, invoice retention periods, or refund
 and dispute policy. Their issue acceptance names the decision gate; settle each before its dependent
 money-moving code, without holding the catalogue behind questions it cannot yet encounter.
+
+---
+
+**Amended 2026-10-13 — the public catalogue boundary, before implementation (#192).**
+
+The following are implementation defaults proposed to Adam, not additional product answers. The first public
+surface is a small module-owned, server-rendered catalogue at each site's exact configured prefix plus `/catalogue`.
+The host explicitly calls `Kitsune\Commerce\Catalogue\CatalogueRoutes::register()` before its catch-all; the optional
+commerce package claims no host route on installation or enablement alone. The skeleton opts in only when that
+class exists. Ordinary host and panel routes win over these fallback routes, and catalogue middleware also refuses
+panel URL space and a route prefix that differs from the resolved site's stored prefix. General themes, content
+routing, product details, search, carts and checkout remain outside this read slice.
+
+This required host call is a fourth named exception to the pre-v1.2 public API prohibition, on ADR-038's first-party
+footing, recorded in CONTRIBUTING beside the earlier exceptions. It offers no third-party extension contract or
+0.x stability promise; the remaining catalogue service, middleware, views and words are internal. Calling a
+required host integration merely internal would not remove the host dependency that makes the exception necessary.
+
+Pages have 24 candidate slots, ordered by the shared SKU and listing ID, with Previous/Next navigation and a bounded
+positive page number. Current schema validation can remove an otherwise eligible candidate after selection, so a
+page may be sparse; filling it by scanning an unbounded number of invalid entries would violate the bounded read.
+An empty candidate page and a page whose candidates no longer satisfy the schema have distinct honest empty copy.
+Only an explicitly available current-site listing, coherent current-org sellable, and published, undeleted,
+complete content of the receipt-selected, enabled product type may be shown. Price/currency/stock are rechecked.
+
+One optional, explicitly configured entitlement name belongs to the shared product. A null name means no access
+badge; it is never derived from a SKU, title or slug. The same name is checked against the current site's grants,
+so a badge on one brand does not imply access on its sibling. The card says only “You have access” when held.
+It makes no statement about buying again, grant duration or pass stacking; those remain product/order decisions.
+Creating or changing this metadata grants nothing. Existing products migrate with no mapping, and clearing one
+does not revoke grants. The owner-only Products form manages it through the existing checked writer.
+
+**Subsequently confirmed by Adam (#192).** Adam selected the host-enabled public catalogue page at each site's
+`/catalogue` URL and one optional entitlement name on the shared product, with access checked separately on each
+site. These two choices were proposed above before implementation and are now explicit product decisions.
+Pagination, the batch contract and the remaining presentation/integration details remain implementation defaults;
+grant duration, pass timing/stacking and repeat purchases remain undecided for their later slices.
+
+Presentation exposes the title, a bounded escaped plain-text description excerpt, exact currency amount, stock
+state and at most one eligible public image. Arbitrary adapted fields, private media names/paths, staff media URLs,
+reader identifiers, grant sources and raw entitlement names are not public card data. Public images are never
+made public by browsing. Responses, including guests and errors, are `private, no-store`; a database or entitlement
+read failure is a generic 503, never an unheld badge or paywall. Copy and document direction follow the existing
+site/copy-locale distinction, without a new theme layer or runtime service.
+
+**Amended 2026-10-13 — the catalogue's bounded entitlement read, before implementation (#192).**
+
+These are implementation defaults, not further product decisions from Adam. The internal read door gains
+`holdsMany(array $names): array<string, bool>` beside the unchanged singular `holds()`. A batch is a list of at most
+100 raw items, counted before deduplication; every item must be a well-formed entitlement name. A malformed list,
+name or value is a caller error, refused with a generic `InvalidArgumentException` before resolving a reader or
+querying grants. The input is sensitive in exception traces. Strict names cannot become PHP numeric array keys.
+
+The result contains each distinct requested name, in first-occurrence order, mapped to whether it is held. An empty
+batch does no work. Missing context, an undeclared/unusable reader guard or a guest produces false for every valid
+name. One `DISTINCT entitlement` read uses explicit current site, org and reader equalities plus the bounded name
+list and existing UTC whole-second live-source predicate. It returns at most 100 names regardless of source count.
+There is no memo, source parameter or staff bypass; a grant or revoke earlier in the request remains visible.
+
+A database failure remains `EntitlementUnavailable`, including failure while loading the declared reader. Its batch
+factory carries SQLSTATE and no reader, source or name list; the optional singular-name property is null for a batch.
+The singular factory and diagnostic remain unchanged. The real paginated catalogue consumer, representative query
+counts and actual plans are still required before this slice can be described as built.
+
+**As built for #192, 2026-10-13 — the real consumer and measured read.** The module-owned catalogue uses this batch
+door once for the eligible products on its page. `PublicCatalogueTest` checks a constant query count for one and
+24 products, including one grant read, and native HTTP probes exercise the actual host routes and module provider
+both uncached and after a real `route:cache` in a fresh process. Separate probes cover provider absence, stale and
+disabled receipts, custom panel URL space, unknown-query removal before session previous-URL storage, and database
+faults in site resolution, module admission, catalogue reads, reader loading and grants.
+
+The SQLite representative probe used 1,000 products, 50,000 grant rows (50 sources per name), and 1,200 image links
+on the first page (49 private images followed by a public image for each product). It returned 24 products, 24
+images and 24 held badges in **17 queries**, the same count as the one-product probe, with **7.65 ms** measured
+consumer time on the development host. This is the service read, not an HTTP timing or ADR-027 floor certification;
+the probe's peak memory includes its large seeding arrays. `EXPLAIN QUERY PLAN` used the org/SKU sellable index,
+site/sellable listing index, page-wide relation indexes and the existing `(site_id, reader_id, entitlement, source)`
+grant index's first three columns. Image ranking sorts eligible page links in SQL and returns at most one row per
+product. These are measured SQLite plans; other engines retain their own CI qualification rather than inheriting
+SQLite's plan or timing.
+
+The fault probes found Laravel's routing pipeline renders exceptions inside each middleware slice before an outer
+middleware can catch them. Catalogue setup therefore nests the existing site resolver, locale setter and area
+guard directly inside its response boundary, while the controller catches its own database and access failures.
+Only SQLSTATE is logged; failed reads produce a generic private 503 with no product or access answer. This is a
+route-local boundary, not a claim to recover a database outage before the application or session can boot.
+
+Two further disposable SQLite regressions exercise configured connection boundaries: the image query works with
+real prefixed tables and preserves sibling-site/cross-org isolation, and metadata rollback consults the primary
+even when a separate read PDO has not seen a retained mapping. The latter refuses before dropping the column;
+schema DDL cannot be authorised by a stale replica's empty answer. This does not serialize teardown against writers;
+the existing stopped-writer requirement still applies.
 
 ---
 

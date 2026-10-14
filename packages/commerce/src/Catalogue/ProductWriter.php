@@ -51,7 +51,7 @@ final class ProductWriter
      * @param  array<string, mixed>  $contentData
      * @param  array<string, mixed>  $relations
      */
-    public function createProduct(array $commerceData, mixed $currencyQuote, array $contentData, array $relations = [], mixed $available = false): Sellable
+    public function createProduct(#[\SensitiveParameter] array $commerceData, mixed $currencyQuote, array $contentData, array $relations = [], mixed $available = false): Sellable
     {
         return $this->write(null, $commerceData, $currencyQuote, $contentData, $relations, $available);
     }
@@ -63,7 +63,7 @@ final class ProductWriter
      * @param  array<string, mixed>  $contentData
      * @param  array<string, mixed>  $relations
      */
-    public function updateProduct(mixed $sellableId, array $commerceData, mixed $currencyQuote, array $contentData, array $relations = [], mixed $available = false): Sellable
+    public function updateProduct(mixed $sellableId, #[\SensitiveParameter] array $commerceData, mixed $currencyQuote, array $contentData, array $relations = [], mixed $available = false): Sellable
     {
         return $this->write(Sellable::catalogueKey($sellableId), $commerceData, $currencyQuote, $contentData, $relations, $available);
     }
@@ -73,10 +73,10 @@ final class ProductWriter
      * @param  array<string, mixed>  $content
      * @param  array<string, mixed>  $relations
      */
-    private function write(?int $id, array $commerce, mixed $quote, array $content, array $relations, mixed $available): Sellable
+    private function write(?int $id, #[\SensitiveParameter] array $commerce, mixed $quote, array $content, array $relations, mixed $available): Sellable
     {
         $this->refuseWithoutAuthority();
-        $this->onlyKeys($commerce, ['sku', 'price_minor', 'stock']);
+        $this->onlyKeys($commerce, ['sku', 'price_minor', 'stock', 'entitlement_name']);
         $this->onlyKeys($content, ['title', 'slug', 'status', 'values']);
 
         if (! is_bool($available)) {
@@ -96,9 +96,11 @@ final class ProductWriter
             }
 
             $content = $this->validateContent($type, $entry, $content, $relations, $available);
+            // Older first-party payloads omit the mapping; do not turn their content edit into a shared offer change.
+            $offer = array_key_exists('entitlement_name', $commerce) ? [$commerce['entitlement_name']] : [];
             $sellable = $id === null
-                ? $this->catalogue->createSellable($commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote)
-                : $this->catalogue->updateSellable($id, $commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote);
+                ? $this->catalogue->createSellable($commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer)
+                : $this->catalogue->updateSellable($id, $commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer);
 
             $this->revisions->open($entry->exists ? (int) $entry->getKey() : null);
 
@@ -320,7 +322,7 @@ final class ProductWriter
     /** @param array<string, mixed> $data
      * @param  list<string>  $allowed
      */
-    private function onlyKeys(array $data, array $allowed): void
+    private function onlyKeys(#[\SensitiveParameter] array $data, array $allowed): void
     {
         if (array_diff(array_keys($data), $allowed) !== []) {
             throw new RuntimeException('The product payload contains fields outside its current schema.');

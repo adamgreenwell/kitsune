@@ -19,6 +19,7 @@ use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -206,7 +207,7 @@ trait InteractsWithProductForm
     }
 
     /** @param array<string, mixed> $data
-     * @return array{sku:mixed,price_minor:string,stock:string|null}
+     * @return array{sku:mixed,price_minor:string,stock:string|null,entitlement_name:string|null}
      */
     private function commerceData(array $data): array
     {
@@ -228,7 +229,14 @@ trait InteractsWithProductForm
             throw ValidationException::withMessages(['data.stock' => __('commerce::catalogue.invalid_stock')]);
         }
 
-        return ['sku' => $data['sku'] ?? null, 'price_minor' => $price, 'stock' => $stock];
+        $name = $data['entitlement_name'] ?? null;
+        $name = $name === '' ? null : $name;
+
+        if ($name !== null && (! is_string($name) || ! EntitlementName::isName($name))) {
+            throw ValidationException::withMessages(['data.entitlement_name' => __('commerce::catalogue.invalid_entitlement')]);
+        }
+
+        return ['sku' => $data['sku'] ?? null, 'price_minor' => $price, 'stock' => $stock, 'entitlement_name' => $name];
     }
 
     /** @return array<string, mixed> */

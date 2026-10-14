@@ -1,8 +1,8 @@
 # Operating the commerce module
 
 Commerce is optional and starts disabled after installation. Its admin screens select the org's currency and manage
-products; public catalogue pages follow in #192. Prices and stock belong to the org, while each site's listing
-connects its own content. See [ADR-040](decision-log.md#adr-040--commerce-is-a-module-entitlements-are-a-kernel-guard-and-v10-waits-for-both)
+products; a host can opt into its public catalogue and reader access badges. Prices and stock belong to the org,
+while each site's listing connects its own content. See [ADR-040](decision-log.md#adr-040--commerce-is-a-module-entitlements-are-a-kernel-guard-and-v10-waits-for-both)
 and [currency maintenance](commerce-currencies.md).
 
 ## Changing module state
@@ -26,7 +26,8 @@ to require an upgrade, so repair the filesystem problem and retry rather than ed
 Routes reflect the new state on the next application boot. A process that has already booted keeps its providers
 and route collection; restart persistent application workers through the host's normal procedure. On a fresh owner
 session, check the dashboard and roles page as well as Products and the currency chooser. A disabled module contributes
-neither commerce resource, and old cached commerce URIs are refused unless the module is enabled, version-matched and registered.
+neither commerce resource. Old cached admin and catalogue URIs are refused unless the module is enabled,
+version-matched and registered.
 
 If the host uses route caching, rebuild it after the switch has completed:
 
@@ -73,7 +74,7 @@ listing. The form names the currency it opened with. If the org's currency chang
 form refuses rather than relabelling the amount; reload and enter the price in the newly displayed currency.
 Finite stock accepts a nonnegative whole number, including zero; untracked stock has no quantity limit.
 
-The form warns that price and stock changes affect every site selling the product. Select a shared product on a
+The form warns that shared changes affect every site selling the product. Select a shared product on a
 second site's Products screen to add that site's own content and listing. Its description, image selection and
 availability are independent; editing its price or stock still changes the one shared record. **Content and history**
 opens the ordinary entry editor and revisions. Editors with ordinary content grants can use that editor, while
@@ -83,7 +84,53 @@ Availability starts off. An unavailable draft may leave adapted required content
 listing available requires published, complete content. One save commits the commerce rows, content, relations,
 revision and audit records together. A refused save reports failure without a partial product or success redirect.
 Selecting an image does not publish its bytes or change its privacy; existing media custody and delivery rules apply.
-Availability alone does not create a public page in this slice.
+Availability alone does not install a host route or provide a checkout.
+
+**Access entitlement** is optional and shared by every site selling the product. Enter a canonical name such as
+`course.surf-101`; it is never inferred from the SKU, title or slug. The current reader's access is checked separately
+on each site, so holding that name on one brand does not give its badge on another. Setting or changing this field
+grants nothing, and clearing it hides the badge without revoking existing grants. Grant duration, fixed-term passes
+and repeat purchases remain later order decisions. Use the existing owner entitlement workflow to grant or revoke
+access independently of this metadata.
+
+## Placing and reading the public catalogue
+
+The host delegates the catalogue explicitly in its `routes/web.php`, before its catch-all:
+
+```php
+\Kitsune\Commerce\Catalogue\CatalogueRoutes::register();
+```
+
+The stock skeleton already calls this only when the optional package is present. A different host using a
+core-only installation should add the call when it adds commerce, or guard it with `class_exists()` in the same
+way. This first-party placement call is the fourth named exception in [CONTRIBUTING](../CONTRIBUTING.md) to the
+pre-v1.2 public API prohibition; it offers no third-party extension contract or stability promise in 0.x.
+
+A root site serves `/catalogue`; a site configured at `https://example.test/news/fr` serves
+`https://example.test/news/fr/catalogue`. Its admin slug does not choose this address. Ordinary host routes and
+panel routes retain precedence. The catalogue also refuses panel URL space, a mismatched prefix, a disabled product
+type, an unfinished Storefront receipt or a module that is disabled, missing or version-mismatched. Rebuild route
+caches and restart persistent workers after module changes as described above.
+
+Guests may browse while reader accounts are off. When reader accounts are enabled, **Your account** links to the
+site's existing account pages; a signed-in reader sees **You have access** only where a configured entitlement is
+currently held on this site. That badge makes no promise about buying again. A product with no mapping has no badge.
+
+Cards require an explicitly available listing and published, undeleted, complete current-site product content.
+They show the title, up to 240 characters of plain description, the exact currency amount, stock state, and at most
+one eligible public image in the author's order. A private image stays private; listing a product never publishes
+its bytes. Missing or disabled image targets, files awaiting publication on a private disk, and fields classified
+as personal are not shown. Additional adapted fields do not become public card data automatically.
+
+Pages address 24 candidate slots, ordered by shared SKU and listing ID, with Previous/Next links and page numbers
+from 1 through 10,000. Later schema edits can make a candidate incomplete and leave a page sparse or empty; the
+page says so and keeps its navigation instead of scanning without a bound to fill it. There is no search, product
+detail route, theme system, cart or checkout in this surface.
+
+Every catalogue response, including a guest's page and an error, is `private, no-store` because access badges can
+vary by reader. An unavailable catalogue or entitlement database produces a generic 503, never a false no-access
+answer or an invitation to pay again. The operator log records SQLSTATE alone, without reader identifiers, grant
+sources or product entitlement names.
 
 ## Removing listings and reversing the blueprint
 
