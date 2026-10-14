@@ -434,6 +434,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
 - [x] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
       ADR-036's chat service is the second consumer *— done: the store (#177) and its admin,
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
+- [x] **Payment credential prerequisites** (#195, #196): operation-bound current-owner/password checks for live
+      changes, native POST confirmation, explicit console recovery, bounded audited key rotation and the strict
+      credential-key release gate. Stripe checkout, verified events and paid-state retention remain pending.
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
       ~~sellable record referencing it~~ *site listing linking the site's own content to an org-owned sellable*;
       money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
