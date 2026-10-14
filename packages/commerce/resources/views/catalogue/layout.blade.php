@@ -41,6 +41,24 @@
         .skip { position: absolute; inset-inline-start: 1rem; inset-block-start: 0; transform: translateY(-120%); padding: .75rem 1rem; background: #fff; z-index: 1; }
         .skip:focus { transform: translateY(0); }
         .visually-hidden { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+        header nav { display: flex; flex-wrap: wrap; gap: 1rem; }
+        button, input { font: inherit; }
+        button { min-block-size: 2.75rem; padding: .625rem 1rem; border: 1px solid currentColor; border-radius: .25rem; background: #1c1917; color: #fff; cursor: pointer; }
+        button:disabled { cursor: default; opacity: .55; }
+        button.secondary { background: transparent; color: inherit; }
+        .add-form { margin-block-start: 1rem; }
+        .cart-items { display: grid; gap: 1rem; margin-block-start: 2rem; }
+        .cart-item { display: flex; align-items: start; }
+        .cart-item img { inline-size: 8rem; flex: 0 0 8rem; }
+        .cart-item .content { flex: 1; min-inline-size: 0; }
+        .quantity-form { margin-block: 1rem; }
+        .quantity-form label { display: block; margin-block-end: .5rem; }
+        .quantity-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+        .quantity-controls input { inline-size: 5rem; min-block-size: 2.75rem; padding: .5rem; border: 1px solid #78716c; border-radius: .25rem; }
+        .cart-total, .summary { margin-block-start: 2rem; padding: 1.25rem; border: 1px solid #78716c; border-radius: .5rem; }
+        .summary h2 { margin-block-end: .75rem; }
+        .summary p { margin-block-end: .75rem; }
+        @media (max-width: 30rem) { .cart-item { display: block; } .cart-item img { inline-size: 100%; max-block-size: 12rem; } }
         @media (min-width: 60rem) { .products { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
         @media (max-width: 38rem) { .products { grid-template-columns: minmax(0, 1fr); } main { padding-block-start: 1.75rem; } }
         @media (prefers-color-scheme: dark) {
@@ -53,18 +71,28 @@
             .sold { background: #451a03; color: #fef3c7; }
             .empty { border-color: #57534e; }
             .skip { background: #292524; }
+            button { background: #fafaf9; color: #1c1917; }
+            button.secondary { background: transparent; color: #fafaf9; }
+            .quantity-controls input { background: #292524; color: #fafaf9; }
         }
     </style>
 </head>
 <body>
-    <a class="skip" href="#catalogue" lang="{{ $copyLang }}" dir="{{ $copyDir }}">{{ $t('skip') }}</a>
+    <a class="skip" href="#{{ $mainId ?? 'catalogue' }}" lang="{{ $copyLang }}" dir="{{ $copyDir }}">{{ $t('skip') }}</a>
     <header>
         <a href="{{ $homePath }}" dir="auto">{{ $siteName }}</a>
-        @if ($accountPath !== null)
-            <nav aria-label="{{ $t('navigation') }}" lang="{{ $copyLang }}" dir="{{ $copyDir }}"><a href="{{ $accountPath }}">{{ $t('account') }}</a></nav>
+        @if ($accountPath !== null || ($cartPath ?? null) !== null)
+            <nav aria-label="{{ $t('navigation') }}" lang="{{ $copyLang }}" dir="{{ $copyDir }}">
+                @if (($cartPath ?? null) !== null)
+                    <a href="{{ $cartPath }}" @if (($mainId ?? '') === 'cart') aria-current="page" @endif>{{ $t('cart') }}</a>
+                @endif
+                @if ($accountPath !== null)
+                    <a href="{{ $accountPath }}">{{ $t('account') }}</a>
+                @endif
+            </nav>
         @endif
     </header>
-    <main id="catalogue" lang="{{ $copyLang }}" dir="{{ $copyDir }}">
+    <main id="{{ $mainId ?? 'catalogue' }}" lang="{{ $copyLang }}" dir="{{ $copyDir }}">
         @yield('content')
     </main>
 </body>

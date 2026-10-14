@@ -15,6 +15,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Lang;
+use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Catalogue\CatalogueRoutes;
 use Kitsune\Commerce\Catalogue\PublicCatalogue;
 use Kitsune\Commerce\Http\Middleware\CatalogueArea;
@@ -57,6 +58,7 @@ final class CatalogueController
             'nextPath' => $result['hasNext'] ? $path.'?page='.($page + 1) : null,
             'accountPath' => $accounts->fault() === null && $accounts->mode($site)->signsIn()
                 ? ($site->path_prefix ?? '').'/'.ReaderLinks::SEGMENT : null,
+            'cartPath' => CartRoutes::availableFor($site) ? CartRoutes::path($site) : null,
         ]);
     }
 
