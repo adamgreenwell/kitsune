@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
+use Kitsune\Core\Readers\Contracts\ModuleReaderData;
 use RuntimeException;
 
 /**
@@ -26,6 +27,9 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
 {
     /** @var list<string> */
     public static array $calls = [];
+
+    /** A privacy-only adapter, returned without registering or booting the runtime provider. */
+    public static ?ModuleReaderData $readerDataStore = null;
 
     /**
      * Makes `install()` write a row and THEN throw, so a test can prove the hook and the receipt commit
@@ -89,6 +93,13 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
     protected function bootModule(): void
     {
         self::$calls[] = 'boot';
+    }
+
+    public function readerData(): ?ModuleReaderData
+    {
+        self::$calls[] = 'reader-data';
+
+        return self::$readerDataStore;
     }
 
     public function migrationPath(): ?string

@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Modules;
 
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Core\Readers\Contracts\ModuleReaderData;
 use RuntimeException;
 
 /**
@@ -62,6 +63,17 @@ abstract class ModuleServiceProvider extends ServiceProvider
 
     /** Where this module's migrations live, or null when it has none. */
     public function migrationPath(): ?string
+    {
+        return null;
+    }
+
+    /**
+     * Data retained about readers, even while this module is disabled or its runtime receipt needs an upgrade.
+     * Called on a fresh unregistered provider; construct the adapter without booting runtime bindings or issuing DDL.
+     *
+     * @internal First-party privacy integration only; no public module extension contract before v1.2.
+     */
+    public function readerData(): ?ModuleReaderData
     {
         return null;
     }

@@ -351,3 +351,27 @@ it('audits nothing and logs nothing on sign-up or recovery, whichever way each g
     expect(DB::table('audit_log')->count())->toBe($audited)
         ->and($logged)->toBe([]);
 });
+
+it('clears optional reader-session data at sign-out without booting an optional module and preserves staff', function (): void {
+    $owner = sessionsOwner();
+    $this->readerPost('/golfdom/account/sign-in', ['email' => 'subscriber@kitsune.test', 'password' => ReaderFixture::PASSWORD])->assertStatus(303);
+    app('session.store')->put(ReaderSessions::EPHEMERAL.'.optional.handle', 'private-session-handle');
+    $this->readerPost('/golfdom/account/sign-out')->assertStatus(303);
+    expect(app('session.store')->has(ReaderSessions::EPHEMERAL))->toBeFalse()
+        ->and(Auth::guard('web')->id())->toBe($owner->getKey());
+});
+
+it('clears optional reader-session data when the password binding expires', function (): void {
+    ReaderFixture::signIn($this->reader);
+    app('session.store')->put(ReaderSessions::EPHEMERAL.'.optional.handle', 'private-session-handle');
+    sessionsElsewhere($this->reader)->forceFill(['password' => Hash::make('changed-elsewhere')])->save();
+    $this->readerGet('/golfdom/account')->assertStatus(303);
+    expect(app('session.store')->has(ReaderSessions::EPHEMERAL))->toBeFalse();
+});
+
+it('does not clear reader module-session data on another guards current-device logout', function (): void {
+    sessionsOwner();
+    app('session.store')->put(ReaderSessions::EPHEMERAL.'.optional.handle', 'private-session-handle');
+    Auth::guard('web')->logoutCurrentDevice();
+    expect(app('session.store')->get(ReaderSessions::EPHEMERAL.'.optional.handle'))->toBe('private-session-handle');
+});

@@ -11,13 +11,16 @@ declare(strict_types=1);
 namespace Kitsune\Core\Readers;
 
 use Illuminate\Auth\Events\Authenticated;
+use Illuminate\Auth\Events\CurrentDeviceLogout;
 use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\Events\Logout;
 use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -59,6 +62,12 @@ final class ReaderSessions
     /** The session key the binding lives under. */
     public const BINDING = 'kitsune_reader_binding';
 
+    /** Internal optional-module session data cleared by the reader lifecycle even when its module is disabled. */
+    public const EPHEMERAL = 'kitsune_reader_ephemeral';
+
+    /** A plain SessionGuard logout keeps its ID; optional anonymous ownership must still begin afresh. */
+    public const LOGOUT_GENERATION = 'kitsune_reader_logout_generation';
+
     /** The cache key's prefix for the timing hash; the rest is a digest of the hashing configuration. */
     public const TIMING_HASH = 'kitsune:readers:timing-hash:';
 
@@ -67,11 +76,32 @@ final class ReaderSessions
         private readonly Context $context,
     ) {}
 
-    /** The two listeners, registered once by core's provider. */
+    /** Registered once by core's provider, independent of optional module enablement. */
     public static function listen(Dispatcher $events): void
     {
         $events->listen(Login::class, [self::class, 'bind']);
         $events->listen(Authenticated::class, [self::class, 'check']);
+        $events->listen(Logout::class, [self::class, 'forgetEphemeral']);
+        $events->listen(CurrentDeviceLogout::class, [self::class, 'forgetEphemeral']);
+    }
+
+    /** A reader logout clears lifecycle-bound module handles, never another guard's authentication state. */
+    public static function forgetEphemeral(Logout|CurrentDeviceLogout $event): void
+    {
+        if ($event->guard !== config(ReaderGuard::CONFIG)) {
+            return;
+        }
+
+        $guard = Auth::guard($event->guard);
+
+        if ($guard instanceof SessionGuard) {
+            $session = $guard->getSession();
+            $session->forget(self::EPHEMERAL);
+            $session->put(self::LOGOUT_GENERATION, bin2hex(random_bytes(32)));
+            app('request')->cookies->remove(self::EPHEMERAL);
+            Cookie::unqueue(self::EPHEMERAL);
+            Cookie::queue(Cookie::forget(self::EPHEMERAL, (string) config('session.path', '/'), config('session.domain')));
+        }
     }
 
     /** At sign-in, on the reader guard and a model with the contract: the binding goes into the session. */
@@ -143,7 +173,7 @@ final class ReaderSessions
         $guard = $this->sessionGuard();
 
         $guard->logoutCurrentDevice();
-        $guard->getSession()->forget([self::BINDING, LinkUseController::STASH]);
+        $guard->getSession()->forget([self::BINDING, LinkUseController::STASH, self::EPHEMERAL]);
         $guard->getSession()->migrate(true);
     }
 
