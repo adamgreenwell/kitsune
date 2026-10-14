@@ -2,6 +2,7 @@
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { selectValue } = require('./select-control');
 
 /*
  * Per-type authorization, measured in a browser — ADR-033, issue #81, and Phase 4's last unchecked line.
@@ -450,7 +451,7 @@ test.describe('a relation pointing at something the editor may not view', () => 
 
         // The link is kept AS A VALUE and withheld AS A TITLE: the id was already in the form state, and the
         // product's name is what the grant protects.
-        const products = page.getByRole('combobox', { name: 'Related products' });
+        const products = selectValue(page, 'Related products');
 
         await expect(products).toContainText(/you may not view this entry type/);
         await expect(page.getByText('Fairway mower')).toHaveCount(0);
@@ -474,7 +475,7 @@ test.describe('a relation pointing at something the editor may not view', () => 
         // The relation the editor could not see is still there, which is the other half of "preserve".
         await page.reload();
         await expect(page.getByLabel('Reading minutes')).toHaveValue('42');
-        await expect(page.getByRole('combobox', { name: 'Related products' }))
+        await expect(selectValue(page, 'Related products'))
             .toContainText(/you may not view this entry type/);
     });
 });

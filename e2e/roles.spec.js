@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { openSelect, selectField, selectValue, callsMethod } = require('./select-control');
 
 /*
  * Defining a role through the admin — issue #84, and the half of RBAC that lives in core.
@@ -101,18 +102,21 @@ test.describe('a role can be defined in the admin', () => {
         const holders = sectionFor(page, 'Held by');
 
         // The seeded copy-editor is already held by somebody, which is the hydration working.
-        await expect(holders).toContainText('Copy Editor');
+        await expect(selectValue(holders, 'Holders')).toContainText('Copy Editor');
 
-        await holders.getByRole('combobox').first().click();
+        const search = await openSelect(holders, 'Holders');
 
         /*
          * ⚠️ `fill()` RATHER THAN `keyboard.type()`, because the search box keeps what was typed before it.
          * A single Backspace left `Riva` and the next search read `RivaAlpha User`, which matches nobody —
          * a test failing on its own typing rather than on the code.
          */
-        const search = page.getByRole('textbox', { name: 'Search' });
-
-        await search.fill('Rival');
+        await Promise.all([
+            page.waitForResponse((response) => callsMethod(response, 'callSchemaComponentMethod', 'getSearchResultsForJs')),
+            search.fill('Rival'),
+        ]);
+        await expect(selectField(holders, 'Holders').locator('.fi-select-input-message:visible'))
+            .toHaveText('No options match your search.');
 
         /*
          * The rival belongs to another org, so the org-scoped user query must not offer them.
@@ -131,7 +135,7 @@ test.describe('a role can be defined in the admin', () => {
 
         // Reopened, because the assignment is a row in a table the role's own save does not touch.
         await page.reload();
-        await expect(sectionFor(page, 'Held by')).toContainText('Alpha User');
+        await expect(selectValue(sectionFor(page, 'Held by'), 'Holders')).toContainText('Alpha User');
     });
 
     test('keeps grants for entry types this site never showed', async ({ page }) => {

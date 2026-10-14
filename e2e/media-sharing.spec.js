@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
+const { selectValue, openSelect, callsMethod } = require('./select-control');
 
 /*
  * Shared media, measured where Filament's scope actually runs — ADR-042 decision 2.
@@ -43,13 +44,13 @@ function tinker(code) {
  * search is one debounced Livewire request; once it has answered, what the dropdown shows is the answer.
  */
 async function search(page, label, term, within = page) {
-    await within.getByRole('combobox', label === null ? {} : { name: label }).first().click();
+    const input = await openSelect(within, label);
 
     const answered = page.waitForResponse(
-        (response) => response.url().includes('/livewire') && response.request().method() === 'POST',
+        (response) => callsMethod(response, 'callSchemaComponentMethod', 'getSearchResultsForJs'),
     );
 
-    await page.keyboard.type(term);
+    await input.fill(term);
     await answered;
 }
 
@@ -146,7 +147,7 @@ test.describe('a shared file travels across the org', () => {
 
             // The edit page, which hydrates relation fields from what was stored; the view page Filament lands on does not.
             await page.goto(`${page.url()}/edit`);
-            await expect(page.getByRole('combobox', { name: /Photo/ }).first()).toContainText('Shared course photo');
+            await expect(selectValue(page, /Photo/).first()).toContainText('Shared course photo');
         } finally {
             // The suite shares one database, and a stray product changes what the product specs count.
             // A force-delete is audited, so it runs with the entry's own org in context.
@@ -181,7 +182,7 @@ test.describe('the media list, and a shared file\'s links', () => {
         const { sharedPhotoId, hiddenTargetId } = media();
 
         await page.goto(`/admin/golfdom-fr/c/image/${sharedPhotoId}/edit`);
-        await expect(page.getByRole('combobox', { name: /Subjects/ }).first())
+        await expect(selectValue(page, /Subjects/).first())
             .toContainText(`Entry #${hiddenTargetId} — not visible from this site`);
 
         // Saved from the title field, as `golfdom-fr`'s buttons are in French; the save notice is what confirms it.

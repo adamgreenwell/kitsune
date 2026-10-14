@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { selectValue, openSelect, callsMethod } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 const path = require('node:path');
 const {
@@ -29,8 +30,8 @@ async function description(page, text) {
 }
 
 async function chooseImage(page, name) {
-    await page.getByRole('combobox', { name: /^Images/ }).first().click();
-    await page.keyboard.type(name);
+    const search = await openSelect(page, /^Images/);
+    await search.fill(name);
     const option = page.getByRole('option', { name }).first();
     await expect(option).toBeVisible({ timeout: 10_000 });
     await option.click();
@@ -45,7 +46,7 @@ async function create(page, site = SITE_A) {
 
 async function save(page) {
     await Promise.all([
-        page.waitForResponse((response) => response.url().includes('livewire') && response.request().method() === 'POST'),
+        page.waitForResponse((response) => callsMethod(response, 'save')),
         page.getByRole('button', { name: 'Save changes', exact: true }).click(),
     ]);
     await expect(page.locator('.fi-no-notification').getByText('Saved', { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -53,7 +54,7 @@ async function save(page) {
 
 /** The response is the barrier: readback must not race the submission being tested. */
 async function refusedSubmit(page, button = 'Create') {
-    const response = page.waitForResponse((candidate) => candidate.request().method() === 'POST' && /livewire[^/]*\/update/.test(candidate.url()));
+    const response = page.waitForResponse((candidate) => callsMethod(candidate, button === 'Create' ? 'create' : 'save'));
     await page.locator('form').getByRole('button', { name: button, exact: true }).first().click();
     return response;
 }
@@ -109,7 +110,7 @@ test.describe('Storefront product administration', () => {
         const id = await create(page);
         await page.reload();
         await expect(price(page)).toHaveValue('20.00');
-        await expect(page.getByRole('combobox', { name: /^Images/ }).first().locator('..')).toContainText(IMAGE_A);
+        await expect(selectValue(page, /^Images/).first()).toContainText(IMAGE_A);
 
         await page.goto(products(SITE_B));
         const row = page.locator('.fi-ta-row').filter({ hasText: SKU });

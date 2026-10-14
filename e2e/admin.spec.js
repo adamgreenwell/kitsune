@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { selectTrigger } = require('./select-control');
 
 /*
  * The admin loop, and the isolation boundary underneath it.
@@ -125,7 +126,7 @@ test.describe('admin', () => {
         // Scope note, because the previous version of this claim was wrong.
         //
         // What this proves is BROWSER-specific: the Attach action is reachable
-        // and its modal opens on a page nested under {type}, with a combobox
+        // and its modal opens on a page nested under {type}, with a searchable picker
         // to choose from and a live submit control. That is the part only a
         // browser can answer.
         //
@@ -144,7 +145,9 @@ test.describe('admin', () => {
         const modal = page.locator('.fi-modal-window').first();
         await expect(modal).toBeVisible({ timeout: 15_000 });
 
-        await expect(modal.locator('button[role="combobox"]')).toBeVisible();
+        await expect(selectTrigger(modal)).toHaveCount(1);
+        await expect(selectTrigger(modal)).toBeVisible();
+        await expect(selectTrigger(modal)).toHaveAccessibleName(/\S/);
         await expect(modal.locator('button[type="submit"]')).toBeVisible();
     });
 });
