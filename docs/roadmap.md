@@ -448,7 +448,13 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       slots per page, public images and per-site reader badges through one bounded entitlement batch. A shared
       optional entitlement mapping grants nothing by itself. Sparse pages after schema edits, private/no-store
       responses and generic database-outage notices keep the read boundary explicit. General theming, product
-      details, carts, orders and payments remain later work.
+      details, orders and payments remain later work. The cart slice
+      [#193](https://github.com/adamgreenwell/kitsune/issues/193) adds site-specific database carts, same-site reader
+      sign-in adoption (merge products, higher duplicate quantity), 30-day item-mutation expiry and saved carts
+      retained at sign-out. The host independently places its private cart page; current prices/stock are not
+      reserved. Revision checks, bounded cleanup and reader export/erasure custody are included. The cart
+      decisions and implementation defaults are separate in ADR-040; order construction and final checkout
+      revalidation follow in [#194](https://github.com/adamgreenwell/kitsune/issues/194).
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

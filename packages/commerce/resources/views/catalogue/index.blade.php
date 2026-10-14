@@ -32,6 +32,14 @@
                                 <span class="badge held">{{ $t('held') }}</span>
                             @endif
                         </div>
+                        @if (($cartPath ?? null) !== null)
+                            <form method="post" action="{{ $cartPath }}/add" class="add-form">
+                                @csrf
+                                <input type="hidden" name="listing" value="{{ $product['listingId'] }}">
+                                <input type="hidden" name="quantity" value="1">
+                                <button type="submit" @disabled($product['stock'] === '0')>{{ $t('add_to_cart') }}</button>
+                            </form>
+                        @endif
                     </div>
                 </article>
             @endforeach

@@ -13,6 +13,7 @@ namespace Kitsune\Commerce\Catalogue;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Commerce\Http\Controllers\CatalogueController;
 use Kitsune\Commerce\Http\Middleware\CatalogueResponse;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderRoutes;
 
 /**
@@ -36,5 +37,20 @@ final class CatalogueRoutes
                 $route->where(self::SITE_PARAMETER, ReaderRoutes::sitePattern());
             }
         }
+    }
+
+    /** Cart and catalogue placement are separate choices, including when a real route cache is loaded. */
+    public static function availableFor(Site $site): bool
+    {
+        $uri = ($site->path_prefix ?? '') === '' ? self::SEGMENT : '{'.self::SITE_PARAMETER.'}/'.self::SEGMENT;
+
+        foreach (Route::getRoutes()->getRoutes() as $route) {
+            if ($route->uri() === $uri && in_array('GET', $route->methods(), true)
+                && in_array($route->getActionName(), [CatalogueController::class, CatalogueController::class.'@__invoke'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

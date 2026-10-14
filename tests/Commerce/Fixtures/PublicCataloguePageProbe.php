@@ -110,6 +110,11 @@ final class PublicCatalogueProbeApplication
     }
 }
 
+// Cart HTTP coverage reuses this real host bootstrap without executing this probe's catalogue scenarios.
+if (defined('KITSUNE_CATALOGUE_PROBE_CLASSES_ONLY') && KITSUNE_CATALOGUE_PROBE_CLASSES_ONLY === true) {
+    return;
+}
+
 if ($step === 'seed') {
     foreach (['bootstrap/cache', 'storage/framework/views', 'storage/framework/sessions', 'storage/logs'] as $path) {
         mkdir($temporary.'/'.$path, 0700, true);

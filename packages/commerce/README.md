@@ -76,3 +76,13 @@ repair that state before enabling again.
 Local path resolution is not a public package release. The publication prerequisites and separate artifact
 checks are in [`docs/commerce-publication.md`](../../docs/commerce-publication.md) in the monorepo; no mirror,
 Packagist registration, tag or release is created by installation.
+
+
+The host can separately opt into carts with `\Kitsune\Commerce\Carts\CartRoutes::register()` before its
+catch-all. Catalogue cards then offer Add to cart. Carts are database-backed and site-specific, use current
+catalogue values, reserve no stock, and retain at most 20 lines with quantities 1–99. Reader sign-in merges the
+same site's anonymous cart using the higher duplicate quantity. Saved reader carts survive sign-out; signed-out
+sessions start fresh. Guest ownership can recover through an encrypted HttpOnly cookie after the shorter login session expires.
+Both expire 30 days after an item change, with bounded `kitsune:cart-prune --limit=100`
+maintenance while commerce is enabled. Checkout remains a later slice. Reader export/erasure includes retained
+saved carts even with commerce disabled; see the operator workflow in `docs/commerce-operations.md`.

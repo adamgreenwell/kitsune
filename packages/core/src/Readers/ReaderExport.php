@@ -24,7 +24,7 @@ use Kitsune\Core\Tenancy\Context;
 
 /**
  * Everything held about one reader of the org in context, for a subject-access request (ADR-020) — the host's account,
- * as its model classifies it, and core's entitlement rows.
+ * as its model classifies it, core's entitlement rows, and installed modules' declared reader stores.
  *
  * ⚠️ AUTHORISED AS AN ENTITLEMENT EXPORT IS, AND FIRST: an owner or the system, never a reader. The entitlement rows are
  * read before the account, so a refusal reads nothing of the host's.
@@ -44,7 +44,7 @@ final class ReaderExport
     ) {}
 
     /**
-     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string}
+     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string, module_data?: array<string, array<string, mixed>>}
      *
      * @throws EntitlementRefused
      */
@@ -55,12 +55,19 @@ final class ReaderExport
         $address = $account !== null ? EmailAddress::normalise($account->readerEmail()) : null;
         $key = app(EntitlementAuthority::class)->filedKey(EntitlementRefused::EXPORT, $reader);
 
-        return [
+        $records = [
             'account' => $account?->exportAccount(),
             'entitlements' => $entitlements,
             'pending_links' => app(ReaderTokens::class)->pending($key, $address),
             'generated_at' => CarbonImmutable::now('UTC')->format('Y-m-d\TH:i:s\Z'),
         ];
+        $modules = app(ReaderModuleData::class)->export($key);
+
+        if ($modules !== []) {
+            $records['module_data'] = $modules;
+        }
+
+        return $records;
     }
 
     /**

@@ -18,6 +18,7 @@ use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Core\Currency\Currencies;
 use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementName;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\RelationType;
 use Kitsune\Core\Media\MediaDelivery;
@@ -43,7 +44,8 @@ use RuntimeException;
  *
  * @internal First-party only; no public extension contract before v1.2.
  *
- * @phpstan-type Product array{title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool}
+ * @phpstan-type Product array{listingId:int,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool}
+ * @phpstan-type CartProduct array{listingId:int,priceMinor:string,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool}
  * @phpstan-type Page array{products:list<Product>,page:int,hasPrevious:bool,hasNext:bool,hasCandidates:bool}
  */
 final class PublicCatalogue
@@ -97,13 +99,96 @@ final class PublicCatalogue
             return $empty;
         }
 
-        $entries = Entry::query()->useWritePdo()->where('org_id', $orgId)->where('site_id', $site->getKey())
-            ->where('entry_type_id', $type->getKey())->whereIn('id', $candidates->pluck('entry_id'))->get()->keyBy('id');
-        $sellables = Sellable::query()->useWritePdo()->where('org_id', $orgId)->whereIn('id', $candidates->pluck('sellable_id'))->get()->keyBy('id');
+        $products = $this->products($candidates, $type, $currency);
+
+        foreach ($products as &$product) {
+            unset($product['priceMinor']);
+        }
+        unset($product);
+
+        return ['products' => $products, 'page' => $page, 'hasPrevious' => $page > 1, 'hasNext' => $hasNext, 'hasCandidates' => true];
+    }
+
+    /**
+     * The cart reuses exactly the catalogue's public admission and native content checks, in one bounded read.
+     * Missing/unpublished/unlisted/invalid candidates are absent, never a stale copied title or price. Mutation
+     * admission uses current locking reads: a primary PDO alone does not refresh an enclosing host transaction's
+     * repeatable-read snapshot. That mode omits image/access presentation and requires the caller's transaction.
+     *
+     * @param  array<mixed>  $ids
+     * @return array<int, CartProduct>
+     */
+    public function forListings(array $ids, bool $current = false): array
+    {
+        if (! array_is_list($ids) || count($ids) > 100 || array_filter($ids, static fn (mixed $id): bool => ! is_int($id) || $id < 1) !== []) {
+            throw new InvalidArgumentException('A catalogue lookup requires at most 100 valid listing keys.');
+        }
+
+        $orgId = $this->context->orgId();
+        $siteId = $this->context->siteId();
+
+        if ($current && (new Listing)->getConnection()->transactionLevel() < 1) {
+            throw new InvalidArgumentException('Current cart admission requires an enclosing transaction.');
+        }
+
+        if ($ids === [] || $orgId === null || $siteId === null) {
+            return [];
+        }
+
+        $enabled = $current ? Module::query()->useWritePdo()->where('handle', 'kitsune/commerce')
+            ->where('is_enabled', true)->lockForUpdate()->first() !== null : Module::isEnabled('kitsune/commerce');
+
+        if (! $enabled) {
+            return [];
+        }
+
+        $type = ProductType::current($current);
+        $currency = Org::query()->useWritePdo()->whereKey($orgId)
+            ->when($current, static fn ($query) => $query->lockForUpdate())->value('currency');
+
+        if ($type === null || ! Currencies::supports($currency)) {
+            return [];
+        }
+
+        $candidates = Listing::query()->useWritePdo()
+            // Its coherence scope contains ordinary EXISTS subqueries. The explicit joins/equalities below prove
+            // the same endpoints while the locking read sees rows created after an outer transaction's snapshot.
+            ->when($current, static fn ($query) => $query->withoutGlobalScope('catalogue_coherence')->lockForUpdate())
+            ->join('commerce_sellables', 'commerce_sellables.id', '=', 'commerce_listings.sellable_id')
+            ->join('entries', 'entries.id', '=', 'commerce_listings.entry_id')
+            ->where('commerce_listings.org_id', $orgId)->where('commerce_listings.site_id', $siteId)
+            ->whereIn('commerce_listings.id', $ids)->where('commerce_listings.is_available', true)
+            ->where('commerce_sellables.org_id', $orgId)->where('commerce_sellables.currency', $currency)
+            ->where('entries.org_id', $orgId)->where('entries.site_id', $siteId)
+            ->where('entries.entry_type_id', $type->getKey())->where('entries.status', 'published')->whereNull('entries.deleted_at')
+            ->orderBy('commerce_listings.id')->limit(100)->get(['commerce_listings.*']);
+        $products = $this->products($candidates, $type, $currency, $current);
+
+        return array_column($products, null, 'listingId');
+    }
+
+    /**
+     * @param  Collection<int, Listing>  $candidates
+     * @return list<CartProduct>
+     */
+    private function products(Collection $candidates, EntryType $type, string $currency, bool $current = false): array
+    {
+        if ($candidates->isEmpty()) {
+            return [];
+        }
+
+        $orgId = $this->context->orgId();
+        $entries = Entry::query()->useWritePdo()->where('org_id', $orgId)->where('site_id', $this->context->siteId())
+            ->where('entry_type_id', $type->getKey())->whereIn('id', $candidates->pluck('entry_id'))
+            ->when($current, static fn ($query) => $query->lockForUpdate())->get()->keyBy('id');
+        $sellables = Sellable::query()->useWritePdo()->where('org_id', $orgId)->whereIn('id', $candidates->pluck('sellable_id'))
+            ->when($current, static fn ($query) => $query->lockForUpdate())->get()->keyBy('id');
         /** @var list<Field> $fields */
-        $fields = $type->fields()->with('fieldStorage')->orderBy('ordering')->get()->all();
-        $relations = $this->relationCounts($entries->keys()->all(), $fields);
-        $images = $this->images($entries->keys()->all(), $fields);
+        $fields = $type->fields()->with(['fieldStorage' => static fn ($query) => $query
+            ->when($current, static fn ($query) => $query->useWritePdo()->lockForUpdate())])
+            ->when($current, static fn ($query) => $query->useWritePdo()->lockForUpdate())->orderBy('ordering')->get()->all();
+        $relations = $current ? $this->currentRelationCounts($entries->keys()->all(), $fields) : $this->relationCounts($entries->keys()->all(), $fields);
+        $images = $current ? [] : $this->images($entries->keys()->all(), $fields);
         $products = [];
         $names = [];
 
@@ -132,6 +217,8 @@ final class PublicCatalogue
             }
 
             $products[] = [
+                'listingId' => (int) $listing->getKey(),
+                'priceMinor' => MinorUnits::integer($raw['price_minor']),
                 'title' => (string) $entry->title,
                 'description' => $this->content->description($entry, $fields),
                 'currency' => $currency,
@@ -143,15 +230,66 @@ final class PublicCatalogue
             $names[] = $name;
         }
 
-        $held = $this->entitlements->holdsMany(array_values(array_unique(array_filter($names, is_string(...)))));
+        $held = $current ? [] : $this->entitlements->holdsMany(array_values(array_unique(array_filter($names, is_string(...)))));
 
         foreach ($products as $index => &$product) {
             $name = $names[$index];
-            $product['held'] = $name === null ? null : ($held[$name] ?? false);
+            $product['held'] = $current || $name === null ? null : ($held[$name] ?? false);
         }
         unset($product);
 
-        return ['products' => $products, 'page' => $page, 'hasPrevious' => $page > 1, 'hasNext' => $hasNext, 'hasCandidates' => true];
+        return $products;
+    }
+
+    /**
+     * Native relation admission needs only presence, any invalid link, and finite-cardinality overflow. Each probe
+     * returns at most one current locked row, including its target visibility subquery. This avoids both unbounded
+     * PHP hydration and FOR UPDATE on COUNT/GROUP BY, which PostgreSQL refuses. Synthetic counts carry precisely
+     * those three decisions into PublicContent; they are never exposed as actual relation totals.
+     *
+     * @param  list<int|string>  $entries
+     * @param  list<Field>  $fields
+     * @return array<int|string, array<int|string, array{count:int,invalid:int}>>
+     */
+    private function currentRelationCounts(array $entries, array $fields): array
+    {
+        $result = [];
+
+        foreach ($fields as $field) {
+            $storage = $field->fieldStorage;
+
+            if (! $storage instanceof FieldStorage || ! $this->types->has($storage->type)
+                || ! $this->types->get($storage->type) instanceof RelationType) {
+                continue;
+            }
+
+            $config = new FieldConfig($storage, $field);
+            $targets = (array) (($storage->settings['targetTypes'] ?? []) ?: []);
+            $visible = Entry::query()->useWritePdo()->where('org_id', $this->context->orgId())
+                ->when($targets !== [], static fn ($query) => $query->whereIn('type_handle', $targets))
+                ->whereColumn('entries.id', 'entry_relations.target_entry_id')->select('entries.id')->lockForUpdate();
+
+            foreach ($entries as $entry) {
+                $links = EntryRelation::query()->useWritePdo()->where('source_entry_id', $entry)
+                    ->where('field_storage_id', $storage->getKey())->orderBy('id')->lockForUpdate();
+                $invalid = (clone $links)->where(fn ($query) => $query->where('org_id', '!=', $this->context->orgId())
+                    ->orWhereNotExists(clone $visible))->first(['id']) !== null;
+                $count = 0;
+
+                if (! $invalid && (clone $links)->first(['id']) !== null) {
+                    $count = 1;
+                    $maximum = $config->cardinality();
+
+                    if ($maximum > 0 && $maximum < PHP_INT_MAX && (clone $links)->offset($maximum)->first(['id']) !== null) {
+                        $count = $maximum + 1;
+                    }
+                }
+
+                $result[$entry][$storage->getKey()] = ['count' => $count, 'invalid' => $invalid ? 1 : 0];
+            }
+        }
+
+        return $result;
     }
 
     /**

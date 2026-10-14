@@ -5566,6 +5566,107 @@ even when a separate read PDO has not seen a retained mapping. The latter refuse
 schema DDL cannot be authorised by a stale replica's empty answer. This does not serialize teardown against writers;
 the existing stopped-writer requirement still applies.
 
+
+**Amended 2026-10-14 — the cart contract (#193).** The catalogue slice above is merged in #268. Adam chose
+three behaviours for its successor: merge distinct products at reader sign-in and keep the higher quantity for
+a duplicate; expire both anonymous and reader carts 30 days after their last item mutation; retain the reader's
+saved cart at sign-out and give the signed-out session a fresh anonymous cart. An ordinary read, a duplicate
+request that changes nothing, or an unchanged duplicate during adoption does not prolong a cart. These are
+product decisions; the bounds and HTTP details below are implementation defaults.
+
+A cart belongs to exactly one org and site, never the brand or the org's other sites. Its owner is a declared
+reader's exact canonical key or an opaque browser secret cached inside the server session. The database
+holds a domain-separated SHA-256 owner digest, not the anonymous secret or a session ID. It survives Laravel's
+sign-in session rotation. A guest source is adopted only for the site where the validated reader Login occurred;
+visiting a sibling site after that sign-in does not silently adopt its anonymous cart. Sign-out, including the
+reader binding's current-device logout, forgets guest handles and pending adoption without touching saved reader
+rows or staff authentication. Handles live under core's internal `ReaderSessions::EPHEMERAL` namespace, which
+core clears on reader logout even when commerce's provider is absent/disabled. The module's listeners alone
+cannot enforce a lifecycle after its code has stopped booting; no method is added to the host's frozen reader
+model contract.
+
+**Review revised the session-only proposal before merge.** Laravel's default session lasts 120 idle minutes, so
+keeping the only guest handle there made a live 30-day cart unreachable after two hours. Two simultaneous first
+Adds could also mint different random handles from the same already-loaded session. The implementation now
+recovers a browser seed from an encrypted HttpOnly, SameSite=Lax 30-day cookie, separately from authentication
+session lifetime. Its first seed is HMAC-derived from APP_KEY, the established session ID and core's internal
+logout generation; concurrent first Adds therefore agree before their database lock. Each org/site derives its
+own opaque secret from that seed. Reads can refresh the recovery cookie, but never the database cart's expiry.
+Core clears incoming/queued recovery cookies and rotates the internal generation on reader logout, including
+plain SessionGuard logout that does not change the session ID. Missing keys or malformed session identities
+refuse initialization; an untrusted/malformed recovery cookie cannot select a submitted cart or reader ID.
+
+`commerce_carts` and `commerce_cart_lines` are site-scoped with `EnforcesScope` and explicit org/site coherence
+checks in addition to SiteScope. Scope-leading indexes serve ownership, parent lines, reader custody and expiry.
+Reader keys use the entitlement table's exact-byte storage rule. Lines retain only a listing reference and a
+quantity; a removed listing becomes a nullable, unavailable line that its owner can remove. There is no copied
+price, product copy, image path, reader profile, address or payment data. A cart has at most 20 lines, including
+unavailable/orphan lines, and each quantity is an integer 1–99. Those bounds are implementation defaults, not a
+restriction to one course or a decision about repeat purchases.
+
+Add means `max(existing, requested)` and never increment: retrying the same Add is harmless. Update sets an
+absolute quantity with an observed cart revision; a stale edit refuses, while an exact replay is a no-op. Remove
+is a no-op for an absent owned line and checks the revision when the line exists. Writes take the org and site
+locks in that order, use the primary connection, and reserve SQLite's writer before reading mutable state. An
+adoption is one transaction, consumes the guest once and clears its session handle only after the outer commit.
+If the union exceeds 20 lines or a supported amount overflows, neither cart is partly merged; both remain, and
+the saved cart can be reduced before a same-site retry. Current exact money uses decimal-digit arithmetic rather
+than floats, platform-width casts or a required BCMath extension.
+
+A primary PDO alone does not refresh a MySQL/MariaDB outer repeatable-read snapshot. Review found that an org
+lock followed by an ordinary cart read could accept an old revision and overwrite a newer selection. Mutable
+cart/child reads therefore use current locking reads, and mutation admission uses a separate current-read path
+for price, stock, publication and the Storefront/schema/availability dependencies. The live reader is rechecked
+under those locks too, so a cached session cannot recreate a cart after erasure. Native relation validation uses
+bounded presence/invalid/finite-overflow probes instead of locking grouped aggregates, which PostgreSQL refuses.
+Presentation-only images and access badges do not run on mutation admission. Normal public catalogue pages keep
+their existing unlocked bounded read; server-engine qualification remains distinct from SQLite's actual process
+race evidence.
+
+The host opts into `Kitsune\Commerce\Carts\CartRoutes::register()` independently from CatalogueRoutes. It
+places `/cart` and its body-CSRF-protected POST actions under the resolved site's prefix before the host catch-all;
+ordinary host and panel routes retain precedence. This is a **fifth named first-party exception** to the pre-v1.2
+public API prohibition, on the same footing as the catalogue placement call: no third-party contract or 0.x
+stability promise. Catalogue cards expose a listing key only when the host also placed the cart routes; the key
+is untrusted input, re-resolved under the current site. The cart uses the catalogue's current public admission,
+content validation, supported currency, price and stock. Missing, unlisted, unpublished, disabled or invalid
+products become unavailable without exposing stale private content. Displaying or editing a cart reserves no
+stock and promises no checkout price. Order construction and its final revalidation remain #194; cart bypass for
+a future digital purchase remains undecided there.
+
+Responses are private and no-store, including refusals. No submitted cart, reader, org or site key selects an
+owner, and bodies/unknown queries never enter previous-URL or validation-flash storage. Database and entitlement
+failures produce a safe 503 with SQLSTATE-only diagnostics. A measured non-testing probe found Laravel's
+framework CSRF rejection runs before the route response boundary, leaving a framework 419 and unsanitized parsed
+input. Only the placed cart routes therefore exclude that framework middleware and perform their own mandatory
+body-token/session match inside the sanitizing boundary. Header-only tokens and same-origin shortcuts do not
+satisfy it; ordinary host routes keep their own middleware. Retained expired rows are unavailable immediately;
+bounded `kitsune:cart-prune` maintenance removes them later, without a worker or external service. The operator
+runs it while commerce is enabled; disable preserves data and does not itself run cleanup. Uninstall continues
+to refuse every retained module row, expired carts included; schema rollback likewise refuses retained cart rows.
+
+**Reader custody widens before these personal rows ship.** Core's export and erasure previously knew only its
+own entitlements, links and the host account. An internal `ModuleReaderData` adapter, obtained through the
+module provider's default-null `readerData()` factory, adds the first optional store. This amends ADR-038's
+first-party module seam; it is not a plugin SDK or a host-model contract change. Core resolves all installed
+receipts regardless of enablement or recorded version and constructs only the privacy factory, without
+registering/booting disabled module code. Destructive discovery locks module receipts in stable handle order,
+so an enclosing repeatable-read snapshot cannot hide a newly installed store from account erasure. A missing
+package/provider or unreadable/malformed retained schema
+refuses the whole privacy operation rather than certifying an incomplete export or erasure. Commerce exports
+reader cart sites, retained activity/expiry timestamps and bounded line references/quantities, never owner hashes
+or guest secrets. Erasure deletes checked lines and carts before the account inside the existing transaction.
+Expired rows count too. A legitimate pre-cart install is distinguished by the absence of migration 000203;
+missing tables after that receipt are a failure. Raw host reader deletion still needs the documented erasure
+workflow, as entitlements already do; the cart does not infer a cross-database foreign key it cannot own.
+
+The cart suites exercise actual sign-in/session rotation, sibling-site and cross-org attacks, pre-existing carts
+and overflow recovery, stale products, exact money and expiry, disabled-module reader custody, real route
+caching/provider absence and the browser journey. Separate-process SQLite races cover competing mutations and
+concurrent first HTTP Adds; the server-engine suite separately exercises destructive receipt discovery from an
+older repeatable-read snapshot. No test or development-host timing here substitutes for the resource-floor,
+release or deployment gates.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

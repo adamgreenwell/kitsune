@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\WelcomeController;
 use Illuminate\Support\Facades\Route;
+use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Catalogue\CatalogueRoutes;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
@@ -53,6 +54,9 @@ ReaderRoutes::register();
 // Explicit first-party opt-in: the published core-only skeleton has no required commerce dependency.
 if (class_exists(CatalogueRoutes::class)) {
     CatalogueRoutes::register();
+}
+if (class_exists(CartRoutes::class)) {
+    CartRoutes::register();
 }
 
 /*

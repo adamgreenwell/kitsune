@@ -18,6 +18,8 @@ return [
     'available' => 'Available',
     'sold_out' => 'Sold out',
     'held' => 'You have access',
+    'cart' => 'Your cart',
+    'add_to_cart' => 'Add to cart',
     'empty_title' => 'No products listed yet',
     'empty_help' => 'Products will appear here when they are available from this site.',
     'page_empty_title' => 'No products available on this page',

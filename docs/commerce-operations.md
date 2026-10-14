@@ -162,3 +162,37 @@ Uninstall requires a disabled module and refuses while any module-owned table re
 through its owning workflow, take the host's normal backup, and stop concurrent catalogue writers before teardown.
 Site content and the org's currency selection remain after an empty commerce uninstall. The lifecycle and its
 partial-DDL recovery limits are recorded in [ADR-038](decision-log.md#adr-038--a-module-is-a-composer-package-core-keeps-a-receipt-for-and-the-kernel-is-a-record-and-a-refusal).
+
+
+## Site carts and reader custody
+
+The host may independently place `\Kitsune\Commerce\Carts\CartRoutes::register()` before its catch-all in
+`routes/web.php`. The stock skeleton opts in when commerce is present. With both host surfaces placed, catalogue
+cards offer **Add to cart** and each site has its own `/cart` page under its configured prefix. Cart pages remain
+available to remove unavailable items even when Storefront's content type has been disabled.
+
+Carts hold up to 20 product lines with quantities 1–99. **Add** keeps the higher existing/requested quantity;
+quantity edits replace the value and refuse a stale browser revision. Cart contents reserve no stock and the
+shown current price can change before checkout. Deleted, unpublished, unlisted or otherwise invalid listings
+stay removable as unavailable items. Checkout and payments arrive in later slices.
+
+Anonymous carts are bound to an opaque browser secret, cached in the server session and recoverable through an
+encrypted HttpOnly cookie for 30 days. Authentication sessions keep their normal shorter lifetime; losing one
+does not by itself lose the cart. Reading a cart can refresh its recovery cookie, but never its database expiry. Reader sign-in adopts only the anonymous cart of
+that same site, combines distinct products and keeps the higher duplicate quantity. An oversized merge keeps
+both carts; remove items from the saved cart and revisit the page to retry. Sign-out retains the saved reader
+cart and starts a fresh anonymous cart. Cart reads and unchanged retries do not extend the 30-day expiry.
+
+Expired carts stop being usable at their UTC expiry; physical cleanup is separate. With commerce enabled, run
+`php artisan kitsune:cart-prune --limit=100` from the application's directory. Each invocation removes at most
+the chosen number of expired carts (maximum 1,000), rechecking expiry under the same write locks as mutations.
+Run again for another bounded batch. Each cart is removed atomically; if a later cart refuses, earlier completed
+removals remain and the command reports that boundary. No worker, external service or automatic schedule is required. Disabling
+commerce retains the rows; re-enable it before using this maintenance command. Uninstall and migration rollback
+refuse retained cart data until its owning cleanup/erasure workflow resolves it.
+
+The existing reader export includes saved carts, including expired rows not yet pruned. Reader erasure removes
+those carts and their lines before removing the account. These privacy operations run while commerce is disabled
+or its receipt version is stale, without booting its provider. Restore a missing installed module package and
+repair unreadable retained schema before retrying a refused export/erasure; a partial answer is never reported
+as complete. Anonymous carts have no reader identity to export by reader key and leave through expiry cleanup.

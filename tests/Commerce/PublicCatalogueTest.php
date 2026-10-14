@@ -88,7 +88,7 @@ function publicImage(string $name, string $visibility = 'public', bool $siteOnly
 }
 
 it('returns only an explicit public projection with exact shared money and stock', function (): void {
-    publicProduct();
+    $product = publicProduct();
     publicProduct('UNTRACKED', stock: null, price: '9223372036854775807');
     publicProduct('ZERO', stock: '0', price: '0');
     $page = app(PublicCatalogue::class)->page();
@@ -96,6 +96,7 @@ it('returns only an explicit public projection with exact shared money and stock
     expect($page)->toMatchArray(['page' => 1, 'hasPrevious' => false, 'hasNext' => false])
         ->and($page['products'])->toHaveCount(3)
         ->and($page['products'][0])->toBe([
+            'listingId' => (int) $product->listings()->firstOrFail()->getKey(),
             'title' => 'Product BOARD', 'description' => 'A & B', 'currency' => 'USD', 'price' => '20.00',
             'stock' => '5', 'imageUrl' => null, 'held' => null,
         ])->and($page['products'][1]['price'])->toBe('92233720368547758.07')

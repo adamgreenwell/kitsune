@@ -217,5 +217,5 @@ it('keeps sold-out status and unmapped access honest without implying a purchase
     $response = publicCataloguePageProbe($scenario)['responses'][0];
 
     expect($response['status'])->toBe(200)->and($response['body'])->toContain($expected)
-        ->and($response['body'])->not->toContain('You have access', 'Buy now', 'Add to cart');
+        ->and($response['body'])->not->toContain('You have access', 'Buy now', 'Checkout');
 })->with(['zero stock' => ['sold-out', 'Sold out'], 'no entitlement mapping' => ['unmapped', 'Available']]);

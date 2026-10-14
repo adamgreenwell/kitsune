@@ -19,14 +19,14 @@ use Kitsune\Core\Models\Entitlement;
 
 /**
  * One reader of the org in context, erased from every store core knows of (ADR-020) — their entitlements on every site
- * of the org, then any link waiting in their mail, then the host's account.
+ * of the org, then any link waiting in their mail, then installed modules' reader data and the host's account.
  *
  * ⚠️ ONE TRANSACTION, ENTITLEMENTS FIRST, THE ACCOUNT LAST. `EntitlementWriter::forget()` authorises (an owner or the
  * system), locks and audits each row as it does alone, nested; then the reader's links go — the recovery link by their
  * key, a sign-up link by their address, normalised, because the contract's address is "as stored" and a host's model need
  * not lower-case it — then the account is locked and `eraseAccount()` runs. Link rows before the reader's row, the one
  * order `ReaderLinkUse` takes them in too. A failure anywhere rolls back everything, so a reader is never left
- * half-erased: no account with their grants gone, and no grants left on an account that is.
+ * half-erased: no account with their grants gone, and no grants or module records left on an account that is.
  *
  * ⚠️ AN ADDRESS WITH NO ACCOUNT can still be erased (`eraseAddress()`): someone asked for a sign-up link and never used
  * it, and the address is all that is held.
@@ -64,6 +64,8 @@ final class ReaderErasure
 
             $links = $this->tokens->forgetSubject(ReaderTokens::RECOVER, $this->authority->filedKey(EntitlementRefused::FORGET, $reader))
                 + ($address !== null ? $this->tokens->forgetSubject(ReaderTokens::REGISTER, $address) : 0);
+
+            app(ReaderModuleData::class)->erase($reader);
 
             $account = $this->readers->find($reader, lock: true);
 

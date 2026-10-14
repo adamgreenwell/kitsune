@@ -13,6 +13,8 @@ use Kitsune\Commerce\CommerceCustody;
 use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Models\Cart;
+use Kitsune\Commerce\Models\CartLine;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Core\Models\EntryType;
@@ -44,7 +46,7 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -74,7 +76,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(3);
+        ->and(glob($path.'/*.php'))->toHaveCount(4);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);
