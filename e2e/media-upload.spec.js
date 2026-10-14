@@ -152,7 +152,7 @@ function translated(key, locale) {
 }
 
 /** The options in the open picker's dropdown, not the Status select's native ones. */
-const dropdownOptions = (page) => page.locator('[id^="fi-select-input-dropdown-"]:visible').getByRole('option');
+const dropdownOptions = (page) => page.locator('.fi-select-input-ctn .fi-dropdown-panel:visible').getByRole('option');
 
 /** Nothing offered, by the "no results" words in the site's language — never by an absence alone, which a pending search shows too. */
 async function expectNoOptions(page, locale) {

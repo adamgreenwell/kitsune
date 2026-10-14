@@ -235,6 +235,8 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * this control does, and folding it in here would make this test fail for a reason it is
          * not about. Recorded separately rather than swallowed.
          */
+        const openDropdowns = page.locator('.fi-select-input-ctn .fi-dropdown-panel:visible');
+        await expect(openDropdowns).toHaveCount(1);
         await page.keyboard.press('Escape');
 
         /*
@@ -245,7 +247,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * is "nothing is open", and counting the visible ones says exactly that however many selects the
          * form grows. Same lesson as `removeSelections()` one docblock up, on the day it predicted.
          */
-        await expect(page.locator('[id^="fi-select-input-dropdown-"]:visible')).toHaveCount(0);
+        await expect(openDropdowns).toHaveCount(0);
 
         const results = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])

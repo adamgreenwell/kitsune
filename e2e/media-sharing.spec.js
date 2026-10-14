@@ -71,7 +71,7 @@ function translated(key, locale) {
  * The options in the open picker's dropdown — not every `option` on the page, which includes the native `<option>`s of
  * the Status select.
  */
-const dropdownOptions = (page) => page.locator('[id^="fi-select-input-dropdown-"]:visible').getByRole('option');
+const dropdownOptions = (page) => page.locator('.fi-select-input-ctn .fi-dropdown-panel:visible').getByRole('option');
 
 /**
  * Nothing offered, and the dropdown saying so.
