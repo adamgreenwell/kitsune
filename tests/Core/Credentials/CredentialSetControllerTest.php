@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Testing\TestResponse;
 use Kitsune\Core\Auth\Permissions;
@@ -45,6 +46,8 @@ beforeEach(function (): void {
     $this->site = Site::create(['handle' => 'main', 'slug' => 'acme-main', 'name' => 'Main', 'locale' => 'en']);
     app(Context::class)->setSite($this->site);
     $this->owner = Fx::member(email: 'owner@acme.test');
+    $this->currentPassword = Fx::value('', 40);
+    DB::table('users')->where('id', $this->owner->getKey())->update(['password' => Hash::make($this->currentPassword)]);
     PanelTenancy::enter($this->site);
 
     Route::get('/test-credentials/{tenant:slug}', static fn (): string => '')->name('filament.admin.pages.credentials');
@@ -61,7 +64,7 @@ beforeEach(function (): void {
         $_REQUEST = $_POST + $_GET;
 
         return $this->withSession(['_token' => $this->token])
-            ->post('/test-credentials/acme-main/set'.$query, ['_token' => $this->token, ...$form]);
+            ->post('/test-credentials/acme-main/set'.$query, ['_token' => $this->token, 'current_password' => $this->currentPassword, ...$form]);
     };
 });
 
@@ -280,8 +283,8 @@ it('shows an empty, absent or array value as the store\'s empty refusal', functi
 ]);
 
 it('refuses a test key for a live org\'s live line in the store\'s own words, keeping the live value (ADR-040)', function (): void {
-    Fx::writer()->switchTo(CredentialMode::Live);
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $live = Fx::value('fx_live_'));
+    Fx::writer()->switchTo(CredentialMode::Live, $this->currentPassword);
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $live = Fx::value('fx_live_'), $this->currentPassword);
     $before = AuditLog::query()->count();
     $test = Fx::value('fx_test_');
 

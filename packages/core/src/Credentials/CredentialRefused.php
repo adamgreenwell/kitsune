@@ -29,6 +29,8 @@ final class CredentialRefused extends RuntimeException
 
     public const SWITCH = 'switch';
 
+    public const REENCRYPT = 'reencrypt';
+
     private function __construct(
         string $message,
         public readonly CredentialRefusal $reason,
@@ -39,7 +41,7 @@ final class CredentialRefused extends RuntimeException
     }
 
     /**
-     * @param  self::SET|self::REMOVE|self::SWITCH  $act
+     * @param  self::SET|self::REMOVE|self::SWITCH|self::REENCRYPT  $act
      * @param  string|null  $slot  the name asked for, repeated only when it has a name's shape
      * @param  array{prefix?: string, state?: string}  $detail
      */
@@ -104,6 +106,8 @@ final class CredentialRefused extends RuntimeException
             CredentialRefusal::Race => "{$subject} was not {$done}: it was changed somewhere else at the same moment. Nothing was written; try again.",
             CredentialRefusal::Database => "{$subject} was not {$done}: the database refused the write (SQLSTATE {$detail['state']}). Its message is not repeated, because it can carry what was being stored. Nothing was written.",
             CredentialRefusal::Cancelled => "{$subject} was not {$done}: a listener cancelled the save. Nothing was written, and nothing is recorded.",
+            CredentialRefusal::FreshAuthentication => 'The change was refused. Confirm it with your current local password as an owner of this organisation. Passwordless accounts need the server recovery tools. Nothing was written.',
+            CredentialRefusal::Unreadable => 'The credential could not be rotated with the available application keys. Restore the previous key or replace the credential. Nothing was written for this row.',
         };
     }
 }

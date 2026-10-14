@@ -12,6 +12,7 @@ namespace Kitsune\Core\Tests\Fixtures;
 
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -34,6 +35,8 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class CredentialFixture
 {
+    public const PASSWORD = 'fixture-only-owner-password';
+
     public const PAYMENT = 'fx.payment-key';
 
     public const HOOK = 'fx.webhook-secret';
@@ -120,7 +123,7 @@ final class CredentialFixture
     public static function member(bool $owner = true, string $email = 'owner@kitsune.test'): TestUser
     {
         /** @var TestUser $user */
-        $user = TestUser::create(['email' => $email]);
+        $user = TestUser::create(['email' => $email, 'password' => Hash::make(self::PASSWORD)]);
         DB::table('org_user')->insert(['org_id' => app(Context::class)->orgId(), 'user_id' => $user->getKey()]);
 
         if ($owner) {

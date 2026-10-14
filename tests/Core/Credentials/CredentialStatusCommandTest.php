@@ -33,8 +33,8 @@ it('counts what is stored by key, across orgs, naming nothing', function (): voi
     Fx::member(email: 'alpha@kitsune.test');
     Fx::writer()->set(Fx::SHARED, null, $value = Fx::value('', 40));
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
-    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live);
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
+    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live, Fx::PASSWORD);
 
     $k2 = Fx::appKey();
     config(['app.key' => $k2]);
@@ -54,7 +54,7 @@ it('counts what is stored by key, across orgs, naming nothing', function (): voi
     expect($out)->toBe(implode("\n", [
         'Credentials: 3 stored, across 2 organisations.',
         '  0 under the current app key.',
-        '  1 under a previous app key (APP_PREVIOUS_KEYS): keep that key until this reads 0. Replacing a credential re-encrypts it.',
+        '  1 under a previous app key (APP_PREVIOUS_KEYS): keep that key until this reads 0. Run kitsune:credentials:reencrypt for each organisation.',
         '  2 under no key this installation has: unreadable until set again.',
     ])."\n");
 

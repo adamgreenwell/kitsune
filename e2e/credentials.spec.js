@@ -20,6 +20,8 @@ const crypto = require('node:crypto');
 const SITE = 'golfdom';
 const PAGE = `/admin/${SITE}/credentials`;
 const SET = `/admin/${SITE}/credentials/set`;
+const REMOVE = `/admin/${SITE}/credentials/remove`;
+const MODE = `/admin/${SITE}/credentials/mode`;
 const LIVEWIRE = /livewire-[0-9a-f]+\/update/;
 const STATIC = /\.(css|js|woff2?)(\?|$)/;
 
@@ -147,6 +149,9 @@ async function openSet(page, label, mode) {
 async function setValue(page, label, mode, v) {
     const modal = await openSet(page, label, mode);
     await modal.locator('input[name="password"]').fill(v);
+    if (await modal.locator('input[name="current_password"]').count()) {
+        await modal.locator('input[name="current_password"]').fill('password');
+    }
     await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: 'Save', exact: true }).click()]);
 }
 
@@ -163,7 +168,11 @@ async function switchTo(page, mode) {
     }
 
     await button.click();
-    await page.locator('.fi-modal-window').getByRole('button', { name: label, exact: true }).click();
+    const modal = page.locator('.fi-modal-window');
+    if (await modal.locator('input[name="current_password"]').count()) {
+        await modal.locator('input[name="current_password"]').fill('password');
+    }
+    await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: label, exact: true }).click()]);
     await expect(page.locator('.fi-no-notification').filter({ hasText: mode === 'live' ? 'Now in live mode' : 'Now in test mode' })).toBeVisible();
 }
 
@@ -268,7 +277,8 @@ test.describe('the credentials page', () => {
             const confirm = page.locator('.fi-modal-window').filter({ hasText: 'Switch' });
             await expect(confirm).toContainText('These have no usable live value yet');
             await expect(confirm).toContainText(HOOK);
-            await confirm.getByRole('button', { name: 'Switch to live mode', exact: true }).click();
+            await confirm.locator('input[name="current_password"]').fill('password');
+            await Promise.all([page.waitForURL(PAGE), confirm.getByRole('button', { name: 'Switch to live mode', exact: true }).click()]);
 
             await expect(page.locator('.fi-badge', { hasText: /^\s*Live mode\s*$/ })).toBeVisible();
             await expect(lineOf(page, PAYMENT, 'live')).toContainText('In use');
@@ -293,6 +303,52 @@ test.describe('the credentials page', () => {
         }
 
         await expect(page.locator('.fi-badge', { hasText: /^\s*Test mode\s*$/ })).toBeVisible();
+    });
+
+    test('keeps a refused fresh password in one native set POST and out of every response and Livewire snapshot', async ({ page }) => {
+        await page.goto(PAGE);
+        await switchTo(page, 'test');
+        const before = await lineOf(page, PAYMENT, 'live').locator('.fi-badge').first().innerText();
+        const seen = capture(page);
+        const secret = value('fx_live_');
+        const wrongPassword = value();
+        const modal = await openSet(page, PAYMENT, 'live');
+        await modal.locator('input[name="password"]').fill(secret);
+        await modal.locator('input[name="current_password"]').fill(wrongPassword);
+        await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: 'Save', exact: true }).click()]);
+
+        await expect(page.locator('.fi-no-notification').filter({ hasText: 'Fresh owner authentication is required' })).toBeVisible();
+        await expect(lineOf(page, PAYMENT, 'live').locator('.fi-badge').first()).toHaveText(before);
+        expect(carriers(seen, secret)).toEqual([`POST ${SET}`]);
+        expect(carriers(seen, wrongPassword)).toEqual([`POST ${SET}`]);
+        await expectClean(page, seen, secret);
+        await expectClean(page, seen, wrongPassword);
+    });
+
+    test('submits removal and live mode confirmation through native password forms only', async ({ page }) => {
+        await page.goto(PAGE);
+        await switchTo(page, 'test');
+        await setValue(page, PAYMENT, 'live', value('fx_live_'));
+        const seen = capture(page);
+        const removePassword = value();
+        await page.getByRole('button', { name: `Remove ${PAYMENT} (live mode)`, exact: true }).click();
+        let modal = page.locator('.fi-modal-window').filter({ has: page.locator('form[action$="/credentials/remove"]') });
+        await modal.locator('input[name="current_password"]').fill(removePassword);
+        await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: 'Remove', exact: true }).click()]);
+        await expect(lineOf(page, PAYMENT, 'live').locator('.fi-badge').first()).toHaveText('Set');
+        await expect(page.locator('.fi-no-notification').filter({ hasText: 'Fresh owner authentication is required' })).toBeVisible();
+        expect(carriers(seen, removePassword)).toEqual([`POST ${REMOVE}`]);
+        await expectClean(page, seen, removePassword);
+
+        await page.locator('.fi-no-notification').filter({ hasText: 'Fresh owner authentication is required' }).locator('.fi-no-notification-close-btn').click();
+        const modePassword = value();
+        await page.getByRole('button', { name: 'Switch to live mode', exact: true }).first().click();
+        modal = page.locator('.fi-modal-window').filter({ has: page.locator('form[action$="/credentials/mode"]') });
+        await modal.locator('input[name="current_password"]').fill(modePassword);
+        await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: 'Switch to live mode', exact: true }).click()]);
+        await expect(page.locator('.fi-badge', { hasText: /^\s*Test mode\s*$/ }).first()).toBeVisible();
+        expect(carriers(seen, modePassword)).toEqual([`POST ${MODE}`]);
+        await expectClean(page, seen, modePassword);
     });
 
     test('is the org\'s at every one of its sites, and nobody else\'s', async ({ page, browser }) => {
@@ -377,6 +433,7 @@ test.describe('the credentials page', () => {
         await expect(modal.locator('input[name="mode"]')).toHaveValue('live');
 
         await modal.locator('input[name="password"]').fill(value('fxhook_'));
+        await modal.locator('input[name="current_password"]').fill('password');
         await Promise.all([page.waitForURL(PAGE), modal.getByRole('button', { name: 'Save', exact: true }).click()]);
 
         await expect(lineOf(page, HOOK, 'live').locator('.fi-badge').first()).toHaveText('Set');

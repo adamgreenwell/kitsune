@@ -103,6 +103,12 @@ final class CredentialCipher
         return $secret;
     }
 
+    /** Rotation keeps plaintext inside the cipher and preserves the authenticated org, slot and mode envelope. */
+    public function reseal(Credential $row): SealedCredential
+    {
+        return $this->seal((int) $row->org_id, $row->slot, $row->mode, $this->open($row)->reveal());
+    }
+
     /** The id of the key a new seal would use, without decrypting anything — null when `APP_KEY` is unset. */
     public function currentKeyId(): ?string
     {

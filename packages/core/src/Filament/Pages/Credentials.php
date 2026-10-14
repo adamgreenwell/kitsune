@@ -13,7 +13,6 @@ namespace Kitsune\Core\Filament\Pages;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Infolists\Components\TextEntry;
-use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Component;
@@ -31,7 +30,6 @@ use Filament\Support\View\Components\ButtonComponent;
 use Illuminate\Support\HtmlString;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Credentials\CredentialMode;
-use Kitsune\Core\Credentials\CredentialRefused;
 use Kitsune\Core\Credentials\CredentialSlot;
 use Kitsune\Core\Credentials\CredentialSlots;
 use Kitsune\Core\Credentials\CredentialState;
@@ -41,6 +39,9 @@ use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Filament\AuditActors;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Filament\Schemas\SiteTime;
+use Kitsune\Core\Http\Controllers\CredentialModeController;
+use Kitsune\Core\Http\Controllers\CredentialMutationRequest;
+use Kitsune\Core\Http\Controllers\CredentialRemoveController;
 use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Credential;
@@ -53,11 +54,11 @@ use Kitsune\Core\Tenancy\Context;
  * ⚠️ IT NEVER HAS A VALUE IN HAND. Everything it renders comes from declared names and row metadata: status, when, by
  * whom, label, help and the declared format. A value reaches the server once, as the body of the plain form in the
  * Set modal, POSTed to `CredentialSetController` — never through Livewire, because a Livewire field's value returns in
- * the response snapshot when its save is refused. Remove and the mode switch carry no value, so they are ordinary
- * confirmed actions.
+ * the response snapshot when its save is refused. Remove and mode changes use native forms too: the current
+ * password is submitted only in their body, never kept in a Livewire property, session or response.
  *
- * ⚠️ OWNER-ONLY, AND THE NULL USER IS THE LOAD-BEARING HALF. The writer trusts its caller when nobody is signed in, so
- * the page, each action and each handler refuse a missing user here, as the controller does (ADR-033, ADR-040).
+ * ⚠️ OWNER-ONLY. The page and each handler refuse a missing user; the writer independently proves current ownership
+ * and fresh authentication under its transaction lock (ADR-033, ADR-040).
  *
  * ⚠️ EVERY PUBLIC METHOD THIS CLASS ADDS IS STATIC. Livewire lets a browser call a component's public instance methods,
  * never its static ones, so the page adds no browser endpoint; `CredentialPageTest` asserts it by reflection. The
@@ -424,6 +425,7 @@ final class Credentials extends Page
             .' spellcheck="false" autocapitalize="off" autocorrect="off" data-1p-ignore data-lpignore="true" data-bwignore'
             .' data-form-type="other" aria-describedby="%s-format"></div>'
             .'<p id="%s-format" style="font-size:0.875rem">%s</p>'
+            .'%s'
             .'<div><button type="submit" class="fi-btn fi-size-md %s">%s</button></div>'
             .'</form>',
             e($action),
@@ -438,6 +440,7 @@ final class Credentials extends Page
             e($id),
             e($id),
             e(self::formatOf($slot, $mode)),
+            self::passwordField($key, self::needsAuthentication($mode)),
             e(implode(' ', FilamentColor::getComponentClasses(ButtonComponent::make(), 'primary'))),
             e(__('kitsune::credentials.set.submit')),
         ));
@@ -461,42 +464,16 @@ final class Credentials extends Page
             ->modalHeading(__('kitsune::credentials.remove.heading', ['line' => $line]))
             ->modalDescription(__('kitsune::credentials.remove.description')
                 .($inUse ? ' '.__('kitsune::credentials.remove.in_use') : ''))
-            ->modalSubmitActionLabel(__('kitsune::credentials.remove.submit'))
-            ->action(static function (self $livewire) use ($slot, $mode): void {
-                self::removeLine($slot, $mode);
-                self::reload($livewire);
-            });
-    }
-
-    /**
-     * Remove one line's value.
-     *
-     * ⚠️ THE STATE IS READ FIRST, because the writer is silent when nothing is stored: a removal that lands between the
-     * page's build and this handler says "nothing was removed" rather than claim one. A page left open after another tab
-     * removed the value no longer offers Remove at all — the action is hidden in the schema rebuilt on the next request —
-     * so the click resolves nothing, and the reload shows the line as it is.
-     */
-    public static function removeLine(CredentialSlot $slot, ?CredentialMode $mode): void
-    {
-        abort_unless(self::canAccess(), 403);
-
-        $line = self::labelOf($slot, $mode);
-
-        if (! self::holdsValue(app(CredentialStates::class)->of($slot->name, $mode))) {
-            Notification::make()->info()->title(e(__('kitsune::credentials.remove.nothing', ['line' => $line])))->send();
-
-            return;
-        }
-
-        try {
-            app(CredentialWriter::class)->remove($slot->name, $mode);
-        } catch (CredentialRefused $refused) {
-            self::refused(__('kitsune::credentials.remove.refused', ['line' => $line]), $refused);
-
-            return;
-        }
-
-        Notification::make()->success()->title(e(__('kitsune::credentials.remove.removed', ['line' => $line])))->send();
+            ->modalContent(static fn (): HtmlString => self::mutationForm(
+                self::mutationUrl(CredentialRemoveController::ROUTE),
+                self::keyOf($slot, $mode).'-remove',
+                ['slot' => $slot->name, ...($mode !== null ? ['mode' => $mode->value] : [])],
+                self::needsAuthentication($mode),
+                __('kitsune::credentials.remove.submit'),
+                'danger',
+            ))
+            ->formWrapper(false)
+            ->modalSubmitAction(false);
     }
 
     // ---- The mode ----------------------------------------------------------------------------------------------------
@@ -520,8 +497,7 @@ final class Credentials extends Page
      * Switch to one fixed mode — two actions, never one that works out "the other" when clicked, so a page left open
      * after another tab switched cannot switch back by accident.
      *
-     * ⚠️ NO PASSWORD RE-ENTRY YET. Adam's answer 4 gives it to the payments slice, before the first live payment;
-     * `CredentialPageTest` pins its absence so that slice flips the test on purpose.
+     * Entering live mode submits a current password in a native form; no credential mutation has a Livewire handler.
      */
     public static function switchActionTo(CredentialMode $to): Action
     {
@@ -537,11 +513,71 @@ final class Credentials extends Page
             ->modalDescription(static fn (): string => $live
                 ? trim(__('kitsune::credentials.switch.to_live_description').' '.self::missingLive())
                 : __('kitsune::credentials.switch.to_test_description'))
-            ->modalSubmitActionLabel(__($live ? 'kitsune::credentials.switch.to_live' : 'kitsune::credentials.switch.to_test'))
-            ->action(static function (self $livewire) use ($to): void {
-                self::switchOrgTo($to);
-                self::reload($livewire);
-            });
+            ->modalContent(static fn (): HtmlString => self::mutationForm(
+                self::mutationUrl(CredentialModeController::ROUTE),
+                'switch-'.$to->value,
+                ['mode' => $to->value],
+                $live,
+                __($live ? 'kitsune::credentials.switch.to_live' : 'kitsune::credentials.switch.to_test'),
+                $live ? 'danger' : 'gray',
+            ))
+            ->formWrapper(false)
+            ->modalSubmitAction(false);
+    }
+
+    private static function mutationUrl(string $route): string
+    {
+        return app(KitsunePanel::PANEL_BINDING)->route($route, ['tenant' => Filament::getTenant()], absolute: false);
+    }
+
+    /** The writer checks again under its lock if the org's mode changes after this form was rendered. */
+    private static function needsAuthentication(?CredentialMode $mode): bool
+    {
+        return $mode === CredentialMode::Live || ($mode === null && app(CredentialStates::class)->mode() === CredentialMode::Live);
+    }
+
+    private static function passwordField(string $key, bool $required): string
+    {
+        if (! $required) {
+            return '';
+        }
+
+        $id = 'credential-password-'.$key;
+
+        return sprintf(
+            '<label for="%s" class="fi-fo-field-label"><span class="fi-fo-field-label-content">%s</span></label>'
+            .'<div class="fi-input-wrp"><input id="%s" class="fi-input" type="password" name="%s" required autocomplete="current-password"'
+            .' aria-describedby="%s-help"></div><p id="%s-help" style="font-size:0.875rem">%s</p>',
+            e($id),
+            e(__('kitsune::credentials.authentication.field')),
+            e($id),
+            e(CredentialMutationRequest::PASSWORD),
+            e($id),
+            e($id),
+            e(__('kitsune::credentials.authentication.help')),
+        );
+    }
+
+    /** @param array<string, string> $fields */
+    private static function mutationForm(string $action, string $key, array $fields, bool $password, string $submit, string $color): HtmlString
+    {
+        $hidden = sprintf('<input type="hidden" name="_token" value="%s">', e((string) csrf_token()));
+
+        foreach ($fields as $name => $value) {
+            $hidden .= sprintf('<input type="hidden" name="%s" value="%s">', e($name), e($value));
+        }
+
+        return new HtmlString(sprintf(
+            '<form method="post" action="%s" autocomplete="off" wire:key="credential-form-%s" x-data'
+            .' x-on:submit="$el.querySelector(\'[type=submit]\').disabled = true" style="display:grid;gap:0.75rem">'
+            .'%s%s<div><button type="submit" class="fi-btn fi-size-md %s">%s</button></div></form>',
+            e($action),
+            e($key),
+            $hidden,
+            self::passwordField($key, $password),
+            e(implode(' ', FilamentColor::getComponentClasses(ButtonComponent::make(), $color))),
+            e($submit),
+        ));
     }
 
     /** The sentence naming every credential kept per mode with no usable live value, or nothing when there is none. */
@@ -557,45 +593,5 @@ final class Credentials extends Page
         }
 
         return $missing === [] ? '' : __('kitsune::credentials.switch.missing', ['labels' => implode(', ', $missing)]);
-    }
-
-    public static function switchOrgTo(CredentialMode $to): void
-    {
-        abort_unless(self::canAccess(), 403);
-
-        $live = $to === CredentialMode::Live;
-
-        try {
-            $switched = app(CredentialWriter::class)->switchTo($to);
-        } catch (CredentialRefused $refused) {
-            self::refused(__('kitsune::credentials.switch.refused'), $refused);
-
-            return;
-        }
-
-        if (! $switched) {
-            Notification::make()->info()->title(e(__($live ? 'kitsune::credentials.switch.already_live' : 'kitsune::credentials.switch.already_test')))->send();
-
-            return;
-        }
-
-        Notification::make()->success()->title(e(__($live ? 'kitsune::credentials.switch.now_live' : 'kitsune::credentials.switch.now_test')))->send();
-    }
-
-    /**
-     * Every change ends on a fresh GET of the page, as a value's does after its 303.
-     *
-     * ⚠️ NOT A RE-RENDER: Filament builds the page's content to find the action before running it, and renders from
-     * that copy afterwards, so the line would still show the state from before the change (measured in the browser).
-     */
-    private static function reload(self $livewire): void
-    {
-        $livewire->redirect(self::getUrl());
-    }
-
-    /** A refusal, in the store's own words, escaped and left on screen until it is read. */
-    private static function refused(string $title, CredentialRefused $refused): void
-    {
-        Notification::make()->danger()->persistent()->title(e($title))->body(e($refused->getMessage()))->send();
     }
 }

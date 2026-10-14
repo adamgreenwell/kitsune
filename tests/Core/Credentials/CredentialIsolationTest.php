@@ -31,7 +31,7 @@ beforeEach(function (): void {
     Fx::member(email: 'alpha@kitsune.test');
     Fx::writer()->set(Fx::SHARED, null, $this->secretA = Fx::value('', 40));
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
 
     $this->b = Fx::org('beta');
     Fx::member(email: 'beta@kitsune.test');
@@ -118,7 +118,7 @@ it('refuses a ciphertext moved to another org, another credential or the other m
 
     if ($rows[$to]['mode'] === 'live') {
         Fx::member(email: 'switcher-'.$from.'@kitsune.test');
-        Fx::writer()->switchTo(CredentialMode::Live);
+        Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
     }
 
     expect(credentialUnavailability(fn () => Fx::reader()->secret($rows[$to]['slot'])))->toBe(CredentialUnavailability::Misfiled);

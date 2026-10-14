@@ -31,7 +31,11 @@ use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
+use Kitsune\Core\Console\CredentialModeCommand;
+use Kitsune\Core\Console\CredentialReencryptCommand;
+use Kitsune\Core\Console\CredentialRemoveCommand;
 use Kitsune\Core\Console\CredentialsCommand;
+use Kitsune\Core\Console\CredentialSetCommand;
 use Kitsune\Core\Console\EntitlementsCommand;
 use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
@@ -297,6 +301,10 @@ final class KitsuneServiceProvider extends ServiceProvider
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
                 CredentialsCommand::class,
+                CredentialSetCommand::class,
+                CredentialRemoveCommand::class,
+                CredentialModeCommand::class,
+                CredentialReencryptCommand::class,
                 EntitlementsCommand::class,
                 MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,

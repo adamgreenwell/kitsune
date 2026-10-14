@@ -27,6 +27,7 @@ use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Shipping\ShippoRates;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Credentials\CredentialConsoleAuthority;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Models\Org;
@@ -103,7 +104,8 @@ if ($step === 'seed') {
     $setup->saveTaxRate(null, ['country' => 'US', 'region' => '*', 'tax_class' => 'shipping', 'rate_parts' => 200000]);
     $setup->setSalesPolicy($product->getKey(), $physical ? ['tax_class' => 'standard', 'delivery_kind' => 'physical', 'weight_grams' => 500, 'length_mm' => 300, 'width_mm' => 200, 'height_mm' => 100, 'tare_grams' => 50, 'units_per_parcel' => 1] : ['tax_class' => 'standard', 'delivery_kind' => 'digital']);
     if ($physical) {
-        app(CredentialWriter::class)->set(OrderQuotes::SHIPPO_SLOT, CredentialMode::Test, 'shippo_test_private_probe_token');
+        CredentialConsoleAuthority::run(app(Context::class), 'set', OrderQuotes::SHIPPO_SLOT, CredentialMode::Test, null,
+            static fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->set(OrderQuotes::SHIPPO_SLOT, CredentialMode::Test, 'shippo_test_private_probe_token', console: $authority));
     }
     echo json_encode(['seeded' => true], JSON_THROW_ON_ERROR);
     exit;

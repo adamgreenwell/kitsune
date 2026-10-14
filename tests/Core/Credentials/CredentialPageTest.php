@@ -18,18 +18,19 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialSlot;
 use Kitsune\Core\Credentials\CredentialSlots;
 use Kitsune\Core\Credentials\CredentialStatus;
-use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Filament\Pages\Credentials;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
+use Kitsune\Core\Http\Controllers\CredentialModeController;
+use Kitsune\Core\Http\Controllers\CredentialRemoveController;
 use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Media\MediaDelivery;
-use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -37,7 +38,6 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\TestUser;
-use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /*
  * The credentials page — ADR-040, its admin half: who may reach it, what each line says, the form a value is typed into,
@@ -51,11 +51,15 @@ beforeEach(function (): void {
     $this->site = Site::create(['handle' => 'main', 'slug' => 'acme-main', 'name' => 'Main', 'locale' => 'en']);
     app(Context::class)->setSite($this->site);
     $this->owner = Fx::member(email: 'owner@acme.test');
+    $this->currentPassword = Fx::value('', 40);
+    DB::table('users')->where('id', $this->owner->getKey())->update(['password' => Hash::make($this->currentPassword)]);
     $this->owner->forceFill(['name' => 'Olive Owner'])->save();
     PanelTenancy::enter($this->site);
 
     Route::get('/test-credentials/{tenant:slug}', static fn (): string => '')->name('filament.admin.pages.credentials');
     Route::post('/test-credentials/{tenant:slug}/set', CredentialSetController::class)->name('filament.admin.credentials.set');
+    Route::post('/test-credentials/{tenant:slug}/remove', CredentialRemoveController::class)->name('filament.admin.credentials.remove');
+    Route::post('/test-credentials/{tenant:slug}/mode', CredentialModeController::class)->name('filament.admin.credentials.mode');
     app('router')->getRoutes()->refreshNameLookups();
 
     session()->forget('filament.notifications');
@@ -183,6 +187,8 @@ it('is a page of the panel, and its POST is registered for a signed-in site alon
     }
 
     expect($byName[CredentialSetController::ROUTE] ?? null)->toBe(['POST'])
+        ->and($byName[CredentialRemoveController::ROUTE] ?? null)->toBe(['POST'])
+        ->and($byName[CredentialModeController::ROUTE] ?? null)->toBe(['POST'])
         ->and($byName[MediaDelivery::ROUTE] ?? null)->toBe(['GET', 'HEAD'])
         ->and($panel->getTenantRoutes())->toBe([])
         ->and($panel->getRoutes())->toBe([]);
@@ -203,7 +209,7 @@ it('reads every line\'s own state at its own mode, and marks the one in use', fu
         ->toBe([CredentialStatus::Set, CredentialStatus::NotSet, CredentialStatus::Removed, CredentialStatus::NotSet, CredentialStatus::Set])
         ->and(array_map(static fn (array $line): bool => $line['inUse'], $lines))->toBe([true, false, true, false, false]);
 
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->switchTo(CredentialMode::Live, $this->currentPassword);
 
     expect(array_map(static fn (array $line): bool => $line['inUse'], Credentials::lines()))->toBe([false, true, false, true, false]);
 
@@ -237,9 +243,9 @@ it('tells a value under a previous key and one under no key apart from a current
 
 it('costs a fixed count of queries, whatever is stored', function (): void {
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), $this->currentPassword);
     Fx::writer()->set(Fx::HOOK, CredentialMode::Test, Fx::value('fxhook_', 30));
-    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, Fx::value('fxhook_', 30));
+    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, Fx::value('fxhook_', 30), $this->currentPassword);
     Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
 
     DB::flushQueryLog();
@@ -277,10 +283,10 @@ it('names who last changed a line through the org\'s own members, and nobody els
     credentialSignIn($this->owner);
     expect(credentialLine(Fx::SHARED, null)['by'])->toBe('someone no longer in this organisation');
 
-    // Written with nobody signed in.
-    credentialSignIn(null);
+    // A system actor recorded by an authorized console write; this test exercises presentation, not console authority.
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
-    credentialSignIn($this->owner);
+    DB::table('audit_log')->where('target_id', credentialLine(Fx::PAYMENT, CredentialMode::Test)['state']->rowId)
+        ->where('target_type', (new Credential)->getMorphClass())->update(['actor_type' => null, 'actor_id' => null]);
     expect(credentialLine(Fx::PAYMENT, CredentialMode::Test)['by'])->toBe('the system');
 });
 
@@ -376,34 +382,6 @@ it('renders a form that posts, names its field password, and carries no value or
         ->and($lookAlike)->not->toBe(Credentials::keyOf($slot, CredentialMode::Live));
 });
 
-it('escapes what a module declares in every notice: nothing removed, removed, and refused', function (): void {
-    app(CredentialSlots::class)->register(new CredentialSlot('fx.marked-up', '<b>Marked</b>', 'Help', false, minLength: 32));
-    $slot = app(CredentialSlots::class)->find('fx.marked-up');
-
-    Credentials::removeLine($slot, null);
-
-    Fx::writer()->set('fx.marked-up', null, Fx::value('', 40));
-    Credential::saving(static fn (): bool => false);
-
-    try {
-        Credentials::removeLine($slot, null);
-    } finally {
-        Credential::flushEventListeners();
-        Credential::clearBootedModels();
-    }
-
-    Credentials::removeLine($slot, null);
-
-    $notices = credentialNotices();
-    expect($notices)->toHaveCount(3)
-        ->and(array_map(static fn (array $notice): string => (string) $notice['title'], $notices))->toBe([
-            '&lt;b&gt;Marked&lt;/b&gt; was not set, so nothing was removed.',
-            'Not removed: &lt;b&gt;Marked&lt;/b&gt;',
-            'Removed: &lt;b&gt;Marked&lt;/b&gt;',
-        ])
-        ->and((string) $notices[1]['body'])->toContain('&lt;b&gt;Marked&lt;/b&gt; was not removed')->not->toContain('<b>');
-});
-
 it('escapes every value it interpolates into the form', function (): void {
     $html = (string) Credentials::valueForm('/x/set?a="b"&c=<d>', 'to"k<en>', app(CredentialSlots::class)->find(Fx::SHARED), null);
 
@@ -413,109 +391,70 @@ it('escapes every value it interpolates into the form', function (): void {
         ->not->toContain('<en>');
 });
 
-/* 10. Remove. */
-it('removes a set line, recording it once, and says so', function (): void {
+/* 10. Native remove and mode forms. */
+it('builds remove as a native POST with no Livewire writer handler', function (): void {
     Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
     $line = credentialLine(Fx::SHARED, null);
-    // Built with every action made transactional, as a host's `databaseTransactions()` panel makes them.
-    $action = Action::configureUsing(
-        static fn (Action $action) => $action->databaseTransaction(),
-        during: static fn (): Action => Credentials::removeActionFor($line['slot'], null, $line['state'], true),
-    );
+    $action = Credentials::removeActionFor($line['slot'], null, $line['state'], true);
+    $html = (string) $action->getModalContent()?->toHtml();
 
     expect($action->isVisible())->toBeTrue()
         ->and($action->isConfirmationRequired())->toBeTrue()
-        ->and($action->hasDatabaseTransactions())->toBeFalse()
-        ->and((string) $action->getModalDescription())->toContain('It is in use right now');
-
-    Credentials::removeLine($line['slot'], null);
-
-    expect(credentialLine(Fx::SHARED, null)['state']->status)->toBe(CredentialStatus::Removed)
-        ->and(AuditLog::query()->where('action', CredentialWriter::REMOVED)->count())->toBe(1)
-        ->and(credentialNotices()[0]['title'])->toBe('Removed: Fixture shared secret')
-        ->and(Credentials::removeActionFor($line['slot'], null, credentialLine(Fx::SHARED, null)['state'], true)->isVisible())->toBeFalse();
+        ->and($action->hasFormWrapper())->toBeFalse()
+        ->and($action->getSchema(Schema::make(app(Credentials::class))))->toBeNull()
+        ->and($action->getActionFunction())->toBeNull()
+        ->and($action->getModalSubmitAction())->toBeNull()
+        ->and($html)->toContain('method="post"', '/test-credentials/acme-main/remove', 'name="slot" value="fx.shared-secret"')
+        ->not->toContain('wire:model', 'name="current_password"');
 });
 
-it('claims no removal when nothing was there, and records nothing', function (): void {
-    $line = credentialLine(Fx::SHARED, null);
+it('keeps every live confirmation password out of Livewire fields and action handlers', function (): void {
+    $line = credentialLine(Fx::PAYMENT, CredentialMode::Live);
+    $remove = Credentials::removeActionFor($line['slot'], $line['mode'], $line['state'], false);
+    $switch = Credentials::switchActionTo(CredentialMode::Live);
 
-    Credentials::removeLine($line['slot'], null);
+    foreach ([$remove, $switch] as $action) {
+        $html = (string) $action->getModalContent()?->toHtml();
+        preg_match('/<input[^>]+name="current_password"[^>]*>/', $html, $input);
 
-    expect(credentialNotices()[0]['title'])->toBe('Fixture shared secret was not set, so nothing was removed.')
-        ->and(credentialNotices()[0]['status'])->toBe('info')
-        ->and(AuditLog::query()->where('action', 'like', 'credential.%')->count())->toBe(0);
-});
-
-it('shows a refused removal in the store\'s words, escaped, and keeps the value', function (): void {
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
-    Credential::saving(static fn (): bool => false);
-
-    try {
-        Credentials::removeLine(app(CredentialSlots::class)->find(Fx::SHARED), null);
-    } finally {
-        Credential::flushEventListeners();
-        Credential::clearBootedModels();
+        expect($action->getSchema(Schema::make(app(Credentials::class))))->toBeNull()
+            ->and($action->getActionFunction())->toBeNull()
+            ->and($action->getModalSubmitAction())->toBeNull()
+            ->and($action->hasFormWrapper())->toBeFalse()
+            ->and($html)->toContain('method="post"', 'Current password')
+            ->not->toContain('wire:model', 'wire:submit')
+            ->and($input[0] ?? '')->toContain('type="password"', 'required', 'autocomplete="current-password"')
+            ->not->toContain('value=');
     }
 
-    $notice = credentialNotices()[0];
-
-    expect($notice['title'])->toBe('Not removed: Fixture shared secret')
-        ->and($notice['status'])->toBe('danger')
-        ->and($notice['duration'])->toBe('persistent')
-        ->and((string) $notice['body'])->toContain('a listener cancelled')
-        ->and(credentialLine(Fx::SHARED, null)['state']->status)->toBe(CredentialStatus::Set);
+    $test = Credentials::switchActionTo(CredentialMode::Test);
+    expect((string) $test->getModalContent()?->toHtml())->toContain('name="mode" value="test"')->not->toContain('current_password');
 });
 
-it('refuses a removal with nobody signed in, which the writer would have taken as the system\'s', function (): void {
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
-    credentialSignIn(null);
+it('asks for a password on neutral credentials only while live and always on a live line', function (): void {
+    $shared = app(CredentialSlots::class)->find(Fx::SHARED);
+    $payment = app(CredentialSlots::class)->find(Fx::PAYMENT);
 
-    expect(fn () => Credentials::removeLine(app(CredentialSlots::class)->find(Fx::SHARED), null))
-        ->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403));
+    expect((string) Credentials::valueForm('/set', 'tok', $shared, null))->not->toContain('current_password')
+        ->and((string) Credentials::valueForm('/set', 'tok', $payment, CredentialMode::Live))->toContain('current_password');
 
-    credentialSignIn($this->owner);
-    expect(credentialLine(Fx::SHARED, null)['state']->status)->toBe(CredentialStatus::Set);
-});
+    Fx::writer()->switchTo(CredentialMode::Live, $this->currentPassword);
 
-/* 11. Switch. */
-it('switches to each fixed mode once, and says when it already was', function (): void {
-    $live = Action::configureUsing(
-        static fn (Action $action) => $action->databaseTransaction(),
-        during: static fn (): Action => Credentials::switchActionTo(CredentialMode::Live),
-    );
-
-    expect($live->getName())->toBe('switchToLive')
-        ->and($live->isConfirmationRequired())->toBeTrue()
-        ->and($live->hasDatabaseTransactions())->toBeFalse();
-
-    Credentials::switchOrgTo(CredentialMode::Live);
-    expect(Fx::states()->mode())->toBe(CredentialMode::Live)
-        ->and(credentialNotices()[0]['title'])->toBe('Now in live mode');
-
-    session()->forget('filament.notifications');
-    Credentials::switchOrgTo(CredentialMode::Live);
-    expect(Fx::states()->mode())->toBe(CredentialMode::Live)
-        ->and(credentialNotices()[0]['title'])->toBe('Already in live mode. Nothing was changed.')
-        ->and(credentialNotices()[0]['status'])->toBe('info')
-        ->and(AuditLog::query()->where('action', CredentialWriter::MODE_LIVE)->count())->toBe(1);
-
-    session()->forget('filament.notifications');
-    Credentials::switchOrgTo(CredentialMode::Test);
-    expect(Fx::states()->mode())->toBe(CredentialMode::Test)
-        ->and(credentialNotices()[0]['title'])->toBe('Now in test mode');
+    expect((string) Credentials::valueForm('/set', 'tok', $shared, null))->toContain('current_password')
+        ->and((string) Credentials::valueForm('/set', 'tok', $payment, CredentialMode::Test))->not->toContain('current_password');
 });
 
 it('lists, before going live, what has no usable live value', function (): void {
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), $this->currentPassword);
 
     expect(Credentials::missingLive())->toBe('These have no usable live value yet, and will refuse to work until one is set: Fixture webhook secret.');
 
-    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, Fx::value('fxhook_', 30));
+    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, Fx::value('fxhook_', 30), $this->currentPassword);
 
     expect(Credentials::missingLive())->toBe('');
 
     // Removed counts as missing; and so does a value no key this installation has can open.
-    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live);
+    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live, $this->currentPassword);
     expect(Credentials::missingLive())->toBe('These have no usable live value yet, and will refuse to work until one is set: Fixture payment key.');
 
     config(['app.key' => Fx::appKey(), 'app.previous_keys' => []]);
@@ -529,25 +468,4 @@ it('offers no switch where nothing is kept per mode', function (): void {
     $page = app(Credentials::class);
 
     expect((fn (): array => $this->getHeaderActions())->call($page))->toBe([]);
-});
-
-it('refuses a switch with nobody signed in', function (): void {
-    credentialSignIn(null);
-
-    expect(fn () => Credentials::switchOrgTo(CredentialMode::Live))
-        ->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403));
-
-    expect(Fx::states()->mode())->toBe(CredentialMode::Test);
-});
-
-/* 12. The pinned gap. */
-it('goes live on a confirmation alone — re-entering a password is owed by the payments slice (ADR-040, answer 4)', function (): void {
-    $live = Credentials::switchActionTo(CredentialMode::Live);
-
-    expect($live->isConfirmationRequired())->toBeTrue()
-        ->and($live->getSchema(Schema::make(app(Credentials::class))))->toBeNull();
-
-    Credentials::switchOrgTo(CredentialMode::Live);
-
-    expect(Fx::states()->mode())->toBe(CredentialMode::Live);
 });

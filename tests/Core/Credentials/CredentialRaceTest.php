@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Credentials\CredentialConsoleAuthority;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialRefusal;
 use Kitsune\Core\Credentials\CredentialRefused;
@@ -88,7 +89,8 @@ it('waits on a rival holding the org, and is refused with nothing written when t
     };
 
     try {
-        Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
+        CredentialConsoleAuthority::run(app(Context::class), 'set', Fx::PAYMENT, CredentialMode::Test, null,
+            static fn (CredentialConsoleAuthority $authority) => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'), console: $authority));
         $this->fail('the write did not wait for the org\'s lock');
     } catch (CredentialRefused $refused) {
         expect($refused->reason)->toBeIn([CredentialRefusal::Database, CredentialRefusal::Race])
@@ -105,7 +107,9 @@ it('waits on a rival holding the org, and is refused with nothing written when t
     expect(Credential::query()->count())->toBe(0);
 
     // And once the rival lets go, the same write goes through.
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, $value = Fx::value('fx_test_'));
+    $value = Fx::value('fx_test_');
+    CredentialConsoleAuthority::run(app(Context::class), 'set', Fx::PAYMENT, CredentialMode::Test, null,
+        static fn (CredentialConsoleAuthority $authority) => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, $value, console: $authority));
 
     expect(Fx::reader()->secret(Fx::PAYMENT)->reveal())->toBe($value);
 });

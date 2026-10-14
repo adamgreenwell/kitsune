@@ -10,6 +10,9 @@ declare(strict_types=1);
 
 use Kitsune\Core\Console\CredentialsCommand;
 use Kitsune\Core\Filament\Pages\Credentials;
+use Kitsune\Core\Http\Controllers\CredentialModeController;
+use Kitsune\Core\Http\Controllers\CredentialMutationRequest;
+use Kitsune\Core\Http\Controllers\CredentialRemoveController;
 use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\OrgCredentialMode;
@@ -36,10 +39,16 @@ function credentialSourceFiles(string $under): array
 }
 
 it('marks every symbol it adds @internal', function (): void {
-    $symbols = [Credential::class, OrgCredentialMode::class, CredentialsCommand::class, Credentials::class, CredentialSetController::class];
+    $symbols = [Credential::class, OrgCredentialMode::class, CredentialsCommand::class, Credentials::class, CredentialSetController::class, CredentialRemoveController::class, CredentialModeController::class, CredentialMutationRequest::class];
 
     foreach (credentialSourceFiles('Credentials') as $file) {
         $symbols[] = 'Kitsune\\Core\\Credentials\\'.basename($file, '.php');
+    }
+
+    foreach (credentialSourceFiles('Console') as $file) {
+        if (str_starts_with(basename($file), 'Credential')) {
+            $symbols[] = 'Kitsune\\Core\\Console\\'.basename($file, '.php');
+        }
     }
 
     // Not vacuous: the namespace holds the writer, the reader and the cipher.
@@ -57,7 +66,7 @@ it('encrypts and decrypts in one file, opens through one caller, and lets nothin
 
     // ⚠️ EVERY SPELLING OF A CIPHER, not `decryptString` alone (review): `decrypt()`, the facade, an `Encrypter` built
     // anywhere else, and the extensions beneath them — a second door to a value, or a second key, would be any of them.
-    $crypto = '/crypt\(|cryptString\(|Crypt::|Encrypter|openssl_|sodium_|hash_hkdf/';
+    $crypto = '/(?<![A-Za-z])(?:crypt\(|encrypt\(|decrypt\(|encryptString\(|decryptString\(|Crypt::|Encrypter|openssl_|sodium_|hash_hkdf)/';
     $decrypting = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => preg_match($crypto, $read($f)) === 1)));
     $opening = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'cipher->open('))));
 
@@ -74,7 +83,7 @@ it('encrypts and decrypts in one file, opens through one caller, and lets nothin
 it('logs and reports nothing', function (): void {
     $core = dirname(__DIR__, 3).'/packages/core/src/';
 
-    foreach ([...credentialSourceFiles('Credentials'), $core.'Console/CredentialsCommand.php', $core.'Filament/Pages/Credentials.php', $core.'Http/Controllers/CredentialSetController.php'] as $file) {
+    foreach ([...credentialSourceFiles('Credentials'), $core.'Console/CredentialsCommand.php', $core.'Filament/Pages/Credentials.php', $core.'Http/Controllers/CredentialSetController.php', $core.'Http/Controllers/CredentialRemoveController.php', $core.'Http/Controllers/CredentialModeController.php', $core.'Http/Controllers/CredentialMutationRequest.php'] as $file) {
         $source = (string) file_get_contents($file);
 
         // Not after a letter or digit: `AuditLog::` is not `Log::` and `->add(` is not `dd(` (the admin page reads the
