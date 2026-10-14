@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { BLOG_OWNER, plantCrossOrgRows, seedReaderDownload, seedReaderGrant } = require('./accounts');
 const { seedStorefrontAdmin } = require('./storefront-fixture');
+const { seedPublicCatalogue } = require('./public-catalogue-fixture');
 
 /*
  * Rebuilds the skeleton's database before the browser suite runs.
@@ -74,6 +75,7 @@ module.exports = async () => {
     run(['kitsune:module', 'install', 'kitsune/commerce', '--no-interaction']);
     run(['kitsune:module', 'enable', 'kitsune/commerce', '--no-interaction']);
     seedStorefrontAdmin();
+    seedPublicCatalogue();
 
     /*
      * ⚠️ THE BROWSER SUITE'S TEST MODULE, ENABLED HERE AND NOWHERE ELSE — ADR-040's admin half. `composer

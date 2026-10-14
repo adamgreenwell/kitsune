@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\WelcomeController;
 use Illuminate\Support\Facades\Route;
+use Kitsune\Commerce\Catalogue\CatalogueRoutes;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Readers\ReaderRoutes;
@@ -48,6 +49,11 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
  * reader page would render the placeholder instead.
  */
 ReaderRoutes::register();
+
+// Explicit first-party opt-in: the published core-only skeleton has no required commerce dependency.
+if (class_exists(CatalogueRoutes::class)) {
+    CatalogueRoutes::register();
+}
 
 /*
  * A SITE-SCOPED public route, which is what `sites.locale` needed in order to mean

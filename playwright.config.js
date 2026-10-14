@@ -61,6 +61,13 @@ module.exports = defineConfig({
             use: { ...devices['Desktop Chrome'] },
         },
         {
+            name: 'public-catalogue',
+            // Public visitors and readers start without a saved staff session; core's reader form signs them in.
+            testMatch: /public-catalogue\.spec\.js/,
+            dependencies: ['setup'],
+            use: { ...devices['Desktop Chrome'] },
+        },
+        {
             name: 'admin',
             // ⚠️ `direction` runs under the LTR admin deliberately. Issue #39's failure
             // is a value rendering in the direction of the CHROME, so the interesting

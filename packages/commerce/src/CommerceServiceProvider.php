@@ -25,7 +25,7 @@ use Kitsune\Core\Modules\ModuleServiceProvider;
  * @internal First-party only; no extension contract before v1.2.
  *
  * Sellables are org-owned, listings are site-owned. Storefront is applied explicitly into each org.
- * No public route or payment client is installed.
+ * The host opts into CatalogueRoutes separately; no public route or payment client is installed automatically.
  */
 final class CommerceServiceProvider extends ModuleServiceProvider
 {
