@@ -19,18 +19,19 @@ use RuntimeException;
  * unthinkable. The reader sees an error page.
  *
  * ⚠️ NEVER CHAINED. A database exception interpolates its bindings, and they hold the reader's identifier: this carries
- * the SQLSTATE alone, and the name, which identifies nobody.
+ * the SQLSTATE alone, and the name, which identifies nobody. A batch names no entitlement and returns no partial
+ * answers: its `entitlement` is null.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
 final class EntitlementUnavailable extends RuntimeException
 {
-    private function __construct(public readonly string $entitlement, public readonly string $state)
+    private function __construct(public readonly ?string $entitlement, public readonly string $state)
     {
         parent::__construct(sprintf(
-            'Whether the reader holds [%s] could not be read: the database refused the query (SQLSTATE %s). Its message '
+            'Whether the reader holds %s could not be read: the database refused the query (SQLSTATE %s). Its message '
             .'is not repeated, because it carries the reader\'s identifier. Nothing was granted.',
-            $entitlement,
+            $entitlement !== null ? '['.$entitlement.']' : 'the requested entitlements',
             $state,
         ));
     }
@@ -39,5 +40,10 @@ final class EntitlementUnavailable extends RuntimeException
     public static function because(string $entitlement, string $state): self
     {
         return new self($entitlement, $state);
+    }
+
+    public static function forBatch(string $state): self
+    {
+        return new self(null, $state);
     }
 }

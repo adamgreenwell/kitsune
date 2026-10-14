@@ -24,8 +24,8 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * One source of one reader's entitlement on one site — ADR-040. One row per (site, reader, entitlement, source).
  *
  * ⚠️ "LIVE" IS ONE ROW'S, "HOLDS" IS THE READER'S. A row is live while it is not revoked and has no end or an end after
- * now; a reader holds an entitlement while ANY of their rows for it is live, and only `EntitlementCheck::holds()` asks
- * that. Lapsed and revoked are derived per row, never stored: nothing ever writes "expired".
+ * now; a reader holds an entitlement while ANY of their rows for it is live, which `EntitlementCheck::holds()` and
+ * `holdsMany()` ask. Lapsed and revoked are derived per row, never stored: nothing ever writes "expired".
  *
  * ⚠️ TWO ENCODINGS OF "LIVE", one SQL (`scopeLiveAt`) and one PHP (`isLiveAt`), for the check and for the writer's
  * decision. `EntitlementExpiryTest` pins them against one dataset of rows × instants, so they cannot drift silently.

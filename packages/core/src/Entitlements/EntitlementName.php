@@ -15,9 +15,10 @@ namespace Kitsune\Core\Entitlements;
  *
  * ⚠️ `Permissions::validated()`'s DISCIPLINE, NOT ITS REGEX. The permission grammar needs `entry.{type}.{action}` and
  * refuses ADR-040's own examples, and its type segment lacks `/D`. What carries over is the design: one encoding, loud
- * on a write (`EntitlementWriter` refuses `NotAName`), quiet on a check (`EntitlementCheck::holds()` answers false
- * before any query), shape checked and existence never. There is no registry: a name nobody has declared is granted and
- * held, which is how an offer and a course arrive in either order.
+ * on a write (`EntitlementWriter` refuses `NotAName`), quiet on a singular check (`EntitlementCheck::holds()` answers
+ * false before any query), shape checked and existence never. `holdsMany()` instead refuses the entire malformed
+ * input list before any query, so its result can only have valid names as string keys. There is no registry: a name
+ * nobody has declared is granted and held, which is how an offer and a course arrive in either order.
  *
  * ⚠️ NOT `CredentialSlot`'s NAME either. That grammar gives the first word a module meaning, reserves `core.` and refuses
  * a digit-led second word such as `issue.2026-10`; sharing it would let a credential change re-shape entitlements.
