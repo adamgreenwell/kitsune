@@ -5505,6 +5505,12 @@ It makes no statement about buying again, grant duration or pass stacking; those
 Creating or changing this metadata grants nothing. Existing products migrate with no mapping, and clearing one
 does not revoke grants. The owner-only Products form manages it through the existing checked writer.
 
+**Subsequently confirmed by Adam (#192).** Adam selected the host-enabled public catalogue page at each site's
+`/catalogue` URL and one optional entitlement name on the shared product, with access checked separately on each
+site. These two choices were proposed above before implementation and are now explicit product decisions.
+Pagination, the batch contract and the remaining presentation/integration details remain implementation defaults;
+grant duration, pass timing/stacking and repeat purchases remain undecided for their later slices.
+
 Presentation exposes the title, a bounded escaped plain-text description excerpt, exact currency amount, stock
 state and at most one eligible public image. Arbitrary adapted fields, private media names/paths, staff media URLs,
 reader identifiers, grant sources and raw entitlement names are not public card data. Public images are never
