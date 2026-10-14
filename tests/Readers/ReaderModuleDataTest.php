@@ -56,6 +56,12 @@ final class ReaderPrivacyFixtureStore implements ModuleReaderData
     }
 }
 
+/** @return array<string, mixed> the real modules table has no Eloquent activity timestamps */
+function readerPrivacyReceipt(): array
+{
+    return ['handle' => 'kitsune/fixture-module', 'version' => 'older-installed-version', 'is_enabled' => false, 'installed_at' => now()];
+}
+
 beforeEach(function (): void {
     $this->world = ReaderFixture::world();
     $this->org = $this->world['golfdom'];
@@ -64,7 +70,7 @@ beforeEach(function (): void {
     FixtureModuleServiceProvider::$calls = [];
     $this->store = new ReaderPrivacyFixtureStore;
     FixtureModuleServiceProvider::$readerDataStore = $this->store;
-    Module::create(['handle' => 'kitsune/fixture-module', 'version' => 'older-installed-version', 'is_enabled' => false, 'installed_at' => now()]);
+    DB::table('modules')->insert(readerPrivacyReceipt());
     DB::table('fixture_module_seeds')->insert(['name' => $this->org->getKey().'|'.$this->reader->getKey()]);
     DB::table('fixture_module_seeds')->insert(['name' => $this->world['rival']->getKey().'|'.$this->reader->getKey()]);
 });
@@ -246,8 +252,7 @@ it('erases a store whose receipt committed after the callers repeatable-read sna
     $connection->beginTransaction();
     expect($connection->table('modules')->count())->toBe(0);
     app(Context::class)->setOrg(Org::query()->findOrFail($orgId));
-    $rival->table('modules')->insert(['handle' => 'kitsune/fixture-module', 'version' => 'old-disabled-version', 'is_enabled' => false,
-        'installed_at' => $now, 'created_at' => $now, 'updated_at' => $now]);
+    $rival->table('modules')->insert(readerPrivacyReceipt());
     $rival->table('fixture_module_seeds')->insert(['name' => $orgId.'|'.$readerId]);
 
     // This proves a plain primary read is still the stale snapshot before the production erasure starts.

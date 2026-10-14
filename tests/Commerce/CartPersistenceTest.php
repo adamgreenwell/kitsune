@@ -68,13 +68,23 @@ it('declares site scopes and stamps exact non-shared cart ownership', function (
 });
 
 it('stores reader keys as distinct bytes without case or trailing-space aliasing', function (): void {
-    foreach (['Ab', 'ab', '0e1', '0e2', str_repeat('X', 255)] as $reader) {
+    $expected = ['Ab', 'ab', '0e1', '0e2', str_repeat('X', 255)];
+
+    foreach ($expected as $reader) {
         Cart::create(cartPersistenceAttributes($reader));
     }
 
-    expect(Cart::query()->whereNotNull('reader_id')->pluck('reader_id')->all())->toEqualCanonicalizing(['Ab', 'ab', '0e1', '0e2', str_repeat('X', 255)])
+    // Canonicalizing comparisons sort numeric-looking keys loosely: '0e1' and '0e2' compare equal in PHP.
+    // Sort explicitly as bytes, then require the exact same strings regardless of the database's row order.
+    $stored = Cart::query()->whereNotNull('reader_id')->pluck('reader_id')->all();
+    sort($expected, SORT_STRING);
+    sort($stored, SORT_STRING);
+
+    expect($stored)->toBe($expected)
         ->and(Cart::query()->where('reader_id', 'Ab')->count())->toBe(1)
-        ->and(Cart::query()->where('reader_id', 'Ab ')->count())->toBe(0);
+        ->and(Cart::query()->where('reader_id', 'Ab ')->count())->toBe(0)
+        ->and(Cart::query()->where('reader_id', '0e1')->count())->toBe(1)
+        ->and(Cart::query()->where('reader_id', '0e2')->count())->toBe(1);
 });
 
 it('accepts checked cart and line updates within the same timestamp second', function (): void {
