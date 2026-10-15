@@ -5799,6 +5799,105 @@ cases. Exact pushed-head matrix results are recorded on the PR; these checks do 
 
 ---
 
+
+⚠️ **Amended 2026-10-14 — Stripe checkout policy before implementation (#197).**
+
+**Adam's decisions.** Stripe hosts the payment page; cards are the first supported method. A fresh buyer review
+commits the displayed item, tax and shipping amounts for a 30-minute checkout. Zero-total completion is deferred
+with a clear buyer message. This slice creates **test-mode checkouts only**: live checkout waits for verified durable
+completion/replay (#198), stock and refund obligations (#199), and pending/charged privacy (#203). Entitlement sales
+also wait for the offer and guest-claim choices in #200. Merely setting a live key or switching the org to live mode
+does not enable a live checkout.
+
+**The failure policy, an implementation default Adam may overrule.** Persist one immutable, exact-site attempt,
+its accepted request and idempotency identity before asking Stripe to create a Session. Nonmutating account
+discovery may precede that claim; all provider I/O happens outside database transactions. A slow response, crash or
+failed local result commit leaves that attempt unresolved. A retry reuses
+its exact provider parameters and identity, never a fresh charge opportunity. Uncertainty remains visible and
+blocks another attempt, cancellation and erasure until authoritative server-side reconciliation establishes a
+terminal result. A browser success/cancel URL and the local clock prove neither payment nor provider expiry.
+An explicit reconciliation/expiry path must accompany this fence. No automatic network retry, worker or service
+is introduced; calls have bounded connection, whole-request and response-size limits.
+
+**Custody and scope.** Fresh review proves the owned prepared order and current catalogue, stock, destination tax,
+shipping and org mode without pretending a recovered guest owns the original cart. Frozen prepared history stays
+unchanged. The attempt binds the verified provider account, mode, credential-row witness, exact currency/amounts
+and opaque order/attempt references. A changed mode, credential/account or disabled module refuses runtime recovery
+through the current-mode reader; it does not silently migrate an in-flight attempt. Operator recovery and the
+remaining historical event policy are explicit rather than an unrestricted secret-reading back door.
+
+**What completion means here.** A server-retrieved, exactly matched completed test Session records test-attempt
+completion only: the order stays prepared and unpaid, confirmed money stays null, stock stays unchanged and no
+access is granted. A completed test attempt has no invented financial-retention exception. Safe attempt history
+ships in reader/guest export and owner detail; payloads, credentials, bearer Checkout URLs and leases do not.
+Pending/uncertain attempts are retained for reconciliation, not under a jurisdictional invoice claim. Terminal
+test attempts can be erased through the checked custody workflow. Live completion and retention remain separate
+slices and cannot be activated by this one.
+
+**The concrete contract.** The client pins Stripe `2026-09-30.endive`: `ui_mode=hosted_page` and
+`allowed_payment_method_types=[card]`, rather than the older request names. It uses the existing Guzzle dependency,
+no SDK or provider interface, TLS verification, no redirects or automatic retries, a 3-second connection limit,
+10-second whole-request limit, 64 KiB request and 256 KiB response bounds. Account verification and a Session
+operation are separate bounded calls. Every transport method refuses a live key and any ambient database
+transaction. Provider URLs remain opaque, up to 4096 bytes, restricted to HTTPS `checkout.stripe.com` without
+credentials or a port; they leave custody only as an authorized empty-body redirect.
+
+**The expiry allowance is an implementation default, not another product choice.** Stripe compares an absolute
+expiry against its remote creation time, so local `now + 1800` can arrive below its minimum. The durable request uses
+`now + 1860`, at most one setup minute beyond the intended 30-minute checkout, displays its exact expiry and says
+"about 30 minutes". It is never extended on retry. Provider-clock and real-account qualification remain separate;
+a local mock is not evidence that a particular remote account accepted a timestamp.
+
+**Money encoding is explicit.** ISO metadata alone is not Stripe encoding. The reviewed presentment list is
+intersected with core metadata; ISK/UGX use exact hundred-unit wire integers and MGA exact whole-unit wire amounts.
+Unrepresentable MGA gross amounts and scaling overflow refuse locally. HUF/TWD payout exceptions do not change charges.
+Three-decimal currencies are deferred for this slice, without claiming Stripe never supports them. Each provider
+line contains the exact extended gross amount once (quantity one), with shipping separate, so unit-tax rounding
+cannot change the order total. Automatic provider tax and adaptive pricing are explicitly off.
+
+**Custody as implemented.** `commerce_checkout_attempts` is exact-site scoped and read-only through Eloquent;
+checked raw writes own its lifecycle, restrictive parent keys and Site-leading indexes. At most 20 attempts belong
+to an order, with one unresolved active claim. The immutable request, account, API version, currency, order hash
+and credential-row witness survive timeouts and local result rollback. A 30-second operation lease fences result
+commits; every replay keeps the original request and derived idempotency key. Unidentified creates stop replaying
+after 23 hours, inside Stripe's minimum 24-hour key retention; a current owner can provide the original test Session
+ID for checked retrieval. A first recognized pure parameter/minimum refusal may release the claim; a later refusal
+after any uncertainty does not. No raw provider text or chained exception survives the boundary.
+
+**The deliberate recovery limit.** The credential witness includes ciphertext/key ID/change metadata. Replacing
+or resealing a key therefore freezes ordinary and owner reconciliation, even if the new key belongs to the same
+account. Re-entering its plaintext cannot reconstruct the old ciphertext witness. The original durable attempt
+is kept, and no different account/key silently takes custody. Historical recovery remains explicit #198 work.
+A changed API version refuses pending runtime I/O while safe historical export remains available.
+
+**The public surface.** Internal payment leaves belong to the existing CartRoutes/OrderRoutes host opt-in; there
+is no new extension or host registration API. GETs only present checked local state. Body-CSRF POSTs review, start,
+resume/reconcile or expire; native request scrubbing covers the new inputs and alternate URL aliases. Stripe's return
+and cancel pages grant no guest proof. The CSP permits only the one supported Stripe form destination on payment
+pages; the real browser redirect seam is tested separately from provider transport mocks.
+
+**Measured — synchronous test checkout, 2026-10-14.** Twenty formal fresh-process runs plus one smoke used
+PHP 8.4.26 ARM64 CLI, disposable SQLite, enforced 1 CPU / 1 GiB cgroup limits and PHP `memory_limit=128M`.
+Network was disabled; Stripe and Shippo were mocked. First `CheckoutWriter::start()` took 37–74 ms without injected
+delay. Six runs exercised the maximum 20 order lines; physical orders used 20 parcels and 21 Stripe items including
+shipping. Peak allocated PHP heap was 48.5 MiB and maximum process RSS 85.09 MiB, with no OOM. Fixture setup,
+including boot/migrations/order preparation/review, took 0.60–1.21 s; that is not ordinary request startup.
+All provider callbacks observed transaction level zero and PDO outside a transaction. Injecting one second per
+mock account/create call made first checkout take 2.057 s without holding database locks. These measurements cover
+the checkout path before the later cancellation-only history-snapshot fix; they do not qualify FPM capacity,
+real provider latency, DNS/TLS or enforcement of socket timeouts. The cached container was a measurement harness,
+not an installation dependency. [Stripe test checkout](stripe-checkout.md) carries the operational limits.
+
+**Local correctness qualification.** Final `composer ci` passed 8,656 tests / 44,829 assertions, with 46 explicit
+skips, root Pint and PHPStan; skeleton Pint passed separately. The two order browser specs passed 17 cases,
+including four authentication setups, without retries. Fresh-process fixtures cover unknown outcomes, exact
+replay, rollback, lease fencing, known-ID recovery, pending privacy and cancellation audit callbacks. A real
+two-process SQLite start race produced one unresolved claim and one Session-create identity. Pushed-head engine
+and full-browser matrix results are recorded with the implementation PR. The policy above preceded its payment
+path; local mocks do not establish provider-account eligibility or live-payment readiness.
+
+---
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**

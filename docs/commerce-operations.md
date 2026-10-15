@@ -255,3 +255,16 @@ a prepared/cancelled order removes invoice/contact/delivery data, lines and link
 exemption. No statutory retention period is invented. A future paid-state writer must establish the explicit invoice
 retention and nonrequired-data erasure policy before it can ship. Uninstall/rollback also refuse retained order/configuration
 rows; export and explicit cleanup remain the operator's maintenance responsibility.
+
+## Stripe test checkout
+
+Prepared orders now offer a [test checkout workflow](stripe-checkout.md): fresh buyer review, hosted cards,
+immutable accepted amounts, durable retries, current server reconciliation and explicit expiry. Returning guests
+use exact order proof rather than needing their original cart. An unresolved attempt blocks cancellation and
+erasure until reconciliation; terminal test history can be erased through the existing checked workflow.
+
+The org must remain in test mode with its own configured Stripe test key. Completion updates only the test attempt;
+orders remain unpaid, stock stays unchanged and no access is granted. Live checkout remains unavailable pending
+#198 verified completion, #199 stock/refund obligations and #203 pending/charged privacy. Zero-total completion and
+three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
+credential-change freezes and the difference between a provider return page and an authoritative result.

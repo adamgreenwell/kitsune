@@ -436,7 +436,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
 - [x] **Payment credential prerequisites** (#195, #196): operation-bound current-owner/password checks for live
       changes, native POST confirmation, explicit console recovery, bounded audited key rotation and the strict
-      credential-key release gate. Stripe checkout, verified events and paid-state retention remain pending.
+      credential-key release gate. Test Stripe checkout is described below; verified events and paid-state retention remain pending.
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
       ~~sellable record referencing it~~ *site listing linking the site's own content to an org-owned sellable*;
       money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
@@ -461,11 +461,16 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       currency witness, exact tax, operator country/region rates, org-selected inclusive/exclusive prices,
       configured SKU delivery/packing, domestic Shippo quotes, separate delivery defaulted to billing,
       guest email recovery and first-migration export/erasure custody. A prepared order is unpaid and grants
-      no access or stock reservation; Stripe, verified events and fulfilment remain the following slices.
+      no access or stock reservation. The test-only Stripe slice (#197) adds hosted card Checkout, fresh order-based
+      buyer review, exact accepted requests, durable same-key retry, server reconciliation/expiry, owner lost-ID
+      recovery and pending-attempt export/erasure fences. Zero completion is deferred; live checkout, verified
+      events, inventory/refunds and paid-state privacy remain later slices.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant
-      of record. The seam is extracted when a second provider exists, not before (Standing Principle #11)
+      of record. The seam is extracted when a second provider exists, not before (Standing Principle #11).
+      The first implemented stage is [test checkout](stripe-checkout.md), pinned to a concrete Stripe contract;
+      this box stays open until the live completion, stock/refund and privacy gates are satisfied.
 - [ ] **Webhooks persisted before they are processed**, verified, idempotent, processed inline with a replay
       command — no queue is assumed (ADR-027)
 
