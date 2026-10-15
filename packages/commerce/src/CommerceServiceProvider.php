@@ -15,6 +15,8 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
 use Kitsune\Commerce\Carts\CartSessions;
 use Kitsune\Commerce\Console\CartPruneCommand;
+use Kitsune\Commerce\Console\StripePruneCommand;
+use Kitsune\Commerce\Console\StripeReplayCommand;
 use Kitsune\Commerce\Filament\CheckoutResource;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\OrderResource;
@@ -22,6 +24,7 @@ use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Orders\CommerceReaderData;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Payments\StripeCheckout;
+use Kitsune\Commerce\Payments\StripeWebhook;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Credentials\CredentialSlot;
 use Kitsune\Core\Credentials\CredentialSlots;
@@ -46,6 +49,13 @@ final class CommerceServiceProvider extends ModuleServiceProvider
             StripeCheckout::SLOT, 'commerce::payments.credential_label', 'commerce::payments.credential_help', true,
             ['test' => ['sk_test_'], 'live' => ['sk_live_']], minLength: 16, maxLength: 255,
         ));
+        foreach ([StripeWebhook::SLOT => ['webhook_credential_label', 'webhook_credential_help'],
+            StripeWebhook::PREVIOUS_SLOT => ['webhook_previous_label', 'webhook_previous_help']] as $slot => [$label, $help]) {
+            $this->app->make(CredentialSlots::class)->register(new CredentialSlot(
+                $slot, 'commerce::payments.'.$label, 'commerce::payments.'.$help, true,
+                ['test' => ['whsec_'], 'live' => ['whsec_']], minLength: 16, maxLength: 255,
+            ));
+        }
         $this->app->make(CredentialSlots::class)->register(new CredentialSlot(
             OrderQuotes::SHIPPO_SLOT, 'commerce::orders.shippo_label', 'commerce::orders.shippo_help', true,
             ['test' => ['shippo_test_'], 'live' => ['shippo_live_']], minLength: 16, maxLength: 255,
@@ -78,7 +88,7 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 
     protected function bootModule(): void
     {
-        $this->commands([CartPruneCommand::class]);
+        $this->commands([CartPruneCommand::class, StripeReplayCommand::class, StripePruneCommand::class]);
         CartSessions::listen($this->app->make(Dispatcher::class));
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'commerce');
         $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'commerce');

@@ -114,6 +114,7 @@ final class CheckoutWriter
                     'created_at' => self::stored($now), 'updated_at' => self::stored($now)];
                 $id = $order->getConnection()->table(CheckoutAttempts::TABLE)->insertGetId($data);
                 $expected = (object) [...$data, 'id' => $id];
+                app(StripeEventInbox::class)->registerAttempt($order->getConnection(), $expected);
                 $this->audit('commerce.checkout_started', $expected);
                 $this->unchanged($expected, $order);
                 $this->reviews->approve($request, $reference, $review);

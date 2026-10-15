@@ -13,7 +13,7 @@ const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public o
 
 /** Only the dedicated catalogue fixture org: retained historical snapshots deliberately have no cart/catalogue FK. */
 function clearOrders() {
-    php(atSite + "DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
+    php(atSite + "DB::table('commerce_stripe_events')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_routing')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_tax_rates')->where('org_id',$site->org_id)->delete();"

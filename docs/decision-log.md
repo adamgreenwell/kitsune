@@ -5896,6 +5896,122 @@ two-process SQLite start race produced one unresolved claim and one Session-crea
 and full-browser matrix results are recorded with the implementation PR. The policy above preceded its payment
 path; local mocks do not establish provider-account eligibility or live-payment readiness.
 
+
+⚠️ **Amended 2026-10-15 — verified Stripe inbox and historical test recovery (#198), before implementation.**
+
+**Adam's decisions.** Keep complete verified webhook payloads for seven days, then
+retain only a minimal processing receipt. A current owner may explicitly recover an older checkout after mode or
+key changes using a verified key for that checkout's original account and mode. This supersedes #197's deliberate
+owner recovery freeze above; its reasoning and ordinary buyer freeze remain visible. This slice remains test-only:
+no paid order transition, stock obligation, entitlement, live checkout or live-key transport is introduced.
+
+**Ingress and authority.** The host opts into one snapshot webhook URL per org, under one canonical Site URL;
+that Site establishes the org before a declared current-mode signing credential is read. A second declared signing
+slot supports explicit old-secret overlap; rotation does not silently retain old secrets. Own-account events need
+not carry an account identifier, so their account binding comes from the exact local attempt and a verified provider
+account read, never arbitrary metadata. Reject Connect/context events, live events, unsupported snapshot API versions,
+unknown/foreign attempts and ambiguous routing. A small OrgScoped routing receipt maps opaque order/attempt hints to
+the recorded Site, including existing #197 attempts. It grants no authority: processing independently checks the
+Org, Site, order, attempt, account, mode, immutable request and provider Session. Ordinary SiteScoped lookup indexes
+remain Site-leading. No receiver or replay runs while commerce is disabled or its installation receipt is stale.
+
+**Bounded verification.** Verify HMAC-SHA256 over the exact raw bytes and one canonical timestamp before parsing
+or persisting JSON. Accept any matching v1 during explicit overlap, use constant-time comparisons and an absolute
+five-minute timestamp window. Bound body to 256 KiB, signature header to 4 KiB/32 components and JSON depth to 32.
+An early host front-controller guard applies before Laravel's eager JSON parsing; middleware/controller checks alone
+cannot establish that memory bound. Existing hosts must install that guard before exposing the URL; a server body limit is supplemental and cannot
+establish the required capture receipt or defer framework JSON parsing by itself. `Kitsune\Core\Http\BoundedWebhookRequest::capture()` is a named first-party host seam,
+on ADR-038's pre-v1.2 footing; it returns a bounded Request or an early refusal Response. It also prevents framework
+JSON parsing until the signature verifier authenticates the raw bytes. No host-model method changes. Provider retry
+timestamps are fresh; persisted replay uses the stored verification
+receipt, not the original signature's present age. Event identity is unique within org/account/mode; a conflicting
+payload digest never replaces a receipt. Different events for one Session still share the attempt's fenced effects.
+
+**Persist, acknowledge, reconcile.** Commit the verified receipt before returning 200. Under PHP-FPM, finish the
+response before bounded inline processing; demonstrate this sequence with an actual HTTP timing probe. Other SAPIs
+leave visible pending receipts for bounded console replay rather than claiming an unmeasured flush. No queue or
+always-on worker is required. Provider I/O stays outside transactions; short leases fence concurrent receipt and
+attempt processing, and an existing checkout lease is never stolen. Re-fetch the Session and prove original account,
+mode, exact money, references, expiry and Session identity. Delivery order or event creation time cannot regress a
+terminal attempt. Completion still records only the test attempt; the order remains prepared/unpaid. Failures retain
+a payload-free category and are retryable or explicitly blocked; no provider response or exception chain is logged.
+An exact already-verified terminal test attempt can finish receipt bookkeeping without reading a changed credential
+or making another provider call; pending attempts retain the current-mode and original-witness freeze.
+Replay skips active leases and orders eligible receipts by a durable claim count, then ID. A blocked old receipt
+therefore cannot monopolize every bounded invocation, including repeated invocations within one clock second.
+Capture admits at most 1,000 distinct events per order, matching the history bound; duplicates still acknowledge
+at that ceiling, while another identity refuses before insertion rather than making the existing graph unreadable.
+
+**Historical owner recovery.** A separate explicit owner action accepts a transient test key and fresh local
+password proof. It verifies the original account before retrieving the original Session, rechecks ownership and the
+exact durable graph around I/O, and audits the result. It neither changes the original credential witness nor installs
+a key, creates a new Session, migrates an account, or enables buyer recovery under a different mode. A missing Session
+ID may be recovered from a verified receipt or supplied by the owner. A different account, live key, API version or
+changed order fails closed. Module disable/staleness halts all recovery; re-enable a matching installation first.
+This first test-only path does not purport to resolve later live retention or financial recovery obligations.
+
+**Custody and seven-day retention.** Store raw verified bytes privately with a fixed received-at plus seven-day
+expiry and a minimal envelope sufficient for authoritative Session retrieval. No customer name, email, address,
+Checkout URL or raw payload belongs in the envelope, logs or admin projection. Expired bytes are never read or restored
+by processing/replay; a bounded prune command clears them physically, including failed and pending receipts. Operators
+must run that command regularly: an idle installation cannot promise wall-clock physical deletion without execution.
+Expiry never resets on redelivery. After expiry replay uses the minimal verified envelope and provider retrieval.
+Terminal test-order erasure clears raw bytes and correlation identifiers atomically, retaining only a dedup tombstone;
+replay cannot recreate erased orders. Pending attempts continue to fence cancellation/erasure. Reader export and owner
+screens receive only safe receipt status. Retained receipt rows block destructive module rollback/uninstall until the
+operator intentionally resolves custody; no invoice-retention exemption is invented.
+
+**Provider references.** [Stripe webhooks](https://docs.stripe.com/webhooks), the
+[official PHP signature verifier](https://github.com/stripe/stripe-php/blob/master/lib/WebhookSignature.php), and the
+[Event object](https://docs.stripe.com/api/events/object) establish raw-byte signatures, retries, separate snapshot
+version selection and optional Connect account identity. The limits, per-org routing receipt, test-only historical
+recovery and seven-day policy are Kitsune decisions, not provider guarantees. Measurements and final qualification
+follow below; the policy above was recorded before its implementation. Stripe does not guarantee byte-identical retry
+JSON: refusing a same-ID digest change preserves the first receipt for explicit replay and may refuse a legitimate
+changed-body redelivery. That conservative availability tradeoff is Kitsune's default, not an assertion that the
+provider's entire envelope or serialization never changes.
+
+**Measured — verified ingress and PHP-FPM acknowledgement, 2026-10-15.** Three real HTTP→FastCGI requests ran
+the production guard, routes, controller, inbox and reconciler on native PHP-FPM 8.5.10 and disposable SQLite with
+PHP `memory_limit=128M`. Only outbound Guzzle transport was mocked: account discovery returned the original account,
+then the Session GET slept two seconds and returned the exact paid test Session. Empty 200 responses arrived in
+162.605, 18.587 and 11.413 ms. An independent SQLite read immediately after each client response saw the committed
+receipt pending with claim count zero and the attempt open; processing subsequently completed in 2038–2053 ms,
+with receipt processed/count one and attempt completed. Full order/line snapshots stayed unchanged, confirmed
+money stayed null, stock stayed five and grants stayed zero. Every provider callback observed transaction level
+zero and PDO outside a transaction. Eight runtime/schema hashes stayed unchanged through the final loop, including
+the fair-replay counter and the 1,000-event admission ceiling.
+
+A 5,242,890-byte JSON request (about 5 MiB) to the actual guarded endpoint received 413 in 8.101 ms before
+application bootstrap, with no receipt or commerce effects and 2 MiB peak allocated PHP heap. Successful requests
+peaked at 2–10 MiB allocated heap; these values exclude shared opcode memory and are not RSS or a CPU-cgroup floor
+qualification. The measured host used a disposable local FastCGI gateway, no user service, no real provider account
+and no network provider calls; owned processes were stopped afterwards. This proves local FPM sequencing and
+ingress allocation, not real Stripe eligibility, production proxy buffering, socket timeout enforcement, throughput
+or other SAPIs. Non-FPM hosts retain pending receipts for the measured bounded console replay path.
+
+**Local qualification, 2026-10-15.** The final full `composer ci` passed 8,846 tests and 46,622 assertions,
+with 46 explicit skips, PHPStan and root Pint; separate skeleton Pint passed. The two order/admin browser specs
+passed all 17 cases without retries, including the native historical-recovery POST and dashboard navigation outside
+content routes. Production-handler probes cover actual process kill/restart, a fresh-boot replay command, transient
+provider failure, duplicates, out-of-order events, expired-raw replay and fair progress past blocked older receipts.
+These subprocess probes use disposable SQLite; the implementation PR records the separate exact-head engine and
+browser matrix. No real provider call, live-payment activation, deployment or package publication is qualified here.
+
+**Credential timestamp portability, 2026-10-15.** The first engine matrix exposed a pre-existing credential-write
+failure on MariaDB 10.6. Its actual `credentials.changed_at` schema carried implicit `ON UPDATE CURRENT_TIMESTAMP`
+with `explicit_defaults_for_timestamp=0`, as [MariaDB documents](https://mariadb.com/docs/server/reference/data-types/date-and-time-data-types/timestamp).
+When Eloquent omitted an unchanged timestamp during a same-second key replacement, the server supplied its own time
+and the strict post-audit readback correctly refused the unexpected durable value. A delayed application-key reseal,
+which deliberately preserves the old change time, has the same risk. Four new frozen-time cases failed on the actual
+engine before the fix. Credential and org-mode model updates must explicitly write their intended raw `changed_at`,
+including an unchanged value; strict comparison and callback guards remain intact. This needs no schema change,
+server setting, relaxed readback or rewritten credential witness.
+The complete focused credential and webhook-HTTP suite then passed on that unchanged MariaDB 10.6 schema:
+359 tests and 4,099 assertions, including the original failing overlap case and existing attacker-side integrity
+checks. Its SQLite run passed 352 tests and 4,052 assertions, with seven explicit engine skips. The disposable
+database was removed afterwards; no user database or server configuration was changed.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

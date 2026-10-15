@@ -19,6 +19,7 @@ use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
 use Kitsune\Commerce\Models\CheckoutAttempt;
+use Kitsune\Commerce\Models\CheckoutRoutingReceipt;
 use Kitsune\Commerce\Models\CommerceSettings;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Order;
@@ -26,6 +27,7 @@ use Kitsune\Commerce\Models\OrderAccessToken;
 use Kitsune\Commerce\Models\OrderLine;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\Sellable;
+use Kitsune\Commerce\Models\StripeEvent;
 use Kitsune\Commerce\Models\TaxRate;
 use Kitsune\Commerce\Payments\CheckoutRoutes;
 use Kitsune\Core\Models\EntryType;
@@ -57,7 +59,7 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class, CheckoutRoutingReceipt::class, StripeEvent::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -87,7 +89,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(7);
+        ->and(glob($path.'/*.php'))->toHaveCount(8);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);

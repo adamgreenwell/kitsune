@@ -10,8 +10,12 @@ declare(strict_types=1);
 
 namespace Kitsune\Commerce\Filament;
 
+use Closure;
+use Filament\Panel;
 use Filament\Resources\Pages\PageRegistration;
 use Filament\Resources\Resource;
+use Illuminate\Support\Facades\Route;
+use Kitsune\Commerce\Http\Controllers\CheckoutRecoveryController;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Core\Tenancy\Context;
 
@@ -36,6 +40,14 @@ final class OrderResource extends Resource
     public static function canViewAny(): bool
     {
         return self::canAccess();
+    }
+
+    public static function routes(Panel $panel, ?Closure $registerPageRoutes = null): void
+    {
+        parent::routes($panel, function () use ($registerPageRoutes): void {
+            $registerPageRoutes?->__invoke();
+            Route::post('/historical-recovery', CheckoutRecoveryController::class)->name('historical-recovery');
+        });
     }
 
     /** @return array<string, PageRegistration> */

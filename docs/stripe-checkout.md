@@ -90,8 +90,12 @@ require operator investigation; lack of a known Session ID is not proof that no 
 Changing the org mode, replacing a key, resealing it under another application key, changing accounts or upgrading
 the pinned API version can refuse runtime recovery. The durable attempt remains; it is not reassigned to the new
 account or deleted. Re-enable the same module and investigate through the original provider account. Historical
-credential/event recovery remains part of #198. Do not promise that restoring a different key recreates its original
-row witness. Export remains available independently of runtime mode/credential eligibility.
+credential/event recovery now has a separate explicit owner action: expand **Recover with this checkout’s original
+Stripe account**, provide a test key for the original account and your fresh Kitsune password. It retrieves only the
+original Session, using a checked verified receipt when its ID was lost, or the ID you supply. The transient key is
+discarded; no credential/witness is rewritten, no new Session is created and buyer recovery stays frozen. A different
+account or API version is refused. Export remains available independently of runtime mode/credential eligibility.
+See [verified Stripe events](stripe-webhooks.md) for receipt custody, replay and seven-day payload cleanup.
 
 The concrete client pins `2026-09-30.endive`, uses TLS verification, refuses redirects, performs no automatic
 network retry and caps requests/responses. Each operation has a 3-second connection and 10-second whole-request

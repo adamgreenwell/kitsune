@@ -1,0 +1,112 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+namespace Kitsune\Commerce\Payments;
+
+use Kitsune\Core\Credentials\Secret;
+use Throwable;
+
+/** Raw-byte own-account snapshot verification. Nothing from a payload chooses an Org. @internal */
+final class StripeWebhook
+{
+    public const SLOT = 'commerce.stripe-webhook';
+
+    public const PREVIOUS_SLOT = 'commerce.stripe-webhook-previous';
+
+    public const MAX_BODY = 262144;
+
+    public const MAX_HEADER = 4096;
+
+    public const TOLERANCE = 300;
+
+    /** @param list<Secret> $secrets
+     * @return array{id:string,type:string,apiVersion:string,sessionId:string,orderReference:string,attemptReference:string,test:bool}
+     */
+    public function verify(#[\SensitiveParameter] string $raw, #[\SensitiveParameter] string $header, array $secrets, int $now): array
+    {
+        try {
+            if ($raw === '' || strlen($raw) > self::MAX_BODY || $header === '' || strlen($header) > self::MAX_HEADER
+                || count($secrets) < 1 || count($secrets) > 2) {
+                throw new CheckoutRefused;
+            }
+            $parts = explode(',', $header);
+            if (count($parts) > 32) {
+                throw new CheckoutRefused;
+            }
+            $timestamp = null;
+            $signatures = [];
+            foreach ($parts as $part) {
+                [$scheme, $value] = array_pad(explode('=', trim($part), 2), 2, null);
+                if ($scheme === 't') {
+                    if ($timestamp !== null || ! is_string($value) || preg_match('/\A[1-9][0-9]{0,11}\z/D', $value) !== 1) {
+                        throw new CheckoutRefused;
+                    }
+                    $timestamp = $value;
+                } elseif ($scheme === 'v1') {
+                    if (! is_string($value) || preg_match('/\A[a-f0-9]{64}\z/D', $value) !== 1) {
+                        throw new CheckoutRefused;
+                    }
+                    $signatures[] = $value;
+                }
+            }
+            if ($timestamp === null || abs($now - (int) $timestamp) > self::TOLERANCE || $signatures === []) {
+                throw new CheckoutRefused;
+            }
+            $matched = false;
+            foreach ($secrets as $secret) {
+                $value = $secret->reveal();
+                if (strlen($value) < 16 || strlen($value) > 255 || preg_match('/\Awhsec_[A-Za-z0-9_]+\z/D', $value) !== 1) {
+                    throw new CheckoutRefused;
+                }
+                $expected = hash_hmac('sha256', $timestamp.'.'.$raw, $value);
+                unset($value);
+                foreach ($signatures as $signature) {
+                    $matched = hash_equals($expected, $signature) || $matched;
+                }
+            }
+            if (! $matched) {
+                throw new CheckoutRefused;
+            }
+            $event = json_decode($raw, true, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+            if (! is_array($event) || ($event['object'] ?? null) !== 'event' || ($event['livemode'] ?? null) !== false
+                || ($event['api_version'] ?? null) !== StripeCheckout::API_VERSION || ($event['account'] ?? null) !== null
+                || ($event['context'] ?? null) !== null || ! self::identifier($event['id'] ?? null, 'evt_')
+                || ! in_array($event['type'] ?? null, ['checkout.session.completed', 'checkout.session.expired',
+                    'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed'], true)) {
+                throw new CheckoutRefused;
+            }
+            $session = $event['data']['object'] ?? null;
+            if (! is_array($session) || ($session['object'] ?? null) !== 'checkout.session' || ($session['livemode'] ?? null) !== false
+                || ($session['mode'] ?? null) !== 'payment' || ! self::identifier($session['id'] ?? null, 'cs_test_')
+                || ! self::reference($session['metadata']['kitsune_order'] ?? null)
+                || ! self::reference($session['metadata']['kitsune_attempt'] ?? null)
+                || ($session['client_reference_id'] ?? null) !== $session['metadata']['kitsune_order']) {
+                throw new CheckoutRefused;
+            }
+
+            return ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
+                'sessionId' => $session['id'], 'orderReference' => $session['metadata']['kitsune_order'],
+                'attemptReference' => $session['metadata']['kitsune_attempt'], 'test' => true];
+        } catch (Throwable) {
+            // Neither signatures, payloads nor provider text may survive in an exception chain.
+            throw new CheckoutRefused;
+        }
+    }
+
+    private static function identifier(mixed $value, string $prefix): bool
+    {
+        return is_string($value) && strlen($value) <= 255 && preg_match('/\A'.preg_quote($prefix, '/').'[A-Za-z0-9_]+\z/D', $value) === 1;
+    }
+
+    private static function reference(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/\A[a-f0-9]{32}\z/D', $value) === 1;
+    }
+}

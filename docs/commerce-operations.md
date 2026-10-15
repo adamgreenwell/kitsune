@@ -258,6 +258,11 @@ rows; export and explicit cleanup remain the operator's maintenance responsibili
 
 ## Stripe test checkout
 
+Verified test events now have a [durable inbox and bounded replay](stripe-webhooks.md). Hosts must install the early
+request guard before exposing the webhook URL. Full verified payloads expire after seven days; operators run the
+bounded prune command regularly for physical removal. Explicit owner recovery can check an older test Session after
+a key or mode change using a transient key for its original Stripe account. Live checkout and paid effects stay off.
+
 Prepared orders now offer a [test checkout workflow](stripe-checkout.md): fresh buyer review, hosted cards,
 immutable accepted amounts, durable retries, current server reconciliation and explicit expiry. Returning guests
 use exact order proof rather than needing their original cart. An unresolved attempt blocks cancellation and
