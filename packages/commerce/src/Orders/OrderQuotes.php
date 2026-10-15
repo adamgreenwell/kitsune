@@ -103,9 +103,10 @@ final class OrderQuotes
 
     /** Requires OrderLocks. Every value used to prepare an order participates in its fingerprint.
      * @param  array<string,mixed>  $details
+     * @param  array<string,mixed>|null  $selection  Authoritative current order selection, already proved under OrderLocks.
      * @return array<string,mixed>
      */
-    public function capture(Request $request, #[\SensitiveParameter] array $details, Org $org, Site $site): array
+    public function capture(Request $request, #[\SensitiveParameter] array $details, Org $org, Site $site, ?array $selection = null): array
     {
         try {
             $siteName = $site->getAttributes()['name'] ?? null;
@@ -114,7 +115,7 @@ final class OrderQuotes
                 || ! mb_check_encoding($siteName, 'UTF-8') || mb_strlen($siteName, 'UTF-8') > 255) {
                 throw new OrderRefused('setup');
             }
-            $selection = $this->carts->checkout($request);
+            $selection ??= $this->carts->checkout($request);
             $connection = (new Order)->getConnection();
             $settings = $connection->table('commerce_settings')->useWritePdo()->where('org_id', $org->getKey())->lockForUpdate()->first();
             if ($settings === null || ! in_array($settings->tax_mode, ['inclusive', 'exclusive'], true)

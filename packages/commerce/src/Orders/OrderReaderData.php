@@ -18,6 +18,7 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -320,7 +321,8 @@ final class OrderReaderData implements ModuleReaderData
             'currency' => $order->currency, 'mode' => $order->mode, 'tax_mode' => $order->tax_mode,
             ...$totals, 'confirmed_total_minor' => null,
             'created_at' => self::instant($order->created_at), 'cancelled_at' => $order->cancelled_at === null ? null : self::instant($order->cancelled_at),
-            'lines' => $items, 'access_links' => $links];
+            'lines' => $items, 'access_links' => $links,
+            'checkout_attempts' => app(CheckoutAttempts::class)->projection($connection, $org, $order, lock: $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder
@@ -349,6 +351,8 @@ final class OrderReaderData implements ModuleReaderData
 
     private function delete(Connection $connection, int $org, #[\SensitiveParameter] object $order): void
     {
+        // A remote test Session can still be open or uncertain. Its recovery evidence must outlive this request.
+        app(CheckoutAttempts::class)->deleteTerminal($connection, $org, $order);
         foreach (['commerce_order_access_tokens', 'commerce_order_lines'] as $table) {
             $expected = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->count();
             if ($connection->table($table)->where('org_id', $org)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete() !== $expected) {

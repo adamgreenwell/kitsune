@@ -17,6 +17,7 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -207,6 +208,7 @@ final class OrderWriter
         $connection = $order->getConnection();
         $orgId = $this->context->orgId() ?? throw new OrderRefused;
         app(OrderReaderData::class)->project($connection, $orgId, (object) $raw, lock: true);
+        app(CheckoutAttempts::class)->assertErasable($connection, $orgId, (object) $raw);
         if ($raw['state'] === 'cancelled') {
             return;
         }
@@ -226,6 +228,7 @@ final class OrderWriter
         if ($this->children($order) !== $children) {
             throw new OrderRefused;
         }
+        app(CheckoutAttempts::class)->assertErasable($connection, $orgId, $stored);
         app(OrderReaderData::class)->project($connection, $orgId, $stored, lock: true);
     }
 
@@ -233,9 +236,14 @@ final class OrderWriter
     private function children(Order $order): array
     {
         $result = [];
-        foreach (['commerce_order_lines', 'commerce_order_access_tokens'] as $table) {
+        $tables = ['commerce_order_lines', 'commerce_order_access_tokens'];
+        if ($order->getConnection()->getSchemaBuilder()->hasTable(CheckoutAttempts::TABLE)) {
+            $tables[] = CheckoutAttempts::TABLE;
+        }
+        foreach ($tables as $table) {
             $result[$table] = $order->getConnection()->table($table)->useWritePdo()->where('order_id', $order->getKey())
-                ->orderBy('id')->limit(21)->lockForUpdate()->get()->map(static fn (object $row): array => (array) $row)->all();
+                ->orderBy('id')->limit($table === CheckoutAttempts::TABLE ? CheckoutAttempts::MAX_ATTEMPTS + 1 : 21)
+                ->lockForUpdate()->get()->map(static fn (object $row): array => (array) $row)->all();
         }
 
         return $result;

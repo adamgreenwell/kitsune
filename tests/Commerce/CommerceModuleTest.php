@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Migrations\Migrator;
+use Illuminate\Routing\Route;
 use Kitsune\Commerce\CommerceCustody;
 use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Filament\CheckoutResource;
@@ -17,6 +18,7 @@ use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
+use Kitsune\Commerce\Models\CheckoutAttempt;
 use Kitsune\Commerce\Models\CommerceSettings;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Order;
@@ -25,6 +27,7 @@ use Kitsune\Commerce\Models\OrderLine;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Models\TaxRate;
+use Kitsune\Commerce\Payments\CheckoutRoutes;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\AdminSurface;
@@ -54,7 +57,7 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -84,7 +87,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(6);
+        ->and(glob($path.'/*.php'))->toHaveCount(7);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);
@@ -104,6 +107,8 @@ it('registers enabled commerce on a headless host without needing a panel or ser
         ->and(Module::isEnabled(COMMERCE_MODULE))->toBeTrue()
         ->and(app(AdminSurface::class)->resources())->toBe([ProductResource::class, CurrencyResource::class, CheckoutResource::class, OrderResource::class])
         ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(4);
+    expect(collect(app('router')->getRoutes()->getRoutes())->filter(static fn (Route $route): bool => str_starts_with($route->getName() ?? '', 'commerce.payments.')))->toBeEmpty()
+        ->and((new ReflectionClass(CheckoutRoutes::class))->getDocComment())->toContain('@internal');
 });
 
 it('does not boot commerce when disabled before the next application boot', function (): void {
