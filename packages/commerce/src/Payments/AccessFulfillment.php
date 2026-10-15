@@ -189,17 +189,40 @@ final class AccessFulfillment
             $this->freeze($connection, $order);
         }
         [$work, $effects] = $this->checked($connection, $order, true);
+        $financial = $order->state === 'paid' ? app(FinancialState::class)->accessPlan($connection, $order, true) : null;
         if (in_array($work->state, ['awaiting_payment', 'awaiting_claim', 'processed'], true)
             || $work->category === 'financial_hold') {
             return ['state' => $work->state, 'category' => $work->category, 'processed' => 0];
         }
+        $contributions = $financial === null || $work->manifest === null ? [] : array_column(
+            AccessContributions::project(self::decode($work->manifest), $financial['removed_units'], $financial['blocked']),
+            null, 'entitlement',
+        );
+        $filedReader = $order->reader_id ?? $this->claim($connection, $order, true)?->reader_id;
+        if (! is_string($filedReader) || ReaderGuard::stored($filedReader) !== $filedReader) {
+            throw new CheckoutRefused('changed');
+        }
+        $sourceRows = [];
+        foreach ($effects as $effect) {
+            if (! in_array($effect->state, ['pending', 'held'], true)) {
+                $sourceRows[] = $this->sourceExpectation($connection, $order, $filedReader, $effect);
+            }
+        }
         $processed = 0;
         foreach ($effects as $effect) {
+            $this->checkSourceRows($connection, $order, $sourceRows);
             if ($effect->state !== 'pending') {
                 continue;
             }
-            $end = $effect->expires_at === null ? null : CheckoutAttempts::instant($effect->expires_at);
+            $contribution = $contributions[$effect->entitlement] ?? throw new CheckoutRefused('changed');
+            if ($contribution['suspended']) {
+                // Keep unperformed work recoverable. A later verified failure may release the original contribution.
+                // Merely revoking an absent source would let a later guest claim or payment replay create it.
+                continue;
+            }
+            $end = $contribution['expires_at'] === null ? null : CheckoutAttempts::instant($contribution['expires_at']);
             if ($end !== null && $end->lessThanOrEqualTo(CarbonImmutable::now('UTC')->startOfSecond())) {
+                $sourceRows[] = $this->sourceExpectation($connection, $order, $filedReader, $effect);
                 $this->effectUpdate($connection, $order, $effect, 'expired');
                 $processed++;
 
@@ -209,12 +232,14 @@ final class AccessFulfillment
             try {
                 $reader = $this->beneficiary($connection, $order, true);
                 $outcome = app(EntitlementWriter::class)->grantVerifiedOrder($reader, $effect->entitlement, $effect->source, $end,
-                    function () use ($connection, $order, $before, $reader, $request, $authority): void {
+                    function () use ($connection, $order, $before, $reader, $request, $authority, $financial, $sourceRows): void {
                         $this->ready($connection);
                         $this->inside($connection, $order);
                         $this->checked($connection, $order, true);
+                        $this->checkSourceRows($connection, $order, $sourceRows);
                         if ($this->admission($connection, $order, $request) !== $authority
                             || $this->beneficiary($connection, $order, true) !== $reader
+                            || ! hash_equals($financial['digest'], app(FinancialState::class)->accessPlan($connection, $order, true)['digest'])
                             || ! hash_equals($before, $this->custody($connection, $order))) {
                             throw new CheckoutRefused('changed');
                         }
@@ -222,6 +247,12 @@ final class AccessFulfillment
                 if (! hash_equals($before, $this->custody($connection, $order))) {
                     throw new CheckoutRefused('changed');
                 }
+                $this->checkSourceRows($connection, $order, $sourceRows);
+                $source = $this->sourceExpectation($connection, $order, $reader, $effect);
+                if ($source['row'] === null) {
+                    throw new CheckoutRefused('changed');
+                }
+                $sourceRows[] = $source;
                 $state = match ($outcome) {
                     GrantOutcome::Granted, GrantOutcome::Extended => 'granted',
                     GrantOutcome::Unchanged => 'unchanged',
@@ -237,6 +268,7 @@ final class AccessFulfillment
                     EntitlementRefusal::NoReaderGuard => 'reader_guard',
                     default => 'grant_refused',
                 };
+                $this->checkSourceRows($connection, $order, $sourceRows);
                 $this->update($connection, $order, $work, ['state' => 'held', 'category' => $category]);
 
                 return ['state' => 'held', 'category' => $category, 'processed' => $processed];
@@ -249,8 +281,48 @@ final class AccessFulfillment
         $category = $held !== [] ? 'unknown_terms' : null;
         $this->update($connection, $order, $work, ['state' => $state, 'category' => $category]);
         $this->checked($connection, $order, true);
+        $this->checkSourceRows($connection, $order, $sourceRows);
 
         return ['state' => $state, 'category' => $category, 'processed' => $processed];
+    }
+
+    /** Core fences the current write; later names must also preserve every earlier row or erased/expired absence.
+     *
+     * @return array{reader:string,entitlement:string,source:string,row:array<string,mixed>|null}
+     */
+    private function sourceExpectation(Connection $connection, #[\SensitiveParameter] object $order, #[\SensitiveParameter] string $reader, #[\SensitiveParameter] object $effect): array
+    {
+        return ['reader' => $reader, 'entitlement' => $effect->entitlement, 'source' => $effect->source,
+            'row' => $this->sourceRow($connection, $order, $reader, $effect->entitlement, $effect->source)];
+    }
+
+    /** @param list<array{reader:string,entitlement:string,source:string,row:array<string,mixed>|null}> $expected */
+    private function checkSourceRows(Connection $connection, #[\SensitiveParameter] object $order, #[\SensitiveParameter] array $expected): void
+    {
+        foreach ($expected as $source) {
+            if ($this->sourceRow($connection, $order, $source['reader'], $source['entitlement'], $source['source']) !== $source['row']) {
+                throw new CheckoutRefused('changed');
+            }
+        }
+    }
+
+    /** A raw primary read includes the opaque write identity; no model cache or timestamp-only comparison.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function sourceRow(Connection $connection, #[\SensitiveParameter] object $order, #[\SensitiveParameter] string $reader, string $entitlement, #[\SensitiveParameter] string $source): ?array
+    {
+        $rows = $connection->table('entitlements')->useWritePdo()->where('site_id', $order->site_id)->where('reader_id', $reader)
+            ->where('entitlement', $entitlement)->where('source', $source)->limit(2)->lockForUpdate()->get();
+        if ($rows->count() > 1) {
+            throw new CheckoutRefused('changed');
+        }
+        $row = $rows->first();
+        if ($row !== null && (self::writtenKey($row->id) === null || (string) $row->org_id !== (string) $order->org_id)) {
+            throw new CheckoutRefused('changed');
+        }
+
+        return $row === null ? null : get_object_vars($row);
     }
 
     /** Owner retry is a proof-only retry: no new beneficiary, offer, end or source can be supplied.
@@ -265,6 +337,26 @@ final class AccessFulfillment
         }
 
         return $this->reconcile($reference);
+    }
+
+    /** Only the financial source-effect consumer needs the private original manifest and filed beneficiary.
+     * It may revoke a deleted reader's source; the core reinstatement door independently requires a fresh reader.
+     *
+     * @return array{work:object,effects:list<object>,manifest:array<string,mixed>|null,reader:?string,custody:string}
+     *
+     * @internal
+     */
+    public function forAdjustment(Connection $connection, #[\SensitiveParameter] object $order): array
+    {
+        $this->inside($connection, $order);
+        [$work, $effects, $manifest] = $this->checked($connection, $order, true);
+        $reader = $order->reader_id ?? $this->claim($connection, $order, true)?->reader_id;
+        if ($reader !== null && (! is_string($reader) || ReaderGuard::stored($reader) !== $reader)) {
+            throw new CheckoutRefused('changed');
+        }
+
+        return ['work' => $work, 'effects' => $effects, 'manifest' => $manifest,
+            'reader' => $reader, 'custody' => $this->custody($connection, $order)];
     }
 
     private function genericAuthority(): string

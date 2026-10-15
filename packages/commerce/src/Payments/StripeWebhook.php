@@ -80,22 +80,37 @@ final class StripeWebhook
                 || ($event['context'] ?? null) !== null || ! self::identifier($event['id'] ?? null, 'evt_')
                 || ! in_array($event['type'] ?? null, ['checkout.session.completed', 'checkout.session.expired',
                     'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed',
-                    'refund.created', 'refund.updated', 'refund.failed'], true)) {
+                    ...FinancialSignals::TYPES], true)) {
                 throw new CheckoutRefused;
             }
             $session = $event['data']['object'] ?? null;
-            if (str_starts_with($event['type'], 'refund.')) {
-                if (! is_array($session) || ($session['object'] ?? null) !== 'refund' || ! self::identifier($session['id'] ?? null, 're_')
-                    || ! self::reference($session['metadata']['kitsune_order'] ?? null)
-                    || ! self::reference($session['metadata']['kitsune_refund'] ?? null)
-                    || ! is_string($session['metadata']['kitsune_request'] ?? null)
-                    || preg_match('/\A[a-f0-9]{64}\z/D', $session['metadata']['kitsune_request']) !== 1) {
+            if (in_array($event['type'], FinancialSignals::TYPES, true)) {
+                $refund = str_starts_with($event['type'], 'refund.');
+                $dispute = str_starts_with($event['type'], 'charge.dispute.');
+                $kind = $refund ? 'refund' : ($dispute ? 'dispute' : 'charge');
+                $prefix = $refund ? 're_' : ($dispute ? 'du_' : 'ch_');
+                $charge = $kind === 'charge' ? ($session['id'] ?? null) : ($session['charge'] ?? null);
+                if (! is_array($session) || ($session['object'] ?? null) !== $kind
+                    || ! self::identifier($session['id'] ?? null, $prefix) || strlen($session['id']) > 100
+                    || ! self::identifier($charge, 'ch_') || strlen($charge) > 100
+                    || (! $refund && ($session['livemode'] ?? null) !== false)) {
                     throw new CheckoutRefused;
                 }
+                $result = ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
+                    'financialChargeId' => $charge, 'financialSubjectId' => $session['id'], 'test' => true];
+                $metadata = $session['metadata'] ?? [];
+                if ($refund && is_array($metadata) && array_intersect(['kitsune_order', 'kitsune_refund', 'kitsune_request'], array_keys($metadata)) !== []) {
+                    if (! self::reference($metadata['kitsune_order'] ?? null) || ! self::reference($metadata['kitsune_refund'] ?? null)
+                        || ! is_string($metadata['kitsune_request'] ?? null)
+                        || preg_match('/\A[a-f0-9]{64}\z/D', $metadata['kitsune_request']) !== 1) {
+                        throw new CheckoutRefused;
+                    }
 
-                return ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
-                    'refundId' => $session['id'], 'orderReference' => $session['metadata']['kitsune_order'],
-                    'refundReference' => $session['metadata']['kitsune_refund'], 'requestDigest' => $session['metadata']['kitsune_request'], 'test' => true];
+                    return [...$result, 'refundId' => $session['id'], 'orderReference' => $metadata['kitsune_order'],
+                        'refundReference' => $metadata['kitsune_refund'], 'requestDigest' => $metadata['kitsune_request']];
+                }
+
+                return $result;
             }
             if (! is_array($session) || ($session['object'] ?? null) !== 'checkout.session' || ($session['livemode'] ?? null) !== false
                 || ($session['mode'] ?? null) !== 'payment' || ! self::identifier($session['id'] ?? null, 'cs_test_')

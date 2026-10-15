@@ -12,6 +12,7 @@ namespace Kitsune\Commerce\Payments;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\RefundAttempt;
 use Kitsune\Commerce\Orders\OrderLocks;
@@ -136,7 +137,13 @@ final class RefundRecovery
                 if (preg_match('/\A(?:0|[1-9][0-9]{0,9})\z/D', $count) !== 1 || (int) $count >= 2147483647) {
                     throw new CheckoutRefused;
                 }
-                $changes = ['lease_token' => bin2hex(random_bytes(32)), 'lease_until' => self::stored(self::now()->addSeconds(self::LEASE_SECONDS)),
+                $financial = app(FinancialState::class)->checked($order->getConnection(), (object) $order->getAttributes(), true);
+                if ($financial['work']->lease_until !== null && CheckoutAttempts::instant($financial['work']->lease_until)->greaterThan(self::now())) {
+                    throw new CheckoutRefused('busy');
+                }
+                // The compatibility path can add six bounded provider reads to the original workflow.
+                $leaseSeconds = $financial['refunds'] === [] ? self::LEASE_SECONDS : 180;
+                $changes = ['lease_token' => bin2hex(random_bytes(32)), 'lease_until' => self::stored(self::now()->addSeconds($leaseSeconds)),
                     'replay_count' => (int) $count + 1, 'updated_at' => self::stored(self::now())];
                 $this->update($order, $row, $changes);
                 $frame = $this->frame($order);
@@ -159,6 +166,12 @@ final class RefundRecovery
             $charge = $this->stripe->retrieveCharge($secret, $captured['frame']['receipt']->charge_id);
             $this->chargeProof($charge, $captured['frame']['receipt']);
             $this->check($orderReference, $attemptReference, $captured, $owner, $password);
+            $financialIds = [];
+            $financial = $this->financialCompatibility($captured, $secret, $owner, $password);
+            if ($financial !== null) {
+                $charge = $financial['charge'];
+                $financialIds = $financial['ids'];
+            }
             if ($charge['disputed']) {
                 return $this->finish($orderReference, $attemptReference, $captured, $owner, $password, 'held', null, 'operator');
             }
@@ -190,7 +203,7 @@ final class RefundRecovery
                     if (($refund['metadata']['kitsune_refund'] ?? null) === $row->reference) {
                         $this->refundProof($refund, $captured);
                         $matches[$refund['id']] = $refund;
-                    } elseif (! in_array($refund['status'], ['failed', 'canceled'], true)) {
+                    } elseif (! isset($financialIds[$refund['id']]) && ! in_array($refund['status'], ['failed', 'canceled'], true)) {
                         $conflict = true;
                     }
                 }
@@ -408,7 +421,96 @@ final class RefundRecovery
 
         return CheckoutAttempts::digest(['order' => $record, 'receipt' => (array) $frame['receipt'], 'checkout' => (array) $frame['checkout'],
             'obligation' => (array) $frame['obligation'], 'attempts' => array_map(static fn (object $row): array => (array) $row, $frame['attempts']),
-            'allocations' => $allocations]);
+            'allocations' => $allocations, 'financial' => app(FinancialState::class)->checked($order->getConnection(), (object) $order->getAttributes(), true)]);
+    }
+
+    /** Recognized selected-unit identities may coexist with the original unavailable-unit obligation.
+     * Verify every active sibling against its exact local request/attribution and complete current provider graph.
+     * No amount-only adoption or relaxed aggregate comparison is permitted.
+     *
+     * @param  array<string,mixed>  $captured
+     * @return array{charge:array<string,mixed>,ids:array<string,true>}|null
+     */
+    private function financialCompatibility(array $captured, Secret $secret, bool $owner, #[SensitiveParameter] ?string $password): ?array
+    {
+        $order = $this->locks->run(function () use ($captured, $owner, $password): Order {
+            $order = $this->orderById($captured['row']->order_id);
+            $this->checked($order->reference, $captured['row']->reference, $captured, $owner, $password);
+
+            return $order;
+        });
+        $frame = $this->locks->run(function () use ($order): array {
+            $frame = app(FinancialState::class)->checked($order->getConnection(), (object) $order->getAttributes(), true);
+            if ($frame['work']->lease_until !== null && CheckoutAttempts::instant($frame['work']->lease_until)->greaterThan(self::now())) {
+                throw new CheckoutRefused('busy');
+            }
+
+            return $frame;
+        });
+        if ($frame['refunds'] === []) {
+            return null;
+        }
+        $graph = app(StripeFinancialGraph::class)->retrieve($secret, $captured['frame']['receipt'],
+            fn () => $this->check($order->reference, $captured['row']->reference, $captured, $owner, $password));
+        $ids = [];
+        $amount = '0';
+        foreach ($graph['refunds'] as $refund) {
+            $recognized = false;
+            foreach ($frame['refunds'] as $local) {
+                if ($local->origin === 'operator') {
+                    $request = json_decode($local->request_payload, true, 32, JSON_THROW_ON_ERROR);
+                    if (($refund['metadata']['kitsune_refund'] ?? null) !== $local->reference) {
+                        continue;
+                    }
+                    if ($refund['metadata'] !== $request['metadata'] || $refund['amount'] !== $request['amount']
+                        || ($local->refund_id !== null && $local->refund_id !== $refund['id'])) {
+                        throw new CheckoutRefused('changed');
+                    }
+                } elseif ($local->refund_id !== $refund['id']) {
+                    continue;
+                } elseif ($refund['amount'] !== StripeAmounts::toWire($local->amount_minor, $order->currency)) {
+                    throw new CheckoutRefused('changed');
+                }
+                $recognized = true;
+                $ids[$refund['id']] = true;
+                if (! in_array($refund['status'], ['failed', 'canceled'], true)) {
+                    $amount = CartAmounts::add($amount, $refund['amount']);
+                }
+                break;
+            }
+            if (! $recognized && ! in_array($refund['status'], ['failed', 'canceled'], true)) {
+                $ours = false;
+                foreach ($captured['frame']['attempts'] as $old) {
+                    $request = $this->paid->refundRequest($old);
+                    if ($refund['metadata'] === $request['metadata'] && $refund['amount'] === $request['amount']
+                        && ($old->refund_id === null || $old->refund_id === $refund['id'])) {
+                        $ours = true;
+                    }
+                }
+                if (! $ours) {
+                    throw new CheckoutRefused('operator');
+                }
+            }
+        }
+        $charge = $graph['charge'];
+        if (AllocationAmounts::compare($amount, $charge['refunded']) > 0) {
+            throw new CheckoutRefused('changed');
+        }
+        $charge['refunded'] = AllocationAmounts::subtract($charge['refunded'], $amount);
+        $charge['disputed'] = false;
+        foreach ($graph['disputes'] as $dispute) {
+            if (in_array($dispute['status'], ['needs_response', 'under_review', 'lost'], true)) {
+                $charge['disputed'] = true;
+            }
+        }
+
+        return ['charge' => $charge, 'ids' => $ids];
+    }
+
+    private function orderById(int|string $id): Order
+    {
+        return Order::query()->useWritePdo()->whereKey($id)->where('org_id', $this->context->orgId())
+            ->where('site_id', $this->context->siteId())->lockForUpdate()->first() ?? throw new CheckoutRefused;
     }
 
     /** @param array<string,mixed> $charge */

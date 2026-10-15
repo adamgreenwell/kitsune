@@ -19,8 +19,10 @@ use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Offers\OfferTerms;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\FinancialReadModel;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\StripeEventInbox;
 use Kitsune\Commerce\Taxes\TaxAmounts;
@@ -340,7 +342,9 @@ final class OrderReaderData implements ModuleReaderData
             'stripe_events' => app(StripeEventInbox::class)->projection($connection, $org, $order, lock: $lock),
             ...app(PaidOrders::class)->projection($connection, $org, $order, lock: $lock),
             'access_claim' => $claim === null ? null : ['claimed_at' => self::instant($claim->claimed_at)],
-            ...app(AccessFulfillment::class)->projection($connection, $org, $order, lock: $lock)];
+            ...app(AccessFulfillment::class)->projection($connection, $org, $order, lock: $lock),
+            ...app(FinancialReadModel::class)->projection($connection, $org, $order, lock: $lock),
+            ...app(AccessAdjustments::class)->projection($connection, $org, $order, lock: $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder
@@ -394,6 +398,8 @@ final class OrderReaderData implements ModuleReaderData
         app(PaidOrders::class)->assertErasable($connection, $order);
         // A remote test Session can still be open or uncertain. Its recovery evidence must outlive this request.
         app(CheckoutAttempts::class)->deleteTerminal($connection, $org, $order);
+        app(AccessAdjustments::class)->deleteUnpaid($connection, $order);
+        app(FinancialReadModel::class)->deleteUnpaid($connection, $order);
         app(AccessFulfillment::class)->deleteUnpaid($connection, $order);
         foreach (['commerce_order_access_tokens', 'commerce_order_lines'] as $table) {
             $expected = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->count();

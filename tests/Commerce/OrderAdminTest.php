@@ -16,7 +16,9 @@ use Kitsune\Commerce\Filament\OrderList;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
@@ -63,6 +65,14 @@ function orderAdminFixture(int $org, int $site, array $overrides = []): string
     DB::table(AccessFulfillment::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
         'state' => 'awaiting_payment', 'category' => null, 'manifest' => null, 'manifest_hash' => null,
         'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null, 'effect_count' => 0, 'replay_count' => 0,
+        'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
+    DB::table(FinancialState::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
+        'order_reference' => $reference, 'revision' => 0, 'basis_hash' => null, 'charge_refunded_minor' => null,
+        'charge_disputed' => null, 'last_observed_at' => null, 'lease_token' => null, 'lease_until' => null,
+        'replay_count' => 0, 'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
+    DB::table(AccessAdjustments::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
+        'state' => 'awaiting_payment', 'category' => null, 'manifest_hash' => null, 'financial_digest' => null,
+        'beneficiary_hash' => null, 'effect_count' => 0, 'replay_count' => 0,
         'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
     DB::table('commerce_order_lines')->insert([
         'org_id' => $org, 'site_id' => $site, 'order_id' => $id, 'sellable_ref' => 123, 'listing_ref' => 456, 'entry_ref' => 789,
@@ -122,7 +132,7 @@ it('rechecks every order read and destructive action without an owner or ready m
     };
     Permissions::forget();
     expect(OrderResource::canAccess())->toBeFalse();
-    foreach (['orders', 'detail', 'cancelOrder', 'eraseOrder', 'retryAccess'] as $action) {
+    foreach (['orders', 'detail', 'cancelOrder', 'eraseOrder', 'retryAccess', 'financialDetail', 'requestRefund', 'attributeRefund', 'requestBalanceRefund', 'refreshFinancial'] as $action) {
         expect(fn () => $page->{$action}())->toThrow(HttpException::class);
     }
     foreach (['cancel', 'erase'] as $action) {
@@ -274,4 +284,4 @@ it('does not certify erasure when an audit observer recreates an orphan child wi
         }
         DB::statement('PRAGMA defer_foreign_keys = OFF');
     }
-})->with(['commerce_order_lines', 'commerce_order_access_tokens', AccessFulfillment::WORK]);
+})->with(['commerce_order_lines', 'commerce_order_access_tokens', AccessFulfillment::WORK, FinancialState::WORK, AccessAdjustments::WORK]);

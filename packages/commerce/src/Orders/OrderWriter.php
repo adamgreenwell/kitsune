@@ -17,8 +17,10 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -98,6 +100,7 @@ final class OrderWriter
                 $connection = (new Order)->getConnection();
                 $id = $connection->table('commerce_orders')->insertGetId($data);
                 app(AccessFulfillment::class)->prepare($connection, (object) [...$data, 'id' => $id]);
+                app(AccessAdjustments::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 $lineIds = [];
                 foreach ($current['lines'] as $line) {
                     $line['offer_terms'] = $line['offer_terms'] === null ? null : json_encode($line['offer_terms'], JSON_THROW_ON_ERROR);
@@ -105,6 +108,7 @@ final class OrderWriter
                         'site_id' => $owner->siteId, 'order_id' => $id]);
                 }
                 $order = $this->current()->whereKey($id)->first() ?? throw new OrderRefused;
+                app(FinancialState::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 if (! $this->auditor->recordOrFail('commerce.order_prepared', $order)->exists) {
                     throw new OrderRefused;
                 }

@@ -15,8 +15,10 @@ use GuzzleHttp\HandlerStack;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\FinancialReconciler;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\PaymentMaintenance;
 use Kitsune\Commerce\Payments\StripeCheckout;
@@ -46,6 +48,23 @@ beforeEach(function (): void {
     $this->reader = Fx::reader();
     // Any unexpected provider request fails immediately. Recovery has no credentials and must need none.
     app()->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' => HandlerStack::create(new MockHandler)])));
+    $this->financialProvider = new class
+    {
+        public int $calls = 0;
+
+        public function reconcile(mixed ...$arguments): never
+        {
+            $this->calls++;
+            throw new RuntimeException('Access recovery must not request financial provider I/O.');
+        }
+
+        public function submit(mixed ...$arguments): never
+        {
+            $this->calls++;
+            throw new RuntimeException('Access recovery must not submit a refund.');
+        }
+    };
+    app()->instance(FinancialReconciler::class, $this->financialProvider);
 });
 
 afterEach(function (): void {
@@ -85,8 +104,17 @@ it('discovers access after an interrupted financial-to-grant handoff without key
         ->and($pdo->query('select source from entitlements')->fetchColumn())->toBe('commerce.order:'.$order->id)
         ->and($pdo->query('select expires_at from entitlements')->fetchColumn())->toBe('2026-11-14 12:00:00')
         ->and(DB::connection()->transactionLevel())->toBe(0)->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
-    expect(app(PaymentMaintenance::class)->run(1, 1))->toBe(['processed' => 0, 'blocked' => 0])
-        ->and(DB::table('commerce_stock_movements')->count())->toBe(1);
+    $grant = $pdo->query('select * from entitlements')->fetch(PDO::FETCH_ASSOC);
+    // Completed initial fulfillment does not hide the independent financial source-adjustment marker.
+    expect(app(PaymentMaintenance::class)->run(1, 1))->toBe(['processed' => 1, 'blocked' => 0])
+        ->and($pdo->query('select state from commerce_access_adjustment_work')->fetchColumn())->toBe('processed')
+        ->and((int) $pdo->query('select replay_count from commerce_access_work')->fetchColumn())->toBe(1)
+        ->and((int) $pdo->query('select replay_count from commerce_access_adjustment_work')->fetchColumn())->toBe(1)
+        ->and($pdo->query('select * from entitlements')->fetch(PDO::FETCH_ASSOC))->toBe($grant)
+        ->and(app(PaymentMaintenance::class)->run(1, 1))->toBe(['processed' => 0, 'blocked' => 0])
+        ->and(DB::table('commerce_stock_movements')->count())->toBe(1)
+        ->and(DB::table('audit_log')->where('action', EntitlementWriter::GRANTED)->count())->toBe(1)
+        ->and(DB::table('credentials')->count())->toBe(0)->and($this->financialProvider->calls)->toBe(0);
 });
 
 it('advances fair durable access claims so one missing reader cannot starve another paid order', function (): void {
@@ -94,11 +122,29 @@ it('advances fair durable access claims so one missing reader cannot starve anot
     $other = Fx::reader(email: 'other@example.test');
     [$ready] = accessRecoveryPurchase($this->site, (string) $other->id);
     DB::table($this->reader->getTable())->where('id', $this->reader->id)->delete();
-    expect(app(PaymentMaintenance::class)->run(1, 1))->toBe(['processed' => 0, 'blocked' => 1])
-        ->and(app(PaymentMaintenance::class)->run(1, 1))->toBe(['processed' => 1, 'blocked' => 0])
+    // Two orders each have initial access and independent source work. Each bounded claim advances one durable
+    // counter, so the missing reader cannot keep either ready work kind behind its earlier order indefinitely.
+    $bound = DB::table(AccessFulfillment::WORK)->count() + DB::table(AccessAdjustments::WORK)->count();
+    $counts = ['processed' => 0, 'blocked' => 0];
+    foreach (range(1, $bound) as $pass) {
+        $result = app(PaymentMaintenance::class)->run(1, 1);
+        expect(array_sum($result))->toBe(1);
+        $counts['processed'] += $result['processed'];
+        $counts['blocked'] += $result['blocked'];
+    }
+    expect($bound)->toBe(4)->and($counts)->toBe(['processed' => 2, 'blocked' => 2])
         ->and(DB::table(AccessFulfillment::WORK)->where('order_id', $blocked->id)->value('category'))->toBe('unknown_reader')
         ->and(DB::table(AccessFulfillment::WORK)->where('order_id', $ready->id)->value('state'))->toBe('processed')
+        ->and(DB::table(AccessAdjustments::WORK)->where('order_id', $ready->id)->value('state'))->toBe('processed')
+        ->and(DB::table(AccessFulfillment::WORK)->orderBy('order_id')->pluck('replay_count')->all())->toBe([1, 1])
+        ->and(DB::table(AccessAdjustments::WORK)->orderBy('order_id')->pluck('replay_count')->all())->toBe([1, 1])
+        ->and(DB::table('entitlements')->count())->toBe(1)
         ->and(DB::table('entitlements')->value('reader_id'))->toBe((string) $other->id)
+        ->and(DB::table('entitlements')->value('source'))->toBe('commerce.order:'.$ready->id)
+        ->and(DB::table('entitlements')->value('expires_at'))->toBe('2026-11-14 12:00:00')
+        ->and(DB::table('audit_log')->where('action', EntitlementWriter::GRANTED)->count())->toBe(1)
+        ->and(DB::table('commerce_stock_movements')->count())->toBe(2)
+        ->and(DB::table('credentials')->count())->toBe(0)->and($this->financialProvider->calls)->toBe(0)
         ->and(DB::connection()->transactionLevel())->toBe(0)->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
 });
 

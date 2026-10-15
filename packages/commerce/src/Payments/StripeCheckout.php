@@ -36,6 +36,8 @@ use Throwable;
  * @phpstan-type RefundMetadata array{kitsune_order:string,kitsune_refund:string,kitsune_request:string}
  * @phpstan-type Refund array{id:string,chargeId:string,paymentIntent:string,currency:string,amount:string,status:string,created:int,metadata:?RefundMetadata}
  * @phpstan-type RefundPage array{refunds:list<Refund>,hasMore:bool,next:?string}
+ * @phpstan-type Dispute array{id:string,chargeId:string,paymentIntent:string,currency:string,amount:string,status:string,created:int,test:true}
+ * @phpstan-type DisputePage array{disputes:list<Dispute>,hasMore:bool,next:?string}
  */
 final class StripeCheckout
 {
@@ -286,6 +288,71 @@ final class StripeCheckout
 
             return ['refunds' => $refunds, 'hasMore' => $data->has_more,
                 'next' => $data->has_more ? $refunds[array_key_last($refunds)]['id'] : null];
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /** Current original-Charge dispute state; an event's funds movement is never proof of a win.
+     * @return Dispute
+     */
+    public function retrieveDispute(Secret $secret, string $disputeId): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($disputeId, 'du_', 'rejected');
+            $dispute = self::dispute($this->send('GET', '/disputes/'.$disputeId, $authorization));
+            if ($dispute['id'] !== $disputeId) {
+                throw new StripeUnavailable;
+            }
+
+            return $dispute;
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /** One bounded page. Multiple disputes can exist on one Charge; a partial page never proves their absence.
+     * @return DisputePage
+     */
+    public function listDisputes(Secret $secret, string $chargeId, ?string $startingAfter = null, int $limit = 20): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($chargeId, 'ch_', 'rejected');
+            if ($startingAfter !== null) {
+                self::id($startingAfter, 'du_', 'rejected');
+            }
+            if ($limit < 1 || $limit > 100) {
+                throw new StripeUnavailable('rejected');
+            }
+            $parameters = ['charge' => $chargeId, 'limit' => $limit];
+            if ($startingAfter !== null) {
+                $parameters['starting_after'] = $startingAfter;
+            }
+            $data = $this->send('GET', '/disputes?'.http_build_query($parameters, '', '&', PHP_QUERY_RFC3986), $authorization);
+            if (! $data instanceof stdClass || ($data->object ?? null) !== 'list' || ($data->url ?? null) !== '/v1/disputes'
+                || ! is_bool($data->has_more ?? null) || ! is_array($data->data ?? null) || ! array_is_list($data->data)
+                || count($data->data) > $limit || ($data->has_more && $data->data === [])) {
+                throw new StripeUnavailable;
+            }
+            $disputes = [];
+            $seen = [];
+            foreach ($data->data as $value) {
+                $dispute = self::dispute($value);
+                if ($dispute['chargeId'] !== $chargeId || isset($seen[$dispute['id']]) || $dispute['id'] === $startingAfter) {
+                    throw new StripeUnavailable;
+                }
+                $seen[$dispute['id']] = true;
+                $disputes[] = $dispute;
+            }
+
+            return ['disputes' => $disputes, 'hasMore' => $data->has_more,
+                'next' => $data->has_more ? $disputes[array_key_last($disputes)]['id'] : null];
         } catch (StripeUnavailable $refused) {
             throw $refused;
         } catch (Throwable) {
@@ -568,6 +635,27 @@ final class StripeCheckout
             'paymentIntent' => self::id($data->payment_intent ?? null, 'pi_'), 'currency' => self::currency($data->currency ?? null),
             'amount' => $amount, 'status' => $data->status, 'created' => $data->created,
             'metadata' => self::refundMetadata($data->metadata ?? null)];
+    }
+
+    /** Financial statements are deliberately discarded, including submitted evidence and customer details.
+     * @return Dispute
+     */
+    private static function dispute(#[\SensitiveParameter] mixed $data): array
+    {
+        if (! $data instanceof stdClass || ($data->object ?? null) !== 'dispute' || ($data->livemode ?? null) !== false
+            || ! in_array($data->status ?? null, ['warning_needs_response', 'warning_under_review', 'warning_closed',
+                'needs_response', 'under_review', 'won', 'lost', 'prevented'], true)
+            || ! is_int($data->created ?? null) || $data->created < 1) {
+            throw new StripeUnavailable;
+        }
+        $amount = MinorUnits::integer($data->amount ?? null);
+        if ($amount === '0') {
+            throw new StripeUnavailable;
+        }
+
+        return ['id' => self::id($data->id ?? null, 'du_'), 'chargeId' => self::id($data->charge ?? null, 'ch_'),
+            'paymentIntent' => self::id($data->payment_intent ?? null, 'pi_'), 'currency' => self::currency($data->currency ?? null),
+            'amount' => $amount, 'status' => $data->status, 'created' => $data->created, 'test' => true];
     }
 
     /** Invalid or external metadata remains unclaimed; callers must not adopt it by amount alone.
