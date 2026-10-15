@@ -198,13 +198,16 @@ if (in_array($mode, ['bad-record-key', 'foreign-record'], true)) {
     exit;
 }
 
-if (in_array($mode, ['halt-update', 'updated-event', 'commit-failure-update'], true)) {
+if (in_array($mode, ['halt-update', 'updated-event', 'commit-failure-update', 'stale-stock-update'], true)) {
     $sellable = app(ProductWriter::class)->createProduct($commerce, 'USD', $content);
     $component = Livewire::test(EditProduct::class, ['record' => $sellable->getKey()]);
     $form['sku'] = 'CHANGED';
     $form['price'] = '25.00';
     $form['stock'] = '6';
     $form['content']['title'] = 'Changed board';
+    if ($mode === 'stale-stock-update') {
+        DB::table('commerce_sellables')->where('id', $sellable->getKey())->update(['stock' => '2']);
+    }
 } else {
     $component = Livewire::test(CreateProduct::class);
 }
@@ -228,7 +231,7 @@ if (in_array($mode, ['halt-create', 'halt-create-retry', 'halt-update'], true)) 
     });
 }
 
-$component->fillForm($form)->call(in_array($mode, ['halt-update', 'updated-event', 'commit-failure-update'], true) ? 'save' : 'create');
+$component->fillForm($form)->call(in_array($mode, ['halt-update', 'updated-event', 'commit-failure-update', 'stale-stock-update'], true) ? 'save' : 'create');
 $unchanged = $state() == $before;
 
 if ($mode === 'halt-create-retry') {
@@ -244,6 +247,7 @@ echo json_encode([
     'observed' => $observed,
     'event_reached' => $eventReached,
     'persisted' => Sellable::query()->first()?->only(['sku', 'price_minor', 'stock']),
+    'displayed_stock' => $component->get('data.stock'),
     'level' => DB::connection()->transactionLevel(),
     'pdo_transaction' => DB::connection()->getPdo()->inTransaction(),
     'revision_notes' => app(RecordedRevisions::class)->held(),

@@ -15,12 +15,14 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
 use Kitsune\Commerce\Carts\CartSessions;
 use Kitsune\Commerce\Console\CartPruneCommand;
+use Kitsune\Commerce\Console\PaymentReconcileCommand;
 use Kitsune\Commerce\Console\StripePruneCommand;
 use Kitsune\Commerce\Console\StripeReplayCommand;
 use Kitsune\Commerce\Filament\CheckoutResource;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Filament\StockResource;
 use Kitsune\Commerce\Orders\CommerceReaderData;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Payments\StripeCheckout;
@@ -77,6 +79,11 @@ final class CommerceServiceProvider extends ModuleServiceProvider
                 ->url(fn (): string => CurrencyResource::getUrl())
                 ->visible(fn (): bool => CurrencyResource::canAccess()),
         );
+        $this->app->make(AdminSurface::class)->resource(StockResource::class)->navigationItem(
+            NavigationItem::make('Stock and history')->label(fn (): string => StockResource::getPluralModelLabel())
+                ->group(fn (): string => __('commerce::catalogue.storefront'))->icon('heroicon-o-archive-box')
+                ->url(fn (): string => StockResource::getUrl())->visible(fn (): bool => StockResource::canAccess()),
+        );
         foreach ([CheckoutResource::class => ['Checkout settings', 'heroicon-o-calculator'], OrderResource::class => ['Orders', 'heroicon-o-document-text']] as $resource => [$label, $icon]) {
             $this->app->make(AdminSurface::class)->resource($resource)->navigationItem(
                 NavigationItem::make($label)->label(fn (): string => $resource::getPluralModelLabel())
@@ -88,7 +95,7 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 
     protected function bootModule(): void
     {
-        $this->commands([CartPruneCommand::class, StripeReplayCommand::class, StripePruneCommand::class]);
+        $this->commands([CartPruneCommand::class, StripeReplayCommand::class, StripePruneCommand::class, PaymentReconcileCommand::class]);
         CartSessions::listen($this->app->make(Dispatcher::class));
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'commerce');
         $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'commerce');

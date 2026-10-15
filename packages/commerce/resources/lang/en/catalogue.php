@@ -35,6 +35,7 @@ return [
     'finite' => 'Finite',
     'stock_quantity' => 'Stock quantity',
     'stock_help' => 'A whole number of units. Zero means out of stock.',
+    'stock_edit_help' => 'Use Stock and history to adjust the shared balance with a reason. Saving product content keeps the current balance.',
     'entitlement_name' => 'Access entitlement',
     'entitlement_help' => 'Optional shared access name, for example course.short-game. Badges are checked separately on each site. Editing this grants or revokes no access.',
     'invalid_entitlement' => 'Enter a valid entitlement name, for example course.short-game, or leave it empty.',
