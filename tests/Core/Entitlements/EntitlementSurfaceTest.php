@@ -78,6 +78,9 @@ it('keeps every reader identifier and every source out of a stack trace', functi
 })->with([
     'grant: the reader' => [EntitlementWriter::class, 'grant', 'reader'],
     'grant: the source' => [EntitlementWriter::class, 'grant', 'source'],
+    'verified order: the reader' => [EntitlementWriter::class, 'grantVerifiedOrder', 'reader'],
+    'verified order: the source' => [EntitlementWriter::class, 'grantVerifiedOrder', 'source'],
+    'verified order: private proof' => [EntitlementWriter::class, 'grantVerifiedOrder', 'verify'],
     'comp: the reader' => [EntitlementWriter::class, 'comp', 'reader'],
     'revoke: the reader' => [EntitlementWriter::class, 'revoke', 'reader'],
     'revoke: the source' => [EntitlementWriter::class, 'revoke', 'source'],
@@ -179,7 +182,7 @@ it('offers the writer\'s doors and nothing more: no duration, no shortening, no 
     );
     sort($public);
 
-    expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'isErasing', 'isWriting', 'revoke']);
+    expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'revoke']);
 });
 
 it('reaches the writer from the owner\'s page alone, and the export from nowhere in the admin or over HTTP', function (): void {

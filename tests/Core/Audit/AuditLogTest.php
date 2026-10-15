@@ -406,6 +406,33 @@ it('records nothing rather than throwing when there is no org', function (): voi
     expect(app(Auditor::class)->record('something.happened'))->toBeNull();
 });
 
+it('keeps a verified producer effect anonymous without changing the signed-in guard or ordinary audit actor', function (): void {
+    $actor = new AuthUser;
+    $actor->forceFill(['id' => 47]);
+    Auth::login($actor);
+
+    $producer = app(Auditor::class)->recordForProducerOrFail('commerce.order_claimed', $this->site);
+    $ordinary = app(Auditor::class)->recordOrFail('settings.updated', $this->site);
+
+    expect($producer->fresh()->actor_type)->toBeNull()
+        ->and($producer->fresh()->actor_id)->toBeNull()
+        ->and($producer->fresh()->org_id)->toBe($this->org->id)
+        ->and($producer->fresh()->site_id)->toBe($this->site->id)
+        ->and($producer->fresh()->target_id)->toBe((string) $this->site->id)
+        ->and($ordinary->fresh()->actor_type)->toBe(AuthUser::class)
+        ->and($ordinary->fresh()->actor_id)->toBe('47')
+        ->and(Auth::id())->toBe(47);
+});
+
+it('refuses an unauditable producer effect without an organisation context', function (): void {
+    app(Context::class)->forget();
+    $before = DB::table(AuditLog::TABLE)->count();
+
+    expect(fn () => app(Auditor::class)->recordForProducerOrFail('commerce.order_claimed'))
+        ->toThrow(RuntimeException::class);
+    expect(DB::table(AuditLog::TABLE)->count())->toBe($before);
+});
+
 /*
  * Three from review, each a way the log failed to be what it claims.
  */

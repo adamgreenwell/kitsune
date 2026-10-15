@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Audit;
 
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
@@ -59,6 +60,22 @@ final class Auditor
     }
 
     /**
+     * Record a verified producer effect with the system actor, even when a buyer's session accompanies it.
+     *
+     * The producer proves the effect and checks persisted audit identity in its transaction. Reader identities
+     * never become audit actors, and no guard is cleared to make the request look anonymous (ADR-040, #200).
+     * There is deliberately no caller-supplied actor parameter.
+     *
+     * @internal First-party verified producer effects only; not an alternative for ordinary staff actions.
+     */
+    public function recordForProducerOrFail(string $action, ?Model $target = null): AuditLog
+    {
+        return $this->recordWithActor($action, $target, null) ?? throw new RuntimeException(
+            'A producer effect requires an organisation context before it can be audited.'
+        );
+    }
+
+    /**
      * An identifier as the log stores it: a string, or null.
      *
      * ⚠️ WHATEVER THE HOST'S KEYS ARE. An integer id, a UUID, an LDAP subject — the column is a string so
@@ -73,8 +90,12 @@ final class Auditor
 
     public function record(string $action, ?Model $target = null): ?AuditLog
     {
+        return $this->recordWithActor($action, $target, Permissions::currentUser());
+    }
+
+    private function recordWithActor(string $action, ?Model $target, ?Authenticatable $actor): ?AuditLog
+    {
         $orgId = $this->context->orgId();
-        $actor = Permissions::currentUser();
 
         if ($orgId === null) {
             return null;

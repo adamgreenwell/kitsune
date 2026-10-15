@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Entitlements;
 
 use Carbon\CarbonImmutable;
+use Closure;
 use DateTimeInterface;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -19,6 +20,7 @@ use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Throwable;
 
 /**
  * The one door in: grants, comps, revokes and erases a reader's entitlements, one source at a time — ADR-040, as
@@ -34,20 +36,24 @@ use Kitsune\Core\Tenancy\Context;
  * — a refunded order's replayed payment gives nothing back. Only `comp()`, an owner deciding now, gives access back, and
  * only through the comp's own row.
  *
- * ⚠️ AUTHORITY, and why nobody signed in is trusted: `EntitlementAuthority`. A public route reaches this writer by design
- * — commerce's webhook — so every caller with nobody signed in must have proved its own authority first; the signature
- * check is commerce's.
+ * ⚠️ ORDINARY AUTHORITY, and why nobody signed in is trusted: `EntitlementAuthority`. A public route reaches this writer
+ * by design — commerce's webhook — so every caller with nobody signed in must have proved its own authority first;
+ * the signature check is commerce's. The narrow `grantVerifiedOrder()` door additionally accepts a buyer's session
+ * only behind the producer's exact persisted order/payment/allocation and original-reader or immutable-claim proof.
+ * It preserves the reader guard and records the producer as the system; it is never an alternative for a comp.
  *
  * ⚠️ RECORDED INSIDE THE WRITE'S TRANSACTION — the action and the row, never the reader, the name or the source. A
  * write that cannot be recorded is not kept (ADR-020), and a refused write, or one that changes nothing, records
  * nothing.
  *
- * ⚠️ THE CONTRACT A PRODUCER KEEPS (commerce, an import): verify first, then with nobody signed in set the site from the
- * ORDER's site; name the cause as the source, never the event (`EntitlementSource`); pass the end as an instant or
+ * ⚠️ THE CONTRACT A PRODUCER KEEPS (commerce, an import): verify first, then for ordinary grant/revoke with nobody signed
+ * in set the site from the ORDER's site; name the cause as the source, never the event (`EntitlementSource`); pass the end as an instant or
  * null, never a duration; branch on `GrantOutcome` and on `EntitlementRefused::$reason`, never on text — `Unchanged` and
  * `StillRevoked` are processed, `Race` and `Database` are retried; a refund is `revoke()` of that order's source alone,
  * and is processed only once that order's grant has been, since a revoke of a source never granted stamps nothing and
- * the later grant would then give access. Never grant from a reader's own request, and never call `comp()`.
+ * the later grant would then give access. Never call ordinary grant/revoke from a reader's own request, and never call
+ * `comp()`. Commerce's verified-order door permits only its proof-backed original or claimed reader, without clearing
+ * authentication; its exact proof must still hold after host callbacks before the surrounding transaction commits.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
@@ -126,6 +132,48 @@ final class EntitlementWriter
             $stored = $this->known(EntitlementRefused::GRANT, $entitlement, $reader);
 
             return $this->give(EntitlementRefused::GRANT, $siteId, $stored, $entitlement, $source, $now, $end);
+        });
+    }
+
+    /**
+     * A first-party confirmed order's exact effect, even when its buyer remains signed in. The caller owns the
+     * transaction and proves the immutable order, captured payment, positive allocation, frozen effect and original
+     * reader or durable whole-order claim under the Org/Site locks. The proof runs before the effect and after host
+     * audit callbacks; it must throw if any of that custody changed. It does not return grant inputs or authority.
+     *
+     * No general caller may substitute this for grant(). Ordinary reader and staff authority remains unchanged.
+     * The producer audit actor is always the system; no authentication guard is cleared or impersonated.
+     *
+     * @param  Closure():void  $verify
+     *
+     * @throws EntitlementRefused
+     *
+     * @internal First-party commerce order fulfillment only; no host extension contract.
+     */
+    public function grantVerifiedOrder(
+        #[\SensitiveParameter] int|string $reader,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+        ?DateTimeInterface $until,
+        #[\SensitiveParameter] Closure $verify,
+    ): GrantOutcome {
+        return EntitlementAuthority::mapped(EntitlementRefused::GRANT, $entitlement, function () use ($reader, $entitlement, $source, $until, $verify): GrantOutcome {
+            $connection = (new Entitlement)->getConnection();
+            if ($connection->transactionLevel() < 1 || ! $connection->getPdo()->inTransaction()
+                || preg_match('/\Acommerce\.order:[1-9][0-9]{0,18}\z/D', $source) !== 1) {
+                throw EntitlementRefused::because(EntitlementRefusal::NotASource, EntitlementRefused::GRANT, $entitlement);
+            }
+
+            return TransactionRecovery::run($connection, function () use ($reader, $entitlement, $source, $until, $verify): GrantOutcome {
+                $verify();
+                $siteId = $this->checked(EntitlementRefused::GRANT, $entitlement, producer: true);
+                [$now, $end] = $this->ends(EntitlementRefused::GRANT, $entitlement, $until);
+                $stored = $this->known(EntitlementRefused::GRANT, $entitlement, $reader);
+                $outcome = $this->give(EntitlementRefused::GRANT, $siteId, $stored, $entitlement, $source, $now, $end, producer: true);
+                $verify();
+
+                return $outcome;
+            });
         });
     }
 
@@ -234,10 +282,12 @@ final class EntitlementWriter
      *
      * @param  EntitlementRefused::*  $act
      */
-    private function checked(string $act, string $entitlement): int
+    private function checked(string $act, string $entitlement, bool $producer = false): int
     {
         $siteId = $this->authority->site($act, $entitlement);
-        $this->authority->authorise($act, $entitlement);
+        if (! $producer) {
+            $this->authority->authorise($act, $entitlement);
+        }
         $this->authority->guard($act, $entitlement);
 
         if (! EntitlementName::isName($entitlement)) {
@@ -297,9 +347,22 @@ final class EntitlementWriter
         #[\SensitiveParameter] string $source,
         CarbonImmutable $now,
         ?CarbonImmutable $end,
+        bool $producer = false,
     ): GrantOutcome {
-        return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($act, $siteId, $stored, $entitlement, $source, $now, $end): GrantOutcome {
+        return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($act, $siteId, $stored, $entitlement, $source, $now, $end, $producer): GrantOutcome {
             $row = $this->lockedRow($act, $siteId, $stored, $entitlement, $source);
+
+            if ($producer && $row !== null) {
+                $attributes = $row->getAttributes();
+                if ((string) $attributes['org_id'] !== (string) $this->context->orgId()
+                    || (string) $attributes['site_id'] !== (string) $siteId || $attributes['reader_id'] !== $stored
+                    || $attributes['entitlement'] !== $entitlement || $attributes['source'] !== $source
+                    || ! self::validInstant($attributes['changed_at'])
+                    || ($attributes['expires_at'] !== null && ! self::validInstant($attributes['expires_at']))
+                    || ($attributes['revoked_at'] !== null && ! self::validInstant($attributes['revoked_at']))) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                }
+            }
 
             if ($row === null) {
                 $row = (new Entitlement)->forceFill([
@@ -330,11 +393,54 @@ final class EntitlementWriter
                 return GrantOutcome::Unchanged;
             }
 
+            $expected = $row->getAttributes();
+            $orgId = $this->context->orgId();
+            $context = $producer ? $this->producerContext() : null;
             $this->save($row, $act, $entitlement);
-            $this->auditor->recordOrFail($action, $row);
+            if ($producer) {
+                $connection = $row->getConnection();
+                $key = $row->getKey();
+                $expected[$row->getKeyName()] = $key;
+                $targetType = $row->getMorphClass();
+                $audit = $this->auditor->recordForProducerOrFail($action, $row);
+                $record = $audit->exists ? $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first() : null;
+                $actual = $connection->table($row->getTable())->useWritePdo()->where('id', $key)->lockForUpdate()->first();
+                if ($actual === null || $record === null || $this->context->orgId() !== $orgId || $this->context->siteId() !== $siteId
+                    || $this->producerContext() !== $context
+                    || (string) $record->org_id !== (string) $orgId || (string) $record->site_id !== (string) $siteId
+                    || $record->action !== $action || $record->target_type !== $targetType
+                    || (string) $record->target_id !== (string) $key || $record->actor_type !== null || $record->actor_id !== null) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                }
+                foreach ($expected as $column => $value) {
+                    if (($value === null) !== ($actual->{$column} === null)
+                        || ($value !== null && (string) $value !== (string) $actual->{$column})) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                    }
+                }
+            } else {
+                $this->auditor->recordOrFail($action, $row);
+            }
 
             return $outcome;
         });
+    }
+
+    private function producerContext(): string
+    {
+        return hash('sha256', json_encode([$this->context->org()?->getAttributes(), $this->context->site()?->getAttributes()], JSON_THROW_ON_ERROR));
+    }
+
+    private static function validInstant(mixed $value): bool
+    {
+        if (! is_string($value) || preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\z/D', $value) !== 1) {
+            return false;
+        }
+        try {
+            return CarbonImmutable::createFromFormat('!'.UtcInstant::FORMAT, $value, 'UTC')?->format(UtcInstant::FORMAT) === $value;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**
