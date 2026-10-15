@@ -38,7 +38,8 @@ async function openHistory(page) {
     // it never mounts at 1280x720 unless something scrolls.
     await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
     await page.mouse.wheel(0, 1200);
-    await expect(page.getByText('History')).toBeVisible();
+    // The sidebar's "Stock and history" link is visible before this lazy component mounts.
+    await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
 }
 
 test.describe('revisions', () => {
