@@ -32,6 +32,10 @@ final class EntitlementRefused extends RuntimeException
 
     public const REVOKE = 'revoke';
 
+    public const REVISE = 'revise';
+
+    public const REINSTATE = 'reinstate';
+
     public const FORGET = 'forget';
 
     public const EXPORT = 'export';
@@ -50,7 +54,7 @@ final class EntitlementRefused extends RuntimeException
     }
 
     /**
-     * @param  self::GRANT|self::COMP|self::REVOKE|self::FORGET|self::EXPORT  $act
+     * @param  self::GRANT|self::COMP|self::REVOKE|self::REVISE|self::REINSTATE|self::FORGET|self::EXPORT  $act
      * @param  string|null  $entitlement  the name asked for, repeated only when it has a name's shape
      * @param  array{state?: string, fault?: string, commit?: bool}  $detail
      */
@@ -67,6 +71,8 @@ final class EntitlementRefused extends RuntimeException
         $doing = match ($act) {
             self::COMP => 'give an entitlement by hand',
             self::REVOKE => 'revoke an entitlement',
+            self::REVISE => 'revise a purchased entitlement',
+            self::REINSTATE => 'reinstate a purchased entitlement',
             self::FORGET => 'erase a reader\'s entitlements',
             self::EXPORT => 'export a reader\'s entitlements',
             default => 'grant an entitlement',
@@ -74,6 +80,8 @@ final class EntitlementRefused extends RuntimeException
         $done = match ($act) {
             self::COMP => 'given',
             self::REVOKE => 'revoked',
+            self::REVISE => 'revised',
+            self::REINSTATE => 'reinstated',
             self::FORGET => 'erased',
             self::EXPORT => 'exported',
             default => 'granted',

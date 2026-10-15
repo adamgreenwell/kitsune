@@ -226,10 +226,10 @@ it('arms each window in one private place, reached from its own doors alone, and
         ->and(preg_match('/self::\$writing = true;\s*try \{\s*\$saved = \$row->save\(\);\s*\} finally \{\s*self::\$writing = false;\s*\}/', $source))->toBe(1)
         ->and(preg_match('/self::\$erasing = true;\s*try \{.*?\} finally \{\s*self::\$erasing = false;\s*\}/s', $source))->toBe(1)
         // Only the ordinary grant, exact verified-order grant and comp reach give(); no new save or erase window.
-        ->and(entitlementWriterMethodsHolding('$this->save('))->toBe(['revoke', 'give'])
+        ->and(entitlementWriterMethodsHolding('$this->save('))->toBe(['adjustOrder', 'revoke', 'give'])
         ->and(entitlementWriterMethodsHolding('$this->give('))->toBe(['grant', 'grantVerifiedOrder', 'comp'])
         ->and(entitlementWriterMethodsHolding('$this->erase('))->toBe(['forget'])
-        ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(3)
+        ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(4)
         ->and(preg_match_all('/->delete\(|[\'"]delete[\'"]/', $source))->toBe(1)
         ->and((new ReflectionProperty(EntitlementWriter::class, 'writing'))->isPrivate())->toBeTrue()
         ->and((new ReflectionProperty(EntitlementWriter::class, 'erasing'))->isPrivate())->toBeTrue();
@@ -237,12 +237,17 @@ it('arms each window in one private place, reached from its own doors alone, and
 
 it('admits the verified order door only inside a real transaction with its exact source and repeated producer proof', function (): void {
     $verified = entitlementWriterMethodSource('grantVerifiedOrder');
+    $give = entitlementWriterMethodSource('give');
 
     expect(entitlementWriterMethodsHolding('producer: true'))->toBe(['grantVerifiedOrder', 'grantVerifiedOrder'])
         ->and($verified)->toContain('$connection->transactionLevel() < 1', '! $connection->getPdo()->inTransaction()',
             "preg_match('/\\Acommerce\\.order:[1-9][0-9]{0,18}\\z/D', \$source) !== 1")
-        ->and(substr_count($verified, '$verify();'))->toBe(2)
-        ->and(preg_match('/\$verify\(\);.*?\$outcome = \$this->give\(.*?producer: true\);\s*\$verify\(\);/s', $verified))->toBe(1)
+        ->and(substr_count($verified, '$verify();'))->toBe(1)
+        ->and($verified)->toContain('producer: true, verify: $verify)')
+        ->and(substr_count($give, '$verify();'))->toBe(1)
+        ->and($give)->toContain('if ($verify === null)', '[GrantOutcome::StillRevoked, null]', '[GrantOutcome::Unchanged, null]')
+        ->and(strpos($give, '$this->auditor->recordForProducerOrFail('))->toBeLessThan(strpos($give, '$verify();'))
+        ->and(strpos($give, '$verify();'))->toBeLessThan(strpos($give, '->lockForUpdate('))
         ->and(entitlementWriterMethodSource('grant'))->not->toContain('producer: true')
         ->and(entitlementWriterMethodSource('comp'))->not->toContain('producer: true')
         ->and(entitlementWriterMethodSource('revoke'))->not->toContain('producer: true');
@@ -259,23 +264,41 @@ it('takes the org\'s row shared and the sites\' in ascending order, and reads a 
     $lockSites = substr($lockSites, 0, (int) strpos($lockSites, "\n    }\n"));
 
     $give = entitlementWriterMethodSource('give');
-    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['forget', 'give', 'give', 'lockedRow', 'lockedRow', 'lockSites'])
+    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['checkedOrderRow', 'knownForReinstatement', 'checkRestorationReader', 'checkAdjustmentReadback', 'checkAdjustmentReadback', 'forget', 'give', 'give', 'lockedRow', 'lockedRow', 'lockSites'])
         ->and(entitlementWriterMethodsHolding('sharedLock('))->toBe(['lockSites'])
         ->and(entitlementWriterMethodsHolding('$this->lockSites('))->toBe(['forget', 'lockedRow'])
-        ->and(entitlementWriterMethodsHolding('$this->lockedRow('))->toBe(['revoke', 'give'])
+        ->and(entitlementWriterMethodsHolding('$this->lockedRow('))->toBe(['adjustOrder', 'adjustOrder', 'revoke', 'give'])
         // The org's row shared, before the sites, which are taken exclusively in ascending order.
         ->and(preg_match('/Org::query\(\).*->sharedLock\(\).*\n.*\n\s*\$locked = Site::query\(\)/', $lockSites))->toBe(1)
         ->and(preg_match('/->orderBy\(\'id\'\)\s*->lockForUpdate\(\)/', $lockSites))->toBe(1)
         // A found row is read again by its key; an absent one is asked again, locking, by a revoke alone.
         ->and($lockedRow)->toContain('$row()->whereKey($found->getKey())->lockForUpdate()->first()')
-        ->and($lockedRow)->toContain('return $act === EntitlementRefused::REVOKE ? $row()->lockForUpdate()->first() : null;')
+        ->and($lockedRow)->toContain('return in_array($act, [EntitlementRefused::REVOKE, EntitlementRefused::REVISE, EntitlementRefused::REINSTATE], true)',
+            '? $row()->lockForUpdate()->first() : null;')
         // The new locks re-read already persisted grant/audit identities, after save and the producer audit callback.
         ->and($give)->toContain("\$connection->table('audit_log')->useWritePdo()->where('id', \$audit->getKey())->lockForUpdate()->first()",
-            "\$connection->table(\$row->getTable())->useWritePdo()->where('id', \$key)->lockForUpdate()->first()")
+            "\$connection->table(\$table)->useWritePdo()->where('id', \$key)->lockForUpdate()->first()")
         ->and(strpos($give, '$this->save($row'))->toBeLessThan(strpos($give, '$this->auditor->recordForProducerOrFail('))
         ->and(strpos($give, '$this->auditor->recordForProducerOrFail('))->toBeLessThan(strpos($give, '->lockForUpdate('))
         ->and(substr_count($give, '->lockForUpdate('))->toBe(2)
         ->and(entitlementWriterMethodSource('grantVerifiedOrder'))->not->toContain('->lockForUpdate(');
+});
+
+it('confines order revisions and witnessed reinstatement to ordinary authority and a real proved transaction', function (): void {
+    $adjust = entitlementWriterMethodSource('adjustOrder');
+    $authority = entitlementWriterMethodSource('adjustmentAuthority');
+    $readback = entitlementWriterMethodSource('checkAdjustmentReadback');
+    expect(entitlementWriterMethodsHolding('$this->adjustOrder('))->toBe(['reviseVerifiedOrder', 'reinstate'])
+        ->and($adjust)->toContain('$connection->transactionLevel() < 1', '! $connection->getPdo()->inTransaction()',
+            "preg_match('/\\Acommerce\\.order:[1-9][0-9]{0,18}\\z/D', \$source) !== 1")
+        ->and(substr_count($adjust, '$verify();'))->toBe(2)
+        ->and($adjust)->not->toContain('$row = (new Entitlement)', 'producer: true', '$this->give(')
+        ->and($authority)->toContain('Permissions::forget();', '$this->checked($act, $entitlement);')
+        ->and(substr_count($adjust, '$this->adjustmentAuthority('))->toBe(5)
+        ->and(strpos($adjust, '$this->save('))->toBeLessThan(strrpos($adjust, '$verify();'))
+        ->and(strrpos($adjust, '$verify();'))->toBeLessThan(strpos($adjust, '$this->checkAdjustmentReadback('))
+        ->and($readback)->toContain("\$key = \$expected['id'];", '$record->actor_type !== null || $record->actor_id !== null')
+        ->and(entitlementWriterMethodSource('save'))->toContain("\$row->forceFill(['change_token' => bin2hex(random_bytes(32))]);");
 });
 
 it('leaves both windows closed after a write that failed', function (): void {

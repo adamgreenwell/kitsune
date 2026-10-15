@@ -81,6 +81,22 @@ it('keeps every reader identifier and every source out of a stack trace', functi
     'verified order: the reader' => [EntitlementWriter::class, 'grantVerifiedOrder', 'reader'],
     'verified order: the source' => [EntitlementWriter::class, 'grantVerifiedOrder', 'source'],
     'verified order: private proof' => [EntitlementWriter::class, 'grantVerifiedOrder', 'verify'],
+    'revision: the reader' => [EntitlementWriter::class, 'reviseVerifiedOrder', 'reader'],
+    'revision: the source' => [EntitlementWriter::class, 'reviseVerifiedOrder', 'source'],
+    'revision: private proof' => [EntitlementWriter::class, 'reviseVerifiedOrder', 'verify'],
+    'reinstatement: the reader' => [EntitlementWriter::class, 'reinstate', 'reader'],
+    'reinstatement: the source' => [EntitlementWriter::class, 'reinstate', 'source'],
+    'reinstatement: private proof' => [EntitlementWriter::class, 'reinstate', 'verify'],
+    'reinstatement: write witness' => [EntitlementWriter::class, 'reinstate', 'expectedRevocationWitness'],
+    'adjustment: the reader' => [EntitlementWriter::class, 'adjustOrder', 'reader'],
+    'adjustment: the source' => [EntitlementWriter::class, 'adjustOrder', 'source'],
+    'adjustment: private proof' => [EntitlementWriter::class, 'adjustOrder', 'verify'],
+    'adjustment: write witness' => [EntitlementWriter::class, 'adjustOrder', 'witness'],
+    'adjustment: validate witness' => [EntitlementWriter::class, 'validWitness', 'witness'],
+    'adjustment: raw reader' => [EntitlementWriter::class, 'checkedOrderRow', 'stored'],
+    'adjustment: raw source' => [EntitlementWriter::class, 'checkedOrderRow', 'source'],
+    'adjustment: fresh reader' => [EntitlementWriter::class, 'knownForReinstatement', 'stored'],
+    'adjustment: readback private row' => [EntitlementWriter::class, 'checkAdjustmentReadback', 'expected'],
     'comp: the reader' => [EntitlementWriter::class, 'comp', 'reader'],
     'revoke: the reader' => [EntitlementWriter::class, 'revoke', 'reader'],
     'revoke: the source' => [EntitlementWriter::class, 'revoke', 'source'],
@@ -182,7 +198,7 @@ it('offers the writer\'s doors and nothing more: no duration, no shortening, no 
     );
     sort($public);
 
-    expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'revoke']);
+    expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'reinstate', 'reviseVerifiedOrder', 'revoke']);
 });
 
 it('reaches the writer from the owner\'s page alone, and the export from nowhere in the admin or over HTTP', function (): void {

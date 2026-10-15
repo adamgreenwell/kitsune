@@ -46,6 +46,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property CarbonImmutable|null $expires_at
  * @property CarbonImmutable|null $revoked_at
  * @property CarbonImmutable $changed_at
+ * @property string $change_token A fresh opaque identity for each actual writer mutation, including in one second.
  */
 #[SiteScoped]
 final class Entitlement extends Model
