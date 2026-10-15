@@ -17,6 +17,10 @@ use Filament\Schemas\Schema;
 use Illuminate\Pagination\Paginator;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderReaderData;
+use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Payments\CheckoutMessages;
+use Kitsune\Commerce\Payments\CheckoutRefused;
+use Kitsune\Commerce\Payments\CheckoutWriter;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Tenancy\Context;
 use Livewire\Attributes\Locked;
@@ -35,6 +39,10 @@ final class OrderList extends Page
 
     #[Locked]
     public ?string $reference = null;
+
+    public mixed $recoverySession = '';
+
+    public bool $recoveryExpire = false;
 
     public function mount(?string $reference = null): void
     {
@@ -128,5 +136,27 @@ final class OrderList extends Page
         $this->reference = null;
         Notification::make()->title(__('commerce::checkout.order_erased'))->success()->send();
         $this->redirect(OrderResource::getUrl());
+    }
+
+    public function recoverAttempt(mixed $attemptReference): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        $session = $this->recoverySession;
+        $expire = $this->recoveryExpire;
+        $this->recoverySession = '';
+        $this->recoveryExpire = false;
+        try {
+            app(CheckoutWriter::class)->operateAsOwner($this->reference, $attemptReference, $session === '' ? null : $session, $expire);
+        } catch (CheckoutRefused|OrderRefused $failure) {
+            $this->addError('order', __('commerce::payments.'.CheckoutMessages::key($failure->reason)));
+
+            return;
+        } catch (Throwable) {
+            $this->addError('order', __('commerce::payments.unavailable'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::payments.recovered'))->success()->send();
     }
 }

@@ -41,6 +41,10 @@ final class OrderResponse
             $response = app(OrderController::class)->unavailable();
         }
         foreach (CatalogueResponse::HEADERS as $name => $value) {
+            if ($name === 'Content-Security-Policy' && $request->routeIs('commerce.payments.*')) {
+                // A native same-origin POST may redirect to the one supported hosted Checkout origin.
+                $value = str_replace("form-action 'self'", "form-action 'self' https://checkout.stripe.com", $value);
+            }
             $response->headers->set($name, $value);
         }
 
@@ -52,7 +56,7 @@ final class OrderResponse
         $body = $request->request->all();
         $input = [];
         foreach (['email', 'billing_name', 'billing_line1', 'billing_line2', 'billing_city', 'billing_region', 'billing_postal_code', 'billing_country',
-            'different_delivery', 'delivery_name', 'delivery_line1', 'delivery_line2', 'delivery_city', 'delivery_region', 'delivery_postal_code', 'delivery_country', 'quote', 'rate'] as $key) {
+            'different_delivery', 'delivery_name', 'delivery_line1', 'delivery_line2', 'delivery_city', 'delivery_region', 'delivery_postal_code', 'delivery_country', 'quote', 'rate', 'review', 'attempt'] as $key) {
             $value = $body[$key] ?? null;
             $input[$key] = is_string($value) && strlen($value) <= 4096 ? $value : null;
         }
@@ -64,10 +68,16 @@ final class OrderResponse
         $request->attributes->set(self::INPUT, $input);
         $request->attributes->set(self::TOKEN, ReaderForm::tokenMatches($request));
         $server = $request->server->all();
-        $server['REQUEST_URI'] = $request->getPathInfo();
-        unset($server['QUERY_STRING']);
+        $server['REQUEST_URI'] = explode('?', $request->getRequestUri(), 2)[0];
+        foreach (['QUERY_STRING', 'UNENCODED_URL', 'IIS_WasUrlRewritten', 'ORIG_PATH_INFO', 'RAW_URI',
+            'HTTP_X_ORIGINAL_URL', 'HTTP_X_REWRITE_URL', 'HTTP_X_ORIGINAL_URI', 'REDIRECT_URL', 'REDIRECT_QUERY_STRING', 'REDIRECT_REQUEST_URI'] as $key) {
+            unset($server[$key], $_SERVER[$key]);
+        }
         $request->initialize([], [], $request->attributes->all(), $request->cookies->all(), [], $server, '');
         $request->setJson(new InputBag);
         $_GET = $_POST = $_REQUEST = [];
+        if (isset($_SERVER['REQUEST_URI'])) {
+            $_SERVER['REQUEST_URI'] = $server['REQUEST_URI'];
+        }
     }
 }

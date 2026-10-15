@@ -15,6 +15,7 @@ use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Orders\OrderWriter;
+use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
@@ -51,6 +52,8 @@ final class OrderAdministration
                     ->orWhere(static fn ($query) => $query->where('org_id', $raw->org_id)->where('site_id', $raw->site_id)->where('reference', $raw->reference))->exists()
                     || $connection->table('commerce_order_lines')->useWritePdo()->where('order_id', $raw->id)->exists()
                     || $connection->table('commerce_order_access_tokens')->useWritePdo()->where('order_id', $raw->id)->exists()
+                    || ($connection->getSchemaBuilder()->hasTable(CheckoutAttempts::TABLE)
+                        && $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('order_id', $raw->id)->exists())
                     || ! $this->ready() || $this->context->orgId() !== (int) $raw->org_id || $this->context->siteId() !== (int) $raw->site_id) {
                     throw new OrderRefused;
                 }
