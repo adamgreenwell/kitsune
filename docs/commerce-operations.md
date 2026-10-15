@@ -92,6 +92,10 @@ revision and audit records together. A refused save reports failure without a pa
 Selecting an image does not publish its bytes or change its privacy; existing media custody and delivery rules apply.
 Availability alone does not install a host route or provide a checkout.
 
+Shared products can also offer [permanent or whole-day purchased access](purchased-access.md). Choose explicit
+terms when setting an entitlement name. Existing named products with unknown terms cannot be purchased until
+configured; existing orders keep their saved terms and any historical unknown terms stay on hold for review.
+
 **Access entitlement** is optional and shared by every site selling the product. Enter a canonical name such as
 `course.surf-101`; it is never inferred from the SKU, title or slug. The current reader's access is checked separately
 on each site, so holding that name on one brand does not give its badge on another. Setting or changing this field
@@ -271,7 +275,7 @@ erasure until reconciliation; expired/rejected unpaid history can be erased; com
 The org must remain in test mode with its own configured Stripe test key. A basic Session status check alone awaits
 captured-payment proof. Verified confirmation records test paid money and shared stock allocation; unavailable units
 create refund obligations including their allocated tax and shipping. Pending, failed or held refunds remain owed and visible.
-Purchased access remains #200. Live checkout remains unavailable
+Confirmed test orders now support [purchased access](purchased-access.md). Live checkout remains unavailable
 pending #203 paid-data policy and the other first-money gates. Zero-total completion and
 three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
 credential-change freezes and the difference between a provider return page and an authoritative result.

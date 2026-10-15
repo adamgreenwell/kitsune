@@ -2,7 +2,7 @@
 const { php, literal } = require('./storefront-fixture');
 
 /** Synthetic authoritative proof for browser presentation only. No credential, transport or provider call. */
-function confirmTestOrder(reference, refundState = 'owed') {
+function confirmTestOrder(reference, refundState = 'owed', disputed = false) {
     return JSON.parse(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();`
         + '$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause("Exact paid browser fixture site",fn($q)=>$q->whereKey($order->site_id)->firstOrFail());'
         + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);auth()->forgetUser();'
@@ -16,9 +16,11 @@ function confirmTestOrder(reference, refundState = 'owed') {
         + "$attempt=DB::table('commerce_checkout_attempts')->where('reference',$reference)->firstOrFail();$amount=(string)$order->quoted_total_minor;"
         + "$proof=['id'=>$attempt->session_id,'test'=>true,'currency'=>$order->currency,'amountTotal'=>$amount,'clientReference'=>$order->reference,'attemptReference'=>$attempt->reference,'orderReference'=>$order->reference,"
         + "'expiresAt'=>$expires->timestamp,'paymentStatus'=>'paid','status'=>'complete','url'=>null,'paymentIntent'=>'pi_'.$reference,'payment'=>['intentId'=>'pi_'.$reference,'chargeId'=>'ch_'.$reference,'currency'=>$order->currency,'amount'=>$amount,'received'=>$amount,'captured'=>$amount,'refunded'=>'0','disputed'=>false,'test'=>true]];"
-        + 'app(Kitsune\\Commerce\\Orders\\OrderLocks::class)->run(fn()=>app(Kitsune\\Commerce\\Payments\\PaidOrders::class)->confirm(DB::connection(),$order,$attempt,$proof));'
+        + `$proof['payment']['disputed']=${disputed ? 'true' : 'false'};`
+        + 'app(Kitsune\\Commerce\\Orders\\OrderLocks::class)->run(function()use($order,$attempt,$proof){app(Kitsune\\Commerce\\Payments\\PaidOrders::class)->confirm(DB::connection(),$order,$attempt,$proof);'
+        + '$paid=DB::table("commerce_orders")->where("id",$order->id)->firstOrFail();app(Kitsune\\Commerce\\Payments\\AccessFulfillment::class)->freeze(DB::connection(),$paid);});'
         + `$refund=DB::table('commerce_refund_attempts')->where('order_id',$order->id)->first();if($refund!==null&&${literal(refundState)}!=='owed'){DB::table('commerce_refund_attempts')->where('id',$refund->id)->update(['state'=>${literal(refundState)},'refund_id'=>'re_'.$refund->reference,'first_submitted_at'=>$now->format('Y-m-d H:i:s')]);}`
-        + 'echo json_encode(["attempt"=>$attempt->reference,"refund"=>$refund?->reference,"session"=>$attempt->session_id,"charge"=>"ch_".$reference,"intent"=>"pi_".$reference]);'));
+        + 'echo json_encode(["attempt"=>$attempt->reference,"refund"=>$refund?->reference,"session"=>$attempt->session_id,"charge"=>"ch_".$reference,"intent"=>"pi_".$reference,"accessState"=>DB::table("commerce_access_work")->where("order_id",$order->id)->value("state")]);'));
 }
 
 module.exports = { confirmTestOrder };

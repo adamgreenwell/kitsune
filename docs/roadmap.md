@@ -467,7 +467,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       exact-site routing, signature-first bounded capture, FPM acknowledgement before processing, fenced replay,
       seven-day raw cleanup and explicit original-account owner recovery after key/mode changes. Paid confirmation
       (#199) records captured test payments, allocates available units under shared stock locks and creates exact
-      unavailable-unit refund obligations with bounded recovery. Purchased access (#200), later refund/dispute
+      unavailable-unit refund obligations with bounded recovery. [Purchased access](purchased-access.md) (#200)
+      freezes permanent or whole-day terms, awards positively allocated items through recoverable work and binds
+      guest purchases through explicit signed-in claims. Historical unknown terms remain held. Later refund/dispute
       access effects (#201), live checkout and paid-state privacy (#203) remain owed. Zero completion is deferred.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*

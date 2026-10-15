@@ -1,7 +1,8 @@
 # Test paid orders, stock and refunds
 
 Live checkout remains disabled. This slice exercises captured-payment confirmation and refunds in Stripe test mode;
-it does not establish real provider sandbox or production qualification, purchased access terms, or invoice retention.
+it does not establish real provider sandbox or production qualification or invoice retention.
+[Purchased access](purchased-access.md) now consumes its confirmed payment and positively allocated units.
 
 ## Confirmation and availability
 
@@ -71,5 +72,6 @@ in [the webhook guide](stripe-webhooks.md).
 Original invoice lines are immutable. Paid/refund records can be read and exported, including through disabled/stale
 commerce custody, but initial-order erasure cannot remove them. Completed legacy attempts are also fenced until their
 financial state is known. #203 must define retention and minimization before live activation; this slice invents no
-statutory retention period. Refund-driven access changes remain #201 after the purchase terms and grants in #200.
+statutory retention period. Refund-driven access changes remain #201 and must use #200's frozen per-order sources
+and immutable guest claims; successful refund status alone does not currently revoke access.
 Retained financial and stock history refuses destructive rollback/uninstall.

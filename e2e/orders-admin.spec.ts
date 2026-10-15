@@ -21,20 +21,22 @@ function resetFixture() {
         + `foreach([${literal(SITE)},${literal(SIBLING)}] as $slug){`
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
-        + "foreach(['commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
 
 function fixtureOrder(siteSlug = SITE) {
     return php(`$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('An exact admin browser fixture site',fn($q)=>$q->where('slug',${literal(siteSlug)})->firstOrFail());`
-        + '$reference=bin2hex(random_bytes(16));$owner=hash(\'sha256\',random_bytes(32));'
+        + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);auth()->forgetUser();'
+        + '$reference=DB::transaction(function()use($site){$reference=bin2hex(random_bytes(16));$owner=hash(\'sha256\',random_bytes(32));'
         + "$id=DB::table('commerce_orders')->insertGetId(['org_id'=>$site->org_id,'site_id'=>$site->id,'reference'=>$reference,'reader_id'=>null,'owner_key'=>$owner,"
         + "'contact_email'=>'admin-buyer@example.test','cart_ref'=>1,'cart_version'=>0,'request_key'=>hash('sha256',random_bytes(32)),'request_digest'=>hash('sha256','request'),'snapshot_hash'=>hash('sha256','snapshot'),"
         + "'active_cart_key'=>hash('sha256',$owner.\"\\0\".'1'.\"\\0\".'0'),'state'=>'prepared','mode'=>'test','currency'=>'USD','tax_mode'=>'exclusive',"
         + "'billing'=>json_encode(['name'=>'Historical Buyer','address'=>['line1'=>'10 Historical Ocean Road','country'=>'US']]),'delivery'=>null,'shipping'=>null,"
         + "'site_snapshot'=>json_encode(['name'=>'Original brand','base_url'=>'https://original.example.test']),"
         + "'quoted_item_net_minor'=>'2000','quoted_shipping_net_minor'=>'0','quoted_tax_minor'=>'200','quoted_total_minor'=>'2200','confirmed_total_minor'=>null,'created_at'=>'2026-10-14 10:00:00','cancelled_at'=>null]);"
-        + "DB::table('commerce_order_lines')->insert(['org_id'=>$site->org_id,'site_id'=>$site->id,'order_id'=>$id,'sellable_ref'=>123,'listing_ref'=>456,'entry_ref'=>789,'sku'=>'HISTORICAL-BOARD','title'=>'Original title','quantity'=>1,'unit_price_minor'=>'2000','tax_class'=>'standard','tax_rate_parts'=>100000,'delivery_kind'=>'digital','net_minor'=>'2000','tax_minor'=>'200','gross_minor'=>'2200','entitlement_name'=>null,'offer_terms'=>null]);echo $reference;");
+        + "DB::table('commerce_order_lines')->insert(['org_id'=>$site->org_id,'site_id'=>$site->id,'order_id'=>$id,'sellable_ref'=>123,'listing_ref'=>456,'entry_ref'=>789,'sku'=>'HISTORICAL-BOARD','title'=>'Original title','quantity'=>1,'unit_price_minor'=>'2000','tax_class'=>'standard','tax_rate_parts'=>100000,'delivery_kind'=>'digital','net_minor'=>'2000','tax_minor'=>'200','gross_minor'=>'2200','entitlement_name'=>null,'offer_terms'=>null]);"
+        + '$order=DB::table("commerce_orders")->where("id",$id)->firstOrFail();app(Kitsune\\Commerce\\Payments\\AccessFulfillment::class)->prepare(DB::connection(),$order);return $reference;});echo $reference;');
 }
 
 async function submit(page, method, label) {
@@ -218,6 +220,24 @@ test.describe('Owner checkout and order administration', () => {
         } finally {
             await editor.close();
         }
+    });
+
+    test('checks purchased access through the native owner action without clearing a financial hold', async ({ page }) => {
+        const reference = fixtureOrder();
+        confirmTestOrder(reference, 'owed', true);
+        await page.goto(`${ORDERS}/${reference}`);
+        const summary = page.getByRole('region', { name: 'Purchased access', exact: true });
+        await expect(summary.getByText('The payment needs review before access can be awarded.', { exact: true })).toBeVisible();
+        await submit(page, 'retryAccess', 'Check purchased access');
+        await expect(page.getByText('Purchased access checked', { exact: true })).toBeVisible();
+        await expect(summary.getByText('The payment needs review before access can be awarded.', { exact: true })).toBeVisible();
+        const state = JSON.parse(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();`
+            + "echo json_encode(['state'=>DB::table('commerce_access_work')->where('order_id',$order->id)->value('state'),'category'=>DB::table('commerce_access_work')->where('order_id',$order->id)->value('category'),'effects'=>DB::table('commerce_access_effects')->where('order_id',$order->id)->count()]);"));
+        expect(state).toEqual({ state: 'held', category: 'financial_hold', effects: 0 });
+        const audit = await new AxeBuilder({ page }).analyze();
+        expect(audit.violations).toEqual([]);
+        await page.goto(`/admin/${SITE}/roles`);
+        await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
 
     test('shows paid refund obligations and native owner recovery while retaining the paid order', async ({ page }) => {

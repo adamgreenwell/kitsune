@@ -67,7 +67,7 @@ function seedPublicCatalogue() {
             + "if($title!=='Unpublished private image'){Kitsune\\Core\\Media\\MediaVisibility::makePublic($image);}}"
             + '$images=Kitsune\\Core\\Models\\Entry::query()->where(\'entry_type_id\',$type->id)->pluck(\'id\',\'title\');'
             + '$writer=app(Kitsune\\Commerce\\Catalogue\\ProductWriter::class);'
-            + `$shared=$writer->createProduct(['sku'=>'CAT-000','price_minor'=>'2000','stock'=>'12','entitlement_name'=>${literal(ENTITLEMENT)}],'USD',`
+            + `$shared=$writer->createProduct(['sku'=>'CAT-000','price_minor'=>'2000','stock'=>'12','entitlement_name'=>${literal(ENTITLEMENT)},'offer_terms'=>['version'=>1,'kind'=>'permanent']],'USD',`
             + `['title'=>${literal(COURSE_A)},'slug'=>'coastal-course','status'=>'published','values'=>['product_description'=>'<p>Learn beside the sea.</p>']],`
             + "['product_images'=>[$images['Coastal public image']]],true);"
             + `$writer->createProduct(['sku'=>'CAT-001','price_minor'=>'1250','stock'=>null],'USD',['title'=>${literal(PRIVATE_PRODUCT)},'slug'=>'private-image-course','status'=>'published','values'=>[]],`
@@ -89,7 +89,7 @@ function seedPublicCatalogue() {
             + "$writer->updateProduct($shared->id,['sku'=>'CAT-000','price_minor'=>'2000','stock'=>'12'],'USD',['title'=>'Nested course','slug'=>'nested-course','status'=>'published','values'=>[]],[],true);");
         php(atCatalogueSite(RIVAL_SITE)
             + "app(Kitsune\\Commerce\\Catalogue\\OrgCurrency::class)->set('USD');"
-            + `app(Kitsune\\Commerce\\Catalogue\\ProductWriter::class)->createProduct(['sku'=>'CAT-000','price_minor'=>'2000','stock'=>null,'entitlement_name'=>${literal(ENTITLEMENT)}],'USD',`
+            + `app(Kitsune\\Commerce\\Catalogue\\ProductWriter::class)->createProduct(['sku'=>'CAT-000','price_minor'=>'2000','stock'=>null,'entitlement_name'=>${literal(ENTITLEMENT)},'offer_terms'=>['version'=>1,'kind'=>'permanent']],'USD',`
             + `['title'=>${literal(RIVAL_PRODUCT)},'slug'=>'rival-course','status'=>'published','values'=>[]],[],true);`);
     } finally {
         fs.rmSync(directory, { recursive: true, force: true });
@@ -124,7 +124,7 @@ function catalogueCourseId() {
 function setCatalogueEntitlementName(name) {
     php(atCatalogueSite()
         + "$row=Kitsune\\Commerce\\Models\\Sellable::query()->where('sku','CAT-000')->firstOrFail();"
-        + `app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->updateSellable($row->id,$row->sku,$row->price_minor,$row->stock,$row->currency,${name === null ? 'null' : literal(name)});`);
+        + `app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->updateSellable($row->id,$row->sku,$row->price_minor,$row->stock,$row->currency,${name === null ? 'null' : literal(name)},${name === null ? 'null' : "['version'=>1,'kind'=>'permanent']"});`);
 }
 
 function revokeCatalogueEntitlement(source, site = SITE_A) {
