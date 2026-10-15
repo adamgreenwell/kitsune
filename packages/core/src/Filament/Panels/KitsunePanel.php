@@ -28,6 +28,8 @@ use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Filament\Widgets\EntryCountsWidget;
 use Kitsune\Core\Filament\Widgets\RecentEntriesWidget;
+use Kitsune\Core\Http\Controllers\CredentialModeController;
+use Kitsune\Core\Http\Controllers\CredentialRemoveController;
 use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
@@ -122,6 +124,8 @@ final class KitsunePanel
                 // ADR-040: a credential's value is POSTed here rather than to Livewire, because a Livewire field's
                 // value returns in the response snapshot when its save is refused.
                 Route::post('credentials/set', CredentialSetController::class)->name(CredentialSetController::ROUTE);
+                Route::post('credentials/remove', CredentialRemoveController::class)->name(CredentialRemoveController::ROUTE);
+                Route::post('credentials/mode', CredentialModeController::class)->name(CredentialModeController::ROUTE);
             })
             /*
              * ⚠️ CORE'S THREE, THEN WHATEVER ENABLED MODULES ADDED — ADR-038 decision H. A disabled module's

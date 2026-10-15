@@ -443,6 +443,7 @@ it('runs every step in order, and nothing else', function (): void {
             'artisan icons:cache --no-interaction',
             'php check serving',
             'artisan migrate --force --no-interaction',
+            'artisan kitsune:credentials status --strict --no-interaction',
             'artisan kitsune:audit-patterns --strict --no-interaction',
             'artisan kitsune:schema-sync --no-interaction',
         ]);
@@ -690,7 +691,7 @@ it('aborts at the first failing step, and runs nothing after it', function (stri
     expect($run->isSuccessful())->toBeFalse()
         ->and(end($log))->toStartWith($call);
 
-    if (! in_array($step, ['migrate', 'kitsune:audit-patterns'], true)) {
+    if (! in_array($step, ['migrate', 'kitsune:credentials', 'kitsune:audit-patterns'], true)) {
         expect(releaseCalls($this->dir, 'artisan migrate'))->toBe([]);
     }
 })->with([
@@ -706,6 +707,7 @@ it('aborts at the first failing step, and runs nothing after it', function (stri
     'view:cache' => ['view:cache', 'artisan view:cache'],
     'icons:cache' => ['icons:cache', 'artisan icons:cache'],
     'migrate' => ['migrate', 'artisan migrate'],
+    'kitsune:credentials' => ['kitsune:credentials', 'artisan kitsune:credentials status --strict'],
     'kitsune:audit-patterns' => ['kitsune:audit-patterns', 'artisan kitsune:audit-patterns'],
 ]);
 

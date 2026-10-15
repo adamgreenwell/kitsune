@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Credentials\CredentialConsoleAuthority;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialRefusal;
 use Kitsune\Core\Credentials\CredentialRefused;
@@ -87,11 +88,11 @@ it('removes nothing that is not there, and records nothing', function (): void {
 it('never records the value, its ends, the credential\'s name or its ciphertext', function (): void {
     $value = Fx::value('fx_live_');
 
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $value);
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $value, Fx::PASSWORD);
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
     $ciphertext = (string) DB::table('credentials')->value('ciphertext');
-    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live);
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live, Fx::PASSWORD);
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
 
     $rows = DB::table('audit_log')->where('action', 'like', 'credential.%')->get()->map(fn (object $row): array => (array) $row)->all();
 
@@ -134,7 +135,7 @@ it('refuses, writing and recording nothing', function (Closure $write, Credentia
     'beyond ASCII' => [fn () => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40).'é'), CredentialRefusal::Characters],
     'too short' => [fn () => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 31)), CredentialRefusal::TooShort],
     'too long' => [fn () => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 256)), CredentialRefusal::TooLong],
-    'the other mode' => [fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_test_')), CredentialRefusal::OtherMode],
+    'the other mode' => [fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_test_'), Fx::PASSWORD), CredentialRefusal::OtherMode],
     'no prefix it takes' => [fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('zz_test_')), CredentialRefusal::Shape],
     'removing what nothing declares' => [fn () => Fx::writer()->remove('fx.nobody', null), CredentialRefusal::UnknownSlot],
 ]);
@@ -145,7 +146,7 @@ it('refuses a member who is not an owner, and writes nothing', function (): void
     foreach ([
         fn () => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40)),
         fn () => Fx::writer()->remove(Fx::SHARED, null),
-        fn () => Fx::writer()->switchTo(CredentialMode::Live),
+        fn () => Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD),
     ] as $write) {
         try {
             $write();
@@ -168,10 +169,13 @@ it('names the owner rule when a member is refused', function (): void {
     );
 });
 
-it('writes for the system with nobody signed in, as an unattributed record', function (): void {
+it('requires an exact console lease with nobody signed in and records its authorized write unattributed', function (): void {
     Auth::guard('web')->logout();
 
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    expect(fn () => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40)))->toThrow(CredentialRefused::class)
+        ->and(credentialActions())->toBe([]);
+    CredentialConsoleAuthority::run(app(Context::class), CredentialRefused::SET, Fx::SHARED, null, null,
+        fn (CredentialConsoleAuthority $console) => Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40), console: $console));
 
     expect(AuditLog::query()->where('action', CredentialWriter::SET)->sole()->actor_id)->toBeNull();
 });

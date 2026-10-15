@@ -62,8 +62,8 @@ function credentialReadRefusal(Closure $read): CredentialUnavailability
 it('puts a new org in test mode, and switches it once each way, recording each switch', function (): void {
     expect(Fx::states()->mode())->toBe(CredentialMode::Test)
         ->and(Fx::writer()->switchTo(CredentialMode::Test))->toBeFalse()
-        ->and(Fx::writer()->switchTo(CredentialMode::Live))->toBeTrue()
-        ->and(Fx::writer()->switchTo(CredentialMode::Live))->toBeFalse()
+        ->and(Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD))->toBeTrue()
+        ->and(Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD))->toBeFalse()
         ->and(Fx::states()->mode())->toBe(CredentialMode::Live)
         ->and(Fx::writer()->switchTo(CredentialMode::Test))->toBeTrue()
         ->and(AuditLog::query()->where('action', 'like', 'credential.%')->orderBy('id')->pluck('action')->all())
@@ -86,10 +86,10 @@ it('keeps a mode on every stored value at the database, where a credential kept 
 
 /** ⚠️ ADR-040's own sentence, three ways. */
 it('refuses a test-mode key against a live-mode org: at write, at read, and moved below the model', function (): void {
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
 
     // At write: a test key pasted for live mode, named as one.
-    expect(fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_test_')))->toThrow(
+    expect(fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_test_'), Fx::PASSWORD))->toThrow(
         new RuntimeException('Fixture payment key was not saved for live mode: it is a test-mode key (it begins fx_test_). A test key in live mode takes no money while appearing to (ADR-040). Nothing was written.'),
     );
 
@@ -99,7 +99,7 @@ it('refuses a test-mode key against a live-mode org: at write, at read, and move
     expect(credentialReadRefusal(fn () => Fx::reader()->secret(Fx::PAYMENT)))->toBe(CredentialUnavailability::NotSet);
 
     // Moved below the model, the test row's ciphertext into the live row: its envelope says test.
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
     $test = DB::table('credentials')->where('mode', 'test')->first(['ciphertext', 'key_id']);
     DB::table('credentials')->where('mode', 'live')->update(['ciphertext' => $test->ciphertext, 'key_id' => $test->key_id]);
 
@@ -113,33 +113,33 @@ it('refuses a live-mode key for test mode, in its own words', function (): void 
 });
 
 it('refuses a value that begins with neither mode\'s prefix as the wrong shape, naming what it takes', function (): void {
-    expect(fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('zz_live_')))->toThrow(
+    expect(fn () => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('zz_live_'), Fx::PASSWORD))->toThrow(
         new RuntimeException('Fixture payment key was not saved for live mode: a value here begins fx_live_, and this one does not. Nothing was written.'),
     );
 });
 
 it('takes a mode-neutral value for whichever line it was pasted into', function (): void {
     Fx::writer()->set(Fx::HOOK, CredentialMode::Test, $test = Fx::value('fxhook_', 40));
-    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, $live = Fx::value('fxhook_', 40));
+    Fx::writer()->set(Fx::HOOK, CredentialMode::Live, $live = Fx::value('fxhook_', 40), Fx::PASSWORD);
 
     expect(Fx::reader()->secret(Fx::HOOK)->reveal())->toBe($test);
 
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
 
     expect(Fx::reader()->secret(Fx::HOOK)->reveal())->toBe($live);
 });
 
 it('stores live keys while in test, and serves each mode only its own', function (): void {
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, $test = Fx::value('fx_test_'));
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $live = Fx::value('fx_live_'));
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $live = Fx::value('fx_live_'), Fx::PASSWORD);
 
     expect(Fx::reader()->secret(Fx::PAYMENT)->reveal())->toBe($test);
 
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
 
     expect(Fx::reader()->secret(Fx::PAYMENT)->reveal())->toBe($live);
 
-    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live);
+    Fx::writer()->remove(Fx::PAYMENT, CredentialMode::Live, Fx::PASSWORD);
 
     expect(credentialReadRefusal(fn () => Fx::reader()->secret(Fx::PAYMENT)))->toBe(CredentialUnavailability::NotSet);
 });
@@ -147,18 +147,18 @@ it('stores live keys while in test, and serves each mode only its own', function
 it('switches to live with live values missing, and each read then fails closed', function (): void {
     Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, Fx::value('fx_test_'));
 
-    expect(Fx::writer()->switchTo(CredentialMode::Live))->toBeTrue()
+    expect(Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD))->toBeTrue()
         ->and(credentialReadRefusal(fn () => Fx::reader()->secret(Fx::PAYMENT)))->toBe(CredentialUnavailability::NotSet);
 });
 
 it('needs the mode named for a credential kept per mode, and refuses one for a credential kept once', function (): void {
     expect(credentialRefusal(fn () => Fx::writer()->set(Fx::PAYMENT, null, Fx::value('fx_test_'))))->toBe(CredentialRefusal::ModeRequired)
-        ->and(credentialRefusal(fn () => Fx::writer()->set(Fx::SHARED, CredentialMode::Live, Fx::value('', 40))))->toBe(CredentialRefusal::ModeNotTaken);
+        ->and(credentialRefusal(fn () => Fx::writer()->set(Fx::SHARED, CredentialMode::Live, Fx::value('', 40), Fx::PASSWORD)))->toBe(CredentialRefusal::ModeNotTaken);
 });
 
 it('refuses on read a stored value its declaration no longer takes', function (): void {
-    Fx::writer()->switchTo(CredentialMode::Live);
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
 
     // A module upgrade that moved its prefixes about: the stored live value now reads as the test mode's.
     app(CredentialSlots::class)->flush();

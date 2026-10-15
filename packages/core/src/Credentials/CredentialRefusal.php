@@ -34,4 +34,6 @@ enum CredentialRefusal
     case Race;
     case Database;
     case Cancelled;
+    case FreshAuthentication;
+    case Unreadable;
 }

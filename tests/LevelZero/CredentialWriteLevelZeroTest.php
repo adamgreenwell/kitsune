@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Credentials\CredentialConsoleAuthority;
 use Kitsune\Core\Credentials\CredentialMode;
 use Kitsune\Core\Credentials\CredentialRefusal;
 use Kitsune\Core\Credentials\CredentialRefused;
@@ -56,14 +57,14 @@ function credentialZeroSeen(string $file): array
 }
 
 it('keeps the old value when the record of a replace cannot be written, and chains nothing', function (): void {
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    credentialZeroSet(Fx::SHARED, null, Fx::value('', 40));
     $before = credentialZeroSeen($this->custodyFile);
 
     // The site in context goes underneath, so `audit_log.site_id`'s foreign key refuses the record of the next write.
     DB::table('sites')->where('id', $this->site->getKey())->delete();
 
     try {
-        Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+        credentialZeroSet(Fx::SHARED, null, Fx::value('', 40));
         $this->fail('a write that could not be recorded was kept');
     } catch (CredentialRefused $refused) {
         expect($refused->reason)->toBe(CredentialRefusal::Database)
@@ -77,12 +78,12 @@ it('keeps the old value when the record of a replace cannot be written, and chai
 });
 
 it('keeps the value when the record of its removal cannot be written', function (): void {
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    credentialZeroSet(Fx::SHARED, null, Fx::value('', 40));
     $before = credentialZeroSeen($this->custodyFile);
     DB::table('sites')->where('id', $this->site->getKey())->delete();
 
     try {
-        Fx::writer()->remove(Fx::SHARED, null);
+        credentialZeroRemove(Fx::SHARED, null);
         $this->fail('a removal that could not be recorded was kept');
     } catch (CredentialRefused $refused) {
         expect($refused->reason)->toBe(CredentialRefusal::Database)
@@ -98,7 +99,7 @@ it('stays in test mode when the record of a switch cannot be written', function 
     DB::table('sites')->where('id', $this->site->getKey())->delete();
 
     try {
-        Fx::writer()->switchTo(CredentialMode::Live);
+        credentialZeroMode(CredentialMode::Live);
         $this->fail('a switch that could not be recorded was kept');
     } catch (CredentialRefused $refused) {
         expect($refused->reason)->toBe(CredentialRefusal::Database)
@@ -121,7 +122,7 @@ it('refuses, writing nothing, while a rival holds the database, and writes once 
 
     try {
         try {
-            Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+            credentialZeroSet(Fx::SHARED, null, Fx::value('', 40));
             $this->fail('a write went through a rival holding the database');
         } catch (CredentialRefused $refused) {
             expect($refused->reason)->toBeIn([CredentialRefusal::Database, CredentialRefusal::Race])
@@ -134,8 +135,27 @@ it('refuses, writing nothing, while a rival holds the database, and writes once 
     expect(credentialZeroSeen($this->custodyFile))->toBe(['ciphertext' => null, 'audit' => 0])
         ->and(DB::connection()->transactionLevel())->toBe(0);
 
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+    credentialZeroSet(Fx::SHARED, null, Fx::value('', 40));
 
     expect(credentialZeroSeen($this->custodyFile)['audit'])->toBe(1)
         ->and(DB::table('audit_log')->where('action', CredentialWriter::SET)->count())->toBe(1);
 })->with(['delete', 'wal']);
+
+/** These level-zero probes act as a server operator, with an exact one-use console lease. */
+function credentialZeroSet(string $slot, ?CredentialMode $mode, string $value): void
+{
+    CredentialConsoleAuthority::run(app(Context::class), 'set', $slot, $mode, null,
+        static fn (CredentialConsoleAuthority $authority) => Fx::writer()->set($slot, $mode, $value, console: $authority));
+}
+
+function credentialZeroRemove(string $slot, ?CredentialMode $mode): void
+{
+    CredentialConsoleAuthority::run(app(Context::class), 'remove', $slot, $mode, null,
+        static fn (CredentialConsoleAuthority $authority) => Fx::writer()->remove($slot, $mode, console: $authority));
+}
+
+function credentialZeroMode(CredentialMode $mode): bool
+{
+    return CredentialConsoleAuthority::run(app(Context::class), 'switch', null, $mode, null,
+        static fn (CredentialConsoleAuthority $authority): bool => Fx::writer()->switchTo($mode, console: $authority));
+}

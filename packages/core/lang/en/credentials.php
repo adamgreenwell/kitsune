@@ -75,6 +75,13 @@ return [
         'in_address_title' => 'Not saved',
         'in_address' => 'The value arrived in the page address, where server logs keep it, so it was not stored. Treat it as exposed: replace it where it was issued, then paste the new one here.',
     ],
+    'authentication' => [
+        'field' => 'Current password',
+        'help' => 'Re-enter your current owner password for this change. It is used once and is never saved. If your account has no local password, this confirmation is unavailable.',
+        'refused' => 'Fresh owner authentication is required. Re-enter your current password and try again. No change was made.',
+        'unavailable' => 'The change could not be completed. Nothing was saved; reload the page and try again.',
+        'in_address' => 'A credential or current password arrived in the page address, where server logs can keep it, so no change was made. Treat it as exposed: replace it before retrying with values in the form.',
+    ],
     'remove' => [
         'action' => 'Remove',
         'heading' => 'Remove :line?',
@@ -84,6 +91,7 @@ return [
         'removed' => 'Removed: :line',
         'nothing' => ':line was not set, so nothing was removed.',
         'refused' => 'Not removed: :line',
+        'refused_plain' => 'Not removed',
     ],
     'switch' => [
         'to_live' => 'Switch to live mode',

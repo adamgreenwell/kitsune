@@ -3,7 +3,8 @@
 Commerce is optional and starts disabled after installation. Its admin screens select the org's currency and manage
 products; a host can opt into its public catalogue and reader access badges. Prices and stock belong to the org,
 while each site's listing connects its own content. See [ADR-040](decision-log.md#adr-040--commerce-is-a-module-entitlements-are-a-kernel-guard-and-v10-waits-for-both)
-and [currency maintenance](commerce-currencies.md).
+and [currency maintenance](commerce-currencies.md). Credential changes, passwordless server recovery and application-key
+rotation are covered in [credential operations](credential-operations.md).
 
 ## Changing module state
 

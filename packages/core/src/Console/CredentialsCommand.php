@@ -20,10 +20,10 @@ use Kitsune\Core\Models\Credential;
  *
  * ⚠️ COUNTS AND NOTHING ELSE. Its output lands in deploy logs, so it names no org, no credential and no value, and it
  * decrypts nothing: a key id says which derived key sealed a row. `--strict` makes it a canary for a wrong or lost
- * `APP_KEY`, exiting 1 while anything stored is unreadable — not wired into `deploy/release.sh` in this slice.
+ * `APP_KEY`, exiting 1 while any stored key tag is unavailable — wired into `deploy/release.sh` before promotion.
  *
- * ⚠️ NO WRITE ACTION (Adam, 2026-10-05: the console tools come with payments). When one comes, it reads a value from a
- * hidden prompt or the first line of standard input only (ADR-026's rule), never from an argument or the environment.
+ * The separate credential set/remove/mode/reencrypt commands open exact one-use console leases. This command remains
+ * read-only and deliberately does not test ciphertext integrity or call providers.
  *
  * @internal First-party modules only; nothing outside this repository may rely on it existing or keeping its shape.
  */
@@ -63,7 +63,7 @@ final class CredentialsCommand extends Command
 
         $this->line(sprintf('Credentials: %d stored, across %d organisations.', $underCurrent + $underPrevious + $underNone, $orgs));
         $this->line(sprintf('  %d under the current app key.', $underCurrent));
-        $this->line(sprintf('  %d under a previous app key (APP_PREVIOUS_KEYS): keep that key until this reads 0. Replacing a credential re-encrypts it.', $underPrevious));
+        $this->line(sprintf('  %d under a previous app key (APP_PREVIOUS_KEYS): keep that key until this reads 0. Run kitsune:credentials:reencrypt for each organisation.', $underPrevious));
         $this->line(sprintf('  %d under no key this installation has: unreadable until set again.', $underNone));
 
         return $this->option('strict') && $underNone > 0 ? self::FAILURE : self::SUCCESS;

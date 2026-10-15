@@ -25,8 +25,8 @@ beforeEach(function (): void {
     Fx::boot();
     $this->org = Fx::org('doors');
     Fx::member();
-    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
-    Fx::writer()->switchTo(CredentialMode::Live);
+    Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40), Fx::PASSWORD);
+    Fx::writer()->switchTo(CredentialMode::Live, Fx::PASSWORD);
 });
 
 afterEach(fn () => Fx::tearDown());
@@ -194,7 +194,7 @@ function credentialWriterMethodsHolding(string $needle): array
     return $methods;
 }
 
-it('arms the window in one private place, which only the writer\'s three acts reach, and closes it in a finally', function (): void {
+it('arms the window in one private place, which only the writer\'s four acts reach, and closes it in a finally', function (): void {
     $source = (string) file_get_contents((string) (new ReflectionClass(CredentialWriter::class))->getFileName());
 
     // ⚠️ EVERY CALL TO `save()` RESOLVED TO ITS METHOD (review): counting `$this->save($row` missed a fourth caller
@@ -202,18 +202,18 @@ it('arms the window in one private place, which only the writer\'s three acts re
     expect(credentialWriterMethodsHolding('self::$writing = true'))->toBe(['save'])
         ->and((new ReflectionMethod(CredentialWriter::class, 'save'))->isPrivate())->toBeTrue()
         ->and(preg_match('/self::\$writing = true;\s*try \{\s*\$saved = \$row->save\(\);\s*\} finally \{\s*self::\$writing = false;\s*\}/', $source))->toBe(1)
-        ->and(credentialWriterMethodsHolding('$this->save('))->toBe(['set', 'remove', 'switchTo'])
+        ->and(credentialWriterMethodsHolding('$this->save('))->toBe(['set', 'remove', 'switchTo', 'reencrypt'])
         // And no other way in: those three calls, the one model save inside, and no callable naming it.
-        ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(4)
+        ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(5)
         ->and((new ReflectionProperty(CredentialWriter::class, 'writing'))->isPrivate())->toBeTrue();
 });
 
-it('locks the org\'s row and no other', function (): void {
+it('locks the org before each act and locks credentials only by a known primary key', function (): void {
     // ⚠️ A ROW LOCK ON A CREDENTIAL NOT YET STORED IS A GAP LOCK on MySQL and MariaDB, and two orgs' first credentials
     // deadlocked on each other's gap (review). No engine here shows that, so the source is asked.
-    expect(credentialWriterMethodsHolding('lockForUpdate('))->toBe(['lockOrg'])
+    expect(credentialWriterMethodsHolding('lockForUpdate('))->toBe(['lockOrg', 'lockedRow', 'modeRow', 'assertKept', 'reencrypt', 'record'])
         ->and(credentialWriterMethodsHolding('sharedLock('))->toBe([])
-        ->and(credentialWriterMethodsHolding('$this->lockOrg()'))->toBe(['switchTo', 'lockedRow']);
+        ->and(credentialWriterMethodsHolding('$this->lockOrg('))->toBe(['set', 'remove', 'switchTo', 'reencrypt']);
 });
 
 it('leaves the window closed after a write that failed', function (): void {
@@ -222,7 +222,7 @@ it('leaves the window closed after a write that failed', function (): void {
     });
 
     try {
-        Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40));
+        Fx::writer()->set(Fx::SHARED, null, Fx::value('', 40), Fx::PASSWORD);
     } catch (RuntimeException) {
     } finally {
         Credential::flushEventListeners();

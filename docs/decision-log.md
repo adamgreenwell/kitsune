@@ -5741,6 +5741,62 @@ cached routes, nested site prefixes, body-only CSRF, exact replay/active-cart cl
 transactions, stale configuration, observer tampering and redacted outages. Exact-head CI evidence is recorded on
 the pull request once completed; provider and SMTP fixtures are not live qualification or deployment.
 
+### Amended 2026-10-14 — payment credential prerequisites (#195, #196)
+
+The original credential-store and admin amendments above describe their earlier slices. Their owed password
+confirmation, console recovery/rotation and deploy gate are implemented here. Stripe checkout, verified events,
+paid-state retention and fulfilment remain owed; changing credentials does not enable payments.
+
+**Web authority.** Every writer operation now requires a current persisted Eloquent owner of the org in context,
+or the exact console authority below. A null actor no longer implicitly means a trusted system write. Test-mode
+changes retain owner-only access. Setting/replacing/removing a live slot requires the current local password even
+while the org is test; a neutral slot requires it while the org is live; entering live requires it. Returning to test
+does not. This is one confirmation for one operation, with no recent-confirmation session interval. The writer
+locks the org, reads current mode, account, declared membership and owner rows from the primary connection, and
+rechecks the same account/scope/password evidence and saved row after the audit. Stale guard objects, changed
+passwords, revoked ownership and an older MySQL outer snapshot do not supply authority. Unsupported/non-Eloquent
+identities fail closed; passwordless/SSO owners use host account recovery or authorised server recovery rather than
+an inferred authentication freshness policy. No new host-facing model method is required.
+
+**Native forms.** Remove and fixed-target mode confirmation now join Set/Replace outside Livewire. `password`
+remains the credential field and `current_password` is the confirmation field, both covered by Laravel's default
+sensitive-input exclusions. Their parsed bags, cached body, URL query and PHP globals are scrubbed before controller
+application work. Body-only CSRF and owner checks remain mandatory, including when a host skips its middleware;
+URL-carried values/passwords are refused. Responses are safe notifications and a 303 to the page. Earlier upstream
+body logging/debug/reporting residuals remain and apply to all three endpoints.
+
+**Console authority and recovery.** Separate `kitsune:credentials:set`, `:remove`, `:mode` and `:reencrypt` commands
+require an explicit org. Set accepts a hidden prompt with no echo fallback or a bounded stdin line, never a value
+argument or environment variable. Remove/mode require explicit `--force` confirmation, also in interactive use.
+A private-constructor capability binds the org, action and exact slot/mode or row ID, is consumed once, checked
+after audit, and expires in `finally`. It requires CLI SAPI and no signed-in actor; `runningInConsole()` grants
+nothing. Commands restore the previous Org/Site context. Every resulting audit row is unattributed and payload-free.
+
+**Rotation and deploy gate.** Re-encryption uses the same writer save window, locks current row state, validates
+its authenticated envelope inside the cipher and reseals under the current derived key. It preserves `changed_at`:
+rotation did not change the provider value. Each changed row records `credential.reencrypted` in the same
+transaction; cancelled/misfiled audits and observer/context/authority changes roll the write back. A bounded ID cursor
+inspects at most 100 rows by default (maximum 1000), commits each separately, reports only counts/cursor, and resumes
+after the last completed row. Current-key rows/tombstones skip safely. Disabled/undeclared slots and soft-deleted orgs
+are included, without widening the current-mode consumer reader. Missing previous keys or malformed envelopes stop
+the batch safely. `deploy/release.sh` now runs `kitsune:credentials status --strict` after migration and before
+promotion. Its installation-wide key-tag count includes every retained value; it proves key availability, not
+ciphertext integrity or provider validity. Previous-key, backup, interruption and lost-key procedures live in
+[credential operations](credential-operations.md).
+
+**Current-read limit.** Known credential primary keys are locked freshly; a missing credential is not gap-locked,
+because that gap can span other orgs on InnoDB. An old outer snapshot missing a newly inserted credential loses the
+unique race and refuses rather than overwriting it. Mode reads must also prove current absence: a first mode-row
+gap race may safely refuse and require retry. Broader commerce write snapshot work remains #272.
+
+**Qualification.** Full local `composer ci` passed **8,294 tests / 42,189 assertions**, with 46 skips, PHPStan
+and both root/skeleton Pint checks. Focused native/page/surface coverage passed **83 tests / 2,812 assertions**;
+credential browser coverage passed **14 cases**, including four authentication setups. MySQL 8.4.7 and MariaDB
+10.6.28 fresh-authentication/writer-boundary runs passed **56 tests / 148 assertions each**, including six real
+older-snapshot cases on each engine. Console/rotation tests passed **70 / 236 assertions** and observer-integrity
+regressions **21 / 66 assertions**. The six newly added default-suite skips are the explicitly engine-only current-read
+cases. Exact pushed-head matrix results are recorded on the PR; these checks do not activate a provider or deploy.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

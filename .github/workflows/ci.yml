@@ -21,7 +21,9 @@ concurrency:
 # pgsql 9.8, mariadb 27.0, mysql 73.9, Playwright 3.2. Every figure predates
 # migrating the test schema once per process; re-measure before lowering one. Post-#112 bare-clone evidence is
 # recorded in #113: 25 successful workflows, green maxima 9:41 (PHP 8.4) and 9:40 (8.5), plus repeated 10-minute
-# cancellations on #267. Its ceiling below is 15 minutes; the historical engine ceilings await their own amendment.
+# cancellations on #267. #274's larger suite later completed the PHP 8.4 bare job in 12:16 and hit the 15-minute
+# PHP 8.5 ceiling with passing recovery tests near the end. Its ceiling below is now 20 minutes; #113 retains the
+# evidence and the historical engine ceilings await their own amendment.
 jobs:
   # What this run needs, decided once and consumed by every matrix below. The reasoning, the measured
   # cost per run and the fail-closed rule are in .github/scripts/ci-scope.sh, which the test suite drives —
@@ -80,8 +82,10 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     # #113: whole-job setup/cleanup matters too. PHP 8.4 completed Pest in 590.48s and still hit the 10m ceiling;
     # both versions were cancelled twice on the same #267 head. The 25-workflow green sample is censored by that
-    # ceiling, so allow five minutes beyond it rather than putting the successful 9:41 tail against a 10m limit.
-    timeout-minutes: 15
+    # ceiling, so #267 allowed five minutes beyond it. #274's 8,261-test Linux suite has now hit that 15m limit
+    # with passing tests near completion; allow another bounded five minutes. Credential fixtures also use real
+    # bcrypt at test cost 4 rather than repeatedly paying production cost 12. The service-free contract stays here.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

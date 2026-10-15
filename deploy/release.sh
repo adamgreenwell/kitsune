@@ -276,6 +276,10 @@ check_the_app serving
 # 16. The schema, with exactly the cached config that will serve. --force because APP_ENV is production.
 "$PHP_BIN" skeleton/artisan migrate --force --no-interaction
 
+# Refuse promotion when retained credentials need an APP_KEY absent from APP_KEY / APP_PREVIOUS_KEYS.
+# This counts every stored slot, including disabled modules, without exposing or decrypting any value.
+"$PHP_BIN" skeleton/artisan kitsune:credentials status --strict --no-interaction
+
 # 17. Kitsune's deploy gate. It reads field_storage, which does not exist before the first migration.
 "$PHP_BIN" skeleton/artisan kitsune:audit-patterns --strict --no-interaction
 

@@ -57,7 +57,7 @@ it('cannot be opened with the application key itself, which is a different key',
 
 it('opens to the envelope naming its org, credential and mode under the derived key', function (): void {
     $value = Fx::value('fx_live_');
-    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $value);
+    Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $value, Fx::PASSWORD);
 
     $raw = (string) config('app.key');
     $key = hash_hkdf('sha256', base64_decode(substr($raw, 7), true), 32, CredentialCipher::INFO);

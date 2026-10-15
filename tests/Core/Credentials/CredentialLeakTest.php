@@ -147,7 +147,7 @@ it('keeps the value out of every refusal\'s message and trace, even with argumen
         ini_set('zend.exception_ignore_args', (string) $before);
     }
 })->with([
-    'the other mode' => [fn (string $v) => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $v), Fx::value('fx_test_')],
+    'the other mode' => [fn (string $v) => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, $v, Fx::PASSWORD), Fx::value('fx_test_')],
     'no prefix it takes' => [fn (string $v) => Fx::writer()->set(Fx::PAYMENT, CredentialMode::Test, $v), Fx::value('zz_test_')],
     'too long' => [fn (string $v) => Fx::writer()->set(Fx::SHARED, null, $v), Fx::value('', 300)],
     'a space' => [fn (string $v) => Fx::writer()->set(Fx::SHARED, null, $v), Fx::value('', 40).' tail'],
@@ -194,7 +194,7 @@ it('chains nothing and quotes no ciphertext when the database refuses the write'
     });
 
     try {
-        Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'));
+        Fx::writer()->set(Fx::PAYMENT, CredentialMode::Live, Fx::value('fx_live_'), Fx::PASSWORD);
         $this->fail('the collision was not refused');
     } catch (CredentialRefused $refused) {
         expect($refused->getPrevious())->toBeNull()
