@@ -31,7 +31,7 @@ final class StripeEvent extends Model
 
     protected $guarded = ['*'];
 
-    protected $hidden = ['account_id', 'event_id', 'api_version', 'session_id', 'order_id', 'attempt_id', 'order_reference', 'attempt_reference', 'payload_hash', 'raw_payload', 'lease_token', 'lease_until'];
+    protected $hidden = ['account_id', 'event_id', 'api_version', 'session_id', 'refund_reference', 'refund_id', 'order_id', 'attempt_id', 'order_reference', 'attempt_reference', 'payload_hash', 'raw_payload', 'lease_token', 'lease_until'];
 
     public function save(array $options = [])
     {

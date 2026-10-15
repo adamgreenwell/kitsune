@@ -15,6 +15,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Payments\CheckoutReconciler;
+use Kitsune\Commerce\Payments\RefundRecovery;
 use Kitsune\Core\Credentials\Secret;
 use Kitsune\Core\Http\Controllers\CredentialMutationRequest;
 use Throwable;
@@ -28,6 +29,7 @@ final class CheckoutRecoveryController
         $order = $body['order_reference'] ?? null;
         $attempt = $body['attempt_reference'] ?? null;
         $session = $body['session_id'] ?? '';
+        $kind = $body['recovery_kind'] ?? 'checkout';
         unset($body);
         $input = CredentialMutationRequest::take($request);
         abort_unless($input['tokenMatches'], 419);
@@ -38,12 +40,20 @@ final class CheckoutRecoveryController
         }
         try {
             if ($input['inAddress'] || ! is_string($order) || ! is_string($attempt) || ! is_string($session)
+                || ! in_array($kind, ['checkout', 'refund_reconcile', 'refund_retry'], true)
                 || ! is_string($input['value']) || ! is_string($input['password'])
                 || strlen($input['value']) > 255 || strlen($input['password']) > 4096) {
                 throw new \RuntimeException;
             }
-            app(CheckoutReconciler::class)->recoverAsOwner($order, $attempt, $session,
-                new Secret($input['value']), $input['password']);
+            if ($kind === 'checkout') {
+                app(CheckoutReconciler::class)->recoverAsOwner($order, $attempt, $session,
+                    new Secret($input['value']), $input['password']);
+            } elseif ($kind === 'refund_reconcile') {
+                app(RefundRecovery::class)->recoverAsOwner($order, $attempt, new Secret($input['value']), $input['password']);
+            } else {
+                $created = app(RefundRecovery::class)->retryAsOwner($order, new Secret($input['value']), $input['password']);
+                app(RefundRecovery::class)->recoverAsOwner($order, $created['reference'], new Secret($input['value']), $input['password']);
+            }
             Notification::make()->success()->title(__('commerce::payments.recovered'))->send();
         } catch (Throwable) {
             Notification::make()->danger()->title(__('commerce::payments.unavailable'))->send();

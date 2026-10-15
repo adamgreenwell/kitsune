@@ -66,8 +66,8 @@ it('stores exact prices and finite or untracked stock without a direct content r
     expect($row->price_minor)->toBe('9223372036854775807')->and($row->stock)->toBe('9223372036854775807')
         ->and($row->currency)->toBe('USD')->and(array_key_exists('entry_id', $row->getAttributes()))->toBeFalse();
 
-    $row = $this->writer->updateSellable($row->getKey(), 'BOARD-01', 0, null, 'USD')->fresh();
-    expect($row->price_minor)->toBe('0')->and($row->stock)->toBeNull()
+    $row = $this->writer->updateSellable($row->getKey(), 'BOARD-01', 0, $row->stock, 'USD')->fresh();
+    expect($row->price_minor)->toBe('0')->and($row->stock)->toBe('9223372036854775807')
         ->and(catalogueAuditActions())->toBe(['commerce.sellable_created', 'commerce.sellable_updated']);
 });
 
@@ -82,20 +82,20 @@ it('shares one price and stock balance while each site has its own entry and ava
     expect(Listing::query()->pluck('id')->all())->toBe([$french->getKey()])
         ->and($french->entry->title)->toBe('Une planche')->and($french->sellable->stock)->toBe('8');
 
-    $this->writer->updateSellable($sellable->getKey(), 'BOARD', 13000, 7, 'USD');
+    $this->writer->updateSellable($sellable->getKey(), 'BOARD', 13000, 8, 'USD');
     app(Context::class)->setSite($this->site);
     $main = $main->fresh();
     expect($main->is_available)->toBeFalse()->and($main->entry->title)->toBe('A board')
-        ->and($main->sellable->price_minor)->toBe('13000')->and($main->sellable->stock)->toBe('7');
+        ->and($main->sellable->price_minor)->toBe('13000')->and($main->sellable->stock)->toBe('8');
 });
 
 it('accepts checked direct evented creates and updates', function (): void {
     $sellable = Sellable::create(['sku' => 'DIRECT', 'price_minor' => 10, 'stock' => null]);
-    $sellable->update(['price_minor' => '20', 'stock' => 0]);
+    $sellable->update(['price_minor' => '20']);
     $listing = Listing::create(['sellable_id' => $sellable->getKey(), 'entry_id' => $this->entry->getKey()]);
     $listing->update(['is_available' => true]);
 
-    expect($sellable->fresh()->price_minor)->toBe('20')->and($sellable->fresh()->stock)->toBe('0')
+    expect($sellable->fresh()->price_minor)->toBe('20')->and($sellable->fresh()->stock)->toBeNull()
         ->and($listing->fresh()->is_available)->toBeTrue()->and(catalogueAuditActions())->toBe([]);
 });
 

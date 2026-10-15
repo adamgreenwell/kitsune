@@ -1,8 +1,9 @@
 # Verified Stripe test events
 
 Commerce receives signed snapshot events into a durable org inbox, acknowledges the committed receipt, then checks
-the original Stripe Session. This remains a test workflow: orders stay prepared/unpaid, confirmed totals stay null,
-stock stays unchanged and no access is granted. Live checkout waits for the remaining paid commerce slices.
+the original Stripe Session. This remains a test workflow. Exact captured-payment proof now records confirmed money, allocates shared stock
+once and creates unavailable-item refund obligations. Purchased access is not granted yet. Live checkout stays off
+until the remaining first-money gates. See [paid confirmation and refunds](paid-orders.md).
 
 ## Host and Stripe setup
 
@@ -36,6 +37,9 @@ In Stripe, choose **Your account**, **Snapshot**, API version **2026-09-30.endiv
 - `checkout.session.expired`
 - `checkout.session.async_payment_succeeded`
 - `checkout.session.async_payment_failed`
+- `refund.created`
+- `refund.updated`
+- `refund.failed`
 
 Under the org's test-mode Credentials, save **Stripe webhook signing secret**. During explicit signing-secret
 rotation, place the old secret in **Previous Stripe webhook signing secret** and remove it when overlap ends.
@@ -54,11 +58,11 @@ The owner recovery POST retains panel authentication, Site context and an indepe
 The ingress Site derives the org; event metadata supplies only opaque lookup hints. An org-scoped routing receipt
 maps those hints to the recorded order Site. Existing #197 attempts are backfilled without changing their original
 request or hash. Full order/attempt custody is checked independently before capture and processing. A verified
-provider account GET and Session GET must match the original account, mode, references, amount, currency and expiry.
+provider account GET and expanded Session GET must match the original account, mode, references, amount, currency and expiry.
 Own-account events need not carry an account field. A browser return URL never grants payment authority.
 
 Event identity is unique within org/account/mode. A duplicate payload cannot renew retention or rewrite the receipt;
-a conflicting digest is refused. Different events for one Session share the attempt's lease and idempotent terminal
+a conflicting digest is refused. Different events for one Session share the attempt's lease and durable once-only payment/allocation
 effects. Delivery order and event creation time do not sequence state; current authoritative Session state does.
 Stripe does not promise byte-identical retry JSON. Kitsune's same-ID digest refusal is a conservative custody choice,
 not a provider guarantee: if redelivery changes bytes, the first receipt stays available for operator replay.
@@ -130,3 +134,20 @@ production throughput or a new service requirement. [Stripe webhook guidance](ht
 [Event object](https://docs.stripe.com/api/events/object), and the
 [official PHP signature verifier](https://github.com/stripe/stripe-php/blob/master/lib/WebhookSignature.php) are the
 provider references; seven days and the implementation budgets are Kitsune policy.
+
+## Paid confirmation and refund subjects
+
+A completed #198 test attempt without a paid receipt is re-fetched before stock effects; its old label is not
+captured-payment proof. Even processed old inbox receipts need explicit catch-up using
+`php artisan kitsune:payments-reconcile --org=<slug> --limit=100 --seconds=30`. This command also reconciles owed
+refunds. Add `--refresh-successful` to check successful refunds for later provider failure. Claims are selected
+fairly across old confirmations and refund work; the time limit stops starting new work, not an in-flight request.
+
+Refund events retain their own Refund ID and local refund-attempt reference alongside the original Session/account
+correlation. They cannot route by an arbitrary amount or email. Current provider GET state determines the refund
+result; the event snapshot is only a signal. A verified Refund ID remains a recovery hint after a failed GET or raw
+payload pruning, and prevents a list miss from authorizing another POST. Successful refunds can later fail and
+reopen the reimbursement obligation, without repeating stock allocation. Conflicting hints require operator attention.
+
+After the FPM receipt is processed and committed, one newly owed refund can progress outside transactions.
+Non-FPM hosts use explicit bounded commands. No always-on worker is required. See [refund recovery](paid-orders.md).

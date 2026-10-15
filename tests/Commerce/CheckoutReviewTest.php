@@ -165,6 +165,12 @@ it('does not treat mutable link or attempt history as a new purchase but hashes 
     $hash = CheckoutReview::orderHash($record);
     $record['access_links'] = [['different' => 'history']];
     $record['checkout_attempts'] = [['state' => 'uncertain']];
+    $record['payment'] = ['amount_minor' => '2100'];
+    $record['allocations'] = [['awarded' => 1]];
+    $record['refund'] = ['state' => 'owed'];
+    $record['state'] = 'paid';
+    $record['confirmed_total_minor'] = $record['quoted_total_minor'];
+    $record['cancelled_at'] = '2026-10-15T12:00:00Z';
     $record = array_reverse($record, true);
     expect(CheckoutReview::orderHash($record))->toBe($hash);
     $record['lines'][0]['title'] = 'Changed snapshot';

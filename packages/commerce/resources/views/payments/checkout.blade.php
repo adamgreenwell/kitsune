@@ -29,6 +29,8 @@
             <p>{{ $t('review_help') }}</p>
             <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/payment/review">@csrf<button type="submit">{{ $t('review') }}</button></form>
         @endif
+        @include('commerce::orders.payment-summary')
+        @if ($completed && $order['payment'] === null)<p role="status">{{ $t('awaiting_confirmation') }}</p>@endif
         @if ($attempts !== [])
             <section class="summary" aria-labelledby="history-heading">
                 <h2 id="history-heading">{{ $t('history') }}</h2>

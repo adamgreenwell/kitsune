@@ -31,6 +31,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\PaidOrderFixture;
 use Kitsune\Core\Tests\Fixtures\StripeInboxFixture;
 use Orchestra\Testbench\Foundation\Application as TestbenchApplication;
 use Psr\Http\Message\RequestInterface;
@@ -145,7 +146,7 @@ $http = static function (RequestInterface $request) use (&$calls, &$nested, &$fa
     $selected = $sessionMap[basename($request->getUri()->getPath())] ?? $networkSession;
     $session = [...$selected, 'status' => 'complete', 'payment_status' => 'paid', 'payment_intent' => 'pi_ReplayFixture', 'url' => null];
 
-    return new Response(200, ['Content-Type' => 'application/json'], json_encode($session, JSON_THROW_ON_ERROR));
+    return new Response(200, ['Content-Type' => 'application/json'], json_encode(PaidOrderFixture::expanded($session), JSON_THROW_ON_ERROR));
 };
 $app->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' => HandlerStack::create(new MockHandler(array_fill(0, 20, $http)))])));
 $inbox = app(StripeEventInbox::class);
@@ -175,8 +176,10 @@ echo json_encode(['initial' => $initialState, 'states' => $states, 'nested' => $
     'calls' => $calls, 'receiptStates' => DB::table(StripeEventInbox::TABLE)->orderBy('id')->pluck('state')->all(),
     'rawCleared' => DB::table(StripeEventInbox::TABLE)->where('id', $receiptId)->value('raw_payload') === null,
     'attemptState' => DB::table(CheckoutAttempts::TABLE)->where('id', $attempt->id)->value('state'),
-    'orderUnchanged' => $beforeOrder == (array) DB::table('commerce_orders')->where('id', $order->getKey())->first(),
+    'orderHistoryUnchanged' => array_diff_key($beforeOrder, array_flip(['state', 'active_cart_key', 'confirmed_total_minor'])) == array_diff_key((array) DB::table('commerce_orders')->where('id', $order->getKey())->first(), array_flip(['state', 'active_cart_key', 'confirmed_total_minor'])),
     'linesUnchanged' => $beforeLines == DB::table('commerce_order_lines')->where('order_id', $order->getKey())->orderBy('id')->get()->map(fn ($row) => (array) $row)->all(),
     'stock' => (string) DB::table('commerce_sellables')->where('id', $productId)->value('stock'), 'grants' => DB::table('entitlements')->count(),
+    'paymentReceipts' => DB::table('commerce_payment_receipts')->count(),
+    'orderState' => DB::table('commerce_orders')->where('id', $order->getKey())->value('state'),
     'confirmed' => DB::table('commerce_orders')->where('id', $order->getKey())->value('confirmed_total_minor'),
     'level' => DB::connection()->transactionLevel(), 'pdo' => DB::connection()->getPdo()->inTransaction()], JSON_THROW_ON_ERROR);

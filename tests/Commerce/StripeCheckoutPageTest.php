@@ -33,15 +33,15 @@ function stripeCheckoutPageProbe(string $scenario, bool $cached = false): array
     }
 }
 
-it('reviews starts and reconciles a test Session through native root and nested cached routes without paying or fulfilling an order', function (string $scenario, bool $cached): void {
+it('reviews starts and reconciles a test Session through native root and nested cached routes and retains completed orders until captured-payment proof', function (string $scenario, bool $cached): void {
     $result = stripeCheckoutPageProbe($scenario, $cached);
-    expect(array_column($result['responses'], 'status'))->toBe([200, 303, 200, 303, 200, 200, 303, 200, 200, 422, 422, 303, 200, 200, 303, 303])
+    expect(array_column($result['responses'], 'status'))->toBe([200, 303, 200, 303, 200, 200, 303, 200, 200, 422, 422, 303, 200, 200, in_array($scenario, ['expire', 'owner-expire'], true) ? 303 : 422, in_array($scenario, ['expire', 'owner-expire'], true) ? 303 : 422])
         ->and($result['cached'])->toBe($cached)->and($result['getReadOnly'])->toBeTrue()
         ->and($result['responses'][5]['body'])->toContain('Test total: ', 'USD 24.00', 'about 30 minutes', 'Surf &amp; &lt;course&gt;')
         ->and($result['responses'][6]['headers']['location'][0])->toStartWith('https://checkout.stripe.com/')
         ->and($result['responses'][6]['headers']['content-security-policy'][0])->toContain("form-action 'self' https://checkout.stripe.com")
-        ->and($result['responses'][12]['body'])->toContain(in_array($scenario, ['expire', 'owner-expire'], true) ? 'Test checkout expired' : 'Test checkout completed — order remains unpaid')
-        ->and($result['orders'])->toBe(0)->and($result['attempts'])->toBe(0)->and($result['stock'])->toBe('5')->and($result['grants'])->toBe(0)
+        ->and($result['responses'][12]['body'])->toContain(in_array($scenario, ['expire', 'owner-expire'], true) ? 'Test checkout expired' : 'Test checkout completed')
+        ->and($result['orders'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['attempts'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['stock'])->toBe('5')->and($result['grants'])->toBe(0)
         ->and($result['level'])->toBe(0)->and($result['pdo'])->toBeFalse();
     foreach ($result['calls'] as $call) {
         expect($call['level'])->toBe(0)->and($call['pdo'])->toBeFalse();

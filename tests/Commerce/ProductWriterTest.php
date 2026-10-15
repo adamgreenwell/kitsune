@@ -109,6 +109,17 @@ it('shares commerce while creating distinct content and availability on a siblin
         ->and($row->listings()->first()->is_available)->toBeFalse();
 });
 
+it('preserves the current stock when a stale or forged product edit submits another balance', function (mixed $submitted): void {
+    $row = $this->writer->createProduct($this->commerce, 'USD', $this->content);
+    // A committed inventory write happened after the owner's form was loaded. This raw fixture isolates that race.
+    DB::table('commerce_sellables')->where('id', $row->getKey())->update(['stock' => '2']);
+    $saved = $this->writer->updateProduct($row->getKey(), [...$this->commerce, 'stock' => $submitted, 'price_minor' => '2500'],
+        'USD', [...$this->content, 'title' => 'Updated content']);
+
+    expect($saved->stock)->toBe('2')->and($saved->fresh()->stock)->toBe('2')
+        ->and($saved->price_minor)->toBe('2500')->and(productEntry($saved)->title)->toBe('Updated content');
+})->with(['stale balance' => ['5'], 'forged balance' => ['99'], 'untracked' => [null], 'malformed' => [['unsafe']]]);
+
 it('uses the receipt ID after an owner renames the product type', function (): void {
     $this->type->update(['handle' => 'boards', 'name' => 'Board']);
     expect(ProductType::current()->getKey())->toBe($this->type->getKey());

@@ -144,7 +144,7 @@ it('physically prunes expired bytes without reading them or altering the immutab
 
 it('retains only a dedup tombstone when a terminal test order is erased and cannot restore its graph on redelivery', function (): void {
     $receipt = $this->inbox->capture($this->org->getKey(), $this->event, $this->raw, CarbonImmutable::now('UTC'));
-    DB::table(CheckoutAttempts::TABLE)->where('id', $this->attempt->id)->update(['state' => 'completed', 'active_order_id' => null, 'checkout_url' => null]);
+    DB::table(CheckoutAttempts::TABLE)->where('id', $this->attempt->id)->update(['state' => 'expired', 'active_order_id' => null, 'checkout_url' => null]);
     $order = DB::table('commerce_orders')->where('id', $this->attempt->order_id)->sole();
     app(Context::class)->setSite($this->selling);
     DB::transaction(fn () => app(OrderReaderData::class)->eraseRecord(DB::connection(), $order));

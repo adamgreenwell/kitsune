@@ -219,14 +219,17 @@ trait InteractsWithProductForm
 
         $mode = $data['stock_mode'] ?? null;
 
-        if (! in_array($mode, ['finite', 'untracked'], true)) {
+        if ($this instanceof EditProduct) {
+            // Disabled controls do not dehydrate; ProductWriter replaces this with its current locked balance.
+            $stock = null;
+        } elseif (! in_array($mode, ['finite', 'untracked'], true)) {
             throw ValidationException::withMessages(['data.stock_mode' => __('commerce::catalogue.invalid_stock')]);
-        }
-
-        try {
-            $stock = $mode === 'untracked' ? null : MinorUnits::integer($data['stock'] ?? null);
-        } catch (\InvalidArgumentException|RuntimeException) {
-            throw ValidationException::withMessages(['data.stock' => __('commerce::catalogue.invalid_stock')]);
+        } else {
+            try {
+                $stock = $mode === 'untracked' ? null : MinorUnits::integer($data['stock'] ?? null);
+            } catch (\InvalidArgumentException|RuntimeException) {
+                throw ValidationException::withMessages(['data.stock' => __('commerce::catalogue.invalid_stock')]);
+            }
         }
 
         $name = $data['entitlement_name'] ?? null;

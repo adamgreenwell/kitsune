@@ -48,7 +48,9 @@ final class CheckoutAttempts
             throw new CheckoutRefused;
         }
         foreach ($this->rows($connection, $org, $order, true) as $row) {
-            if (! in_array($row->state, ['expired', 'rejected', 'completed'], true)) {
+            // A legacy completed test attempt may already represent provider-confirmed payment. Retain its graph
+            // for the paid confirmation/recovery path instead of treating absence of a local receipt as no payment.
+            if (! in_array($row->state, ['expired', 'rejected'], true)) {
                 throw new CheckoutRefused('pending');
             }
         }

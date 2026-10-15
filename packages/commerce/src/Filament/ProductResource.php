@@ -134,12 +134,15 @@ final class ProductResource extends Resource
                         ->helperText(__('commerce::catalogue.price_help')),
                     Select::make('stock_mode')->label(__('commerce::catalogue.stock_tracking'))->native()
                         ->options(['untracked' => __('commerce::catalogue.untracked'), 'finite' => __('commerce::catalogue.finite')])
-                        ->default('untracked')->required()->rule('in:untracked,finite')->live(),
+                        ->default('untracked')->required()->rule('in:untracked,finite')->live()
+                        ->disabled(fn ($livewire): bool => $livewire instanceof EditProduct),
                     TextInput::make('stock')->label(__('commerce::catalogue.stock_quantity'))->inputMode('numeric')
                         ->extraInputAttributes(['dir' => 'ltr'])->maxLength(19)
                         ->visible(fn (Get $get): bool => $get('stock_mode') === 'finite')
                         ->required(fn (Get $get): bool => $get('stock_mode') === 'finite')
-                        ->helperText(__('commerce::catalogue.stock_help')),
+                        ->disabled(fn ($livewire): bool => $livewire instanceof EditProduct)
+                        ->helperText(fn ($livewire): string => __($livewire instanceof EditProduct
+                            ? 'commerce::catalogue.stock_edit_help' : 'commerce::catalogue.stock_help')),
                     TextInput::make('entitlement_name')->label(__('commerce::catalogue.entitlement_name'))
                         ->maxLength(100)->extraInputAttributes(['dir' => 'ltr'])->nullable()
                         ->rules([static fn (): \Closure => static function (string $attribute, mixed $value, \Closure $fail): void {

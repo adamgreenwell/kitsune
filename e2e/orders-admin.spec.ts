@@ -3,6 +3,7 @@ const AxeBuilder = require('@axe-core/playwright').default;
 const path = require('node:path');
 const { php, literal } = require('./storefront-fixture');
 const { callsMethod } = require('./select-control');
+const { confirmTestOrder } = require('./paid-order-fixture');
 
 const SITE = 'orders-admin-main';
 const SIBLING = 'orders-admin-other';
@@ -20,7 +21,7 @@ function resetFixture() {
         + `foreach([${literal(SITE)},${literal(SIBLING)}] as $slug){`
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
-        + "foreach(['commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
 
@@ -37,13 +38,23 @@ function fixtureOrder(siteSlug = SITE) {
 }
 
 async function submit(page, method, label) {
+    const button = page.getByRole('button', { name: label, exact: true });
+    // The DOM alone can precede Livewire/Alpine event binding after sidebar navigation.
+    await expect.poll(() => button.evaluate((element) => {
+        const target = element.hasAttribute('wire:click') ? element : element.closest('form[wire\\:submit]');
+        const bound = target as Element & { _x_attributeCleanups?: Record<string, unknown> };
+        return Object.keys(bound?._x_attributeCleanups ?? {}).some((key) => key.startsWith('x-on:click') || key.startsWith('x-on:submit'));
+    })).toBe(true);
     await Promise.all([
         page.waitForResponse((response) => callsMethod(response, method)),
-        page.getByRole('button', { name: label, exact: true }).click(),
+        button.click(),
     ]);
 }
 
 async function configure(page) {
+    // A sidebar navigation can render controls before Alpine binds wire:model. Filling earlier is overwritten.
+    await page.waitForFunction(() => ['checkout-tax_mode', 'checkout-shipping_tax_mode', 'checkout-shipping-class', 'checkout-dispatch-name', 'checkout-address-line1']
+        .every((id) => Boolean((document.getElementById(id) as HTMLInputElement & { _x_model?: unknown })?._x_model)));
     await page.locator('#checkout-tax_mode').selectOption('exclusive');
     await page.locator('#checkout-shipping_tax_mode').selectOption('inclusive');
     await page.getByLabel('Shipping tax class', { exact: true }).fill('shipping');
@@ -179,6 +190,13 @@ test.describe('Owner checkout and order administration', () => {
         await expect(page.locator('form[action$="/historical-recovery"] [name="password"]')).toHaveValue('');
         await expect(page.locator('form[action$="/historical-recovery"] [name="current_password"]')).toHaveValue('');
         expect(php(`echo DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->value('state');`)).toBe('uncertain');
+        // A previously completed test attempt has no paid receipt yet. It keeps original-account recovery available.
+        php(`DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->update(['state'=>'completed','active_order_id'=>null,'session_id'=>'cs_test_browserFixture']);`);
+        await page.reload();
+        await expect(page.getByRole('button', { name: 'Check test Session', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Erase unpaid order', exact: true })).toHaveCount(0);
+        await page.getByText('Recover with this checkout’s original Stripe account', { exact: true }).first().click();
+        await expect(page.locator('form[action$="/historical-recovery"] [name="password"]')).toBeVisible();
         await page.goto(`/admin/${SITE}`);
         await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
@@ -200,5 +218,40 @@ test.describe('Owner checkout and order administration', () => {
         } finally {
             await editor.close();
         }
+    });
+
+    test('shows paid refund obligations and native owner recovery while retaining the paid order', async ({ page }) => {
+        const reference = fixtureOrder();
+        const fixture = confirmTestOrder(reference, 'failed');
+        await page.goto(`${ORDERS}/${reference}`);
+        await expect(page.locator('[data-payment-summary]').getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
+        await expect(page.getByText('Refund failed — still owed', { exact: true }).first()).toBeVisible();
+        await expect(page.locator('[data-refund-owed]')).toHaveText('USD 22.00');
+        await expect(page.getByRole('button', { name: 'Cancel unpaid order', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Erase unpaid order', exact: true })).toHaveCount(0);
+        await expect(page.getByText(/^Cancellation and erasure are unavailable for this paid test order\./)).toBeVisible();
+        expect(await page.content()).not.toMatch(new RegExp(`${fixture.session}|${fixture.charge}|${fixture.intent}`));
+        await page.getByText('Check or submit refund', { exact: true }).first().click();
+        const form = page.locator('form[data-refund-recovery="refund_reconcile"]');
+        await expect(form).toHaveAttribute('method', 'post');
+        await expect(form.locator('[name="attempt_reference"]')).toHaveValue(fixture.refund);
+        await expect(page.locator('form[data-refund-recovery="refund_retry"]')).toHaveCount(1);
+        const secret = 'sk_test_browserNeverSentToProvider';
+        await form.locator('[name="password"]').fill(secret);
+        await form.locator('[name="current_password"]').fill('wrong-owner-password');
+        const [response] = await Promise.all([
+            page.waitForResponse((reply) => reply.url().endsWith('/historical-recovery') && reply.request().method() === 'POST'),
+            form.getByRole('button', { name: 'Check or submit refund', exact: true }).click(),
+        ]);
+        expect(response.status()).toBe(303);
+        await expect(page).toHaveURL(new RegExp(`${ORDERS}/${reference}$`));
+        expect(await page.content()).not.toMatch(/sk_test_browserNeverSentToProvider|wrong-owner-password/);
+        await page.getByText('Check or submit refund', { exact: true }).first().click();
+        await expect(page.locator('form[data-refund-recovery="refund_reconcile"] [name="password"]')).toHaveValue('');
+        expect(php(`echo DB::table('commerce_refund_attempts')->where('reference',${literal(fixture.refund)})->value('state');`)).toBe('failed');
+        const audit = await new AxeBuilder({ page }).analyze();
+        expect(audit.violations).toEqual([]);
+        await page.goto(`/admin/${SITE}/roles`);
+        await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
 });

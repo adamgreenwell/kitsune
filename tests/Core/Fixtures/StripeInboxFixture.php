@@ -29,21 +29,21 @@ final class StripeInboxFixture
         DB::table('modules')->updateOrInsert(['handle' => 'kitsune/commerce'], ['version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => true, 'installed_at' => OrderFixture::now()]);
     }
 
-    public static function attempt(Site $site, string $state = 'open', bool $route = true): object
+    public static function attempt(Site $site, string $state = 'open', bool $route = true, string $currency = 'USD'): object
     {
         $context = app(Context::class);
         $beforeOrg = $context->org();
         $beforeSite = $context->site();
         try {
             $context->setSite($site);
-            $order = OrderFixture::plant($site);
+            $order = OrderFixture::plant($site, overrides: ['currency' => $currency]);
             $record = app(OrderReaderData::class)->record(DB::connection(), $order);
             $reference = bin2hex(random_bytes(16));
             $expires = CarbonImmutable::now('UTC')->startOfSecond()->addSeconds(1860);
             $payload = CheckoutAttempts::payload($record, $reference, $expires->getTimestamp(), rtrim($site->base_url, '/'));
             $data = ['org_id' => $site->org_id, 'site_id' => $site->getKey(), 'order_id' => $order->id, 'reference' => $reference,
                 'active_order_id' => in_array($state, ['expired', 'completed', 'rejected'], true) ? null : $order->id,
-                'mode' => 'test', 'currency' => 'USD', 'account_id' => 'acct_InboxFixture', 'api_version' => StripeCheckout::API_VERSION,
+                'mode' => 'test', 'currency' => $currency, 'account_id' => 'acct_InboxFixture', 'api_version' => StripeCheckout::API_VERSION,
                 'credential_witness' => str_repeat('a', 64), 'state' => $state, 'request_payload' => json_encode($payload, JSON_THROW_ON_ERROR),
                 'request_hash' => CheckoutAttempts::digest($payload), 'order_hash' => CheckoutReview::orderHash($record),
                 'session_id' => in_array($state, ['creating', 'uncertain', 'rejected'], true) ? null : 'cs_test_'.bin2hex(random_bytes(16)),

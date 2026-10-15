@@ -6,6 +6,7 @@ const { SITE_A, SITE_B, RIVAL_SITE, COURSE_A, READER, artisan, php } = require('
 const { literal } = require('./storefront-fixture');
 const { resetCartFixtures, setCartCourse, cartStorage } = require('./cart-fixture');
 const { mailMark, mailTo, mailFacts } = require('./mail');
+const { confirmTestOrder } = require('./paid-order-fixture');
 
 const cart = `/${SITE_A}/cart`;
 const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public order browser fixture bootstrap',fn($q)=>$q->where('slug',${literal(SITE_A)})->firstOrFail());`
@@ -13,7 +14,8 @@ const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public o
 
 /** Only the dedicated catalogue fixture org: retained historical snapshots deliberately have no cart/catalogue FK. */
 function clearOrders() {
-    php(atSite + "DB::table('commerce_stripe_events')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_routing')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
+    php(atSite + "foreach(['commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts'] as $table){DB::table($table)->where('org_id',$site->org_id)->delete();}"
+        + "DB::table('commerce_stripe_events')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_routing')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_tax_rates')->where('org_id',$site->org_id)->delete();"
@@ -245,6 +247,32 @@ test('prepares an exact unpaid guest invoice by keyboard, retains its original a
     await expect(page).toHaveURL(new RegExp(`${cart}$`));
     expect(storedOrders()).toEqual({ orders: 0, lines: 0, consumed: 0, tokens: 0 });
     expect((await page.goto(path)).status()).toBe(404);
+});
+
+test('keeps a paid guests exact proof and safe export while showing unavailable-item refund obligations', async ({ page }, testInfo) => {
+    await add(page);
+    await review(page, `paid-order-${testInfo.retry}-${Date.now()}@kitsune.test`);
+    const path = await prepare(page);
+    const reference = path.split('/').pop();
+    // Another checkout consumed the remaining stock after this order was reviewed. Backend tests prove the locking.
+    php(atSite + "DB::table('commerce_sellables')->where('org_id',$site->org_id)->where('sku','CAT-000')->update(['stock'=>'0']);");
+    const fixture = confirmTestOrder(reference);
+    await page.reload();
+    await expect(page.locator('[data-payment-summary]').getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
+    await expect(page.getByText('Refund owed', { exact: true }).first()).toBeVisible();
+    await expect(page.locator('[data-refund-owed]')).toHaveText('USD 24.00');
+    await expect(page.getByRole('button', { name: 'Cancel this order', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Erase this unpaid order and its personal data', exact: true })).toHaveCount(0);
+    await expect(page.getByText(/^Cancellation and erasure are unavailable for this paid test order\./)).toBeVisible();
+    expect(await page.content()).not.toMatch(new RegExp(`${fixture.session}|${fixture.charge}|${fixture.intent}`));
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download my order data', exact: true }).click();
+    const exported = JSON.parse(fs.readFileSync(await (await downloaded).path(), 'utf8'));
+    expect(exported).toMatchObject({ state: 'paid', confirmed_total_minor: '2400', refund: { state: 'owed', owed_minor: '2400' } });
+    expect(exported.allocations[0]).toMatchObject({ awarded: 0, unavailable: 1 });
+    expect(JSON.stringify(exported)).not.toMatch(/cs_test_|ch_|pi_|credential_witness|request_payload|lease_token|idempotency_key/);
+    await axe(page);
+    expect(storedOrders().orders).toBe(1);
 });
 
 test('recovers a guest order in a fresh browser through an actual one-use email link with a clean confirmation address', async ({ page, browser }, testInfo) => {

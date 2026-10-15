@@ -32,6 +32,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\PaidOrderFixture;
 use Psr\Http\Message\RequestInterface;
 
 // Reuse #197's real level-zero setup and provider protocol fixture, then independently exercise the new recovery path.
@@ -154,7 +155,7 @@ $http = static function (RequestInterface $sent) use (&$outbound, &$nestedRefusa
         default => null,
     };
 
-    return new Response(200, ['Content-Type' => 'application/json'], json_encode($session, JSON_THROW_ON_ERROR));
+    return new Response(200, ['Content-Type' => 'application/json'], json_encode(PaidOrderFixture::expanded($session), JSON_THROW_ON_ERROR));
 };
 $app->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' => HandlerStack::create(new MockHandler(array_fill(0, 20, $http)))])));
 $app->forgetInstance(CheckoutReconciler::class);
@@ -208,9 +209,11 @@ echo json_encode(['states' => $states, 'failure' => $failure, 'safeFailure' => $
     'requestUnchanged' => $finalAttempt['request_payload'] === $originalAttempt['request_payload'], 'sessionId' => $finalAttempt['session_id'],
     'credentialsUnchanged' => $originalCredentials == DB::table('credentials')->orderBy('id')->get()->all(),
     'modeUnchanged' => $originalMode == DB::table('org_credential_modes')->orderBy('id')->get()->all(),
-    'orderUnchanged' => $beforeOrder === (array) DB::table('commerce_orders')->where('id', $order->getKey())->first(),
+    'orderHistoryUnchanged' => array_diff_key($beforeOrder, array_flip(['state', 'active_cart_key', 'confirmed_total_minor'])) === array_diff_key((array) DB::table('commerce_orders')->where('id', $order->getKey())->first(), array_flip(['state', 'active_cart_key', 'confirmed_total_minor'])),
     'linesUnchanged' => $beforeLines == DB::table('commerce_order_lines')->where('order_id', $order->getKey())->orderBy('id')->get()->all(),
     'stock' => (string) DB::table('commerce_sellables')->where('id', $product->getKey())->value('stock'), 'grants' => DB::table('entitlements')->count(),
+    'paymentReceipts' => DB::table('commerce_payment_receipts')->count(),
+    'orderState' => DB::table('commerce_orders')->where('id', $order->getKey())->value('state'),
     'confirmed' => DB::table('commerce_orders')->where('id', $order->getKey())->value('confirmed_total_minor'),
     'calls' => $outbound, 'level' => DB::connection()->transactionLevel(), 'pdo' => DB::connection()->getPdo()->inTransaction(),
     'audits' => DB::table('audit_log')->whereIn('action', ['commerce.checkout_reconciled', 'commerce.checkout_owner_recovered'])->pluck('action')->all()], JSON_THROW_ON_ERROR);

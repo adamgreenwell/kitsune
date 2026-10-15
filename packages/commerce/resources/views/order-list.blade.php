@@ -56,9 +56,36 @@
                 @foreach (['quoted_item_net_minor' => 'net', 'quoted_shipping_net_minor' => 'shipping', 'quoted_tax_minor' => 'tax', 'quoted_total_minor' => 'total'] as $field => $label)
                     <div><dt class="font-medium">{{ __('commerce::checkout.'.$label) }}</dt><dd>{{ $order['currency'] }} {{ \Kitsune\Commerce\Money\MinorUnits::format($order[$field], $order['currency']) }}</dd></div>
                 @endforeach
-                <div><dt class="font-medium">{{ __('commerce::checkout.payment') }}</dt><dd>{{ __('commerce::checkout.not_charged') }}</dd></div>
+                <div><dt class="font-medium">{{ __('commerce::checkout.payment') }}</dt><dd>{{ __($order['payment'] === null ? 'commerce::checkout.not_charged' : 'commerce::paid.paid') }}</dd></div>
             </dl>
         </x-filament::section>
+        @include('commerce::orders.payment-summary')
+        @if ($order['refund'] !== null && $order['refund']['attempts'] !== [])
+            @php($latestRefund = $order['refund']['attempts'][array_key_last($order['refund']['attempts'])])
+            <x-filament::section :heading="__('commerce::paid.refund_actions')">
+                <p>{{ __('commerce::paid.recovery_help') }}</p>
+                @foreach (['refund_reconcile' => 'reconcile', 'refund_retry' => 'retry'] as $recoveryKind => $label)
+                    @if ($recoveryKind === 'refund_reconcile' || in_array($latestRefund['state'], ['failed', 'canceled'], true))
+                        <details class="space-y-3">
+                            <summary class="cursor-pointer underline">{{ __('commerce::paid.'.$label) }}</summary>
+                            @if ($recoveryKind === 'refund_retry')<p>{{ __('commerce::paid.retry_help') }}</p>@endif
+                            <form action="{{ $this->historicalRecoveryUrl() }}" method="post" class="space-y-3" autocomplete="off" data-refund-recovery="{{ $recoveryKind }}">
+                                @csrf
+                                <input type="hidden" name="recovery_kind" value="{{ $recoveryKind }}">
+                                <input type="hidden" name="order_reference" value="{{ $order['reference'] }}">
+                                <input type="hidden" name="attempt_reference" value="{{ $latestRefund['reference'] }}">
+                                <label for="refund-key-{{ $recoveryKind }}">{{ __('commerce::payments.historical_key') }}</label>
+                                <input id="refund-key-{{ $recoveryKind }}" name="password" type="password" required maxlength="255" autocomplete="new-password" class="block w-full rounded-lg border p-2" dir="ltr">
+                                <label for="refund-password-{{ $recoveryKind }}">{{ __('commerce::payments.owner_password') }}</label>
+                                <input id="refund-password-{{ $recoveryKind }}" name="current_password" type="password" required maxlength="4096" autocomplete="current-password" class="block w-full rounded-lg border p-2">
+                                <x-filament::button type="submit">{{ __('commerce::paid.'.$label) }}</x-filament::button>
+                            </form>
+                        </details>
+                    @endif
+                @endforeach
+            </x-filament::section>
+        @endif
+        @if ($order['refund'] !== null && $order['refund']['attempts'] === [])<p>{{ __('commerce::paid.unrepresentable_refund') }}</p>@endif
         @if ($order['checkout_attempts'] !== [])
             <x-filament::section :heading="__('commerce::payments.history')">
                 <p>{{ __('commerce::payments.test_only') }}</p>
@@ -75,6 +102,8 @@
                                 <label class="flex gap-2"><input type="checkbox" wire:model="recoveryExpire">{{ __('commerce::payments.expire_after_recovery') }}</label>
                                 <x-filament::button type="submit">{{ __('commerce::payments.recover') }}</x-filament::button>
                             </form>
+                        @endif
+                        @if (in_array($attempt['state'], ['creating', 'open', 'uncertain'], true) || ($attempt['state'] === 'completed' && $order['payment'] === null))
                             <details class="space-y-3">
                                 <summary class="cursor-pointer underline">{{ __('commerce::payments.historical_recover') }}</summary>
                                 <p>{{ __('commerce::payments.historical_help') }}</p>
@@ -104,8 +133,10 @@
             </x-filament::section>
         @endif
         <div class="flex flex-wrap gap-3">
-            @if ($order['state'] === 'prepared')<x-filament::button color="warning" wire:click="cancelOrder" wire:confirm="{{ __('commerce::checkout.cancel_confirm') }}">{{ __('commerce::checkout.cancel_order') }}</x-filament::button>@endif
-            <x-filament::button color="danger" wire:click="eraseOrder" wire:confirm="{{ __('commerce::checkout.erase_confirm') }}">{{ __('commerce::checkout.erase_order') }}</x-filament::button>
+            @php($completedCheckout = in_array('completed', array_column($order['checkout_attempts'], 'state'), true))
+            @if ($order['state'] === 'prepared' && ! $completedCheckout)<x-filament::button color="warning" wire:click="cancelOrder" wire:confirm="{{ __('commerce::checkout.cancel_confirm') }}">{{ __('commerce::checkout.cancel_order') }}</x-filament::button>@endif
+            @if ($order['payment'] === null && ! $completedCheckout)<x-filament::button color="danger" wire:click="eraseOrder" wire:confirm="{{ __('commerce::checkout.erase_confirm') }}">{{ __('commerce::checkout.erase_order') }}</x-filament::button>@endif
         </div>
+        @if ($order['payment'] !== null || $completedCheckout)<p>{{ __('commerce::paid.'.($order['payment'] !== null ? 'retained' : 'completed_retained')) }}</p>@endif
     @endif
 </x-filament-panels::page>

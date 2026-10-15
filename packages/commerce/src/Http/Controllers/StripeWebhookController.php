@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Kitsune\Commerce\Http\Middleware\CartArea;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Payments\CheckoutRefused;
+use Kitsune\Commerce\Payments\PaymentMaintenance;
 use Kitsune\Commerce\Payments\StripeEventInbox;
 use Kitsune\Commerce\Payments\StripeWebhook;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -111,6 +112,7 @@ final class StripeWebhookController
                     $context->setOrg($org);
                     $context->setSite($site);
                     app(StripeEventInbox::class)->process($receipt['id']);
+                    app(PaymentMaintenance::class)->afterEvent($receipt['id']);
                 } catch (Throwable) {
                     // The durable pending/leased receipt is the retry record; never report raw provider exceptions.
                 } finally {

@@ -28,9 +28,9 @@ use SensitiveParameter;
 use Throwable;
 
 /**
- * Reconcile only a recorded TEST Session. No create, expiry, credential installation or payment effects.
+ * Reconcile a recorded TEST Session and confirm captured payments under the original custody.
  * Provider reads retain #197's current-mode/witness rule; a fresh owner can explicitly supply a transient test key.
- * An exact already-terminal test attempt is local receipt bookkeeping: no key read, provider call or further effect.
+ * An expired attempt or completed attempt with a paid receipt can finish local receipt bookkeeping without I/O.
  * Provider calls occur after the claim commits. Every durable graph and owner proof is checked around the I/O.
  *
  * @internal
@@ -89,7 +89,8 @@ final class CheckoutReconciler
                 if ($row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(self::now())) {
                     throw new CheckoutRefused('busy');
                 }
-                if (! $owner && in_array($row->state, ['completed', 'expired'], true)) {
+                if (! $owner && ($row->state === 'expired' || ($row->state === 'completed'
+                    && app(PaidOrders::class)->receipt($order->getConnection(), (object) $order->getAttributes(), true) !== null))) {
                     // A prior verified reconciliation (including explicit historical owner recovery) already
                     // settled this exact test Session. Finish its receipt without reopening old credential custody.
                     return ['terminal' => self::result($row)];
@@ -126,7 +127,7 @@ final class CheckoutReconciler
             }
             // Account lookup is itself I/O: revocation or a credential change must stop the next provider read too.
             $this->locks->run(fn () => $this->checked($orderReference, $attemptReference, $captured, $owner, $password));
-            $session = $this->stripe->retrieve($secret, $captured['sessionId']);
+            $session = $this->stripe->retrievePaid($secret, $captured['sessionId']);
             CheckoutSession::assertMatches($captured['row'], $session, $captured['sessionId']);
 
             return $this->locks->run(function () use ($orderReference, $attemptReference, $captured, $session, $owner, $password): array {
@@ -138,6 +139,10 @@ final class CheckoutReconciler
                     'lease_token' => null, 'lease_until' => null, 'updated_at' => self::stored(self::now())];
                 $this->update($order, $row, $changes);
                 $expected = (object) [...(array) $row, ...$changes];
+                if ($state === 'completed') {
+                    app(PaidOrders::class)->confirm($order->getConnection(), (object) $order->getAttributes(), $expected, $session);
+                    $order = $this->order($orderReference);
+                }
                 $expectedGraph = $this->graph($order);
                 $this->audit($owner ? 'commerce.checkout_owner_recovered' : 'commerce.checkout_reconciled', $expected);
                 $this->checked($orderReference, $attemptReference, [...$captured, 'row' => $expected, 'graph' => $expectedGraph], $owner, $password);
@@ -173,6 +178,7 @@ final class CheckoutReconciler
         $row = $this->find($order, $attemptReference);
         $this->binding($order, $row);
         if (! hash_equals($captured['graph'], $this->graph($order)) || $row->lease_token !== $captured['row']->lease_token
+            || ($row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->lessThanOrEqualTo(self::now()))
             || (! $owner && ! hash_equals($captured['witness'], $this->witness()))) {
             throw new CheckoutRefused('changed');
         }
@@ -186,7 +192,7 @@ final class CheckoutReconciler
         $row = $this->orders->find($connection, $this->context->orgId() ?? throw new CheckoutRefused,
             $this->context->siteId() ?? throw new CheckoutRefused, $reference, true) ?? throw new CheckoutRefused;
         $this->orders->record($connection, $row);
-        if ($row->state !== 'prepared' || $row->mode !== 'test') {
+        if (! in_array($row->state, ['prepared', 'cancelled', 'paid'], true) || $row->mode !== 'test') {
             throw new CheckoutRefused('live');
         }
 

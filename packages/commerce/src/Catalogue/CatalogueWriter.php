@@ -73,6 +73,10 @@ final class CatalogueWriter
             $this->refuseStaleCurrencyQuote($this->lockOrg(), $currency);
             $row = Sellable::query()->useWritePdo()->whereKey($key)->first()
                 ?? throw new RuntimeException('The sellable is not available in this org.');
+            if (($row->stock === null) !== ($attributes['stock'] === null)
+                || ($row->stock !== null && $row->stock !== $attributes['stock'])) {
+                throw new RuntimeException('Change existing stock through StockWriter with a reason.');
+            }
             $row->forceFill($attributes);
 
             if ($row->isDirty(array_keys($attributes))) {

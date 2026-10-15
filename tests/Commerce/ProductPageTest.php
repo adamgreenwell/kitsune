@@ -43,11 +43,18 @@ it('rolls back the entire native product save when a native event requests a rol
 
 it('hands native saved listeners the new shared values after an edit', function (): void {
     $result = productPageProbe('updated-event');
-    expect($result['observed'])->toBe(['CHANGED', '2500', '6'])
-        ->and($result['persisted'])->toBe(['sku' => 'CHANGED', 'price_minor' => '2500', 'stock' => '6'])
+    expect($result['observed'])->toBe(['CHANGED', '2500', '5'])
+        ->and($result['persisted'])->toBe(['sku' => 'CHANGED', 'price_minor' => '2500', 'stock' => '5'])
         ->and($result['errors'])->toBe([])->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse()
         ->and($result['notifications'])->toHaveCount(1)->and($result['notifications'][0]['title'])->toBe('Saved')
         ->and(array_column($result['dispatches'], 'name'))->toContain('notificationsSent');
+});
+
+it('keeps a concurrently changed balance when saving an already loaded native product form', function (): void {
+    $result = productPageProbe('stale-stock-update');
+    expect($result['persisted'])->toBe(['sku' => 'CHANGED', 'price_minor' => '2500', 'stock' => '2'])
+        ->and($result['displayed_stock'])->toBe('2')->and($result['errors'])->toBe([])
+        ->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse();
 });
 
 it('can retry the same create form after a rollback halt without hydrating a rolled-back record', function (): void {

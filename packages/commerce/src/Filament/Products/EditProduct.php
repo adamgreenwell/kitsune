@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Model;
 use Kitsune\Commerce\Catalogue\CatalogueWriter;
 use Kitsune\Commerce\Catalogue\ProductWriter;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Filament\StockResource;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -60,6 +61,12 @@ final class EditProduct extends EditRecord
         $this->productAction(fn () => parent::save($shouldRedirect, $shouldSendSavedNotification));
 
         if ($this->savedSuccessfully) {
+            $record = $this->getRecord();
+            if (! $record instanceof Sellable) {
+                throw new RuntimeException('The saved product is unavailable.');
+            }
+            $this->data['stock_mode'] = $record->stock === null ? 'untracked' : 'finite';
+            $this->data['stock'] = $record->stock;
             parent::getSavedNotification()?->send();
         }
     }
@@ -86,6 +93,8 @@ final class EditProduct extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('stockHistory')->label(__('commerce::stock.adjust_and_history'))
+                ->url(fn (): string => StockResource::getUrl('detail', ['reference' => (string) $this->getRecord()->getKey()])),
             Action::make('contentHistory')->label(__('commerce::catalogue.content_history'))
                 ->visible(fn (): bool => $this->contentRecord()->exists)
                 ->url(fn (): ?string => $this->contentRecord()->exists

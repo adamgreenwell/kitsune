@@ -259,7 +259,7 @@ test.describe('restoring a version that was published', () => {
         // The relation manager is a lazy Livewire component below the fold — see `revisions.spec.js`.
         await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
         await page.mouse.wheel(0, 1200);
-        await expect(page.getByText('History')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
 
         /*
          * The published version's row. Two versions exist: the one it was created with (published) and the
@@ -285,7 +285,7 @@ test.describe('restoring a version that was published', () => {
 
         await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
         await page.mouse.wheel(0, 1200);
-        await expect(page.getByText('History')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
 
         const draft = page.locator('.fi-ta-row').filter({ hasText: 'Draft' }).first();
         await expect(draft).toBeVisible();
@@ -317,7 +317,7 @@ test.describe('the history of an entry somebody may only view', () => {
 
         // The relation manager is a lazy Livewire component below the fold — see `revisions.spec.js`.
         await page.mouse.wheel(0, 1200);
-        await expect(page.getByText('History')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
     }
 
     test('is refused credentials too, holding one grant', async ({ page }) => {

@@ -79,7 +79,9 @@ final class Sellable extends Model implements RequiresModelSave
     {
         $org = $this->catalogueOrg();
         $raw = $this->getAttributes();
-        $this->refuseChangedCatalogueIdentity(['org_id', 'currency']);
+        // Initial stock is established on creation. Thereafter only StockWriter may change the balance,
+        // atomically with its required reason/history; even a constructed instance compares stored values.
+        $this->refuseChangedCatalogueIdentity(['org_id', 'currency', 'stock']);
 
         if (! Currencies::supports($raw['currency'] ?? null) || $raw['currency'] !== $org->getAttribute('currency')) {
             throw new RuntimeException('A sellable must use its org\'s supported currency.');

@@ -124,12 +124,17 @@ final class CheckoutReview
         }
     }
 
-    /** Mutable email-link history and attempt projections are not purchase consent.
+    /** Mutable operation history and payment effects are not the buyer's original purchase consent.
      * @param  array<string,mixed>  $record
      */
     public static function orderHash(#[\SensitiveParameter] array $record): string
     {
-        unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events']);
+        unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund']);
+        if (in_array($record['state'] ?? null, ['paid', 'cancelled'], true)) {
+            $record['state'] = 'prepared';
+            $record['confirmed_total_minor'] = null;
+            $record['cancelled_at'] = null;
+        }
 
         return hash('sha256', json_encode(self::canonical($record), JSON_THROW_ON_ERROR));
     }

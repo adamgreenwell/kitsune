@@ -48,8 +48,10 @@ function stripeReplayProbe(string $scenario): array
         }
         $process->mustRun();
         $result = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
-        expect($result['orderUnchanged'])->toBeTrue()->and($result['linesUnchanged'])->toBeTrue()
-            ->and($result['stock'])->toBe('5')->and($result['grants'])->toBe(0)->and($result['confirmed'])->toBeNull()
+        expect($result['orderHistoryUnchanged'])->toBeTrue()->and($result['linesUnchanged'])->toBeTrue()
+            ->and($result['stock'])->toBe($scenario === 'fairness' ? '5' : '3')->and($result['grants'])->toBe(0)
+            ->and($result['confirmed'] === null ? null : (string) $result['confirmed'])->toBe($scenario === 'fairness' ? null : '4800')
+            ->and($result['paymentReceipts'])->toBe(1)->and($result['orderState'])->toBe($scenario === 'fairness' ? 'prepared' : 'paid')
             ->and($result['level'])->toBe(0)->and($result['pdo'])->toBeFalse()->and($result['attemptState'])->toBe($scenario === 'fairness' ? 'open' : 'completed');
         foreach ($result['calls'] as $call) {
             expect($call['method'])->toBe('GET')->and($call['level'])->toBe(0)->and($call['pdo'])->toBeFalse();
