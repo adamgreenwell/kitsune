@@ -22,8 +22,8 @@ concurrency:
 # migrating the test schema once per process; re-measure before lowering one. Post-#112 bare-clone evidence is
 # recorded in #113: 25 successful workflows, green maxima 9:41 (PHP 8.4) and 9:40 (8.5), plus repeated 10-minute
 # cancellations on #267. #274's larger suite later completed the PHP 8.4 bare job in 12:16 and hit the 15-minute
-# PHP 8.5 ceiling with passing recovery tests near the end. Its ceiling below is now 20 minutes; #113 retains the
-# evidence and the historical engine ceilings await their own amendment.
+# PHP 8.5 ceiling with passing recovery tests near the end. Both bare jobs later exhausted 20 minutes on #201;
+# their bounded allowance below is now 25 minutes. #113 retains the tail-measurement work and historical engine ceilings.
 jobs:
   # What this run needs, decided once and consumed by every matrix below. The reasoning, the measured
   # cost per run and the fail-closed rule are in .github/scripts/ci-scope.sh, which the test suite drives —
@@ -85,7 +85,10 @@ jobs:
     # ceiling, so #267 allowed five minutes beyond it. #274's 8,261-test Linux suite has now hit that 15m limit
     # with passing tests near completion; allow another bounded five minutes. Credential fixtures also use real
     # bcrypt at test cost 4 rather than repeatedly paying production cost 12. The service-free contract stays here.
-    timeout-minutes: 20
+    # #201 run 38807337780, head 0367460: jobs 116671547049/116671547243 explicitly exceeded 20m0s.
+    # Both were interrupted without final Pest totals; PHP 8.5 passed a case 0.18s before cancellation.
+    # Allow five more minutes provisionally; this is not a measured green tail bound (#113).
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
