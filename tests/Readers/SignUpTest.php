@@ -19,6 +19,7 @@ use Illuminate\Testing\TestResponse;
 use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
 use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
 use Kitsune\Core\Http\Controllers\Readers\SignInController;
+use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Readers\ReaderThrottle;
 use Kitsune\Core\Tests\Fixtures\BlindFindReader;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
@@ -554,3 +555,21 @@ it('answers 503 on both sides of the page when no mail can be sent, reading noth
     expect(DB::table('reader_tokens')->count())->toBe(0)
         ->and(app('mail.manager')->mailer('array')->getSymfonyTransport()->messages())->toHaveCount(0);
 });
+
+it('returns a newly registered reader only to a validated current-site intended reader page', function (mixed $intended, string $expected): void {
+    signUpOpened();
+    app('session.store')->put(RequireReader::INTENDED, $intended);
+    signUpFinish()->assertStatus(303)->assertHeader('Location', $expected);
+    expect(app('session.store')->has(RequireReader::INTENDED))->toBeFalse();
+})->with([
+    'exact claim page' => ['/golfdom/account/order-claims/'.str_repeat('a', 32), '/golfdom/account/order-claims/'.str_repeat('a', 32)],
+    'sibling site' => ['/golfdom-fr/account/order-claims/'.str_repeat('a', 32), '/golfdom/account'],
+    'foreign org' => ['/rival/account', '/golfdom/account'],
+    'absolute' => ['https://evil.test/golfdom/account', '/golfdom/account'],
+    'network path' => ['//evil.test/golfdom/account', '/golfdom/account'],
+    'query' => ['/golfdom/account?next=https://evil.test', '/golfdom/account'],
+    'encoded traversal' => ['/golfdom/account/%2e%2e/evil', '/golfdom/account'],
+    'case mismatch' => ['/GOLFDOM/account', '/golfdom/account'],
+    'array' => [['/golfdom/account'], '/golfdom/account'],
+    'missing' => [null, '/golfdom/account'],
+]);

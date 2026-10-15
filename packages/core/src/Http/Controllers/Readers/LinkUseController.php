@@ -21,6 +21,7 @@ use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\PasswordRefusal;
 use Kitsune\Core\Auth\PasswordRules;
 use Kitsune\Core\Http\Middleware\ReaderArea;
+use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\ReaderExport;
@@ -160,7 +161,12 @@ final class LinkUseController
         $request->session()->flash(SignInController::STATUS, $purpose === ReaderTokens::REGISTER ? 'complete.done' : 'reset.done');
         defer(static fn () => app(ReaderTokens::class)->sweep($orgId));
 
-        return new RedirectResponse(ReaderLinks::path($site), 303);
+        $intended = $request->session()->pull(RequireReader::INTENDED);
+
+        return new RedirectResponse(
+            is_string($intended) && ReaderLinks::isOwn($site, $intended) ? $intended : ReaderLinks::path($site),
+            303,
+        );
     }
 
     /**
