@@ -20,7 +20,7 @@ function resetFixture() {
         + `foreach([${literal(SITE)},${literal(SIBLING)}] as $slug){`
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
-        + "foreach(['commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
 
@@ -131,6 +131,35 @@ test.describe('Owner checkout and order administration', () => {
         await submit(page, 'eraseOrder', 'Erase unpaid order');
         await expect(page).toHaveURL(new RegExp(`${ORDERS}$`));
         await expect(page.getByText('No orders on this site yet.', { exact: true })).toBeVisible();
+    });
+
+    test('renders safe owner recovery controls and clears a refused Session ID without changing unresolved custody', async ({ page }) => {
+        const reference = fixtureOrder();
+        const attempt = php(`$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('Exact checkout recovery browser fixture',fn($q)=>$q->where('slug',${literal(SITE)})->firstOrFail());`
+            + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + `$order=app(Kitsune\\Commerce\\Orders\\OrderReaderData::class)->find(DB::connection(),$site->org_id,$site->id,${literal(reference)});`
+            + '$record=app(Kitsune\\Commerce\\Orders\\OrderReaderData::class)->record(DB::connection(),$order);$reference=bin2hex(random_bytes(16));$now=Carbon\\CarbonImmutable::now("UTC")->startOfSecond();$expires=$now->addSeconds(1860);'
+            + '$payload=Kitsune\\Commerce\\Payments\\CheckoutAttempts::payload($record,$reference,$expires->timestamp,"https://original.example.test");'
+            + "DB::table('commerce_checkout_attempts')->insert(['org_id'=>$site->org_id,'site_id'=>$site->id,'order_id'=>$order->id,'reference'=>$reference,'active_order_id'=>$order->id,"
+            + "'mode'=>'test','currency'=>'USD','account_id'=>'acct_browserFixture','api_version'=>Kitsune\\Commerce\\Payments\\StripeCheckout::API_VERSION,'credential_witness'=>str_repeat('a',64),'state'=>'uncertain',"
+            + "'request_payload'=>json_encode($payload,JSON_THROW_ON_ERROR),'request_hash'=>Kitsune\\Commerce\\Payments\\CheckoutAttempts::digest($payload),'order_hash'=>Kitsune\\Commerce\\Payments\\CheckoutReview::orderHash($record),"
+            + "'session_id'=>null,'checkout_url'=>null,'reviewed_at'=>$now->format('Y-m-d H:i:s'),'expires_at'=>$expires->format('Y-m-d H:i:s'),"
+            + "'lease_token'=>null,'lease_until'=>null,'created_at'=>$now->format('Y-m-d H:i:s'),'updated_at'=>$now->format('Y-m-d H:i:s')]);echo $reference;");
+        await page.goto(`${ORDERS}/${reference}`);
+        await expect(page.getByText(attempt, { exact: true })).toBeVisible();
+        await expect(page.getByText('Test checkout outcome needs checking', { exact: true })).toBeVisible();
+        const input = page.getByRole('textbox', { name: 'Session ID (only if missing)', exact: true });
+        await input.fill('not-a-session');
+        const expire = page.getByRole('checkbox', { name: 'Expire the open test Session after checking it', exact: true });
+        await expire.check();
+        await submit(page, 'recoverAttempt', 'Check test Session');
+        await expect(page.getByRole('alert').filter({ hasText: 'Test checkout could not be completed.' })).toBeVisible();
+        await expect(input).toHaveValue('');
+        await expect(expire).not.toBeChecked();
+        expect(await page.content()).not.toContain('not-a-session');
+        expect(php(`echo DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->value('state');`)).toBe('uncertain');
+        const audit = await new AxeBuilder({ page }).analyze();
+        expect(audit.violations).toEqual([]);
     });
 
     test('rejects editor settings and sibling-site or malformed direct order URLs', async ({ page, browser }) => {

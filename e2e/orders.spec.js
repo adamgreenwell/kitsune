@@ -13,10 +13,24 @@ const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public o
 
 /** Only the dedicated catalogue fixture org: retained historical snapshots deliberately have no cart/catalogue FK. */
 function clearOrders() {
-    php(atSite + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
+    php(atSite + "DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
+        + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_tax_rates')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_settings')->where('org_id',$site->org_id)->delete();");
+}
+
+/** Synthetic custody only; no key or provider call. Backend probes separately prove verified transitions. */
+function plantOpenTestCheckout(reference) {
+    return php(atSite + `$order=app(Kitsune\\Commerce\\Orders\\OrderReaderData::class)->find(DB::connection(),$site->org_id,$site->id,${literal(reference)});`
+        + '$record=app(Kitsune\\Commerce\\Orders\\OrderReaderData::class)->record(DB::connection(),$order);'
+        + '$reference=bin2hex(random_bytes(16));$now=Carbon\\CarbonImmutable::now("UTC")->startOfSecond();$expires=$now->addSeconds(1860);'
+        + '$payload=Kitsune\\Commerce\\Payments\\CheckoutAttempts::payload($record,$reference,$expires->timestamp,' + literal(`http://127.0.0.1:8125/${SITE_A}`) + ');'
+        + "DB::table('commerce_checkout_attempts')->insert(['org_id'=>$site->org_id,'site_id'=>$site->id,'order_id'=>$order->id,'reference'=>$reference,'active_order_id'=>$order->id,"
+        + "'mode'=>'test','currency'=>'USD','account_id'=>'acct_browserFixture','api_version'=>Kitsune\\Commerce\\Payments\\StripeCheckout::API_VERSION,'credential_witness'=>str_repeat('a',64),'state'=>'open',"
+        + "'request_payload'=>json_encode($payload,JSON_THROW_ON_ERROR),'request_hash'=>Kitsune\\Commerce\\Payments\\CheckoutAttempts::digest($payload),'order_hash'=>Kitsune\\Commerce\\Payments\\CheckoutReview::orderHash($record),"
+        + "'session_id'=>'cs_test_'.$reference,'checkout_url'=>'https://checkout.stripe.com/c/pay/cs_test_'.$reference.'#private-checkout-capability','reviewed_at'=>$now->format('Y-m-d H:i:s'),'expires_at'=>$expires->format('Y-m-d H:i:s'),"
+        + "'lease_token'=>null,'lease_until'=>null,'created_at'=>$now->format('Y-m-d H:i:s'),'updated_at'=>$now->format('Y-m-d H:i:s')]);echo $reference;");
 }
 
 function configureOrders() {
@@ -100,6 +114,107 @@ test.beforeEach(() => {
 test.afterEach(() => {
     clearOrders();
     resetCartFixtures();
+});
+
+test('reviews test checkout by keyboard and permits its native POST redirect under the actual checkout CSP', async ({ page }, testInfo) => {
+    await add(page);
+    await review(page, `checkout-csp-${testInfo.retry}-${Date.now()}@kitsune.test`);
+    const path = await prepare(page);
+    await page.getByRole('link', { name: 'Test checkout', exact: true }).click();
+    await expect(page).toHaveURL(`${new URL(page.url()).origin}${path}/payment`);
+    await expect(page.getByRole('heading', { name: 'Test checkout', exact: true })).toBeVisible();
+    const reviewed = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `${path}/payment/review`);
+    await page.getByRole('button', { name: 'Review test checkout', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    expect((await reviewed).headers()['content-security-policy']).toContain("form-action 'self' https://checkout.stripe.com");
+    await expect(page.getByRole('heading', { name: 'Test total: USD 24.00', exact: true })).toBeVisible();
+    await axe(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const action = await page.evaluate(() => document.querySelector('form[action$="/payment/start"]')?.getAttribute('action'));
+    expect(action).toBe(`${path}/payment/start`);
+    let redirected = 0;
+    let submitted = 0;
+    const problems = [];
+    const fixtureUrl = 'https://checkout.stripe.com/c/pay/cs_test_browserFixture';
+    const startUrl = new URL(`${path}/payment/start`, page.url()).href;
+    // page.route only intercepts the first URL in a redirect chain. Fetch pauses both legs before any network I/O.
+    // The actual writer is covered by native HTTP tests; this Chromium witness isolates the real page's form-action.
+    const session = await page.context().newCDPSession(page);
+    session.on('Fetch.requestPaused', async ({ requestId, request }) => {
+        try {
+            if (request.url === startUrl && request.method === 'POST') {
+                if (! /^[a-f0-9]{64}$/.test(new URLSearchParams(request.postData).get('review'))) {
+                    problems.push('The native checkout POST did not carry its reviewed token.');
+                    return await session.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
+                }
+                submitted++;
+                return await session.send('Fetch.fulfillRequest', { requestId, responseCode: 303, responseHeaders: [{ name: 'Location', value: fixtureUrl }], body: '' });
+            }
+            if (request.url === fixtureUrl && request.method === 'GET') {
+                redirected++;
+                return await session.send('Fetch.fulfillRequest', { requestId, responseCode: 200,
+                    responseHeaders: [{ name: 'Content-Type', value: 'text/html' }],
+                    body: Buffer.from('<!doctype html><html lang="en"><title>Stripe redirect fixture</title><h1>Stripe redirect fixture</h1></html>').toString('base64') });
+            }
+            problems.push('Unexpected request during the isolated checkout redirect.');
+            await session.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
+        } catch {
+            problems.push('The checkout redirect fixture could not fulfil its intercepted request.');
+        }
+    });
+    await page.context().setOffline(true);
+    await session.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+    try {
+        await page.getByRole('button', { name: 'Continue to Stripe test checkout', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(fixtureUrl);
+        await expect(page.getByRole('heading', { name: 'Stripe redirect fixture', exact: true })).toBeVisible();
+    } finally {
+        await session.send('Fetch.disable');
+        await session.detach();
+        await page.context().setOffline(false);
+    }
+    expect(problems).toEqual([]);
+    expect(submitted).toBe(1);
+    expect(redirected).toBe(1);
+    expect(cartStorage().stock).toBe('12');
+});
+
+test('shows unresolved test custody without exposing its Session URL and preserves exact guest export and erasure fences', async ({ page }, testInfo) => {
+    await add(page);
+    await review(page, `checkout-custody-${testInfo.retry}-${Date.now()}@kitsune.test`);
+    const path = await prepare(page);
+    const reference = path.split('/').pop();
+    const attempt = plantOpenTestCheckout(reference);
+    const response = await page.goto(`${path}/payment/return?session_id=forged-browser-session`);
+    expect(response.status()).toBe(200);
+    await expect(page.getByText('Test checkout is open', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review test checkout', exact: true })).toHaveCount(0);
+    expect(await page.content()).not.toMatch(/private-checkout-capability|cs_test_|forged-browser-session/);
+    await axe(page);
+    await page.getByRole('link', { name: 'Back to order', exact: true }).click();
+    const downloadPending = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download my order data', exact: true }).click();
+    const exported = JSON.parse(fs.readFileSync(await (await downloadPending).path(), 'utf8'));
+    expect(exported.checkout_attempts[0]).toMatchObject({ reference: attempt, state: 'open', mode: 'test', total_minor: '2400' });
+    expect(JSON.stringify(exported)).not.toMatch(/private-checkout-capability|cs_test_|credential_witness|request_payload|lease_token/);
+    await page.getByRole('button', { name: 'Cancel this order', exact: true }).click();
+    await expect(page.getByText('The order or delivery quote is unavailable. Please check your cart and try again shortly.', { exact: true })).toBeVisible();
+    expect(storedOrders().orders).toBe(1);
+    await page.goto(path);
+    await page.getByRole('button', { name: 'Erase this unpaid order and its personal data', exact: true }).click();
+    await expect(page.getByText('The order or delivery quote is unavailable. Please check your cart and try again shortly.', { exact: true })).toBeVisible();
+    expect(storedOrders().orders).toBe(1);
+    // Simulated verified expiry; native backend probes separately exercise Stripe retrieval and expiry.
+    php(atSite + `DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->where('site_id',$site->id)->where('reference',${literal(attempt)})`
+        + "->update(['state'=>'expired','active_order_id'=>null,'checkout_url'=>null]);");
+    await page.goto(`${path}/payment`);
+    await expect(page.getByText('Test checkout expired', { exact: true })).toBeVisible();
+    await page.getByRole('link', { name: 'Back to order', exact: true }).click();
+    await page.getByRole('button', { name: 'Erase this unpaid order and its personal data', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`${cart}$`));
+    expect(storedOrders()).toEqual({ orders: 0, lines: 0, consumed: 0, tokens: 0 });
 });
 
 test('prepares an exact unpaid guest invoice by keyboard, retains its original amount and supports export cancellation and erasure', async ({ page }, testInfo) => {

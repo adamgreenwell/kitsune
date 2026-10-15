@@ -59,6 +59,27 @@
                 <div><dt class="font-medium">{{ __('commerce::checkout.payment') }}</dt><dd>{{ __('commerce::checkout.not_charged') }}</dd></div>
             </dl>
         </x-filament::section>
+        @if ($order['checkout_attempts'] !== [])
+            <x-filament::section :heading="__('commerce::payments.history')">
+                <p>{{ __('commerce::payments.test_only') }}</p>
+                @foreach ($order['checkout_attempts'] as $attempt)
+                    <div class="space-y-3 py-3">
+                        <p>{{ __('commerce::payments.attempt') }}: <span dir="ltr">{{ $attempt['reference'] }}</span></p>
+                        <p>{{ __('commerce::payments.'.$attempt['state']) }}</p>
+                        <p>{{ __('commerce::payments.expires') }}: <span dir="ltr">{{ $attempt['expires_at'] }}</span></p>
+                        @if (in_array($attempt['state'], ['creating', 'open', 'uncertain'], true))
+                            <p>{{ __('commerce::payments.operator_help') }}</p>
+                            <form wire:submit="recoverAttempt('{{ $attempt['reference'] }}')" class="space-y-3">
+                                <label for="recovery-session-{{ $attempt['reference'] }}">{{ __('commerce::payments.session_id') }}</label>
+                                <input id="recovery-session-{{ $attempt['reference'] }}" type="text" wire:model="recoverySession" maxlength="255" autocomplete="off" class="block w-full rounded-lg border p-2" dir="ltr">
+                                <label class="flex gap-2"><input type="checkbox" wire:model="recoveryExpire">{{ __('commerce::payments.expire_after_recovery') }}</label>
+                                <x-filament::button type="submit">{{ __('commerce::payments.recover') }}</x-filament::button>
+                            </form>
+                        @endif
+                    </div>
+                @endforeach
+            </x-filament::section>
+        @endif
         <div class="flex flex-wrap gap-3">
             @if ($order['state'] === 'prepared')<x-filament::button color="warning" wire:click="cancelOrder" wire:confirm="{{ __('commerce::checkout.cancel_confirm') }}">{{ __('commerce::checkout.cancel_order') }}</x-filament::button>@endif
             <x-filament::button color="danger" wire:click="eraseOrder" wire:confirm="{{ __('commerce::checkout.erase_confirm') }}">{{ __('commerce::checkout.erase_order') }}</x-filament::button>

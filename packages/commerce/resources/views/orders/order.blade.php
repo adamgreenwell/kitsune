@@ -14,6 +14,7 @@
     <p>{{ $t('net') }}: {{ $order['currency'] }} {{ $money($order['quoted_item_net_minor'], $order['currency']) }}</p>
     <p>{{ $t('tax') }}: {{ $order['currency'] }} {{ $money($order['quoted_tax_minor'], $order['currency']) }}</p>
     <h2>{{ $t('total') }}: <span dir="ltr">{{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</span></h2>
+    @if ($order['mode'] === 'test')<p><a href="{{ $cartPath }}/orders/{{ $reference }}/payment">{{ __('commerce::payments.title', [], 'en') }}</a></p>@endif
     <p>{{ $t('email') }}: {{ $order['contact_email'] }}</p>
     @foreach (['billing', 'delivery'] as $kind)
         @if ($order[$kind] !== null)<section><h2>{{ $t($kind) }}</h2><p dir="auto">{{ $order[$kind]['name'] }}<br>@foreach ($order[$kind]['address'] as $part)@if ($part !== ''){{ $part }}<br>@endif @endforeach</p></section>@endif
