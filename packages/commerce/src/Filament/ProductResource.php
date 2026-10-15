@@ -144,12 +144,23 @@ final class ProductResource extends Resource
                         ->helperText(fn ($livewire): string => __($livewire instanceof EditProduct
                             ? 'commerce::catalogue.stock_edit_help' : 'commerce::catalogue.stock_help')),
                     TextInput::make('entitlement_name')->label(__('commerce::catalogue.entitlement_name'))
-                        ->maxLength(100)->extraInputAttributes(['dir' => 'ltr'])->nullable()
+                        ->maxLength(100)->extraInputAttributes(['dir' => 'ltr'])->nullable()->live(onBlur: true)
                         ->rules([static fn (): \Closure => static function (string $attribute, mixed $value, \Closure $fail): void {
                             if ($value !== null && (! is_string($value) || ! EntitlementName::isName($value))) {
                                 $fail(__('commerce::catalogue.invalid_entitlement'));
                             }
                         }])->helperText(__('commerce::catalogue.entitlement_help')),
+                    Select::make('offer_kind')->label(__('commerce::catalogue.offer_kind'))->native()->live()
+                        ->options(['permanent' => __('commerce::catalogue.offer_permanent'), 'fixed' => __('commerce::catalogue.offer_fixed_choice')])
+                        ->placeholder(__('commerce::catalogue.offer_choose'))->nullable()->rule('in:permanent,fixed')
+                        ->visible(fn (Get $get): bool => filled($get('entitlement_name')))
+                        ->required(fn (Get $get): bool => filled($get('entitlement_name')))
+                        ->helperText(__('commerce::catalogue.offer_help')),
+                    TextInput::make('offer_days')->label(__('commerce::catalogue.offer_days'))->inputMode('numeric')
+                        ->extraInputAttributes(['dir' => 'ltr'])->maxLength(5)
+                        ->visible(fn (Get $get): bool => filled($get('entitlement_name')) && $get('offer_kind') === 'fixed')
+                        ->required(fn (Get $get): bool => filled($get('entitlement_name')) && $get('offer_kind') === 'fixed')
+                        ->helperText(__('commerce::catalogue.offer_days_help')),
                 ]),
             Section::make(__('commerce::catalogue.site_section'))
                 ->description(__('commerce::catalogue.site_help'))

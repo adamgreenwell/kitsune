@@ -115,6 +115,40 @@ $commerce = ['sku' => 'BOARD', 'price_minor' => '2000', 'stock' => '5'];
 $content = ['title' => 'Board', 'slug' => 'board', 'status' => 'draft', 'values' => ['product_description' => '<p>A board</p>']];
 $form = ['sku' => 'BOARD', 'price' => '20.00', 'stock_mode' => 'finite', 'stock' => '5', 'is_available' => false, 'content' => $content];
 
+if (str_starts_with($mode, 'terms-')) {
+    $updating = in_array($mode, ['terms-edit', 'terms-clear', 'terms-unknown'], true);
+    if ($updating) {
+        $terms = $mode === 'terms-unknown' ? null : ['version' => 1, 'kind' => 'fixed', 'days' => 30];
+        $sellable = app(ProductWriter::class)->createProduct([...$commerce, 'entitlement_name' => 'course.surf', 'offer_terms' => $terms], 'USD', $content);
+        $component = Livewire::test(EditProduct::class, ['record' => $sellable->getKey()]);
+        if ($mode === 'terms-edit') {
+            $component->assertFormSet(['offer_kind' => 'fixed', 'offer_days' => 30]);
+        }
+    } else {
+        $component = Livewire::test(CreateProduct::class);
+    }
+    $before = $state();
+    $form['entitlement_name'] = $mode === 'terms-clear' ? null : 'course.surf';
+    $form['offer_kind'] = $mode === 'terms-permanent' ? 'permanent' : 'fixed';
+    $form['offer_days'] = '45';
+    if (in_array($mode, ['terms-missing', 'terms-unknown'], true)) {
+        $form['offer_kind'] = null;
+    }
+    if (str_starts_with($mode, 'terms-invalid-')) {
+        $form['offer_days'] = match ($mode) {
+            'terms-invalid-zero' => '0', 'terms-invalid-leading-zero' => '030',
+            'terms-invalid-fraction' => '30.0', 'terms-invalid-overbound' => '36501',
+            'terms-invalid-array' => ['30'], 'terms-invalid-bool' => true,
+        };
+    }
+    $component->fillForm($form)->call($updating ? 'save' : 'create')->assertStatus(200);
+    $saved = Sellable::query()->first();
+    echo json_encode(['unchanged' => $state() == $before, 'errors' => $component->errors(),
+        'mapping' => $saved?->entitlement_name, 'terms' => $saved?->offer_terms,
+        'level' => DB::connection()->transactionLevel(), 'pdo_transaction' => DB::connection()->getPdo()->inTransaction()], JSON_THROW_ON_ERROR);
+    exit;
+}
+
 if (str_starts_with($mode, 'bad-offer-')) {
     $updating = str_starts_with($mode, 'bad-offer-update-');
     $malformed = match (true) {

@@ -31,6 +31,7 @@ use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
 
 beforeEach(function (): void {
     Fx::boot();
+    app('translator')->addNamespace('commerce', dirname(__DIR__, 2).'/packages/commerce/resources/lang');
     config(['app.key' => 'base64:'.base64_encode(str_repeat('w', 32))]);
     Fx::declareReaders();
     $this->org = Org::create(['slug' => 'carts', 'name' => 'Carts', 'currency' => 'USD']);
@@ -86,6 +87,32 @@ it('uses absolute quantities and detects stale tab edits without partial writes'
     expect($this->writer->snapshot($this->request))->toBe($three);
     $this->writer->remove($this->request, $id, $three['version']);
     $this->writer->remove($this->request, $id, $three['version']);
+    expect($this->writer->snapshot($this->request)['items'])->toBe([]);
+});
+
+it('shows the purchased term and refuses new cart changes when a mapped offer becomes unknown', function (): void {
+    $product = app(ProductWriter::class)->createProduct(['sku' => 'TERM-PASS', 'price_minor' => '2000', 'stock' => null,
+        'entitlement_name' => 'course.carts', 'offer_terms' => ['version' => 1, 'kind' => 'fixed', 'days' => 30]], 'USD', [
+            'title' => 'Thirty day pass', 'slug' => 'term-pass', 'status' => 'published', 'values' => [],
+        ], [], true);
+    $listing = (int) $product->listings()->firstOrFail()->getKey();
+    $this->writer->add($this->request, $listing, 1);
+    $before = $this->writer->snapshot($this->request);
+    expect($before['items'][0]['offerLabel'])->toContain('30')
+        ->and($before['items'][0]['available'])->toBeTrue();
+
+    // A retained old catalogue row can have a name with unknown terms. Existing selections remain removable,
+    // but neither another Add nor a quantity edit can charge the buyer for an unconfigured access offer.
+    DB::table('commerce_sellables')->where('org_id', $this->org->id)->where('id', $product->getKey())
+        ->update(['offer_terms' => null]);
+    $unavailable = $this->writer->snapshot($this->request);
+    expect($unavailable['items'][0]['available'])->toBeFalse()
+        ->and($unavailable['items'][0]['offerLabel'])->toBe('Access offer unavailable')
+        ->and($unavailable['total'])->toBeNull();
+    expect(fn () => $this->writer->add($this->request, $listing, 1))->toThrow(CartRefused::class);
+    expect(fn () => $this->writer->update($this->request, $before['items'][0]['lineId'], 2, $before['version']))
+        ->toThrow(CartRefused::class);
+    $this->writer->remove($this->request, $before['items'][0]['lineId'], $before['version']);
     expect($this->writer->snapshot($this->request)['items'])->toBe([]);
 });
 

@@ -94,10 +94,13 @@ function areaRouteFor(string $method, string $uri, bool $compiled = false): Rout
 it('marks every reader route a fallback, registered ahead of the skeleton\'s catch-all', function (): void {
     $fallbacks = array_values(array_filter(app('router')->getRoutes()->getRoutes(), static fn (RoutingRoute $route): bool => $route->isFallback));
     $uris = array_map(static fn (RoutingRoute $route): string => implode('|', $route->methods()).' '.$route->uri(), $fallbacks);
-    $readers = array_filter(app('router')->getRoutes()->getRoutes(), static fn (RoutingRoute $route): bool => str_contains($route->uri(), 'account'));
+    $accounts = array_filter(app('router')->getRoutes()->getRoutes(), static fn (RoutingRoute $route): bool => str_contains($route->uri(), 'account'));
+    // Optional host modules also contribute account leaves. Keep core's exact shape pinned, and check every
+    // account leaf for fallback precedence so an optional route cannot swallow a panel or host route either.
+    $readers = array_filter($accounts, static fn (RoutingRoute $route): bool => str_starts_with($route->getActionName(), 'Kitsune\\Core\\Http\\Controllers\\Readers\\'));
 
     expect($readers)->toHaveCount(28)
-        ->and(array_filter($readers, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
+        ->and(array_filter($accounts, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
         ->and(end($uris))->toBe('GET|HEAD {fallbackPlaceholder}')
         ->and($uris)->toContain('GET|HEAD account', 'GET|HEAD account/sign-in', 'POST account/sign-in', 'POST account/sign-out')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out')

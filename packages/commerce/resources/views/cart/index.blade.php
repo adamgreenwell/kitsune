@@ -36,6 +36,9 @@
                     @endif
                     <div class="content">
                         <h2 lang="{{ $item['title'] === '' ? $copyLang : $htmlLang }}" dir="auto">{{ $item['title'] === '' ? $t('unavailable_product') : $item['title'] }}</h2>
+                        @if ($item['offerLabel'] !== null)
+                            <p>{{ $item['offerLabel'] }}</p>
+                        @endif
                         @if ($item['available'])
                             <p class="price">{{ $t('unit_price') }}: <span dir="ltr">{{ $item['currency'] }} {{ $item['price'] }}</span></p>
                             <p>{{ $t('line_total') }}: <span dir="ltr">{{ $item['currency'] }} {{ $item['lineTotal'] }}</span></p>

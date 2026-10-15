@@ -142,8 +142,9 @@ final class PaidOrders
             ->where('state', $order->state)->whereNull('confirmed_total_minor')->update(['state' => 'paid', 'confirmed_total_minor' => $charged, 'active_cart_key' => null]) !== 1) {
             throw new CheckoutRefused;
         }
-        app(PaidConfirmationAudit::class)->record($connection, (object) [...get_object_vars($order),
-            'state' => 'paid', 'confirmed_total_minor' => $charged, 'active_cart_key' => null]);
+        $paidOrder = (object) [...get_object_vars($order), 'state' => 'paid', 'confirmed_total_minor' => $charged, 'active_cart_key' => null];
+        app(AccessFulfillment::class)->freeze($connection, $paidOrder);
+        app(PaidConfirmationAudit::class)->record($connection, $paidOrder);
     }
 
     /** A new identity is legal only for a never-submitted obligation or after an explicit verified failed/cancelled retry. */

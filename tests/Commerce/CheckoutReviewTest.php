@@ -168,6 +168,8 @@ it('does not treat mutable link or attempt history as a new purchase but hashes 
     $record['payment'] = ['amount_minor' => '2100'];
     $record['allocations'] = [['awarded' => 1]];
     $record['refund'] = ['state' => 'owed'];
+    $record['access_claim'] = ['claimed_at' => '2026-10-15T12:00:00Z'];
+    $record['access_fulfillment'] = ['state' => 'processed', 'effects' => [['state' => 'granted']]];
     $record['state'] = 'paid';
     $record['confirmed_total_minor'] = $record['quoted_total_minor'];
     $record['cancelled_at'] = '2026-10-15T12:00:00Z';
@@ -175,6 +177,19 @@ it('does not treat mutable link or attempt history as a new purchase but hashes 
     expect(CheckoutReview::orderHash($record))->toBe($hash);
     $record['lines'][0]['title'] = 'Changed snapshot';
     expect(CheckoutReview::orderHash($record))->not->toBe($hash);
+});
+
+it('includes frozen offer terms in purchase consent while retaining legacy null terms', function (): void {
+    $record = app(OrderReaderData::class)->record($this->order->getConnection(), (object) $this->order->getAttributes());
+    $legacy = CheckoutReview::orderHash($record);
+    $record['lines'][0]['entitlement_name'] = 'course.reviewed';
+    $record['lines'][0]['offer_terms'] = ['version' => 1, 'kind' => 'fixed', 'days' => 30];
+    $fixed = CheckoutReview::orderHash($record);
+    expect($fixed)->not->toBe($legacy);
+    $record['lines'][0]['offer_terms'] = ['days' => 30, 'kind' => 'fixed', 'version' => 1];
+    expect(CheckoutReview::orderHash($record))->toBe($fixed);
+    $record['lines'][0]['offer_terms']['days'] = 31;
+    expect(CheckoutReview::orderHash($record))->not->toBe($fixed);
 });
 
 /** Fresh process: physical carrier shopping must be measured at actual transaction level zero. @return array<string,mixed> */

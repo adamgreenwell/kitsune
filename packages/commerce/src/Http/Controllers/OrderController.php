@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Commerce\Http\Controllers;
 
 use Closure;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -20,11 +21,16 @@ use Kitsune\Commerce\Http\Middleware\OrderResponse;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\OrderAccess;
+use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Orders\OrderWriter;
+use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Kitsune;
+use Kitsune\Core\Readers\ReaderAccounts;
+use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Readers\ReaderThrottle;
 use Kitsune\Core\Tenancy\Context;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
@@ -58,6 +64,53 @@ final class OrderController
     public function show(Request $request): Response|RedirectResponse
     {
         return $this->safe(fn () => $this->showPage($request));
+    }
+
+    public function retryAccess(Request $request): Response|RedirectResponse
+    {
+        return $this->safe(function () use ($request): Response|RedirectResponse {
+            if (! $this->csrf($request)) {
+                return $this->view('notice', ['message' => 'session_expired'], 419);
+            }
+            $reference = $this->reference($request);
+            abort_if(app(OrderAccess::class)->owned($request, $reference) === null, 404);
+            try {
+                app(AccessFulfillment::class)->reconcileReader($request, $reference);
+            } catch (Throwable) {
+                return $this->view('notice', ['message' => 'claim_unavailable'], 422);
+            }
+
+            return new RedirectResponse($this->path().'/orders/'.$reference, 303);
+        });
+    }
+
+    public function claimForm(Request $request): Response|RedirectResponse
+    {
+        return $this->safe(fn () => $this->claimFormPage($request));
+    }
+
+    public function claim(Request $request): Response|RedirectResponse
+    {
+        return $this->safe(function () use ($request): Response|RedirectResponse {
+            if (! $this->csrf($request)) {
+                return $this->view('notice', ['message' => 'session_expired'], 419);
+            }
+            $reference = $this->reference($request);
+            try {
+                $order = app(OrderClaims::class)->claim($request, $reference);
+                $order->getConnection()->afterCommit(static function () use ($request, $reference): void {
+                    try {
+                        app(AccessFulfillment::class)->reconcileClaim($request, $reference);
+                    } catch (Throwable) {
+                        // The durable claim and pending access work already committed; recovery can resume it.
+                    }
+                });
+
+                return new RedirectResponse($this->path().'/orders/'.$reference, 303);
+            } catch (OrderRefused) {
+                return $this->view('notice', ['message' => 'claim_unavailable'], 422);
+            }
+        });
     }
 
     public function access(Request $request): Response|RedirectResponse
@@ -100,7 +153,14 @@ final class OrderController
         $records = [];
         $hasNext = false;
         if ($owner !== null) {
-            $rows = Order::query()->useWritePdo()->where('owner_key', $owner->key)->orderByDesc('id')
+            $rows = Order::query()->useWritePdo()->where(function ($owned) use ($owner): void {
+                $owned->where('owner_key', $owner->key);
+                if ($owner->reader !== null) {
+                    $owned->orWhereExists(fn (Builder $claim): Builder => $claim->selectRaw('1')->from(OrderClaims::TABLE)
+                        ->whereColumn(OrderClaims::TABLE.'.order_id', 'commerce_orders.id')->whereColumn(OrderClaims::TABLE.'.org_id', 'commerce_orders.org_id')
+                        ->whereColumn(OrderClaims::TABLE.'.site_id', 'commerce_orders.site_id')->where(OrderClaims::TABLE.'.reader_id', $owner->reader));
+                }
+            })->orderByDesc('id')
                 ->offset(((int) $page - 1) * 24)->limit(25)->get();
             $hasNext = $rows->count() > 24;
             foreach ($rows->take(24) as $row) {
@@ -163,7 +223,49 @@ final class OrderController
         $order = app(OrderAccess::class)->owned($request, $reference) ?? abort(404);
         $record = app(OrderReaderData::class)->record($order->getConnection(), (object) $order->getAttributes());
 
-        return $this->view('order', ['order' => $record, 'reference' => $reference, 'isGuest' => $order->getAttributes()['reader_id'] === null, 'money' => MinorUnits::format(...)]);
+        $claim = app(OrderClaims::class)->forOrder($order->getConnection(), (object) $order->getAttributes());
+        $isGuest = $order->getAttributes()['reader_id'] === null && $claim === null;
+        $site = $this->context->site();
+        $canClaim = $isGuest && $record['state'] === 'paid' && $site !== null
+            && app(ReaderAccounts::class)->fault() === null && app(ReaderAccounts::class)->mode($site)->signsIn();
+
+        return $this->view('order', ['order' => $record, 'reference' => $reference, 'isGuest' => $isGuest,
+            'claimPath' => $canClaim ? app(OrderClaims::class)->path($reference) : null,
+            'accessRetryPath' => ! $isGuest && in_array($record['access_fulfillment']['state'] ?? null, ['pending', 'held'], true)
+                ? $this->path().'/orders/'.$reference.'/access/retry' : null, 'money' => MinorUnits::format(...)]);
+    }
+
+    private function claimFormPage(Request $request): Response|RedirectResponse
+    {
+        $site = $this->context->site() ?? abort(404);
+        $accounts = app(ReaderAccounts::class);
+        abort_if($accounts->fault() !== null || ! $accounts->mode($site)->signsIn(), 404);
+        $reference = $this->reference($request);
+        $connection = (new Order)->getConnection();
+        $claims = app(OrderClaims::class);
+        $order = app(OrderReaderData::class)->find($connection, (int) $site->org_id, (int) $site->getKey(), $reference) ?? abort(404);
+        app(OrderReaderData::class)->project($connection, (int) $site->org_id, $order);
+        $claim = $claims->forOrder($connection, $order);
+        if ($claim !== null) {
+            abort_if(app(OrderAccess::class)->owned($request, $reference) === null, 404);
+
+            return new RedirectResponse($this->path().'/orders/'.$reference, 303);
+        }
+        abort_if($order->reader_id !== null || $order->state !== 'paid' || app(OrderAccess::class)->guestProof($request, $order) === null, 404);
+        $claims->remember($request, $reference);
+        $reader = null;
+        try {
+            $reader = $claims->freshReader($request, $connection);
+        } catch (OrderRefused) {
+            // An unbound or expired reader session conveys no claim authority.
+        }
+        if ($reader === null) {
+            $request->session()->put(RequireReader::INTENDED, $claims->path($reference));
+        }
+
+        return $this->view('claim', ['reference' => $reference, 'claimPath' => $claims->path($reference),
+            'readerEmail' => $reader?->readerEmail(), 'signInPath' => ReaderLinks::path($site, ReaderLinks::SIGN_IN),
+            'registerPath' => $accounts->mode($site)->signsUp() ? ReaderLinks::path($site, ReaderLinks::REGISTER) : null]);
     }
 
     private function accessPage(Request $request): Response|RedirectResponse

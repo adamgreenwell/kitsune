@@ -21,6 +21,7 @@ use Kitsune\Commerce\Catalogue\ProductWriter;
 use Kitsune\Commerce\Checkout\CommerceSetupWriter;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\OrderLine;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderJson;
 use Kitsune\Commerce\Orders\OrderQuotes;
@@ -48,9 +49,10 @@ beforeEach(function (): void {
     app(Context::class)->setSite($this->site);
     Module::create(['handle' => 'kitsune/commerce', 'version' => 'dev-main', 'is_enabled' => true, 'installed_at' => now()]);
     BlueprintApplier::apply(new StorefrontBlueprint);
-    $this->product = app(ProductWriter::class)->createProduct(['sku' => 'ORDER-COURSE', 'price_minor' => '2000', 'stock' => '10', 'entitlement_name' => 'course.order'], 'USD', [
-        'title' => 'Original course title', 'slug' => 'order-course', 'status' => 'published', 'values' => [],
-    ], [], true);
+    $this->product = app(ProductWriter::class)->createProduct(['sku' => 'ORDER-COURSE', 'price_minor' => '2000', 'stock' => '10', 'entitlement_name' => 'course.order',
+        'offer_terms' => ['version' => 1, 'kind' => 'permanent']], 'USD', [
+            'title' => 'Original course title', 'slug' => 'order-course', 'status' => 'published', 'values' => [],
+        ], [], true);
     $this->listing = $this->product->listings()->firstOrFail();
     $this->setup = app(CommerceSetupWriter::class);
     $this->settings = $this->setup->setSettings(['tax_mode' => 'exclusive', 'shipping_tax_mode' => 'exclusive', 'shipping_tax_class' => 'shipping']);
@@ -89,10 +91,68 @@ it('prepares immutable exact digital invoice lines without reserving stock grant
         ->and($line['title'])->toBe('Original course title')->and($line['sku'])->toBe('ORDER-COURSE')
         ->and((int) $line['quantity'])->toBe(2)->and((string) $line['unit_price_minor'])->toBe('2000')
         ->and((string) $line['tax_minor'])->toBe('800')->and($line['entitlement_name'])->toBe('course.order')
-        ->and($line['offer_terms'])->toBeNull()->and($this->product->fresh()->stock)->toBe('10')
+        ->and(OfferTerms::stored($line['offer_terms']))->toBe(['version' => 1, 'kind' => 'permanent'])
+        ->and($this->product->fresh()->stock)->toBe('10')
         ->and(DB::table('entitlements')->count())->toBe(0)->and(Cart::query()->count())->toBe(1)
         ->and(app(OrderAccess::class)->owned($this->request, $raw['reference'])->getKey())->toBe($order->getKey());
 });
+
+it('refuses a new quote for mapped products whose retained access duration remains unknown', function (): void {
+    $this->carts->add($this->request, $this->listing->getKey(), 1);
+    $this->product->update(['offer_terms' => null]);
+    expect(fn () => $this->quotes->quote($this->request, orderWriterDetails()))->toThrow(OrderRefused::class);
+    expect(DB::table('commerce_orders')->count())->toBe(0)->and(DB::table('entitlements')->count())->toBe(0);
+});
+
+it('refuses preparing a prior quote when shared access terms changed before submission', function (): void {
+    $this->carts->add($this->request, $this->listing->getKey(), 1);
+    $quote = $this->quotes->quote($this->request, orderWriterDetails());
+    $this->product->update(['offer_terms' => ['version' => 1, 'kind' => 'fixed', 'days' => 30]]);
+    expect(fn () => $this->writer->prepare($this->request, $quote['token'], 'none'))->toThrow(OrderRefused::class)
+        ->and(DB::table('commerce_orders')->count())->toBe(0)->and(DB::table('entitlements')->count())->toBe(0);
+});
+
+it('retains fixed access terms as immutable JSON and accepts database key reordering', function (): void {
+    $terms = ['version' => 1, 'kind' => 'fixed', 'days' => 30];
+    $this->product->update(['offer_terms' => $terms]);
+    $this->carts->add($this->request, $this->listing->getKey(), 1);
+    $quote = $this->quotes->quote($this->request, orderWriterDetails());
+    AuditLog::creating(static function (AuditLog $audit): void {
+        if ($audit->action === 'commerce.order_prepared') {
+            DB::table('commerce_order_lines')->update(['offer_terms' => '{"days":30,"kind":"fixed","version":1}']);
+        }
+    });
+    try {
+        $order = $this->writer->prepare($this->request, $quote['token'], 'none');
+    } finally {
+        AuditLog::flushEventListeners();
+        AuditLog::clearBootedModels();
+    }
+    $record = app(OrderReaderData::class)->record(DB::connection(), (object) $order->getAttributes());
+    $this->product->update(['offer_terms' => ['version' => 1, 'kind' => 'permanent']]);
+    expect($record['lines'][0]['offer_terms'])->toBe($terms)
+        ->and(app(OrderReaderData::class)->record(DB::connection(), (object) $order->getAttributes())['lines'][0]['offer_terms'])->toBe($terms)
+        ->and(DB::table('entitlements')->count())->toBe(0);
+});
+
+it('rolls back an invoice when audit code substitutes purchased access terms', function (string $replacement): void {
+    $this->carts->add($this->request, $this->listing->getKey(), 1);
+    $quote = $this->quotes->quote($this->request, orderWriterDetails());
+    AuditLog::creating(static function (AuditLog $audit) use ($replacement): void {
+        if ($audit->action === 'commerce.order_prepared') {
+            DB::table('commerce_order_lines')->update(['offer_terms' => $replacement]);
+        }
+    });
+    try {
+        expect(fn () => $this->writer->prepare($this->request, $quote['token'], 'none'))->toThrow(OrderRefused::class)
+            ->and(DB::table('commerce_orders')->count())->toBe(0)->and(DB::table('commerce_order_lines')->count())->toBe(0);
+    } finally {
+        AuditLog::flushEventListeners();
+        AuditLog::clearBootedModels();
+    }
+    // MySQL leaves an existing JSON integer unchanged when assigned an equal integral float. A string is a real
+    // persisted type change on every supported engine; PHP-boundary float refusal has its own pre-encoding tests.
+})->with(['coherent replacement' => ['{"version":1,"kind":"fixed","days":36500}'], 'coerced scalar type' => ['{"version":"1","kind":"permanent"}']]);
 
 /** Restore the original listeners, including all model guards, after a hostile host callback. */
 function orderWriterAudit(Closure $listener, Closure $work): void

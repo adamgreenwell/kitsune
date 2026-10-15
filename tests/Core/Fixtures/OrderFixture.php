@@ -16,6 +16,7 @@ use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\Store;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Carts\CartOwner;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Core\Models\Site;
 
 /** Raw historical rows: no current catalogue, commerce runtime, provider call or permissive model cast. */
@@ -55,6 +56,13 @@ final class OrderFixture
             'quoted_total_minor' => '2100', 'confirmed_total_minor' => null, 'created_at' => self::now(), 'cancelled_at' => null,
             ...$overrides];
         $id = DB::table('commerce_orders')->insertGetId($data);
+        if (DB::connection()->getSchemaBuilder()->hasTable(AccessFulfillment::WORK)) {
+            // Historical planting mirrors migration213, including foreign-Site attack fixtures without changing Context.
+            DB::table(AccessFulfillment::WORK)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
+                'order_id' => $id, 'state' => $data['state'] === 'paid' ? 'initializing' : 'awaiting_payment',
+                'category' => null, 'manifest' => null, 'manifest_hash' => null, 'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null,
+                'effect_count' => 0, 'replay_count' => 0, 'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
+        }
         DB::table('commerce_order_lines')->insert(['org_id' => $site->org_id, 'site_id' => $site->getKey(), 'order_id' => $id,
             'sellable_ref' => 7, 'listing_ref' => 8, 'entry_ref' => 9, 'sku' => 'SAVED-COURSE', 'title' => 'Saved course title',
             'quantity' => 1, 'unit_price_minor' => '2000', 'tax_class' => 'standard', 'tax_rate_parts' => 50000,

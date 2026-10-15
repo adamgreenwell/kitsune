@@ -102,3 +102,31 @@ it('refuses forged mixed entitlement form state without a server error or any pa
     'edit: bool' => ['bad-offer-update-bool', 'course.kept'],
     'edit: numeric' => ['bad-offer-update-numeric', 'course.kept'],
 ]);
+
+it('saves explicit permanent or fixed access terms through the native product form', function (string $mode, array $terms): void {
+    $result = productPageProbe($mode);
+    expect($result['errors'])->toBe([])->and($result['mapping'])->toBe('course.surf')->and($result['terms'])->toBe($terms)
+        ->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse();
+})->with([
+    'permanent' => ['terms-permanent', ['version' => 1, 'kind' => 'permanent']],
+    'fixed' => ['terms-fixed', ['version' => 1, 'kind' => 'fixed', 'days' => 45]],
+    'edit fixed' => ['terms-edit', ['version' => 1, 'kind' => 'fixed', 'days' => 45]],
+]);
+
+it('clears configured purchased access when the native form clears its entitlement name', function (): void {
+    $result = productPageProbe('terms-clear');
+    expect($result['errors'])->toBe([])->and($result['mapping'])->toBeNull()->and($result['terms'])->toBeNull()
+        ->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse();
+});
+
+it('requires an explicit duration for new and historical mapped product forms', function (string $mode): void {
+    $result = productPageProbe($mode);
+    expect($result['errors'])->toHaveKey('data.offer_kind')->and($result['unchanged'])->toBeTrue()
+        ->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse();
+})->with(['terms-missing', 'terms-unknown']);
+
+it('refuses forged days without partially saving product content or access', function (string $mode): void {
+    $result = productPageProbe($mode);
+    expect($result['errors'])->toHaveKey('data.offer_days')->and($result['unchanged'])->toBeTrue()
+        ->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse();
+})->with(['terms-invalid-zero', 'terms-invalid-leading-zero', 'terms-invalid-fraction', 'terms-invalid-overbound', 'terms-invalid-array', 'terms-invalid-bool']);

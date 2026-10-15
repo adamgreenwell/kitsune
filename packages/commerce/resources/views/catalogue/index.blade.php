@@ -26,8 +26,12 @@
                             <p class="description" lang="{{ $htmlLang }}" dir="auto">{{ $product['description'] }}</p>
                         @endif
                         <p class="price"><span class="visually-hidden">{{ $t('price') }} </span><span dir="ltr">{{ $product['currency'] }} {{ $product['price'] }}</span></p>
+                        @if ($product['purchasable'] && $product['offerLabel'] !== null)
+                            <p>{{ $product['offerLabel'] }}</p>
+                        @endif
                         <div class="badges">
-                            <span class="badge {{ $product['stock'] === '0' ? 'sold' : '' }}">{{ $t($product['stock'] === '0' ? 'sold_out' : 'available') }}</span>
+                            <span class="badge {{ $product['stock'] === '0' || ! $product['purchasable'] ? 'sold' : '' }}">{{ $product['purchasable']
+                                ? $t($product['stock'] === '0' ? 'sold_out' : 'available') : __('commerce::catalogue.offer_unknown') }}</span>
                             @if ($product['held'] === true)
                                 <span class="badge held">{{ $t('held') }}</span>
                             @endif
@@ -37,7 +41,7 @@
                                 @csrf
                                 <input type="hidden" name="listing" value="{{ $product['listingId'] }}">
                                 <input type="hidden" name="quantity" value="1">
-                                <button type="submit" @disabled($product['stock'] === '0')>{{ $t('add_to_cart') }}</button>
+                                <button type="submit" @disabled($product['stock'] === '0' || ! $product['purchasable'])>{{ $t('add_to_cart') }}</button>
                             </form>
                         @endif
                     </div>

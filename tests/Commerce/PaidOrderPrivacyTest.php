@@ -19,6 +19,7 @@ use Kitsune\Commerce\Filament\OrderList;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Orders\OrderWriter;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutReview;
 use Kitsune\Commerce\Payments\PaidOrders;
@@ -99,6 +100,8 @@ function paidPrivacyPlant(Site $site, ?string $reader = null, ?string $ownerKey 
                 'first_submitted_at' => $refundState === 'owed' ? null : PaidPrivacyOrders::now()]);
         }
         DB::table('commerce_orders')->where('id', $order->id)->update(['state' => 'paid', 'active_cart_key' => null, 'confirmed_total_minor' => '2100']);
+        // This raw pre-#200 paid history reaches the migration's explicit initialization path, not a missing paid hook.
+        DB::table(AccessFulfillment::WORK)->where('order_id', $order->id)->update(['state' => 'initializing']);
 
         return ['order' => DB::table('commerce_orders')->where('id', $order->id)->first(), 'attempt' => $attempt,
             'charge' => $charge, 'intent' => $intent, 'hash' => CheckoutReview::orderHash($record)];
@@ -124,6 +127,7 @@ it('exports checked paid and refund summaries across the readers sites while com
         ->and($orders[0]['state'])->toBe('paid')->and($orders[0]['confirmed_total_minor'])->toBe('2100')
         ->and($orders[0]['payment']['amount_minor'])->toBe('2100')->and($orders[0]['refund']['owed_minor'])->toBe('2100')
         ->and($orders[0]['allocations'][0]['unavailable'])->toBe(1)
+        ->and($orders[0]['access_fulfillment'])->toMatchArray(['state' => 'initializing', 'effects' => []])
         ->and(CheckoutReview::orderHash($orders[0]))->toBe($first['hash'])
         ->and($json)->not->toContain($first['charge'], $first['intent'], $first['attempt']->session_id,
             $first['attempt']->account_id, $first['attempt']->credential_witness, $foreign['order']->reference,
@@ -148,6 +152,7 @@ it('keeps exact guest proof for paid export while refusing cancellation and eras
     $order = $fixture['order'];
     $export = $this->privacy->exportGuest($request, $order->reference);
     expect($export['refund']['state'])->toBe($refundState)
+        ->and($export['access_fulfillment'])->toMatchArray(['state' => 'initializing', 'effects' => []])
         ->and(fn () => $this->privacy->exportGuest(PaidPrivacyOrders::request(), $order->reference))->toThrow(RuntimeException::class)
         ->and(fn () => $this->privacy->eraseGuest($request, $order->reference))->toThrow(RuntimeException::class)
         ->and(DB::table(PaidOrders::RECEIPTS)->count())->toBe(1);

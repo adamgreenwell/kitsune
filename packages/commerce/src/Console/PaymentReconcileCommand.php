@@ -18,7 +18,7 @@ final class PaymentReconcileCommand extends StripeInboxCommand
 {
     protected $signature = 'kitsune:payments-reconcile {--org= : Organisation slug} {--limit=100 : Maximum operations, 1 through 1000} {--seconds=30 : Stop starting operations after this budget, 1 through 300} {--refresh-successful : Also refresh previously succeeded refunds for later failure}';
 
-    protected $description = 'Process a fair bounded batch of test confirmations and refund recovery without a worker.';
+    protected $description = 'Process a fair bounded batch of test confirmations, purchased access and refund recovery without a worker.';
 
     public function handle(Context $context, PaymentMaintenance $payments): int
     {

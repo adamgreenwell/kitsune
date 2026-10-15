@@ -17,6 +17,7 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Audit\Auditor;
@@ -96,8 +97,10 @@ final class OrderWriter
                     'confirmed_total_minor' => null, 'created_at' => $now, 'cancelled_at' => null];
                 $connection = (new Order)->getConnection();
                 $id = $connection->table('commerce_orders')->insertGetId($data);
+                app(AccessFulfillment::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 $lineIds = [];
                 foreach ($current['lines'] as $line) {
+                    $line['offer_terms'] = $line['offer_terms'] === null ? null : json_encode($line['offer_terms'], JSON_THROW_ON_ERROR);
                     $lineIds[] = $connection->table('commerce_order_lines')->insertGetId([...$line, 'org_id' => $owner->orgId,
                         'site_id' => $owner->siteId, 'order_id' => $id]);
                 }
@@ -121,7 +124,9 @@ final class OrderWriter
                 }
                 foreach ($savedLines as $index => $line) {
                     foreach ([...$current['lines'][$index], 'id' => $lineIds[$index], 'org_id' => $owner->orgId, 'site_id' => $owner->siteId, 'order_id' => $id] as $column => $value) {
-                        if (($value === null) !== ($line->{$column} === null) || ($value !== null && (string) $value !== (string) $line->{$column})) {
+                        if (($value === null) !== ($line->{$column} === null) || ($value !== null && ($column === 'offer_terms'
+                            ? ! OrderJson::same(json_encode($value, JSON_THROW_ON_ERROR), $line->{$column})
+                            : (string) $value !== (string) $line->{$column}))) {
                             throw new OrderRefused;
                         }
                     }

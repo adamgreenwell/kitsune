@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Orders\OrderAccess;
+use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Readers\ReaderMail;
@@ -257,7 +258,7 @@ it('rechecks captured site, order, contact and enablement before deferred mintin
         'receipt' => DB::table('modules')->where('handle', 'kitsune/commerce')->update(['version' => 'old-installed-version']),
         'disabled' => DB::table('modules')->where('handle', 'kitsune/commerce')->update(['is_enabled' => false]),
         'context' => app(Context::class)->setSite($this->world['sites']['golfdom-fr']),
-        'erased' => DB::table('commerce_orders')->where('id', $order->id)->delete(),
+        'erased' => app(OrderLocks::class)->run(fn () => app(OrderReaderData::class)->eraseRecord(DB::connection(), $order)),
     };
     app(DeferredCallbackCollection::class)->invoke();
     expect(DB::table('commerce_order_access_tokens')->count())->toBe(0);

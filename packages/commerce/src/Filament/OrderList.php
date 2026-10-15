@@ -18,6 +18,7 @@ use Illuminate\Pagination\Paginator;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutMessages;
 use Kitsune\Commerce\Payments\CheckoutRefused;
 use Kitsune\Commerce\Payments\CheckoutWriter;
@@ -165,5 +166,19 @@ final class OrderList extends Page
         self::authorizeResourceAccess();
 
         return OrderResource::getUrl('historical-recovery');
+    }
+
+    public function retryAccess(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        try {
+            app(AccessFulfillment::class)->retryAsOwner(OrderAdministration::reference($this->reference));
+        } catch (Throwable) {
+            $this->addError('order', __('commerce::access.unavailable'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::access.checked'))->success()->send();
     }
 }

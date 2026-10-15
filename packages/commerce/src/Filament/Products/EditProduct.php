@@ -22,6 +22,7 @@ use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Filament\StockResource;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use RuntimeException;
 
@@ -49,9 +50,12 @@ final class EditProduct extends EditRecord
 
     protected function mutateFormDataBeforeFill(array $data): array
     {
+        $terms = OfferTerms::forMapping($data['entitlement_name'] ?? null, OfferTerms::normalize($data['offer_terms'] ?? null));
+
         return ['sku' => $data['sku'], 'price' => MinorUnits::format($data['price_minor'], $this->currencyQuote),
             'stock_mode' => $data['stock'] === null ? 'untracked' : 'finite', 'stock' => $data['stock'],
             'entitlement_name' => $data['entitlement_name'] ?? null,
+            'offer_kind' => $terms['kind'] ?? null, 'offer_days' => $terms['days'] ?? null,
             'is_available' => $this->siteListing()->is_available ?? false, 'content' => $this->contentState()];
     }
 
