@@ -27,7 +27,7 @@ final class StripeWebhook
     public const TOLERANCE = 300;
 
     /** @param list<Secret> $secrets
-     * @return array{id:string,type:string,apiVersion:string,sessionId:string,orderReference:string,attemptReference:string,test:bool}
+     * @return array<string,mixed>
      */
     public function verify(#[\SensitiveParameter] string $raw, #[\SensitiveParameter] string $header, array $secrets, int $now): array
     {
@@ -79,10 +79,24 @@ final class StripeWebhook
                 || ($event['api_version'] ?? null) !== StripeCheckout::API_VERSION || ($event['account'] ?? null) !== null
                 || ($event['context'] ?? null) !== null || ! self::identifier($event['id'] ?? null, 'evt_')
                 || ! in_array($event['type'] ?? null, ['checkout.session.completed', 'checkout.session.expired',
-                    'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed'], true)) {
+                    'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed',
+                    'refund.created', 'refund.updated', 'refund.failed'], true)) {
                 throw new CheckoutRefused;
             }
             $session = $event['data']['object'] ?? null;
+            if (str_starts_with($event['type'], 'refund.')) {
+                if (! is_array($session) || ($session['object'] ?? null) !== 'refund' || ! self::identifier($session['id'] ?? null, 're_')
+                    || ! self::reference($session['metadata']['kitsune_order'] ?? null)
+                    || ! self::reference($session['metadata']['kitsune_refund'] ?? null)
+                    || ! is_string($session['metadata']['kitsune_request'] ?? null)
+                    || preg_match('/\A[a-f0-9]{64}\z/D', $session['metadata']['kitsune_request']) !== 1) {
+                    throw new CheckoutRefused;
+                }
+
+                return ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
+                    'refundId' => $session['id'], 'orderReference' => $session['metadata']['kitsune_order'],
+                    'refundReference' => $session['metadata']['kitsune_refund'], 'requestDigest' => $session['metadata']['kitsune_request'], 'test' => true];
+            }
             if (! is_array($session) || ($session['object'] ?? null) !== 'checkout.session' || ($session['livemode'] ?? null) !== false
                 || ($session['mode'] ?? null) !== 'payment' || ! self::identifier($session['id'] ?? null, 'cs_test_')
                 || ! self::reference($session['metadata']['kitsune_order'] ?? null)
