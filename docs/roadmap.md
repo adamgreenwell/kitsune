@@ -436,7 +436,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
 - [x] **Payment credential prerequisites** (#195, #196): operation-bound current-owner/password checks for live
       changes, native POST confirmation, explicit console recovery, bounded audited key rotation and the strict
-      credential-key release gate. Test Stripe checkout is described below; verified events and paid-state retention remain pending.
+      credential-key release gate. Test Stripe checkout and verified events are described below; paid-state retention remains pending.
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
       ~~sellable record referencing it~~ *site listing linking the site's own content to an org-owned sellable*;
       money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
@@ -463,16 +463,20 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       guest email recovery and first-migration export/erasure custody. A prepared order is unpaid and grants
       no access or stock reservation. The test-only Stripe slice (#197) adds hosted card Checkout, fresh order-based
       buyer review, exact accepted requests, durable same-key retry, server reconciliation/expiry, owner lost-ID
-      recovery and pending-attempt export/erasure fences. Zero completion is deferred; live checkout, verified
-      events, inventory/refunds and paid-state privacy remain later slices.
+      recovery and pending-attempt export/erasure fences. The verified-event slice (#198) adds an org inbox,
+      exact-site routing, signature-first bounded capture, FPM acknowledgement before processing, fenced replay,
+      seven-day raw cleanup and explicit original-account owner recovery after key/mode changes. Zero completion
+      is deferred; live checkout, inventory/refunds and paid-state privacy remain later slices.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant
       of record. The seam is extracted when a second provider exists, not before (Standing Principle #11).
       The first implemented stage is [test checkout](stripe-checkout.md), pinned to a concrete Stripe contract;
       this box stays open until the live completion, stock/refund and privacy gates are satisfied.
-- [ ] **Webhooks persisted before they are processed**, verified, idempotent, processed inline with a replay
-      command — no queue is assumed (ADR-027)
+- [x] **Webhooks persisted before they are processed**, verified, idempotent, processed inline with a replay
+      command — no queue is assumed (ADR-027). *The first implementation is [Stripe test events](stripe-webhooks.md)
+      (#198): PHP-FPM finishes the response before inline work; other SAPIs retain pending receipts for bounded
+      console replay. Live completion remains gated separately.*
 
 **Not in it:** subscriptions. Recurring billing — renewals, proration, dunning, involuntary churn — is a second
 workstream of comparable size, and one-time payment already serves all four consumers' first cut.
