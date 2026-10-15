@@ -39,7 +39,7 @@ final class CartWriter
     public function __construct(private readonly Context $context, private readonly PublicCatalogue $catalogue) {}
 
     /**
-     * @return array{version:int,items:list<array{lineId:int,title:string,quantity:int,available:bool,currency:?string,price:?string,lineTotal:?string,stock:?string,imageUrl:?string}>,currency:?string,total:?string,mergeBlocked:bool,isReader:bool}
+     * @return array{version:int,items:list<array{lineId:int,title:string,quantity:int,available:bool,currency:?string,price:?string,lineTotal:?string,stock:?string,imageUrl:?string,offerLabel:?string}>,currency:?string,total:?string,mergeBlocked:bool,isReader:bool}
      */
     public function snapshot(Request $request): array
     {
@@ -67,7 +67,8 @@ final class CartWriter
 
         foreach ($lines as $line) {
             $product = $products[(int) $line->listing_id] ?? null;
-            $available = $product !== null && self::hasStock($product['stock'], (int) $line->quantity);
+            $available = $product !== null && ($product['purchasable'] ?? false) === true
+                && self::hasStock($product['stock'], (int) $line->quantity);
             $lineTotal = null;
 
             if ($available) {
@@ -86,6 +87,7 @@ final class CartWriter
                 'lineId' => (int) $line->getKey(), 'title' => $product['title'] ?? '', 'quantity' => (int) $line->quantity,
                 'available' => $available, 'currency' => $product['currency'] ?? null, 'price' => $product['price'] ?? null,
                 'lineTotal' => $lineTotal, 'stock' => $product['stock'] ?? null, 'imageUrl' => $product['imageUrl'] ?? null,
+                'offerLabel' => $product['offerLabel'] ?? null,
             ];
         }
 
@@ -122,7 +124,7 @@ final class CartWriter
         $items = [];
         foreach ($lines as $line) {
             $product = $products[(int) $line->listing_id] ?? null;
-            if ($product === null || ! self::hasStock($product['stock'], (int) $line->quantity)) {
+            if ($product === null || ($product['purchasable'] ?? false) !== true || ! self::hasStock($product['stock'], (int) $line->quantity)) {
                 throw new CartRefused('unavailable');
             }
             $items[] = [...$product, 'quantity' => (int) $line->quantity];
@@ -488,7 +490,7 @@ final class CartWriter
     {
         $product = $listing > 0 ? ($this->catalogue->forListings([$listing], current: true)[$listing] ?? null) : null;
 
-        if ($product === null || ! self::hasStock($product['stock'], $quantity)) {
+        if ($product === null || $product['purchasable'] !== true || ! self::hasStock($product['stock'], $quantity)) {
             throw new CartRefused('unavailable');
         }
     }

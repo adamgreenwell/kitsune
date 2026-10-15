@@ -60,6 +60,15 @@
             </dl>
         </x-filament::section>
         @include('commerce::orders.payment-summary')
+        @include('commerce::orders.access-summary', ['operator' => true])
+        @if ($order['payment'] !== null && in_array($order['access_fulfillment']['state'] ?? null, ['initializing', 'pending', 'held'], true))
+            <x-filament::section :heading="__('commerce::access.recovery')">
+                <p>{{ __('commerce::access.recovery_help') }}</p>
+                <form wire:submit="retryAccess" class="mt-3">
+                    <x-filament::button type="submit" wire:loading.attr="disabled">{{ __('commerce::access.check') }}</x-filament::button>
+                </form>
+            </x-filament::section>
+        @endif
         @if ($order['refund'] !== null && $order['refund']['attempts'] !== [])
             @php($latestRefund = $order['refund']['attempts'][array_key_last($order['refund']['attempts'])])
             <x-filament::section :heading="__('commerce::paid.refund_actions')">

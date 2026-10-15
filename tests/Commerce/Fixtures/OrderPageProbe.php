@@ -93,9 +93,10 @@ if ($step === 'seed') {
     ModuleLifecycle::enable($app, 'kitsune/commerce');
     ModuleKernel::boot($app);
     BlueprintApplier::apply(new StorefrontBlueprint);
-    $product = app(ProductWriter::class)->createProduct(['sku' => 'SURF', 'price_minor' => '2000', 'stock' => '5', 'entitlement_name' => 'course.surf'], 'USD', [
-        'title' => 'Surf course', 'slug' => 'surf', 'status' => 'published', 'values' => [],
-    ], [], true);
+    $product = app(ProductWriter::class)->createProduct(['sku' => 'SURF', 'price_minor' => '2000', 'stock' => '5', 'entitlement_name' => 'course.surf',
+        'offer_terms' => ['version' => 1, 'kind' => 'permanent']], 'USD', [
+            'title' => 'Surf course', 'slug' => 'surf', 'status' => 'published', 'values' => [],
+        ], [], true);
     $setup = app(CommerceSetupWriter::class);
     $physical = str_starts_with($scenario, 'physical');
     $setup->setSettings(['tax_mode' => 'exclusive', 'shipping_tax_mode' => $scenario === 'physical-inclusive' ? 'inclusive' : 'exclusive', 'shipping_tax_class' => 'shipping',

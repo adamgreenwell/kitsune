@@ -56,6 +56,14 @@ it('serves a guest through the actual optional provider while reader accounts ar
     publicCataloguePageHeaders($response);
 })->with(['uncached' => [false], 'real route cache' => [true]]);
 
+it('presents permanent fixed and unavailable access offers as buyer copy without internal mappings', function (string $scenario, string $label): void {
+    $response = publicCataloguePageProbe($scenario)['responses'][0];
+    expect($response['status'])->toBe(200)->and($response['body'])->toContain($label)
+        ->and($response['body'])->not->toContain('course.surf-101', 'offer_terms', 'not configured');
+    publicCataloguePageHeaders($response);
+})->with(['permanent' => ['guest', 'Permanent access'], 'fixed' => ['fixed-offer', '30 days from confirmed payment'],
+    'unknown' => ['unknown-offer', 'Access offer unavailable']]);
+
 it('uses the declared canonical host and prefix rather than the admin slug', function (string $scenario, array $statuses): void {
     $result = publicCataloguePageProbe($scenario, true);
 

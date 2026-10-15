@@ -171,6 +171,11 @@ if ($step === 'seed') {
         $row = $writer->createProduct([
             'sku' => sprintf('SURF-%02d', $number), 'price_minor' => '2000', 'stock' => $scenario === 'sold-out' ? '0' : null,
             'entitlement_name' => $scenario === 'unmapped' ? null : 'course.surf-101',
+            'offer_terms' => match ($scenario) {
+                'unmapped', 'unknown-offer' => null,
+                'fixed-offer' => ['version' => 1, 'kind' => 'fixed', 'days' => 30],
+                default => ['version' => 1, 'kind' => 'permanent'],
+            },
         ], 'USD', [
             'title' => $scenario === 'escaped' ? 'Surf <script>alert("title")</script>' : 'Surf course '.$number,
             'slug' => 'surf-'.$number, 'status' => 'published',

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\OrderAccessToken;
 use Kitsune\Commerce\Models\OrderLine;
+use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -112,7 +113,13 @@ it('retains its own database currency witness with no catalogue rows or enabled 
             ->toThrow(QueryException::class);
     }
     expect(DB::table('orgs')->where('id', $this->org->getKey())->value('currency'))->toBe('USD');
-    DB::table('commerce_orders')->where('org_id', $this->org->getKey())->delete();
+    expect(fn () => DB::transaction(fn () => DB::table('commerce_orders')->where('org_id', $this->org->getKey())->delete()))
+        ->toThrow(QueryException::class);
+    foreach (DB::table('commerce_orders')->where('org_id', $this->org->getKey())->orderBy('id')->get() as $order) {
+        app(Context::class)->setSite(Site::query()->whereKey($order->site_id)->sole());
+        DB::transaction(fn () => app(OrderReaderData::class)->eraseRecord(DB::connection(), $order));
+    }
+    app(Context::class)->setSite($this->site);
     DB::table('orgs')->where('id', $this->org->getKey())->update(['currency' => 'EUR']);
     expect(DB::table('commerce_order_lines')->where('org_id', $this->org->getKey())->count())->toBe(0)
         ->and(DB::table('commerce_order_access_tokens')->where('org_id', $this->org->getKey())->count())->toBe(0)

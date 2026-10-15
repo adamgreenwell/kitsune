@@ -98,7 +98,7 @@ test.describe('Storefront product administration', () => {
 
     test('sells one $20 course through two brands with independent content, images and availability', async ({ page }) => {
         await page.goto(`${products()}/create`);
-        await expect(page.getByText('Price and stock changes affect every site selling this product.', { exact: true })).toBeVisible();
+        await expect(page.getByText('Price, stock and access terms affect every site selling this product. Existing orders keep their saved terms.', { exact: true })).toBeVisible();
         await expect(page.getByRole('switch', { name: 'Available on this site', exact: true })).not.toBeChecked();
         await fillProduct(page);
         await page.getByRole('combobox', { name: /^Stock tracking\s*\*?$/ }).selectOption('finite');

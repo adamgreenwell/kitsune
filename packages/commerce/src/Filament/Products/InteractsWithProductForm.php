@@ -18,6 +18,7 @@ use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Fields\Control;
@@ -207,7 +208,7 @@ trait InteractsWithProductForm
     }
 
     /** @param array<string, mixed> $data
-     * @return array{sku:mixed,price_minor:string,stock:string|null,entitlement_name:string|null}
+     * @return array{sku:mixed,price_minor:string,stock:string|null,entitlement_name:string|null,offer_terms:array<string,mixed>|null}
      */
     private function commerceData(array $data): array
     {
@@ -239,7 +240,25 @@ trait InteractsWithProductForm
             throw ValidationException::withMessages(['data.entitlement_name' => __('commerce::catalogue.invalid_entitlement')]);
         }
 
-        return ['sku' => $data['sku'] ?? null, 'price_minor' => $price, 'stock' => $stock, 'entitlement_name' => $name];
+        $terms = null;
+        if ($name !== null) {
+            $kind = $data['offer_kind'] ?? null;
+            if (! in_array($kind, ['permanent', 'fixed'], true)) {
+                throw ValidationException::withMessages(['data.offer_kind' => __('commerce::catalogue.offer_choose')]);
+            }
+            $terms = ['version' => 1, 'kind' => $kind];
+            if ($kind === 'fixed') {
+                $days = $data['offer_days'] ?? null;
+                if ((! is_string($days) && ! is_int($days)) || preg_match('/\A[1-9][0-9]{0,4}\z/D', (string) $days) !== 1
+                    || (int) $days > OfferTerms::MAX_DAYS) {
+                    throw ValidationException::withMessages(['data.offer_days' => __('commerce::catalogue.invalid_offer_days')]);
+                }
+                $terms['days'] = (int) $days;
+            }
+        }
+
+        return ['sku' => $data['sku'] ?? null, 'price_minor' => $price, 'stock' => $stock, 'entitlement_name' => $name,
+            'offer_terms' => OfferTerms::forMapping($name, $terms)];
     }
 
     /** @return array<string, mixed> */

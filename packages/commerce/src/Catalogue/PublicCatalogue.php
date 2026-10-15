@@ -15,6 +15,7 @@ use InvalidArgumentException;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Core\Currency\Currencies;
 use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementName;
@@ -44,8 +45,8 @@ use RuntimeException;
  *
  * @internal First-party only; no public extension contract before v1.2.
  *
- * @phpstan-type Product array{listingId:int,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool}
- * @phpstan-type CartProduct array{listingId:int,priceMinor:string,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool}
+ * @phpstan-type Product array{listingId:int,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool,offerLabel:?string,purchasable:bool}
+ * @phpstan-type CartProduct array{listingId:int,priceMinor:string,title:string,description:?string,currency:string,price:string,stock:?string,imageUrl:?string,held:?bool,offerLabel:?string,purchasable:bool}
  * @phpstan-type Page array{products:list<Product>,page:int,hasPrevious:bool,hasNext:bool,hasCandidates:bool}
  */
 final class PublicCatalogue
@@ -190,6 +191,9 @@ final class PublicCatalogue
             $product = ['listingId' => $id, 'sellableRef' => (int) $sellable->getKey(), 'entryRef' => (int) $listing->entry_id,
                 'sku' => Sellable::skuValue($sellable->getAttributes()['sku'] ?? null),
                 'entitlementName' => $sellable->getAttributes()['entitlement_name'] ?? null,
+                'offerTerms' => OfferTerms::forMapping($sellable->getAttributes()['entitlement_name'] ?? null,
+                    OfferTerms::stored($sellable->getAttributes()['offer_terms'] ?? null)),
+                'purchasable' => $product['purchasable'],
                 'title' => $product['title'], 'currency' => $product['currency'], 'priceMinor' => $product['priceMinor'], 'stock' => $product['stock']];
         }
         unset($product);
@@ -240,6 +244,7 @@ final class PublicCatalogue
 
             try {
                 Sellable::skuValue($raw['sku'] ?? null);
+                $terms = OfferTerms::forMapping($name, OfferTerms::stored($raw['offer_terms'] ?? null));
                 $price = MinorUnits::format($raw['price_minor'] ?? null, $currency);
                 $stock = ($raw['stock'] ?? null) === null ? null : MinorUnits::integer($raw['stock']);
             } catch (InvalidArgumentException|RuntimeException) {
@@ -256,6 +261,8 @@ final class PublicCatalogue
                 'stock' => $stock,
                 'imageUrl' => $images[$entry->getKey()] ?? null,
                 'held' => null,
+                'offerLabel' => OfferTerms::label($terms, $name !== null),
+                'purchasable' => $name === null || $terms !== null,
             ];
             $names[] = $name;
         }

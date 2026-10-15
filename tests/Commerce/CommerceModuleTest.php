@@ -17,6 +17,8 @@ use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Filament\StockResource;
+use Kitsune\Commerce\Models\AccessEffect;
+use Kitsune\Commerce\Models\AccessWork;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
 use Kitsune\Commerce\Models\CheckoutAttempt;
@@ -26,6 +28,7 @@ use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\OrderAccessToken;
 use Kitsune\Commerce\Models\OrderAllocation;
+use Kitsune\Commerce\Models\OrderClaim;
 use Kitsune\Commerce\Models\OrderLine;
 use Kitsune\Commerce\Models\PaymentReceipt;
 use Kitsune\Commerce\Models\RefundAttempt;
@@ -65,7 +68,7 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class, CheckoutRoutingReceipt::class, StripeEvent::class, StockMovement::class, PaymentReceipt::class, OrderAllocation::class, RefundObligation::class, RefundAttempt::class])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class, CheckoutRoutingReceipt::class, StripeEvent::class, StockMovement::class, PaymentReceipt::class, OrderAllocation::class, RefundObligation::class, RefundAttempt::class, AccessWork::class, AccessEffect::class, OrderClaim::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -95,7 +98,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(11);
+        ->and(glob($path.'/*.php'))->toHaveCount(14);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);

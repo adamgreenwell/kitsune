@@ -8,9 +8,9 @@
 @section('content')
     <h1>{{ $t('review_title') }}</h1><p>{{ $t('quote_help') }}</p>
     <p>{{ $t($quote['snapshot']['test'] ? 'test_mode' : 'live_mode') }}</p>
-    <ul>@foreach ($quote['snapshot']['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $quote['snapshot']['currency'] }} {{ $money($line['gross_minor'], $quote['snapshot']['currency']) }}</span></li>@endforeach</ul>
+    <ul>@foreach ($quote['snapshot']['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $quote['snapshot']['currency'] }} {{ $money($line['gross_minor'], $quote['snapshot']['currency']) }}</span>@php($offer = \Kitsune\Commerce\Offers\OfferTerms::label($line['offer_terms'] ?? null, ($line['entitlement_name'] ?? null) !== null))@if ($offer !== null)<p>{{ $offer }}</p>@endif</li>@endforeach</ul>
     <p>{{ $t('gross') }}: {{ $quote['snapshot']['currency'] }} {{ $money($quote['snapshot']['itemGross'], $quote['snapshot']['currency']) }}</p>
-    <p>{{ $t('tax') }}: {{ $quote['snapshot']['currency'] }} {{ $money($quote['snapshot']['itemTax'], $quote['snapshot']['currency']) }}</p>
+    <p>{{ $t('tax_total') }}: {{ $quote['snapshot']['currency'] }} {{ $money($quote['snapshot']['itemTax'], $quote['snapshot']['currency']) }}</p>
     <form method="post" action="{{ $cartPath }}/orders">@csrf<input type="hidden" name="quote" value="{{ $quote['token'] }}">
         <fieldset><legend>{{ $t('shipping') }}</legend><p>{{ $t('shipping_help') }}</p>
         @foreach ($quote['rates'] as $rate)

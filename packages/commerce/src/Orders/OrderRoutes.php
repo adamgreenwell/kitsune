@@ -26,11 +26,21 @@ final class OrderRoutes
     {
         $leaves = ['index' => ['GET', '/orders'], 'checkout' => ['GET', '/checkout'], 'quote' => ['POST', '/quote'], 'prepare' => ['POST', '/orders'],
             'show' => ['GET', '/orders/{reference}'], 'access' => ['GET', '/orders/{reference}/access'],
-            'consume' => ['POST', '/orders/{reference}/access'], 'link' => ['POST', '/orders/{reference}/link'],
+            'consume' => ['POST', '/orders/{reference}/access'], 'retryAccess' => ['POST', '/orders/{reference}/access/retry'], 'link' => ['POST', '/orders/{reference}/link'],
             'cancel' => ['POST', '/orders/{reference}/cancel'], 'export' => ['POST', '/orders/{reference}/export'], 'erase' => ['POST', '/orders/{reference}/erase']];
         foreach (['root' => '', 'site' => '{'.CartRoutes::SITE_PARAMETER.'}/'] as $scope => $prefix) {
             foreach ($leaves as $action => [$method, $suffix]) {
                 $route = Route::match($method === 'GET' ? ['GET', 'HEAD'] : ['POST'], $prefix.'cart'.$suffix, [OrderController::class, $action])
+                    ->middleware(OrderResponse::class)->withoutMiddleware(PreventRequestForgery::class)
+                    ->where('reference', '[a-f0-9]{32}')->name('commerce.orders.'.$scope.'.'.$action)->fallback();
+                if ($prefix !== '') {
+                    $route->where(CartRoutes::SITE_PARAMETER, ReaderRoutes::sitePattern());
+                }
+            }
+        }
+        foreach (['root' => '', 'site' => '{'.CartRoutes::SITE_PARAMETER.'}/'] as $scope => $prefix) {
+            foreach (['GET' => 'claimForm', 'POST' => 'claim'] as $method => $action) {
+                $route = Route::match($method === 'GET' ? ['GET', 'HEAD'] : ['POST'], $prefix.'account/order-claims/{reference}', [OrderController::class, $action])
                     ->middleware(OrderResponse::class)->withoutMiddleware(PreventRequestForgery::class)
                     ->where('reference', '[a-f0-9]{32}')->name('commerce.orders.'.$scope.'.'.$action)->fallback();
                 if ($prefix !== '') {

@@ -151,3 +151,8 @@ reopen the reimbursement obligation, without repeating stock allocation. Conflic
 
 After the FPM receipt is processed and committed, one newly owed refund can progress outside transactions.
 Non-FPM hosts use explicit bounded commands. No always-on worker is required. See [refund recovery](paid-orders.md).
+
+The same maintenance command independently discovers [purchased access](purchased-access.md), including paid
+orders whose earlier webhook has already finished. Frozen access work can progress without a Stripe key or another
+provider call. FPM follow-up may attempt that work after the paid transaction commits; an interrupted follow-up
+leaves durable pending work for a later command. Later refund/dispute access effects remain #201.

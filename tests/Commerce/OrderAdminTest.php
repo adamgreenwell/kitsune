@@ -10,10 +10,14 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Filament\OrderAdministration;
 use Kitsune\Commerce\Filament\OrderList;
 use Kitsune\Commerce\Filament\OrderResource;
+use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Module;
@@ -22,6 +26,7 @@ use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as OrderAdminFx;
+use Kitsune\Core\Tests\Fixtures\PaidOrderFixture;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function (): void {
@@ -55,6 +60,10 @@ function orderAdminFixture(int $org, int $site, array $overrides = []): string
         'quoted_item_net_minor' => '2000', 'quoted_shipping_net_minor' => '0', 'quoted_tax_minor' => '200', 'quoted_total_minor' => '2200',
         'confirmed_total_minor' => null, 'created_at' => '2026-10-14 10:00:00', 'cancelled_at' => null,
     ], $overrides));
+    DB::table(AccessFulfillment::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
+        'state' => 'awaiting_payment', 'category' => null, 'manifest' => null, 'manifest_hash' => null,
+        'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null, 'effect_count' => 0, 'replay_count' => 0,
+        'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
     DB::table('commerce_order_lines')->insert([
         'org_id' => $org, 'site_id' => $site, 'order_id' => $id, 'sellable_ref' => 123, 'listing_ref' => 456, 'entry_ref' => 789,
         'sku' => 'HISTORICAL-BOARD', 'title' => 'Original title', 'quantity' => 1, 'unit_price_minor' => '2000',
@@ -113,7 +122,7 @@ it('rechecks every order read and destructive action without an owner or ready m
     };
     Permissions::forget();
     expect(OrderResource::canAccess())->toBeFalse();
-    foreach (['orders', 'detail', 'cancelOrder', 'eraseOrder'] as $action) {
+    foreach (['orders', 'detail', 'cancelOrder', 'eraseOrder', 'retryAccess'] as $action) {
         expect(fn () => $page->{$action}())->toThrow(HttpException::class);
     }
     foreach (['cancel', 'erase'] as $action) {
@@ -121,6 +130,29 @@ it('rechecks every order read and destructive action without an owner or ready m
     }
     expect(DB::table('commerce_orders')->value('state'))->toBe('prepared')->and(DB::table('commerce_order_lines')->count())->toBe(1);
 })->with(['member', 'no actor', 'disabled', 'stale']);
+
+it('lets an owner check retained unknown terms without inventing access or changing the accepted purchase', function (): void {
+    $this->site->update(['base_url' => 'https://owner-access.test']);
+    $attempt = PaidOrderFixture::attempt($this->site, null, 1);
+    $order = DB::table('commerce_orders')->where('id', $attempt->order_id)->sole();
+    $reader = '42';
+    $owner = CartOwner::readerKey($reader);
+    DB::table('commerce_orders')->where('id', $order->id)->update(['reader_id' => $reader, 'owner_key' => $owner,
+        'active_cart_key' => hash('sha256', $owner."\0".$order->cart_ref."\0".$order->cart_version)]);
+    $attempt = PaidOrderFixture::refresh($attempt);
+    app(OrderLocks::class)->run(fn () => app(PaidOrders::class)->confirm(DB::connection(),
+        DB::table('commerce_orders')->where('id', $order->id)->sole(), $attempt, PaidOrderFixture::session($attempt)));
+    $snapshot = (array) DB::table('commerce_order_lines')->where('order_id', $order->id)->sole();
+    $page = app(OrderList::class);
+    $page->mount($order->reference);
+    $page->retryAccess();
+    $page->retryAccess();
+    expect($page->getErrorBag()?->has('order') ?? false)->toBeFalse()
+        ->and($page->detail()['access_fulfillment'])->toMatchArray(['state' => 'held', 'category' => 'unknown_terms'])
+        ->and(DB::table('entitlements')->count())->toBe(0)
+        ->and((array) DB::table('commerce_order_lines')->where('order_id', $order->id)->sole())->toBe($snapshot)
+        ->and(session('filament.notifications'))->not->toBeEmpty();
+});
 
 it('cancels once without changing snapshots and then erases all checked unpaid order children', function (): void {
     $raw = (array) DB::table('commerce_orders')->first();
@@ -242,4 +274,4 @@ it('does not certify erasure when an audit observer recreates an orphan child wi
         }
         DB::statement('PRAGMA defer_foreign_keys = OFF');
     }
-})->with(['commerce_order_lines', 'commerce_order_access_tokens']);
+})->with(['commerce_order_lines', 'commerce_order_access_tokens', AccessFulfillment::WORK]);

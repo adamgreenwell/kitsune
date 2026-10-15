@@ -37,6 +37,7 @@ use Kitsune\Core\Tests\Fixtures\MissingTableReader;
 
 beforeEach(function (): void {
     Fx::boot();
+    app('translator')->addNamespace('commerce', dirname(__DIR__, 2).'/packages/commerce/resources/lang');
     $this->org = Org::create(['slug' => 'catalogue', 'name' => 'Catalogue', 'currency' => 'USD']);
     app(Context::class)->setOrg($this->org);
     $this->site = Site::create(['handle' => 'main', 'slug' => 'catalogue-main', 'name' => 'Main', 'locale' => 'en']);
@@ -98,11 +99,37 @@ it('returns only an explicit public projection with exact shared money and stock
         ->and($page['products'][0])->toBe([
             'listingId' => (int) $product->listings()->firstOrFail()->getKey(),
             'title' => 'Product BOARD', 'description' => 'A & B', 'currency' => 'USD', 'price' => '20.00',
-            'stock' => '5', 'imageUrl' => null, 'held' => null,
+            'stock' => '5', 'imageUrl' => null, 'held' => null, 'offerLabel' => null, 'purchasable' => true,
         ])->and($page['products'][1]['price'])->toBe('92233720368547758.07')
         ->and($page['products'][1]['stock'])->toBeNull()
         ->and($page['products'][2]['price'])->toBe('0.00')->and($page['products'][2]['stock'])->toBe('0');
 });
+
+it('publishes safe access offer descriptions without names or internal duration objects', function (array $terms, string $label): void {
+    $product = publicProduct();
+    $product->update(['entitlement_name' => 'course.private-subject', 'offer_terms' => $terms]);
+    $page = app(PublicCatalogue::class)->page();
+    expect($page['products'][0]['offerLabel'])->toBe($label)->and($page['products'][0]['purchasable'])->toBeTrue()
+        ->and(json_encode($page, JSON_THROW_ON_ERROR))->not->toContain('course.private-subject', 'offer_terms', 'version');
+})->with([
+    'permanent' => [['version' => 1, 'kind' => 'permanent'], 'Permanent access'],
+    'fixed' => [['version' => 1, 'kind' => 'fixed', 'days' => 30], '30 days from confirmed payment'],
+]);
+
+it('keeps a retained unknown mapped offer visible but unavailable for a new purchase', function (): void {
+    $product = publicProduct();
+    $product->update(['entitlement_name' => 'course.saved']);
+    $page = app(PublicCatalogue::class)->page();
+    expect($page['products'][0]['offerLabel'])->toBe('Access offer unavailable')
+        ->and($page['products'][0]['purchasable'])->toBeFalse();
+});
+
+it('omits products carrying malformed configured purchase terms', function (string $terms): void {
+    $product = publicProduct();
+    DB::table('commerce_sellables')->where('id', $product->getKey())->update(['entitlement_name' => 'course.saved', 'offer_terms' => $terms]);
+    expect(app(PublicCatalogue::class)->page()['products'])->toBe([]);
+})->with(['future' => ['{"version":2,"kind":"permanent"}'], 'float' => ['{"version":1,"kind":"fixed","days":30.0}'],
+    'extra' => ['{"version":1,"kind":"permanent","reader":"private"}']]);
 
 it('uses fixed stable bounded pages and rejects unbounded page offsets', function (): void {
     foreach (range(25, 1) as $number) {

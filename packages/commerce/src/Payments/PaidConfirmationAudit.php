@@ -123,10 +123,12 @@ final class PaidConfirmationAudit
             }
         }
         app(PaidOrders::class)->projection($connection, (int) $order->org_id, $order, true);
+        app(AccessFulfillment::class)->projection($connection, (int) $order->org_id, $order, true);
         $rows = [];
         foreach (['commerce_order_lines' => OrderReaderData::MAX_LINES, CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS,
             PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES, PaidOrders::OBLIGATIONS => 1,
-            PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS] as $table => $bound) {
+            PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS, AccessFulfillment::WORK => 1,
+            AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS] as $table => $bound) {
             $children = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit($bound + 1)->lockForUpdate()->get();
             if ($children->count() > $bound) {
                 throw new CheckoutRefused;

@@ -18,6 +18,7 @@ use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
 use Kitsune\Commerce\Orders\OrderReaderData;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Readers\ReaderErasure;
 use Kitsune\Core\Readers\ReaderExport;
@@ -93,6 +94,31 @@ it('returns a singular guest projection only to the exact current site owner and
         ->and(DB::table('commerce_order_access_tokens')->count())->toBe(0);
 });
 
+it('exports explicit frozen terms without treating a historical null as permanent', function (?array $terms): void {
+    $reader = (string) $this->reader->getKey();
+    Orders::plant($this->site, $reader, lineOverrides: [
+        'offer_terms' => $terms === null ? null : json_encode($terms, JSON_THROW_ON_ERROR),
+    ]);
+    $records = $this->privacy->export(DB::connection(), $this->org->getKey(), $reader)['orders'];
+    expect($records)->toHaveCount(1)->and($records[0]['lines'][0]['offer_terms'])->toBe($terms)
+        ->and($records[0]['access_fulfillment']['state'])->toBe('awaiting_payment');
+})->with([
+    'historical unknown' => [null],
+    'permanent' => [['version' => 1, 'kind' => 'permanent']],
+    'fixed UTC days' => [['version' => 1, 'kind' => 'fixed', 'days' => 30]],
+]);
+
+it('refuses complete reader privacy when a recorded access parent has disappeared', function (): void {
+    $reader = (string) $this->reader->getKey();
+    $order = Orders::plant($this->site, $reader);
+    DB::table(AccessFulfillment::WORK)->where('order_id', $order->id)->delete();
+
+    expect(fn () => $this->privacy->export(DB::connection(), $this->org->getKey(), $reader))->toThrow(RuntimeException::class);
+    expect(fn () => app(ReaderErasure::class)->erase($reader))->toThrow(ReaderModuleDataUnavailable::class);
+    expect(DB::table('commerce_orders')->where('id', $order->id)->exists())->toBeTrue()
+        ->and(Reader::query()->whereKey($reader)->exists())->toBeTrue();
+});
+
 it('refuses unknown future financial state or malformed custody before exporting or erasing any reader data', function (string $table, array $patch): void {
     if (isset($patch['created_at']) && DB::connection()->getDriverName() !== 'sqlite') {
         $this->markTestSkipped('Server datetime columns refuse this malformed stored value before application custody can inspect it.');
@@ -126,6 +152,10 @@ it('refuses unknown future financial state or malformed custody before exporting
     'line money disagrees' => ['commerce_order_lines', ['net_minor' => '1999']],
     'line tax disagrees' => ['commerce_order_lines', ['tax_minor' => '101']],
     'future terms' => ['commerce_order_lines', ['offer_terms' => '{"unknown":true}']],
+    'future offer version' => ['commerce_order_lines', ['offer_terms' => '{"version":2,"kind":"permanent"}']],
+    'string offer days' => ['commerce_order_lines', ['offer_terms' => '{"version":1,"kind":"fixed","days":"30"}']],
+    'float offer days' => ['commerce_order_lines', ['offer_terms' => '{"version":1,"kind":"fixed","days":30.0}']],
+    'extra offer data' => ['commerce_order_lines', ['offer_terms' => '{"version":1,"kind":"permanent","private_note":"private-payload"}']],
     'entitlement grammar' => ['commerce_order_lines', ['entitlement_name' => 'Course Saved']],
     'physical without delivery' => ['commerce_order_lines', ['delivery_kind' => 'physical']],
     'malformed token hash' => ['commerce_order_access_tokens', ['token_hash' => str_repeat('z', 64)]],

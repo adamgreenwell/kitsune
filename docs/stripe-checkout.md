@@ -68,7 +68,8 @@ local state; they make no provider call and never change payment, stock or acces
 A basic Session status check records **completed** on the attempt. Until the expanded captured-payment graph is
 verified, the order awaits confirmation. Verified webhook, catch-up or explicit historical recovery now records paid
 test money, allocates stock once and creates exact unavailable-item refund obligations. See [paid orders](paid-orders.md).
-No entitlement is granted yet. A completed test order cannot
+Confirmed test orders now queue [purchased access](purchased-access.md) from their frozen terms and positively
+allocated units. A guest must explicitly claim their order after signing in. A completed test order cannot
 start another checkout; prepare a separate order when testing another purchase.
 
 Creating, open, uncertain and completed attempts block cancellation and erasure, including whole-reader erasure, until they

@@ -63,6 +63,13 @@ final class PaymentMaintenance
             foreach ($query->orderBy('a.replay_count')->orderBy('a.id')->limit($limit)->get(['a.id', 'a.site_id', 'a.order_id', 'a.reference', 'a.replay_count']) as $attempt) {
                 $work[] = ['kind' => 'refund', 'count' => self::counter($attempt->replay_count), 'id' => (int) $attempt->id, 'row' => $attempt];
             }
+            if (app(AccessFulfillment::class)->schemaAvailable($connection)) {
+                foreach ($connection->table(AccessFulfillment::WORK.' as a')->useWritePdo()->where('a.org_id', $org)
+                    ->whereIn('a.site_id', $sites->keys()->all())->whereIn('a.state', ['initializing', 'pending', 'held'])
+                    ->orderBy('a.replay_count')->orderBy('a.id')->limit($limit)->get(['a.id', 'a.site_id', 'a.order_id', 'a.replay_count']) as $access) {
+                    $work[] = ['kind' => 'access', 'count' => self::counter($access->replay_count), 'id' => (int) $access->id, 'row' => $access];
+                }
+            }
             usort($work, static fn (array $left, array $right): int => $left['count'] <=> $right['count']
                 ?: $left['id'] <=> $right['id'] ?: strcmp($left['kind'], $right['kind']));
             foreach ($work as $candidate) {
@@ -79,9 +86,12 @@ final class PaymentMaintenance
                     if ($candidate['kind'] === 'confirmation') {
                         app(CheckoutReconciler::class)->reconcile($order->reference, $attempt->reference, $attempt->session_id ?? '');
                         $counts['processed']++;
-                    } else {
+                    } elseif ($candidate['kind'] === 'refund') {
                         $result = app(RefundRecovery::class)->reconcile($order->reference, $attempt->reference);
                         $counts[in_array($result['state'], ['held', 'unknown', 'failed', 'canceled', 'requires_action'], true) ? 'blocked' : 'processed']++;
+                    } else {
+                        $result = app(AccessFulfillment::class)->reconcile($order->reference);
+                        $counts[$result['state'] === 'processed' ? 'processed' : 'blocked']++;
                     }
                 } catch (Throwable) {
                     $counts['blocked']++;
@@ -106,16 +116,25 @@ final class PaymentMaintenance
         return app(OrderLocks::class)->run(function () use ($connection, $org, $candidate, $refreshSuccessful): ?object {
             $this->ready($connection);
             $site = $this->context->siteId() ?? throw new CheckoutRefused;
-            $table = $candidate['kind'] === 'confirmation' ? CheckoutAttempts::TABLE : PaidOrders::ATTEMPTS;
+            $table = match ($candidate['kind']) {
+                'confirmation' => CheckoutAttempts::TABLE,
+                'refund' => PaidOrders::ATTEMPTS,
+                'access' => AccessFulfillment::WORK,
+                default => throw new CheckoutRefused,
+            };
             $counter = $candidate['kind'] === 'confirmation' ? 'confirmation_replay_count' : 'replay_count';
             $row = $connection->table($table)->useWritePdo()->where('id', $candidate['id'])->where('org_id', $org)
                 ->where('site_id', $site)->lockForUpdate()->first();
             if ($row === null || self::counter($row->{$counter}) !== $candidate['count']
-                || ($row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(CarbonImmutable::now('UTC')))) {
+                || ($candidate['kind'] !== 'access' && $row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(CarbonImmutable::now('UTC')))) {
                 return null;
             }
             if ($candidate['kind'] === 'confirmation') {
                 if ($row->state !== 'completed' || $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $row->order_id)->exists()) {
+                    return null;
+                }
+            } elseif ($candidate['kind'] === 'access') {
+                if (! in_array($row->state, ['initializing', 'pending', 'held'], true)) {
                     return null;
                 }
             } elseif ((! $refreshSuccessful && $row->state === 'succeeded')
@@ -168,6 +187,11 @@ final class PaymentMaintenance
             }
             $site = Site::query()->useWritePdo()->whereKey($event->site_id)->where('org_id', $org)->first() ?? throw new CheckoutRefused;
             $this->context->setSite($site);
+            try {
+                app(AccessFulfillment::class)->reconcile($event->order_reference);
+            } catch (Throwable) {
+                // Durable independent access work remains available to bounded maintenance and owner retry.
+            }
             $attempt = $connection->table(PaidOrders::ATTEMPTS)->useWritePdo()->where('org_id', $org)->where('site_id', $event->site_id)
                 ->where('order_id', $event->order_id)->orderByDesc('id')->first();
             if ($attempt !== null && in_array($attempt->state, ['owed', 'unknown'], true)) {

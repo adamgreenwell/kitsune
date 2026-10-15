@@ -65,6 +65,17 @@ final class OrderAccess
                 return null;
             }
             $this->privacy->project($connection, $org, $row, lock: $lock);
+            $claim = app(OrderClaims::class)->forOrder($connection, $row, $lock);
+            if ($claim !== null) {
+                try {
+                    $reader = app(OrderClaims::class)->freshReader($request, $connection);
+                } catch (OrderRefused) {
+                    return null;
+                }
+
+                return app(ReaderGuard::class)->key($reader->getAuthIdentifier()) === $claim->reader_id
+                    ? (new Order)->newFromBuilder((array) $row, $connection->getName()) : null;
+            }
             $owner = CartOwner::current($request);
             $allowed = $owner !== null && $owner->orgId === $org && $owner->siteId === $site
                 && is_string($row->owner_key) && hash_equals($owner->key, $row->owner_key)
@@ -83,6 +94,33 @@ final class OrderAccess
         } catch (Throwable) {
             throw new RuntimeException('The order access data is unavailable.');
         }
+    }
+
+    /** Exact guest proof remains usable through a legitimate reader login, never after logout or a claim.
+     * A matching address is deliberately never queried. Caller supplies a checked, current primary order row.
+     */
+    public function guestProof(Request $request, object $order): ?string
+    {
+        $scope = $this->scope($request, $order->reference ?? null);
+        if ($scope === null || $order->reader_id !== null || (int) $order->org_id !== $scope[0] || (int) $order->site_id !== $scope[1]) {
+            return null;
+        }
+        $connection = (new Order)->getConnection();
+        if (app(OrderClaims::class)->forOrder($connection, $order, $connection->transactionLevel() > 0) !== null) {
+            return null;
+        }
+        CartOwner::restore($request, $request->session());
+        $browser = CartOwner::anonymous($request->session(), $scope[0], $scope[1]);
+        if ($browser !== null && is_string($order->owner_key) && hash_equals($order->owner_key, $browser->key)) {
+            return 'browser';
+        }
+        $grant = $this->slots($request, self::GRANTS, self::GRANT_MINUTES)[$scope[2]] ?? null;
+        if ($grant !== null && $this->sameScope($grant, $scope[0], $scope[1], $scope[3])
+            && is_string($grant['owner_key'] ?? null) && is_string($order->owner_key) && hash_equals($order->owner_key, $grant['owner_key'])) {
+            return 'email';
+        }
+
+        return null;
     }
 
     /** GET only stashes a hash under a fresh session ID. It never consumes or even queries a link. */
@@ -140,7 +178,7 @@ final class OrderAccess
             return TransactionRecovery::run($connection, function () use ($request, $reference, $org, $site, $key, $pending, $connection): bool {
                 $this->lock($connection, $org, $site);
                 $row = $this->privacy->find($connection, $org, $site, $reference, lock: true);
-                if ($row === null || $row->reader_id !== null) {
+                if ($row === null || $row->reader_id !== null || app(OrderClaims::class)->forOrder($connection, $row, true) !== null) {
                     return false;
                 }
                 $this->privacy->project($connection, $org, $row, lock: true);
@@ -199,7 +237,7 @@ final class OrderAccess
         }
         $capturedReceipt = [$receipt->id, $receipt->version];
         $row = $this->privacy->find($connection, $org, $site, $reference);
-        if ($row === null || $row->reader_id !== null) {
+        if ($row === null || $row->reader_id !== null || app(OrderClaims::class)->forOrder($connection, $row) !== null) {
             return;
         }
         $this->privacy->project($connection, $org, $row);
@@ -233,7 +271,7 @@ final class OrderAccess
                         $siteRow = $connection->table('sites')->useWritePdo()->where('org_id', $org)->where('id', $site)->first();
                         $row = $this->privacy->find($connection, $org, $site, $reference, lock: true);
                         if ($siteRow === null || [$siteRow->name, $siteRow->base_url, $siteRow->canonical_host, $siteRow->path_prefix] !== $capturedSite
-                            || $row === null || $row->reader_id !== null || [$row->id, $row->owner_key, $row->snapshot_hash, $row->contact_email] !== $captured) {
+                            || $row === null || $row->reader_id !== null || app(OrderClaims::class)->forOrder($connection, $row, true) !== null || [$row->id, $row->owner_key, $row->snapshot_hash, $row->contact_email] !== $captured) {
                             return null;
                         }
                         $this->privacy->project($connection, $org, $row, lock: true);

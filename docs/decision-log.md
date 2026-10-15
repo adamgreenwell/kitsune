@@ -6115,6 +6115,63 @@ refund failure. None of these measurements makes a real Stripe call or enables l
 
 ---
 
+### Amendment — Purchased access terms and explicit guest claims, 2026-10-15 (#200)
+
+**Adam's decisions, before implementation.** Offers are permanent or a configured number of whole days. A day is
+exactly 24 hours in UTC. A fixed term starts at the first durable Kitsune payment confirmation, the payment receipt's
+`verified_at`, not a browser return, later grant retry or guest claim. Separate orders overlap independently: the
+latest live end wins, and a permanent live source wins over finite ones. Awarded quantity does not multiply time.
+Within an order, positive-awarded lines naming one entitlement combine into one pass with the latest end, permanent
+winning. A guest signs in or registers and explicitly claims the paid order. Historical lines whose entitlement name
+has no saved terms remain held for operator review; this slice never guesses or assigns terms to an old purchase.
+These settle the purchase timing and combination questions left open above; the earlier reasoning stays visible.
+
+**Frozen offers.** A shared product carries nullable, versioned terms: version 1 permanent, or version 1 fixed with
+1–36,500 whole days. A missing name means no purchased access; a name with null terms means unknown, never permanent.
+New mapped purchases require explicit terms. Quote and immutable order lines capture those terms, and fresh review
+detects a changed offer. Later product edits or removal cannot change a committed order's offer. Resolve each end
+once from the confirmed receipt, in UTC whole seconds within year 9999, before calling the entitlement writer.
+Recovery after that end records an expired outcome without extending it. An unavailable unit, held financial
+allocation or unproved payment never creates access; unavailable-unit refund failure cannot create an awarded unit.
+
+**Durable producer work.** An order has an access-work parent from preparation, including an explicit migration
+backfill for retained orders. Paid confirmation freezes its manifest and bounded per-name effects atomically with
+the financial graph. Missing or inconsistent recorded parents/effects fail closed; recovery never regenerates a
+completed grant. A separate bounded, fair selector discovers access work independently of completed checkout
+shortcuts and payment credentials. Grant and completion marker share one transaction and connection, under the
+existing Org-first locks. `Unchanged` and `StillRevoked` complete work; race/database refusals remain recoverable;
+deleted readers, unknown terms and financial holds remain visible for attention. No Stripe call, queue, required
+cron or always-on worker is needed to reconcile access. Replaying access repeats no stock or refund effect.
+
+**Guest custody.** A separate immutable, Site-scoped claim receipt binds the whole paid guest order to one canonical
+reader after exact order proof and a fresh primary read of that authenticated reader. It preserves the original
+invoice, contact, guest ownership witnesses and checkout hash. Matching email alone gives no authority; a proof
+holder may explicitly choose their signed-in account even when its email differs. The same reader's repeat is a
+no-op; another reader cannot transfer a claim. Claiming withdraws prior guest browser/mail authority, and order
+history, reader export and paid-retention refusal follow the claim across the org's Sites. Module disable/staleness
+does not hide retained claim or grant custody. No method is added to the host's frozen `ReaderAccount` contract.
+
+**Narrow producer authority amendment.** The ordinary entitlement doors still refuse reader and non-owner calls,
+and comp remains an owner's act. A first-party-only, internal verified-order grant door may complete a proved paid
+effect while the buyer remains signed in: it requires an already-open real entitlement transaction, the recorded
+Org/Site, a canonical target reader, exact `commerce.order:{order id}` source and frozen name/end. A trusted producer
+proof callback rechecks that precise paid allocation, immutable work and original reader or claim under the same
+locks before the write and after audit callbacks. The callback supplies no replacement grant fields. This amends
+the earlier absolute prohibition only for that verified completion; it grants no reader general write authority.
+Never clear the guard or impersonate an anonymous system caller. Persisted entitlement, audit identity, authority
+context and producer graph must match after host callbacks before work can be marked complete. This internal seam
+adds no host-model method, third-party extension contract or pre-v1.2 stability promise.
+Producer claim/grant audit rows explicitly name the system actor, even when a buyer's session accompanies the
+request. A narrow internal Auditor door supplies that null actor without clearing guards or accepting an actor
+identifier from a caller; ordinary audit recording continues to resolve the acting staff guard as before.
+
+**Staging.** This remains the test-payment stage. Later refunds/disputes and their access effects remain #201;
+operator-paid retention/minimization remains #203. Paid and claimed custody retains its explicit erasure fence,
+without inventing an invoice retention period. Live checkout stays disabled. Implementation evidence follows only
+after the corresponding checks run; these paragraphs record policy and authority before code.
+
+---
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**

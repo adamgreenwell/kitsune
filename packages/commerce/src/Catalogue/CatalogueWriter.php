@@ -14,6 +14,7 @@ use Closure;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Currency\Currencies;
@@ -36,10 +37,12 @@ final class CatalogueWriter
 
     public function __construct(private readonly Context $context, private readonly Auditor $auditor) {}
 
-    public function createSellable(mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null): Sellable
+    public function createSellable(mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null,
+        #[\SensitiveParameter] mixed $offerTerms = null): Sellable
     {
         $this->refuseWithoutAuthority();
-        $attributes = [...$this->sellableAttributes($sku, $priceMinor, $stock), 'entitlement_name' => Sellable::entitlementNameValue($entitlementName)];
+        $attributes = [...$this->sellableAttributes($sku, $priceMinor, $stock), 'entitlement_name' => Sellable::entitlementNameValue($entitlementName),
+            'offer_terms' => OfferTerms::forMapping($entitlementName, $offerTerms)];
         $currency = $this->currencyQuote($currency);
 
         return $this->transaction(function () use ($attributes, $currency): Sellable {
@@ -57,7 +60,8 @@ final class CatalogueWriter
      * Omitted offer metadata preserves the stored mapping for existing first-party callers; an explicit null clears
      * it. Argument presence, including a named entitlementName argument, distinguishes the two.
      */
-    public function updateSellable(mixed $id, mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null): Sellable
+    public function updateSellable(mixed $id, mixed $sku, mixed $priceMinor, mixed $stock, mixed $currency, #[\SensitiveParameter] mixed $entitlementName = null,
+        #[\SensitiveParameter] mixed $offerTerms = null): Sellable
     {
         $this->refuseWithoutAuthority();
         $key = Sellable::catalogueKey($id);
@@ -65,6 +69,12 @@ final class CatalogueWriter
 
         if (func_num_args() >= 6) {
             $attributes['entitlement_name'] = Sellable::entitlementNameValue($entitlementName);
+            if ($entitlementName === null) {
+                $attributes['offer_terms'] = null;
+            }
+        }
+        if (func_num_args() >= 7) {
+            $attributes['offer_terms'] = OfferTerms::normalize($offerTerms);
         }
 
         $currency = $this->currencyQuote($currency);
@@ -237,8 +247,17 @@ final class CatalogueWriter
 
     private function record(string $action, Sellable|Listing $row): void
     {
+        $offer = $row instanceof Sellable && $action !== 'commerce.sellable_removed'
+            ? [$row->entitlement_name, OfferTerms::stored($row->getAttributes()['offer_terms'] ?? null)] : null;
         if (! $this->auditor->recordOrFail($action, $row)->exists) {
             throw new RuntimeException('The catalogue audit save was cancelled.');
+        }
+        if ($offer !== null) {
+            $fresh = Sellable::query()->useWritePdo()->whereKey($row->getKey())->lockForUpdate()->first()
+                ?? throw new RuntimeException('The saved purchased access offer is unavailable.');
+            if ($offer !== [$fresh->entitlement_name, OfferTerms::stored($fresh->getAttributes()['offer_terms'] ?? null)]) {
+                throw new RuntimeException('The saved purchased access offer changed during its audit.');
+            }
         }
     }
 

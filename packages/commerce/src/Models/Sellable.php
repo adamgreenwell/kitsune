@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Persistence\GuardedCatalogueBuilder;
 use Kitsune\Commerce\Persistence\GuardsCatalogueWrites;
 use Kitsune\Core\Currency\Currencies;
@@ -38,6 +39,7 @@ use RuntimeException;
  * @property string $price_minor
  * @property string|null $stock
  * @property string|null $entitlement_name
+ * @property array<string,mixed>|null $offer_terms
  */
 #[OrgScoped]
 final class Sellable extends Model implements RequiresModelSave
@@ -50,12 +52,37 @@ final class Sellable extends Model implements RequiresModelSave
 
     protected $guarded = [];
 
-    protected $casts = ['price_minor' => 'string', 'stock' => 'string'];
+    protected $casts = ['price_minor' => 'string', 'stock' => 'string', 'offer_terms' => 'array'];
 
     /** @return array<string, string> */
     public static function columnsRequiringModelSave(): array
     {
-        return array_fill_keys(['id', 'org_id', 'currency', 'sku', 'price_minor', 'stock', 'entitlement_name'], 'Catalogue values require a checked instance save.');
+        return array_fill_keys(['id', 'org_id', 'currency', 'sku', 'price_minor', 'stock', 'entitlement_name', 'offer_terms'], 'Catalogue values require a checked instance save.');
+    }
+
+    /** MySQL may reorder JSON object keys; an equivalent offer is not a second catalogue change. */
+    public function originalIsEquivalent($key)
+    {
+        if ($key === 'offer_terms') {
+            try {
+                return OfferTerms::stored($this->getAttributes()['offer_terms'] ?? null)
+                    === OfferTerms::stored($this->getRawOriginal('offer_terms'));
+            } catch (RuntimeException) {
+                return false;
+            }
+        }
+
+        return parent::originalIsEquivalent($key);
+    }
+
+    /** Validate before Laravel's JSON cast can turn 30.0 into the integer 30. */
+    public function setAttribute($key, #[\SensitiveParameter] $value)
+    {
+        if ($key === 'offer_terms') {
+            $value = OfferTerms::normalize($value);
+        }
+
+        return parent::setAttribute($key, $value);
     }
 
     protected static function booted(): void
@@ -95,6 +122,7 @@ final class Sellable extends Model implements RequiresModelSave
         $raw = $this->getAttributes();
         self::skuValue($raw['sku'] ?? null);
         self::entitlementNameValue($raw['entitlement_name'] ?? null);
+        OfferTerms::forMapping($raw['entitlement_name'] ?? null, OfferTerms::stored($raw['offer_terms'] ?? null));
         MinorUnits::integer($raw['price_minor'] ?? null);
 
         if (($raw['stock'] ?? null) !== null) {
@@ -126,6 +154,8 @@ final class Sellable extends Model implements RequiresModelSave
         $raw = $this->getAttributes();
         $this->price_minor = MinorUnits::integer($raw['price_minor'] ?? null);
         $this->stock = ($raw['stock'] ?? null) === null ? null : MinorUnits::integer($raw['stock']);
+        self::entitlementNameValue($raw['entitlement_name'] ?? null);
+        $this->offer_terms = OfferTerms::forMapping($raw['entitlement_name'] ?? null, OfferTerms::stored($raw['offer_terms'] ?? null));
     }
 
     /** @return HasMany<Listing, $this> */

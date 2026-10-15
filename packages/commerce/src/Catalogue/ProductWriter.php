@@ -76,7 +76,7 @@ final class ProductWriter
     private function write(?int $id, #[\SensitiveParameter] array $commerce, mixed $quote, array $content, array $relations, mixed $available): Sellable
     {
         $this->refuseWithoutAuthority();
-        $this->onlyKeys($commerce, ['sku', 'price_minor', 'stock', 'entitlement_name']);
+        $this->onlyKeys($commerce, ['sku', 'price_minor', 'stock', 'entitlement_name', 'offer_terms']);
         $this->onlyKeys($content, ['title', 'slug', 'status', 'values']);
 
         if (! is_bool($available)) {
@@ -90,6 +90,7 @@ final class ProductWriter
             $type = ProductType::current() ?? throw new RuntimeException('Apply and enable Storefront for this site before editing products.');
             // Ordinary product edits never resubmit a stale stock balance. Adjustments have their own reason/history
             // writer; read the current value beneath the same Org lock used by payment and inventory writes.
+            $current = null;
             if ($id !== null) {
                 $current = Sellable::query()->useWritePdo()->whereKey($id)->lockForUpdate()->first()
                     ?? throw new RuntimeException('The product is not available in this org.');
@@ -105,6 +106,9 @@ final class ProductWriter
             $content = $this->validateContent($type, $entry, $content, $relations, $available);
             // Older first-party payloads omit the mapping; do not turn their content edit into a shared offer change.
             $offer = array_key_exists('entitlement_name', $commerce) ? [$commerce['entitlement_name']] : [];
+            if (array_key_exists('offer_terms', $commerce)) {
+                $offer = [array_key_exists('entitlement_name', $commerce) ? $commerce['entitlement_name'] : $current?->entitlement_name, $commerce['offer_terms']];
+            }
             $sellable = $id === null
                 ? $this->catalogue->createSellable($commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer)
                 : $this->catalogue->updateSellable($id, $commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer);

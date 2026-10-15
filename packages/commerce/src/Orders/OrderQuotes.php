@@ -20,6 +20,7 @@ use Kitsune\Commerce\Models\CommerceSettings;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\TaxRate;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Shipping\ParcelPacking;
 use Kitsune\Commerce\Shipping\ShippoRates;
 use Kitsune\Commerce\Taxes\TaxAmounts;
@@ -152,7 +153,8 @@ final class OrderQuotes
                 $lines[] = ['sellable_ref' => $item['sellableRef'], 'listing_ref' => $item['listingId'], 'entry_ref' => $item['entryRef'],
                     'sku' => $item['sku'], 'title' => $item['title'], 'quantity' => $item['quantity'], 'unit_price_minor' => $item['priceMinor'],
                     'tax_class' => $policy->tax_class, 'tax_rate_parts' => (int) $rate->rate_parts, 'delivery_kind' => $policy->delivery_kind,
-                    'net_minor' => $tax['net'], 'tax_minor' => $tax['tax'], 'gross_minor' => $tax['gross'], 'entitlement_name' => $item['entitlementName'], 'offer_terms' => null];
+                    'net_minor' => $tax['net'], 'tax_minor' => $tax['tax'], 'gross_minor' => $tax['gross'], 'entitlement_name' => $item['entitlementName'],
+                    'offer_terms' => OfferTerms::purchasable($item['entitlementName'], $item['offerTerms'])];
                 $itemNet = CartAmounts::add($itemNet, $tax['net']);
                 $itemTax = CartAmounts::add($itemTax, $tax['tax']);
                 $itemGross = CartAmounts::add($itemGross, $tax['gross']);

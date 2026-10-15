@@ -2,10 +2,10 @@
 const fs = require('node:fs');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
-const { SITE_A, SITE_B, RIVAL_SITE, COURSE_A, READER, artisan, php } = require('./public-catalogue-fixture');
+const { SITE_A, SITE_B, RIVAL_SITE, COURSE_A, READER, ENTITLEMENT, resetCatalogueEntitlements, setCatalogueReaderMode, artisan, php } = require('./public-catalogue-fixture');
 const { literal } = require('./storefront-fixture');
 const { resetCartFixtures, setCartCourse, cartStorage } = require('./cart-fixture');
-const { mailMark, mailTo, mailFacts } = require('./mail');
+const { mailMark, mailTo, mailLink, mailFacts } = require('./mail');
 const { confirmTestOrder } = require('./paid-order-fixture');
 
 const cart = `/${SITE_A}/cart`;
@@ -14,7 +14,7 @@ const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public o
 
 /** Only the dedicated catalogue fixture org: retained historical snapshots deliberately have no cart/catalogue FK. */
 function clearOrders() {
-    php(atSite + "foreach(['commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts'] as $table){DB::table($table)->where('org_id',$site->org_id)->delete();}"
+    php(atSite + "foreach(['commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts'] as $table){DB::table($table)->where('org_id',$site->org_id)->delete();}"
         + "DB::table('commerce_stripe_events')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_routing')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"
@@ -62,7 +62,7 @@ async function add(page) {
     await expect(page).toHaveURL(new RegExp(`${cart}$`));
 }
 
-async function review(page, email) {
+async function review(page, email, tax = '4.00') {
     await page.getByRole('link', { name: 'Prepare an order', exact: true }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Prepare an order', exact: true })).toBeVisible();
     await page.getByLabel('Email for order access', { exact: true }).fill(email);
@@ -78,14 +78,16 @@ async function review(page, email) {
     await page.keyboard.press('Enter');
     await expect(page.getByRole('heading', { level: 1, name: 'Review your order', exact: true })).toBeVisible();
     await expect(page.getByRole('radio', { name: 'No physical delivery — USD 0.00', exact: true })).toBeChecked();
+    await expect(page.getByText(`Tax: USD ${tax}`, { exact: true })).toBeVisible();
     await axe(page);
 }
 
-async function prepare(page) {
+async function prepare(page, tax = '4.00') {
     await page.getByRole('button', { name: 'Prepare order', exact: true }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(new RegExp(`${cart}/orders/[a-f0-9]{32}$`));
     await expect(page.getByRole('heading', { level: 1, name: 'Your order', exact: true })).toBeVisible();
+    await expect(page.getByText(`Tax: USD ${tax}`, { exact: true })).toBeVisible();
     return new URL(page.url()).pathname;
 }
 
@@ -230,6 +232,7 @@ test('prepares an exact unpaid guest invoice by keyboard, retains its original a
     setCartCourse({ price: '2500' });
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Quoted total: USD 24.00', exact: true })).toBeVisible();
+    await expect(page.getByText('Tax: USD 4.00', { exact: true })).toBeVisible();
     await page.getByRole('link', { name: 'Your orders', exact: true }).last().click();
     const reference = path.split('/').pop();
     await page.getByRole('link', { name: reference, exact: true }).click();
@@ -317,8 +320,8 @@ test('refuses stale prepared quotes and never exposes a guest invoice through si
     await expect(page.getByText('The cart, prices or delivery settings changed. Review a fresh quote before preparing the order.', { exact: true })).toBeVisible();
     expect(storedOrders().orders).toBe(0);
     await page.goto(cart);
-    await review(page, `order-scopes-${testInfo.retry}-${Date.now()}@kitsune.test`);
-    const path = await prepare(page);
+    await review(page, `order-scopes-${testInfo.retry}-${Date.now()}@kitsune.test`, '5.00');
+    const path = await prepare(page, '5.00');
     const reference = path.split('/').pop();
     for (const site of [SITE_B, RIVAL_SITE, 'unknown-order-site']) {
         const response = await page.goto(`/${site}/cart/orders/${reference}?invoice=PrivateBrowserSecret`);
@@ -416,3 +419,109 @@ for (const oldLinkState of ['used', 'expired']) {
         }
     });
 }
+
+
+test('claims a paid guest order to an explicit different-email account and activates only this sites purchased access', async ({ page }, testInfo) => {
+    php(atSite + `$reader=App\\Models\\Reader::findByEmail(${literal(READER.email)});`
+        + `foreach(['e2e.catalogue:1','e2e.catalogue:2'] as $source){app(Kitsune\\Core\\Entitlements\\EntitlementWriter::class)->revoke($reader->id,${literal(ENTITLEMENT)},$source);}`);
+    try {
+        await add(page);
+        await review(page, `claim-guest-${testInfo.retry}-${Date.now()}@kitsune.test`);
+        const path = await prepare(page);
+        const reference = path.split('/').pop();
+        const proof = confirmTestOrder(reference);
+        expect(proof.accessState).toBe('awaiting_claim');
+        await page.reload();
+        await page.getByRole('link', { name: 'Save this order to your account', exact: true }).click();
+        const claimPath = `/${SITE_A}/account/order-claims/${reference}`;
+        await expect(page).toHaveURL(new RegExp(`${claimPath}$`));
+        await axe(page);
+        await page.getByRole('link', { name: 'Sign in to save this order', exact: true }).click();
+        await page.getByLabel('Email address', { exact: true }).fill(READER.email);
+        await page.getByLabel('Password', { exact: true }).fill(READER.password);
+        await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+        await expect(page).toHaveURL(new RegExp(`${claimPath}$`));
+        await expect(page.getByText(READER.email, { exact: true })).toBeVisible();
+        await expect(page.getByText(/Previous guest access links and browser access will stop working/)).toBeVisible();
+        await expect(page.getByText('Any fixed-term access runs from payment confirmation. Saving this order to your account does not restart or extend it.', { exact: true })).toBeVisible();
+        await axe(page);
+        await testInfo.attach('guest-order-claim-review', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        await page.getByRole('button', { name: 'Save order to this account', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(new RegExp(`${path}$`));
+        await expect(page.getByRole('link', { name: 'Save this order to your account', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Email me an access link', exact: true })).toHaveCount(0);
+        await expect(page.getByText('Tax: USD 4.00', { exact: true })).toBeVisible();
+        await axe(page);
+        await testInfo.attach('claimed-order-access-summary', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        await page.goto(`/${SITE_A}/catalogue`);
+        await expect(page.getByRole('article').filter({ has: page.getByRole('heading', { name: COURSE_A, exact: true }) }).getByText('You have access', { exact: true })).toBeVisible();
+        await page.goto(`/${SITE_B}/catalogue`);
+        await expect(page.getByText('You have access', { exact: true })).toHaveCount(0);
+        await page.goto(`/${SITE_A}/cart/orders`);
+        await page.getByRole('link', { name: reference, exact: true }).click();
+        await expect(page).toHaveURL(new RegExp(`${path}$`));
+        await page.goto(`/${SITE_A}/account`);
+        await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+        expect((await page.goto(path)).status()).toBe(404);
+    } finally {
+        resetCatalogueEntitlements();
+    }
+});
+
+
+test('claims from one-use guest mail after registering a different-email account and withdraws the original guest browser', async ({ page, browser }, testInfo) => {
+    const guestEmail = `claim-mail-guest-${testInfo.retry}-${Date.now()}@kitsune.test`;
+    const accountEmail = `claim-new-account-${testInfo.retry}-${Date.now()}@kitsune.test`;
+    const password = 'a new account for purchased access';
+    const recoveredContext = await browser.newContext();
+    const replayContext = await browser.newContext();
+    setCatalogueReaderMode('open');
+    try {
+        await add(page);
+        await review(page, guestEmail);
+        const orderMark = mailMark();
+        const path = await prepare(page);
+        const reference = path.split('/').pop();
+        const link = orderMailLink(await mailTo(guestEmail, orderMark));
+        confirmTestOrder(reference);
+        const recovered = await recoveredContext.newPage();
+        await recovered.goto(link);
+        await recovered.getByRole('button', { name: 'Continue to my order', exact: true }).click();
+        await recovered.getByRole('link', { name: 'Save this order to your account', exact: true }).click();
+        const claimPath = `/${SITE_A}/account/order-claims/${reference}`;
+        await recovered.getByRole('link', { name: 'Create an account', exact: true }).click();
+        const registerMark = mailMark();
+        await recovered.getByLabel('Email address', { exact: true }).fill(accountEmail);
+        await recovered.getByRole('button', { name: 'Send me a link', exact: true }).click();
+        const registerLink = mailLink(await mailTo(accountEmail, registerMark));
+        expect(registerLink).not.toBeNull();
+        await recovered.goto(String(registerLink));
+        await recovered.getByLabel('New password', { exact: true }).fill(password);
+        await recovered.getByLabel('Type the same password again', { exact: true }).fill(password);
+        await recovered.getByRole('button', { name: 'Create my account', exact: true }).click();
+        await expect(recovered).toHaveURL(new RegExp(`${claimPath}$`));
+        await expect(recovered.getByText(accountEmail, { exact: true })).toBeVisible();
+        await expect(recovered.getByText('Any fixed-term access runs from payment confirmation. Saving this order to your account does not restart or extend it.', { exact: true })).toBeVisible();
+        await axe(recovered);
+        await recovered.getByRole('button', { name: 'Save order to this account', exact: true }).click();
+        await expect(recovered).toHaveURL(new RegExp(`${path}$`));
+        await expect(recovered.getByText('Tax: USD 4.00', { exact: true })).toBeVisible();
+        await recovered.goto(`/${SITE_A}/catalogue`);
+        await expect(recovered.getByRole('article').filter({ has: recovered.getByRole('heading', { name: COURSE_A, exact: true }) }).getByText('You have access', { exact: true })).toBeVisible();
+        expect((await page.goto(path)).status()).toBe(404);
+        const replay = await replayContext.newPage();
+        await replay.goto(link);
+        await replay.getByRole('button', { name: 'Continue to my order', exact: true }).click();
+        await expect(replay.getByText('This access link is expired, already used or unavailable. You can request a fresh link below.', { exact: true })).toBeVisible();
+        expect((await replay.goto(path)).status()).toBe(404);
+    } finally {
+        await recoveredContext.close();
+        await replayContext.close();
+        clearOrders();
+        php(atSite + `$reader=App\\Models\\Reader::findByEmail(${literal(accountEmail)});if($reader!==null){`
+            + 'app(Kitsune\\Core\\Entitlements\\EntitlementWriter::class)->forget($reader->id);$reader->eraseAccount();}');
+        setCatalogueReaderMode('sign-in');
+        resetCatalogueEntitlements();
+    }
+});

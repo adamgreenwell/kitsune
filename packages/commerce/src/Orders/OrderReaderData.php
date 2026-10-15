@@ -18,6 +18,8 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Offers\OfferTerms;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\StripeEventInbox;
@@ -61,8 +63,10 @@ final class OrderReaderData implements ModuleReaderData
         }
 
         $records = [];
+        app(OrderClaims::class)->forReader($connection, $orgId, $reader);
+        app(AccessFulfillment::class)->forReader($connection, $orgId, $reader);
         foreach ($this->orders($connection, $orgId, $reader)->orderBy('site_id')->orderBy('id')->get() as $order) {
-            $this->readerOwnership($order, $reader);
+            $this->readerOwnership($connection, $order, $reader);
             $records[] = $this->project($connection, $orgId, $order);
         }
 
@@ -79,9 +83,11 @@ final class OrderReaderData implements ModuleReaderData
         }
 
         $this->lockSites($connection, $orgId);
+        app(OrderClaims::class)->forReader($connection, $orgId, $reader, lock: true);
+        app(AccessFulfillment::class)->forReader($connection, $orgId, $reader, lock: true);
         $orders = $this->orders($connection, $orgId, $reader)->orderBy('site_id')->orderBy('id')->lockForUpdate()->get();
         foreach ($orders as $order) {
-            $this->readerOwnership($order, $reader);
+            $this->readerOwnership($connection, $order, $reader, lock: true);
             $this->project($connection, $orgId, $order, lock: true);
         }
         foreach ($orders as $order) {
@@ -266,11 +272,12 @@ final class OrderReaderData implements ModuleReaderData
                 || self::writtenKey($line->quantity) === null || (int) $line->quantity < 1 || (int) $line->quantity > 99
                 || self::writtenKey($line->tax_rate_parts) === null || (int) $line->tax_rate_parts < 0 || (int) $line->tax_rate_parts > 1000000
                 || ! in_array($line->delivery_kind, ['digital', 'physical'], true)
-                || preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/D', $line->tax_class) !== 1 || $line->offer_terms !== null) {
+                || preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/D', $line->tax_class) !== 1) {
                 throw new RuntimeException('The retained order line is incompatible.');
             }
             Sellable::skuValue($line->sku);
             Sellable::entitlementNameValue($line->entitlement_name);
+            $offer = OfferTerms::forMapping($line->entitlement_name, OfferTerms::stored($line->offer_terms));
             $references = [];
             foreach (['sellable_ref', 'listing_ref', 'entry_ref'] as $key) {
                 $references[$key] = MinorUnits::integer($line->{$key});
@@ -294,7 +301,7 @@ final class OrderReaderData implements ModuleReaderData
                 'unit_price_minor' => MinorUnits::integer($line->unit_price_minor), 'tax_class' => $line->tax_class,
                 'tax_rate_parts' => (int) $line->tax_rate_parts, 'delivery_kind' => $line->delivery_kind,
                 'net_minor' => MinorUnits::integer($line->net_minor), 'tax_minor' => MinorUnits::integer($line->tax_minor),
-                'gross_minor' => MinorUnits::integer($line->gross_minor), 'entitlement_name' => $line->entitlement_name, 'offer_terms' => null];
+                'gross_minor' => MinorUnits::integer($line->gross_minor), 'entitlement_name' => $line->entitlement_name, 'offer_terms' => $offer];
         }
         if (($order->shipping !== null) !== $physical || ($delivery !== null) !== $physical) {
             throw new RuntimeException('The retained order delivery is inconsistent.');
@@ -319,6 +326,8 @@ final class OrderReaderData implements ModuleReaderData
                 'consumed_at' => $token->consumed_at === null ? null : self::instant($token->consumed_at)];
         }
 
+        $claim = app(OrderClaims::class)->forOrder($connection, $order, lock: $lock);
+
         return ['reference' => $order->reference, 'site' => $site->handle, 'state' => $order->state,
             'contact_email' => $order->contact_email, 'billing' => $billing, 'delivery' => $delivery,
             'shipping' => $shipping,
@@ -329,17 +338,39 @@ final class OrderReaderData implements ModuleReaderData
             'lines' => $items, 'access_links' => $links,
             'checkout_attempts' => app(CheckoutAttempts::class)->projection($connection, $org, $order, lock: $lock),
             'stripe_events' => app(StripeEventInbox::class)->projection($connection, $org, $order, lock: $lock),
-            ...app(PaidOrders::class)->projection($connection, $org, $order, lock: $lock)];
+            ...app(PaidOrders::class)->projection($connection, $org, $order, lock: $lock),
+            'access_claim' => $claim === null ? null : ['claimed_at' => self::instant($claim->claimed_at)],
+            ...app(AccessFulfillment::class)->projection($connection, $org, $order, lock: $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder
     {
+        $claims = app(OrderClaims::class)->schemaAvailable($connection);
+        $access = app(AccessFulfillment::class)->schemaAvailable($connection);
+
         return $connection->table('commerce_orders')->useWritePdo()->where('org_id', $org)
-            ->where(fn (Builder $owned) => $owned->where('reader_id', $reader)->orWhere('owner_key', CartOwner::readerKey($reader)));
+            ->where(function (Builder $owned) use ($reader, $claims, $access): void {
+                $owned->where('reader_id', $reader)->orWhere('owner_key', CartOwner::readerKey($reader));
+                if ($claims) {
+                    // Admit a candidate even when its claim's child scope was forged; strict raw validation below
+                    // then refuses the malformed graph instead of silently omitting retained reader custody.
+                    $owned->orWhereExists(fn (Builder $claim) => $claim->selectRaw('1')->from(OrderClaims::TABLE)
+                        ->whereColumn(OrderClaims::TABLE.'.order_id', 'commerce_orders.id')->where('reader_id', $reader));
+                }
+                if ($access) {
+                    // This independent receipt keeps custody discoverable if a claim's reader field is damaged.
+                    $owned->orWhereExists(fn (Builder $work) => $work->selectRaw('1')->from(AccessFulfillment::WORK)
+                        ->whereColumn(AccessFulfillment::WORK.'.order_id', 'commerce_orders.id')->where('claim_reader_id', $reader));
+                }
+            });
     }
 
-    private function readerOwnership(#[\SensitiveParameter] object $order, #[\SensitiveParameter] string $reader): void
+    private function readerOwnership(Connection $connection, #[\SensitiveParameter] object $order, #[\SensitiveParameter] string $reader, bool $lock = false): void
     {
+        $claim = app(OrderClaims::class)->forOrder($connection, $order, lock: $lock);
+        if ($order->reader_id === null && $claim !== null && $claim->reader_id === $reader) {
+            return;
+        }
         if (! is_string($order->reader_id) || $order->reader_id !== $reader
             || ! is_string($order->owner_key) || ! hash_equals(CartOwner::readerKey($reader), $order->owner_key)) {
             throw new RuntimeException('The retained order reader ownership is inconsistent.');
@@ -363,6 +394,7 @@ final class OrderReaderData implements ModuleReaderData
         app(PaidOrders::class)->assertErasable($connection, $order);
         // A remote test Session can still be open or uncertain. Its recovery evidence must outlive this request.
         app(CheckoutAttempts::class)->deleteTerminal($connection, $org, $order);
+        app(AccessFulfillment::class)->deleteUnpaid($connection, $order);
         foreach (['commerce_order_access_tokens', 'commerce_order_lines'] as $table) {
             $expected = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->count();
             if ($connection->table($table)->where('org_id', $org)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete() !== $expected) {

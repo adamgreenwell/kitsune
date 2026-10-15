@@ -11,9 +11,10 @@
     <p>{{ $t($order['mode'].'_mode') }}</p>
     @if ($order['payment'] === null)<p>{{ $t('unpaid') }}</p>@endif
     @include('commerce::orders.payment-summary')
-    <ul>@foreach ($order['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $order['currency'] }} {{ $money($line['gross_minor'], $order['currency']) }}</span></li>@endforeach</ul>
+    @include('commerce::orders.access-summary', ['order' => $order])
+    <ul>@foreach ($order['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $order['currency'] }} {{ $money($line['gross_minor'], $order['currency']) }}</span>@php($offer = \Kitsune\Commerce\Offers\OfferTerms::label($line['offer_terms'] ?? null, ($line['entitlement_name'] ?? null) !== null))@if ($offer !== null)<p>{{ $offer }}</p>@endif</li>@endforeach</ul>
     <p>{{ $t('net') }}: {{ $order['currency'] }} {{ $money($order['quoted_item_net_minor'], $order['currency']) }}</p>
-    <p>{{ $t('tax') }}: {{ $order['currency'] }} {{ $money($order['quoted_tax_minor'], $order['currency']) }}</p>
+    <p>{{ $t('tax_total') }}: {{ $order['currency'] }} {{ $money($order['quoted_tax_minor'], $order['currency']) }}</p>
     <h2>{{ $t('total') }}: <span dir="ltr">{{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</span></h2>
     @if ($order['mode'] === 'test' && $order['state'] === 'prepared')<p><a href="{{ $cartPath }}/orders/{{ $reference }}/payment">{{ __('commerce::payments.title', [], 'en') }}</a></p>@endif
     <p>{{ $t('email') }}: {{ $order['contact_email'] }}</p>
@@ -22,6 +23,8 @@
     @endforeach
     @php($completedCheckout = in_array('completed', array_column($order['checkout_attempts'], 'state'), true))
     @if ($order['state'] === 'prepared' && ! $completedCheckout)<form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/cancel">@csrf<button type="submit" class="secondary">{{ $t('cancel') }}</button></form>@endif
+    @if ($accessRetryPath !== null)<form method="post" action="{{ $accessRetryPath }}">@csrf<button type="submit" class="secondary">{{ $t('access_check') }}</button></form>@endif
+    @if ($claimPath !== null)<p><a href="{{ $claimPath }}">{{ $t('claim_title') }}</a></p>@endif
     @if ($isGuest)<form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/link">@csrf<button type="submit" class="secondary">{{ $t('send_link') }}</button></form>@endif
     <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/export">@csrf<button type="submit" class="secondary">{{ $t('export') }}</button></form>
     @if ($order['payment'] !== null || $completedCheckout)
