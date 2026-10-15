@@ -465,8 +465,10 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       buyer review, exact accepted requests, durable same-key retry, server reconciliation/expiry, owner lost-ID
       recovery and pending-attempt export/erasure fences. The verified-event slice (#198) adds an org inbox,
       exact-site routing, signature-first bounded capture, FPM acknowledgement before processing, fenced replay,
-      seven-day raw cleanup and explicit original-account owner recovery after key/mode changes. Zero completion
-      is deferred; live checkout, inventory/refunds and paid-state privacy remain later slices.
+      seven-day raw cleanup and explicit original-account owner recovery after key/mode changes. Paid confirmation
+      (#199) records captured test payments, allocates available units under shared stock locks and creates exact
+      unavailable-unit refund obligations with bounded recovery. Purchased access (#200), later refund/dispute
+      access effects (#201), live checkout and paid-state privacy (#203) remain owed. Zero completion is deferred.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

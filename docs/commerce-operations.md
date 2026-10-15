@@ -261,7 +261,7 @@ rows; export and explicit cleanup remain the operator's maintenance responsibili
 Verified test events now have a [durable inbox and bounded replay](stripe-webhooks.md). Hosts must install the early
 request guard before exposing the webhook URL. Full verified payloads expire after seven days; operators run the
 bounded prune command regularly for physical removal. Explicit owner recovery can check an older test Session after
-a key or mode change using a transient key for its original Stripe account. Live checkout stays off. Verified test payments now allocate stock and create refunds; see [paid orders](paid-orders.md).
+a key or mode change using a transient key for its original Stripe account. Live checkout stays off. Verified test payments now allocate stock and create unavailable-unit refund obligations; see [paid orders](paid-orders.md).
 
 Prepared orders now offer a [test checkout workflow](stripe-checkout.md): fresh buyer review, hosted cards,
 immutable accepted amounts, durable retries, current server reconciliation and explicit expiry. Returning guests
@@ -270,7 +270,8 @@ erasure until reconciliation; expired/rejected unpaid history can be erased; com
 
 The org must remain in test mode with its own configured Stripe test key. A basic Session status check alone awaits
 captured-payment proof. Verified confirmation records test paid money and shared stock allocation; unavailable units
-are reimbursed with their allocated tax and shipping. Purchased access remains #200. Live checkout remains unavailable
+create refund obligations including their allocated tax and shipping. Pending, failed or held refunds remain owed and visible.
+Purchased access remains #200. Live checkout remains unavailable
 pending #203 paid-data policy and the other first-money gates. Zero-total completion and
 three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
 credential-change freezes and the difference between a provider return page and an authoritative result.
