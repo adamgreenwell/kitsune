@@ -14,6 +14,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Credentials\GuardedCredentialBuilder;
+use Kitsune\Core\Credentials\WritesExplicitChangeTime;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -42,6 +43,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 final class Credential extends Model
 {
     use EnforcesScope;
+    use WritesExplicitChangeTime;
 
     protected $table = 'credentials';
 

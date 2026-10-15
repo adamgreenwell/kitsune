@@ -5990,13 +5990,27 @@ and no network provider calls; owned processes were stopped afterwards. This pro
 ingress allocation, not real Stripe eligibility, production proxy buffering, socket timeout enforcement, throughput
 or other SAPIs. Non-FPM hosts retain pending receipts for the measured bounded console replay path.
 
-**Local qualification, 2026-10-15.** The final full `composer ci` passed 8,842 tests and 46,593 assertions,
+**Local qualification, 2026-10-15.** The final full `composer ci` passed 8,846 tests and 46,622 assertions,
 with 46 explicit skips, PHPStan and root Pint; separate skeleton Pint passed. The two order/admin browser specs
 passed all 17 cases without retries, including the native historical-recovery POST and dashboard navigation outside
 content routes. Production-handler probes cover actual process kill/restart, a fresh-boot replay command, transient
 provider failure, duplicates, out-of-order events, expired-raw replay and fair progress past blocked older receipts.
 These subprocess probes use disposable SQLite; the implementation PR records the separate exact-head engine and
 browser matrix. No real provider call, live-payment activation, deployment or package publication is qualified here.
+
+**Credential timestamp portability, 2026-10-15.** The first engine matrix exposed a pre-existing credential-write
+failure on MariaDB 10.6. Its actual `credentials.changed_at` schema carried implicit `ON UPDATE CURRENT_TIMESTAMP`
+with `explicit_defaults_for_timestamp=0`, as [MariaDB documents](https://mariadb.com/docs/server/reference/data-types/date-and-time-data-types/timestamp).
+When Eloquent omitted an unchanged timestamp during a same-second key replacement, the server supplied its own time
+and the strict post-audit readback correctly refused the unexpected durable value. A delayed application-key reseal,
+which deliberately preserves the old change time, has the same risk. Four new frozen-time cases failed on the actual
+engine before the fix. Credential and org-mode model updates must explicitly write their intended raw `changed_at`,
+including an unchanged value; strict comparison and callback guards remain intact. This needs no schema change,
+server setting, relaxed readback or rewritten credential witness.
+The complete focused credential and webhook-HTTP suite then passed on that unchanged MariaDB 10.6 schema:
+359 tests and 4,099 assertions, including the original failing overlap case and existing attacker-side integrity
+checks. Its SQLite run passed 352 tests and 4,052 assertions, with seven explicit engine skips. The disposable
+database was removed afterwards; no user database or server configuration was changed.
 
 ---
 
