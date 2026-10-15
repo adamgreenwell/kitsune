@@ -65,13 +65,16 @@ checkout** first reconciles and then explicitly expires an open Session at Strip
 its Back link, closing a tab or passing the local expiry time does not prove payment or expiry. GETs only display
 local state; they make no provider call and never change payment, stock or access.
 
-Server-confirmed test completion records **completed** on the attempt only. The order remains prepared and unpaid,
-its confirmed amount remains null, stock is unchanged and no entitlement is granted. A completed test order cannot
+A basic Session status check records **completed** on the attempt. Until the expanded captured-payment graph is
+verified, the order awaits confirmation. Verified webhook, catch-up or explicit historical recovery now records paid
+test money, allocates stock once and creates exact unavailable-item refund obligations. See [paid orders](paid-orders.md).
+No entitlement is granted yet. A completed test order cannot
 start another checkout; prepare a separate order when testing another purchase.
 
-Creating, open and uncertain attempts block cancellation and erasure, including whole-reader erasure, until they
-are reconciled. This is an unresolved-operation fence, not financial invoice retention. Verified terminal test
-attempts can be erased through the existing checked order/reader/guest workflow. Safe attempt summaries ship in
+Creating, open, uncertain and completed attempts block cancellation and erasure, including whole-reader erasure, until they
+are reconciled. This is an unresolved-operation fence, not financial invoice retention. Expired/rejected unpaid test
+attempts can be erased through the existing checked workflow. Completed attempts and paid/refund custody are retained
+until the paid-data policy in #203; absence of a local receipt does not prove an old completed Session was unpaid. Safe attempt summaries ship in
 exports, including while commerce is disabled or stale; private Session URLs, request payloads, credential
 witnesses, leases and raw provider responses do not.
 

@@ -6014,6 +6014,107 @@ database was removed afterwards; no user database or server configuration was ch
 
 ---
 
+### Amendment — Paid confirmation, shared stock and unavailable-item refunds, 2026-10-15 (#199)
+
+**Policy before implementation.** Adam chose partial allocation: retain available items and reimburse unavailable
+items, including their allocated tax and shipping. A three-unit line with two remaining awards two and refunds
+one. Shipping net and shipping tax are apportioned by the original net value of physical items, with stable
+line-ID order breaking rounding ties; digital items receive none. Item net and tax are apportioned across units
+without recomputing or changing the frozen invoice totals. Zero-net physical orders use physical unit counts
+as a deterministic fallback because their net weights sum to zero. Owners and product editors may adjust shared stock, with a
+required reason and immutable history. These amend the owner-only absolute stock setters in #190/#191 above;
+price, SKU, currency, listing setup and financial administration remain owner-only. There is no generic Editor
+role: the narrow stock surface reuses the current Site's actual Storefront product type view and update grants,
+current membership and Site admission (ADR-033's existing entry permission vocabulary).
+
+**Payment authority.** A newly verified, exact test Session and its expanded succeeded PaymentIntent/captured
+Charge are required before any confirmed money or allocation is recorded. The Org-first lock then serializes
+sibling sites' shared stock; sellables are read in ID order. A durable payment receipt and one immutable allocation
+per original order line make duplicate/out-of-order delivery harmless. A prior #198 completed label does not prove
+this graph: bounded catch-up must retrieve it afresh. The buyer return remains read-only. External refunds or a
+disputed Charge hold allocation for operator attention. A cancelled legacy order with newly proved captured money
+is recorded and owed a full refund, rather than allocating products after cancellation.
+
+**Stock history.** Manual adjustments compare the displayed prior balance under the same Org lock, recheck current
+authority and require a bounded reason. Ordinary existing-product content/price saves preserve current stock.
+History retains historical product references after removal and exposes no buyer or provider identity to editors.
+Null stock stays untracked. An allocation is evidence of awarded availability, not evidence a parcel shipped.
+No reservation, sweep, cron, external service or always-on worker is required for stock correctness.
+
+**Refund custody.** Freeze unavailable item/tax/shipping amounts separately from original invoice snapshots.
+Stripe receives an exact positive minor-unit refund against the original verified Charge. Persist each attempt's
+request, digest, idempotency identity and first submission before I/O. Unknown results retry identical parameters
+and key only inside 23 hours; later recovery adopts exactly one matching bounded Charge-filtered refund receipt
+or remains visibly held. Never replace an uncertain key or credit an unrelated dashboard refund by matching amount.
+Known failed/cancelled attempts remain owed and require an explicit owner retry with a fresh attempt; prior receipts
+remain retained. Pending/requires-action are not successful reimbursement. Even a succeeded refund remains
+refreshable: Stripe documents later failure, which reopens the obligation without repeating stock allocation.
+All provider I/O is outside transactions with fenced claims and exact custody checked again before commit.
+
+**Currency and maintenance boundaries.** Ledger money stays in ISO minor units; provider requests and proof use
+ADR-040's explicit Stripe wire conversion. An exact partial refund that Stripe cannot represent, such as an MGA
+fraction, remains visibly held/owed with no fabricated or rounded request. Old completed checkout catch-up and refund
+work share durable fair claim counts so key changes cannot monopolize repeated bounded maintenance runs. Financial
+confirmation captures its expected complete graph before audit callbacks and verifies persisted audit identity plus
+the graph afterward; a successful audit acknowledgement alone is not persistence proof.
+
+**Staging and privacy.** This is test-mode confirmation and refund handling; the live fence stays in place until
+#203 and the remaining first-money gates. Paid/refund custody is readable/exportable but cannot be erased through
+the old initial-order workflow, including when commerce is disabled. This is an explicit temporary refusal, not an
+invented invoice-retention period. Purchased entitlement terms and grants remain #200.
+
+**Provider evidence.** Stripe's [nested expansions](https://docs.stripe.com/expand),
+[PaymentIntent](https://docs.stripe.com/api/payment_intents/object),
+[Charge](https://docs.stripe.com/api/charges/object), [refund API](https://docs.stripe.com/api/refunds/create),
+[idempotency window](https://docs.stripe.com/api/idempotent_requests) and
+[refund failure testing](https://docs.stripe.com/testing#refunds) support the provider checks. The expanded
+`payment_intent.latest_charge` path follows the documented expandable fields and recursive expansion rule.
+Kitsune's allocation, retry deadline and permission decisions are its own policy.
+
+---
+
+### Paid confirmation and refunds — implementation evidence (#199)
+
+The test workflow now stores read-only payment receipts, per-line availability decisions, refund obligations and
+bounded refund attempts. The verified inbox admits refund-created/updated/failed signals separately from Session
+subjects. A captured payment is allocated only inside the existing Org-first lock; provider calls remain outside
+transactions. Ordinary product/model stock overwrites refuse, and the narrow Stock screen rechecks current product
+view/update grants, Site admission, expected balance, audit identity and required reason. Paid and legacy-completed
+privacy fences remain active independently of the commerce provider. Retained deleted-product history remains in
+custody; its operator browser is tracked in [#279](https://github.com/adamgreenwell/kitsune/issues/279).
+
+**Measured native contention.** The stock/paid/privacy checkpoint passed 76 tests / 392 assertions on each of
+PostgreSQL 17.10, MySQL 8.4.7 and MariaDB 10.6.28, in 23.84, 22.30 and 16.72 seconds respectively. Two subprocess
+races use the actual selected engine, independent committed fixtures, and a barrier inside the winning transaction.
+Sibling Sites competing for the last finite unit leave zero stock, one unavailable-unit refund obligation and no
+second decrement; untracked stock stays null. A sibling owner's stale manual adjustment blocks then refuses after
+payment wins. Every process ends at Laravel transaction level zero with PDO outside a transaction. The checkpoint
+preceded final projection/audit hardening; final full-suite and engine CI results are recorded with the pull request.
+Owned local engine containers and volumes were removed. The default uses a private SQLite file and no services.
+
+**Measured HTTP ordering on final payment sources.** Actual PHP-FPM, a localhost FastCGI gateway and an independent
+SQLite connection observed an empty paid-webhook 200 after 167.167 ms, with the pending receipt already committed,
+order still prepared and stock still one. Mocked provider I/O began 24.820 ms after receipt of the response. After a
+two-second expanded Session GET, the order was paid for USD 48, stock zero, one unit awarded and one unavailable;
+the USD 24 obligation and submission deadline were durable while the refund POST slept another two seconds. A
+refund-failed event acknowledged after 28.514 ms, with provider I/O 25.319 ms later. Its raw snapshot deliberately
+said succeeded; the authenticated GET said failed and reopened USD 24 owed without another stock movement. Exact
+duplicate delivery acknowledged after 10.456 ms with no I/O or effects. All I/O callbacks observed transaction level
+zero and PDO outside a transaction; frozen lines were unchanged, grants zero, and 18 production source/migration
+hashes were identical across the run. PHP-reported heap peaked at 10 MiB in a 128 MiB pool; this is not host RSS,
+resource-floor admission or deployed-host proof. Owned FPM/socket/server processes were cleaned up.
+
+**Read and callback checks.** The browser's 23 selected owner/editor/guest cases passed with no retries, including
+navigation outside `/c/{type}`, native refund forms, guest export and cross-Site/org refusal. Published test assets
+were restored and all 40 original file/symlink entries hash-verified. Twenty-seven financial-audit cases include a
+coherent stock/allocation/refund rewrite that the semantic projection accepts but the pre-audit exact graph refuses.
+Twenty-seven additional projection cases refuse missing provider IDs, unsafe categories and SQLite REAL/text
+quantity corruption. Allocation arithmetic matched 1,000 independent reference calculations plus BIGINT boundaries.
+Transport/recovery qualification used mocks, including special-currency wire round trips and success followed by
+refund failure. None of these measurements makes a real Stripe call or enables live checkout.
+
+---
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**

@@ -252,8 +252,8 @@ Reader exports and account erasure include every retained reader-owned order acr
 disabled or its receipt stale. Missing recorded storage, inconsistent children or unknown future financial states refuse
 complete erasure rather than silently skipping rows. Guests download/erase through exact browser or email proof. Erasing
 a prepared/cancelled order removes invoice/contact/delivery data, lines and links; these states have no financial retention
-exemption. No statutory retention period is invented. A future paid-state writer must establish the explicit invoice
-retention and nonrequired-data erasure policy before it can ship. Uninstall/rollback also refuse retained order/configuration
+exemption. No statutory retention period is invented. The test paid-state writer explicitly refuses complete erasure of financial custody. Live activation must establish
+the explicit invoice retention and nonrequired-data erasure policy in #203. Uninstall/rollback also refuse retained order/configuration
 rows; export and explicit cleanup remain the operator's maintenance responsibility.
 
 ## Stripe test checkout
@@ -261,15 +261,25 @@ rows; export and explicit cleanup remain the operator's maintenance responsibili
 Verified test events now have a [durable inbox and bounded replay](stripe-webhooks.md). Hosts must install the early
 request guard before exposing the webhook URL. Full verified payloads expire after seven days; operators run the
 bounded prune command regularly for physical removal. Explicit owner recovery can check an older test Session after
-a key or mode change using a transient key for its original Stripe account. Live checkout and paid effects stay off.
+a key or mode change using a transient key for its original Stripe account. Live checkout stays off. Verified test payments now allocate stock and create refunds; see [paid orders](paid-orders.md).
 
 Prepared orders now offer a [test checkout workflow](stripe-checkout.md): fresh buyer review, hosted cards,
 immutable accepted amounts, durable retries, current server reconciliation and explicit expiry. Returning guests
 use exact order proof rather than needing their original cart. An unresolved attempt blocks cancellation and
-erasure until reconciliation; terminal test history can be erased through the existing checked workflow.
+erasure until reconciliation; expired/rejected unpaid history can be erased; completed and paid records remain retained pending #203.
 
-The org must remain in test mode with its own configured Stripe test key. Completion updates only the test attempt;
-orders remain unpaid, stock stays unchanged and no access is granted. Live checkout remains unavailable pending
-#198 verified completion, #199 stock/refund obligations and #203 pending/charged privacy. Zero-total completion and
+The org must remain in test mode with its own configured Stripe test key. A basic Session status check alone awaits
+captured-payment proof. Verified confirmation records test paid money and shared stock allocation; unavailable units
+are reimbursed with their allocated tax and shipping. Purchased access remains #200. Live checkout remains unavailable
+pending #203 paid-data policy and the other first-money gates. Zero-total completion and
 three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
 credential-change freezes and the difference between a provider return page and an authoritative result.
+
+## Shared stock adjustments
+
+Use **Storefront → Stock** to adjust an existing product, including a change between finite and untracked stock.
+A reason is required, the displayed prior balance must still match, and history records the actor and before/after
+balance. Owners can adjust the org's products; members with view and update grants on the current Site's Storefront
+product type can adjust its coherent listings. The shared balance affects all selling sites. This grants no access
+to price, currency, credentials, checkout settings or orders. Ordinary product edits preserve existing stock; initial
+product creation still accepts its opening balance. Historical ledger rows survive product removal.
