@@ -127,7 +127,7 @@ it('rolls back complete account erasure while any checkout outcome remains unres
         ->and(Reader::query()->count())->toBe(1)
         ->and(DB::table('entitlements')->count())->toBe(1)
         ->and(DB::table('audit_log')->where('action', 'entitlement.erased')->count())->toBe(0);
-})->with(['creating', 'open', 'uncertain']);
+})->with(['creating', 'open', 'uncertain', 'completed']);
 
 it('erases terminal test checkout history and the reader without inventing paid retention', function (string $state): void {
     $reader = (string) $this->reader->getKey();
@@ -141,7 +141,7 @@ it('erases terminal test checkout history and the reader without inventing paid 
         ->and(DB::table('commerce_order_access_tokens')->count())->toBe(0)
         ->and(DB::table('commerce_checkout_attempts')->count())->toBe(0)
         ->and(Reader::query()->count())->toBe(0);
-})->with(['expired', 'rejected', 'completed']);
+})->with(['expired', 'rejected']);
 
 it('keeps exact guest proof for export and refuses erase while the test checkout is unresolved', function (string $state): void {
     $request = Orders::request();
@@ -154,7 +154,7 @@ it('keeps exact guest proof for export and refuses erase while the test checkout
         ->and(fn () => $this->privacy->eraseGuest($request, $order->reference))->toThrow(RuntimeException::class)
         ->and(DB::table('commerce_orders')->count())->toBe(1)
         ->and(DB::table('commerce_checkout_attempts')->count())->toBe(1);
-})->with(['creating', 'open', 'uncertain']);
+})->with(['creating', 'open', 'uncertain', 'completed']);
 
 it('erases terminal test checkout children through exact guest ownership', function (string $state): void {
     $request = Orders::request();
@@ -164,7 +164,7 @@ it('erases terminal test checkout children through exact guest ownership', funct
     expect($this->privacy->eraseGuest($request, $order->reference))->toBe(1)
         ->and(DB::table('commerce_orders')->count())->toBe(0)
         ->and(DB::table('commerce_checkout_attempts')->count())->toBe(0);
-})->with(['expired', 'rejected', 'completed']);
+})->with(['expired', 'rejected']);
 
 it('refuses buyer and owner cancellation while a provider test Session can still complete', function (string $state): void {
     checkoutPrivacyEnable();
@@ -181,7 +181,7 @@ it('refuses buyer and owner cancellation while a provider test Session can still
         ->and(DB::table('commerce_orders')->value('confirmed_total_minor'))->toBeNull()
         ->and(DB::table('commerce_checkout_attempts')->count())->toBe(1)
         ->and(DB::table('audit_log')->whereIn('action', ['commerce.order_cancelled', 'commerce.order_erased'])->count())->toBe(0);
-})->with(['creating', 'open', 'uncertain']);
+})->with(['creating', 'open', 'uncertain', 'completed']);
 
 it('cancels without losing terminal test evidence and then permits operator erasure', function (string $state): void {
     checkoutPrivacyEnable();
@@ -195,7 +195,7 @@ it('cancels without losing terminal test evidence and then permits operator eras
         ->and(DB::table('commerce_checkout_attempts')->value('reference'))->toBe($attempt->reference);
     app(OrderAdministration::class)->erase($order->reference);
     expect(DB::table('commerce_orders')->count())->toBe(0)->and(DB::table('commerce_checkout_attempts')->count())->toBe(0);
-})->with(['expired', 'rejected', 'completed']);
+})->with(['expired', 'rejected']);
 
 it('refuses mismatched checkout stamps before export or any order erasure', function (string $column): void {
     $reader = (string) $this->reader->getKey();

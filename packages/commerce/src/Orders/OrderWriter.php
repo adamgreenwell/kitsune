@@ -207,6 +207,9 @@ final class OrderWriter
         $raw = $order->getAttributes();
         $connection = $order->getConnection();
         $orgId = $this->context->orgId() ?? throw new OrderRefused;
+        if (! in_array($raw['state'], ['prepared', 'cancelled'], true) || $raw['confirmed_total_minor'] !== null) {
+            throw new OrderRefused;
+        }
         app(OrderReaderData::class)->project($connection, $orgId, (object) $raw, lock: true);
         app(CheckoutAttempts::class)->assertErasable($connection, $orgId, (object) $raw);
         if ($raw['state'] === 'cancelled') {

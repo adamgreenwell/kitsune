@@ -19,6 +19,7 @@ use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\StripeEventInbox;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Auth\EmailAddress;
@@ -220,7 +221,10 @@ final class OrderReaderData implements ModuleReaderData
             || ! self::hex($order->request_key, 64) || ! self::hex($order->request_digest, 64) || ! self::hex($order->snapshot_hash, 64)
             || self::writtenKey($order->cart_ref) === null || (int) $order->cart_ref < 1
             || self::writtenKey($order->cart_version) === null || (int) $order->cart_version < 0
-            || ! in_array($order->state, ['prepared', 'cancelled'], true) || $order->confirmed_total_minor !== null
+            || ! in_array($order->state, ['prepared', 'cancelled', 'paid'], true)
+            || ($order->state === 'paid'
+                ? ($order->active_cart_key !== null || MinorUnits::integer($order->confirmed_total_minor) !== MinorUnits::integer($order->quoted_total_minor))
+                : $order->confirmed_total_minor !== null)
             || ! in_array($order->mode, ['test', 'live'], true) || ! Currencies::supports($order->currency) || $orgRow === null || $orgRow->currency !== $order->currency || ! in_array($order->tax_mode, ['inclusive', 'exclusive'], true)
             || ! is_string($order->contact_email) || EmailAddress::normalise($order->contact_email) !== $order->contact_email
             || ($order->reader_id !== null && (! is_string($order->reader_id) || ReaderGuard::stored($order->reader_id) !== $order->reader_id
@@ -320,11 +324,12 @@ final class OrderReaderData implements ModuleReaderData
             'shipping' => $shipping,
             'site_snapshot' => ['name' => $siteSnapshot['name'], 'base_url' => $siteSnapshot['base_url']],
             'currency' => $order->currency, 'mode' => $order->mode, 'tax_mode' => $order->tax_mode,
-            ...$totals, 'confirmed_total_minor' => null,
+            ...$totals, 'confirmed_total_minor' => $order->confirmed_total_minor === null ? null : MinorUnits::integer($order->confirmed_total_minor),
             'created_at' => self::instant($order->created_at), 'cancelled_at' => $order->cancelled_at === null ? null : self::instant($order->cancelled_at),
             'lines' => $items, 'access_links' => $links,
             'checkout_attempts' => app(CheckoutAttempts::class)->projection($connection, $org, $order, lock: $lock),
-            'stripe_events' => app(StripeEventInbox::class)->projection($connection, $org, $order, lock: $lock)];
+            'stripe_events' => app(StripeEventInbox::class)->projection($connection, $org, $order, lock: $lock),
+            ...app(PaidOrders::class)->projection($connection, $org, $order, lock: $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder
@@ -353,6 +358,9 @@ final class OrderReaderData implements ModuleReaderData
 
     private function delete(Connection $connection, int $org, #[\SensitiveParameter] object $order): void
     {
+        // Paid and refund obligations remain in custody until #203 supplies an explicit retention/minimization policy.
+        // This also runs for disabled/stale-module account and guest erasure, independently of runtime providers.
+        app(PaidOrders::class)->assertErasable($connection, $order);
         // A remote test Session can still be open or uncertain. Its recovery evidence must outlive this request.
         app(CheckoutAttempts::class)->deleteTerminal($connection, $org, $order);
         foreach (['commerce_order_access_tokens', 'commerce_order_lines'] as $table) {
