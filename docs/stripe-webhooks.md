@@ -155,4 +155,7 @@ Non-FPM hosts use explicit bounded commands. No always-on worker is required. Se
 The same maintenance command independently discovers [purchased access](purchased-access.md), including paid
 orders whose earlier webhook has already finished. Frozen access work can progress without a Stripe key or another
 provider call. FPM follow-up may attempt that work after the paid transaction commits; an interrupted follow-up
-leaves durable pending work for a later command. Later refund/dispute access effects remain #201.
+leaves durable pending work for a later command. [Refund and dispute handling](refunds-and-disputes.md) additionally
+captures minimal signed financial signals before acknowledgement. Unresolved signals veto access restoration;
+current complete Charge/refund/dispute reads establish the later financial state. Source adjustments are
+discoverable independently of completed initial grants and provider credentials.

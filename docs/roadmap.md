@@ -469,8 +469,11 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       (#199) records captured test payments, allocates available units under shared stock locks and creates exact
       unavailable-unit refund obligations with bounded recovery. [Purchased access](purchased-access.md) (#200)
       freezes permanent or whole-day terms, awards positively allocated items through recoverable work and binds
-      guest purchases through explicit signed-in claims. Historical unknown terms remain held. Later refund/dispute
-      access effects (#201), live checkout and paid-state privacy (#203) remain owed. Zero completion is deferred.
+      guest purchases through explicit signed-in claims. Historical unknown terms remain held. [Refunds and
+      disputes](refunds-and-disputes.md) (#201) add owner-selected delivered-unit refunds, explicit external-refund
+      attribution, current financial observations and recoverable source suspension, revision and restoration.
+      Stock returns remain separate reasoned adjustments. Live checkout and paid-state privacy (#203) remain owed.
+      Zero completion is deferred.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

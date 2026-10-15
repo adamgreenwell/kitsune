@@ -6172,6 +6172,93 @@ after the corresponding checks run; these paragraphs record policy and authority
 
 ---
 
+### Amendment — Refund and dispute access effects, 2026-10-15 (#201)
+
+**Adam's decisions, before dependent implementation.** An operator refunds selected delivered units. Each
+unrefunded unit keeps its original offer; a quantity never multiplies duration. Remaining original lines naming
+one entitlement still combine by latest end, with permanent winning. Refunding the permanent or longest line
+can therefore shorten this order's source to the remaining original end. No refund moves another order's or
+`core.comp`'s source. Suspend selected contributions when their local refund request commits, including while
+submission is uncertain or reimbursement is pending. A freshly verified failed or cancelled refund releases
+those contributions, with their original dates. A formal dispute suspends the affected order's access; only a
+freshly verified win can release that dispute's blocker. An external/dashboard refund suspends this order's
+access until its owner explicitly attributes it to original units. Stock changes remain separate, explicit
+adjustments with a reason; a refund proves neither a physical return nor that a digital item is restockable.
+
+**Financial authority and attribution.** Money actions and external-refund attribution are owner-only, with a
+required reason and explicit confirmation. Selected units come from the immutable awarded allocation, never
+the current product or an editable invoice. Keep the original receipt, availability allocation, offer manifest,
+guest claim and invoice unchanged; later financial facts have their own bounded ledger and recovery work.
+Unknown, pending and successful local refunds reserve their exact units against concurrent requests. Unavailable
+units' existing automatic refund is a separate obligation and never removes delivered access. A provider amount
+or matching email cannot attribute an external refund. An amount not representable by the selected units remains
+an explicit hold; do not round or fabricate attribution. Held initial allocations never gain invented awarded
+units as a side effect of refund recovery.
+
+**Current state, rather than event order.** Verified events are signals to retrieve the original-account,
+original-mode Charge, complete bounded refund list and complete bounded dispute list. Check every identity,
+parent link, currency, exact money conversion and aggregate before applying a financial observation. An incomplete
+or inconsistent graph holds work and cannot restore access. Neither arrival order nor `event.created` orders
+financial truth. Successful refunds remain refreshable because Stripe can later report failure; lost disputes
+remain refreshable because a late win is possible. A `funds_reinstated` event is not a win: Stripe may return a
+previously refunded portion while the dispute remains lost. Every unresolved/lost formal dispute and every other
+active financial blocker must clear before that order's access can return. Inquiries do not establish a formal
+dispute or a won outcome. Unknown provider statuses hold rather than implying restoration.
+
+**Source effects and the narrow core amendment.** The old ordinary grant remains sticky after revocation.
+Separate internal verified-order revision and `reinstate()` doors may reconcile only an existing exact
+`commerce.order:{id}` row, under owner/system authority, a real same-connection transaction, the Org-first locks
+and the producer's repeatedly checked original-payment/allocation/claim plus financial-ledger proof. Revision
+can set the exact remaining original end or suspend that source; it never inserts a row or clears a revocation.
+Reinstatement requires the exact persisted commerce-owned revocation witness, including a nonreusable write
+identity, and never recreates a missing/erased grant or replaces its reader. Whole-second timestamps alone are
+not write identity: two actual writes in one second can otherwise be indistinguishable. A manual source change
+invalidates commerce's witness. An original end already past finishes expired without live restoration.
+Persist the entitlement mutation, explicit system audit and its checked source-effect receipt atomically;
+re-read authority, exact graph and persisted audit after callbacks. Never clear signed-in guards, impersonate
+the system or accept a replacement reader, source or duration from a buyer.
+
+**Ordering and recovery.** A mandatory per-order financial marker exists before an order can be exposed, with
+an explicit migration backfill for retained orders. Negative financial state vetoes pending initial grants and
+grants during later guest claims under the same locks, even when a refund signal precedes payment confirmation. Durable source
+adjustments are discoverable independently of completed initial grants and Stripe credentials. Provider I/O
+stays outside transactions; lease and complete-custody fences reject stale observations before commit. An
+uncertain outbound refund retains its exact request/idempotency identity; no automatic fresh-key retry after the
+existing 23-hour admission window. A verified failure/cancellation and owner intent are required for a fresh
+attempt. Retained financial state is included in checked export and paid-erasure refusal when commerce is disabled
+or stale. No scheduler, separate service or always-on worker becomes mandatory.
+
+**Provider evidence and staging.** The [refund object](https://docs.stripe.com/api/refunds/object),
+[asynchronous refund failure test](https://docs.stripe.com/testing#simulate-an-asynchronous-refund),
+[dispute lifecycle](https://docs.stripe.com/disputes/how-disputes-work),
+[partial-refund dispute outcomes](https://docs.stripe.com/disputes/best-practices#disputes-on-partially-refunded-payments)
+and [webhook ordering](https://docs.stripe.com/webhooks#event-ordering) support the provider boundaries above;
+unit attribution, access suspension and stock policy are Kitsune's decisions. This remains test-mode commerce.
+No fixture proves provider sandbox or production acceptance; live checkout remains disabled while these effects
+and #203 paid-retention/minimization are unfinished. Implementation evidence is recorded only after checks run.
+
+### Refund and dispute access — implementation evidence (#201)
+
+The test workflow now persists separate financial observations, exact original-unit refund requests, minimal
+signed financial signals and recoverable access adjustments. Owner controls expose selected-unit refunds,
+external attribution and explicit held-balance recovery. Read/export summaries omit raw provider custody and
+owner reasons; retained paid state still refuses erasure with commerce disabled or stale.
+
+Independent SQLite connections observe neither refund consent nor source suspension before the outer commit,
+then both after it. Refusing the source audit rolls back consent and the source mutation together. Targeted
+tests cover partial shortening, failed-refund restoration, simultaneous dispute/refund blockers, expired wins,
+manual same-second revocation and missing completed sources, preserving unrelated orders and comps. Callback
+regressions cover later effects changing an earlier source, missing-source recreation, and final reader admission
+changing the current source or its audit; each refuses the mutation. An owner retry of a held original capture
+returns its checked financial hold without attempting to project nonexistent awarded units.
+
+Provider transport tests use mocks: complete bounded current graphs, signed unresolved hints, late failure,
+unknown submission recovery, account/key changes and lease/audit admission checks. They make no real provider
+call. Native database and browser qualification are reported with the pull request; none enables live checkout
+or establishes production acceptance.
+
+---
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**
