@@ -22,7 +22,7 @@ use stdClass;
 use Throwable;
 
 /**
- * Concrete, bounded Stripe v1 hosted Checkout, TEST MODE ONLY. No account activation, Connect or payment effects.
+ * Concrete, bounded Stripe v1 hosted Checkout and refunds, TEST MODE ONLY. No account activation or Connect.
  * Provider contract checked 2026-10-14: https://docs.stripe.com/api/checkout/sessions/create and
  * https://docs.stripe.com/error-low-level. An unknown response never authorizes a replacement attempt.
  * The caller owns durable request identity, consent, exact semantic comparison and recovery across credential changes.
@@ -30,6 +30,12 @@ use Throwable;
  * @internal
  *
  * @phpstan-type Session array{id:string,url:?string,status:string,paymentStatus:string,amountTotal:string,currency:string,expiresAt:int,clientReference:string,attemptReference:string,orderReference:string,test:bool,paymentIntent:?string}
+ * @phpstan-type Payment array{intentId:string,chargeId:string,currency:string,amount:string,received:string,captured:string,refunded:string,disputed:bool,test:true}
+ * @phpstan-type PaidSession array{id:string,url:?string,status:string,paymentStatus:string,amountTotal:string,currency:string,expiresAt:int,clientReference:string,attemptReference:string,orderReference:string,test:bool,paymentIntent:?string,payment:?Payment}
+ * @phpstan-type Charge array{id:string,paymentIntent:string,currency:string,amount:string,captured:string,refunded:string,paid:bool,capturedFully:bool,status:string,disputed:bool,test:true}
+ * @phpstan-type RefundMetadata array{kitsune_order:string,kitsune_refund:string,kitsune_request:string}
+ * @phpstan-type Refund array{id:string,chargeId:string,paymentIntent:string,currency:string,amount:string,status:string,created:int,metadata:?RefundMetadata}
+ * @phpstan-type RefundPage array{refunds:list<Refund>,hasMore:bool,next:?string}
  */
 final class StripeCheckout
 {
@@ -109,6 +115,177 @@ final class StripeCheckout
             self::id($sessionId, 'cs_test_', 'rejected');
 
             return self::session($this->send('GET', '/checkout/sessions/'.$sessionId, $authorization));
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /**
+     * Retrieve the payment graph in the existing single Session read. Both edges are documented expandable fields:
+     * https://docs.stripe.com/expand and https://docs.stripe.com/api/payment_intents/object#payment_intent_object-latest_charge.
+     * The projection discards expanded client secrets and buyer details. Incomplete paid proof is never downgraded
+     * to an ordinary Session or repaired with additional unbounded provider reads.
+     *
+     * @return PaidSession
+     */
+    public function retrievePaid(Secret $secret, string $sessionId): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($sessionId, 'cs_test_', 'rejected');
+            $data = $this->send('GET', '/checkout/sessions/'.$sessionId.'?expand%5B%5D=payment_intent.latest_charge', $authorization);
+
+            if (! $data instanceof stdClass) {
+                throw new StripeUnavailable;
+            }
+            $intent = $data->payment_intent ?? null;
+            $plain = clone $data;
+            if ($intent instanceof stdClass) {
+                if (($intent->object ?? null) !== 'payment_intent' || ($intent->livemode ?? null) !== false) {
+                    throw new StripeUnavailable;
+                }
+                $plain->payment_intent = self::id($intent->id ?? null, 'pi_');
+            }
+            $session = self::session($plain);
+            if ($session['id'] !== $sessionId) {
+                throw new StripeUnavailable;
+            }
+            $payment = null;
+            if ($session['paymentStatus'] === 'paid') {
+                if ($session['status'] !== 'complete' || $session['amountTotal'] === '0' || ! $intent instanceof stdClass) {
+                    throw new StripeUnavailable;
+                }
+                $payment = self::payment($intent, $session['amountTotal'], $session['currency']);
+            }
+
+            return [...$session, 'payment' => $payment];
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /** @return Charge */
+    public function retrieveCharge(Secret $secret, string $chargeId): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($chargeId, 'ch_', 'rejected');
+            $charge = self::charge($this->send('GET', '/charges/'.$chargeId, $authorization));
+            if ($charge['id'] !== $chargeId) {
+                throw new StripeUnavailable;
+            }
+
+            return $charge;
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /**
+     * Exact card-refund request: the workflow owns durable identity, amount allocation and ambiguity recovery.
+     * A Refund has no documented livemode field; mode/account custody comes from the verified original Charge.
+     * https://docs.stripe.com/api/refunds/create and https://docs.stripe.com/api/refunds/object.
+     *
+     * @param  array<mixed>  $payload
+     * @return Refund
+     */
+    public function createRefund(Secret $secret, #[\SensitiveParameter] array $payload, string $idempotencyKey): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::key($idempotencyKey);
+            $keys = array_keys($payload);
+            sort($keys);
+            if ($keys !== ['amount', 'charge', 'metadata'] || ! is_array($payload['metadata'])) {
+                throw new StripeUnavailable('rejected');
+            }
+            $charge = self::id($payload['charge'], 'ch_', 'rejected');
+            try {
+                $amount = MinorUnits::integer($payload['amount']);
+            } catch (Throwable) {
+                throw new StripeUnavailable('rejected');
+            }
+            $metadata = self::refundMetadata((object) $payload['metadata']);
+            if ($amount === '0' || $metadata === null) {
+                throw new StripeUnavailable('rejected');
+            }
+            $budget = 1024;
+            $body = http_build_query(self::form(['charge' => $charge, 'amount' => $amount, 'metadata' => $metadata], 0, $budget), '', '&', PHP_QUERY_RFC3986);
+            $refund = self::refund($this->send('POST', '/refunds', $authorization, $body, $idempotencyKey));
+            if ($refund['chargeId'] !== $charge || $refund['amount'] !== $amount || $refund['metadata'] !== $metadata) {
+                throw new StripeUnavailable;
+            }
+
+            return $refund;
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /** @return Refund */
+    public function retrieveRefund(Secret $secret, string $refundId): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($refundId, 're_', 'rejected');
+            $refund = self::refund($this->send('GET', '/refunds/'.$refundId, $authorization));
+            if ($refund['id'] !== $refundId) {
+                throw new StripeUnavailable;
+            }
+
+            return $refund;
+        } catch (StripeUnavailable $refused) {
+            throw $refused;
+        } catch (Throwable) {
+            throw new StripeUnavailable;
+        }
+    }
+
+    /** One bounded, Charge-filtered page; the workflow decides whether a complete search has been established.
+     * @return RefundPage
+     */
+    public function listRefunds(Secret $secret, string $chargeId, ?string $startingAfter = null, int $limit = 100): array
+    {
+        try {
+            $authorization = self::authorization($secret);
+            self::id($chargeId, 'ch_', 'rejected');
+            if ($startingAfter !== null) {
+                self::id($startingAfter, 're_', 'rejected');
+            }
+            if ($limit < 1 || $limit > 100) {
+                throw new StripeUnavailable('rejected');
+            }
+            $parameters = ['charge' => $chargeId, 'limit' => $limit];
+            if ($startingAfter !== null) {
+                $parameters['starting_after'] = $startingAfter;
+            }
+            $data = $this->send('GET', '/refunds?'.http_build_query($parameters, '', '&', PHP_QUERY_RFC3986), $authorization);
+            if (! $data instanceof stdClass || ($data->object ?? null) !== 'list' || ($data->url ?? null) !== '/v1/refunds'
+                || ! is_bool($data->has_more ?? null) || ! is_array($data->data ?? null) || ! array_is_list($data->data)
+                || count($data->data) > $limit || ($data->has_more && $data->data === [])) {
+                throw new StripeUnavailable;
+            }
+            $refunds = [];
+            $seen = [];
+            foreach ($data->data as $value) {
+                $refund = self::refund($value);
+                if ($refund['chargeId'] !== $chargeId || isset($seen[$refund['id']]) || $refund['id'] === $startingAfter) {
+                    throw new StripeUnavailable;
+                }
+                $seen[$refund['id']] = true;
+                $refunds[] = $refund;
+            }
+
+            return ['refunds' => $refunds, 'hasMore' => $data->has_more,
+                'next' => $data->has_more ? $refunds[array_key_last($refunds)]['id'] : null];
         } catch (StripeUnavailable $refused) {
             throw $refused;
         } catch (Throwable) {
@@ -331,5 +508,103 @@ final class StripeCheckout
         }
 
         return $value;
+    }
+
+    /** @return Payment */
+    private static function payment(#[\SensitiveParameter] stdClass $intent, string $amount, string $currency): array
+    {
+        $intentId = self::id($intent->id ?? null, 'pi_');
+        if (($intent->object ?? null) !== 'payment_intent' || ($intent->livemode ?? null) !== false
+            || ($intent->status ?? null) !== 'succeeded' || self::currency($intent->currency ?? null) !== $currency
+            || MinorUnits::integer($intent->amount ?? null) !== $amount || MinorUnits::integer($intent->amount_received ?? null) !== $amount) {
+            throw new StripeUnavailable;
+        }
+        $charge = self::charge($intent->latest_charge ?? null);
+        if ($charge['paymentIntent'] !== $intentId || $charge['currency'] !== $currency || $charge['amount'] !== $amount
+            || ! $charge['paid'] || ! $charge['capturedFully'] || $charge['status'] !== 'succeeded') {
+            throw new StripeUnavailable;
+        }
+
+        return ['intentId' => $intentId, 'chargeId' => $charge['id'], 'currency' => $currency, 'amount' => $amount,
+            'received' => $amount, 'captured' => $charge['captured'], 'refunded' => $charge['refunded'],
+            'disputed' => $charge['disputed'], 'test' => true];
+    }
+
+    /** @return Charge */
+    private static function charge(#[\SensitiveParameter] mixed $data): array
+    {
+        if (! $data instanceof stdClass || ($data->object ?? null) !== 'charge' || ($data->livemode ?? null) !== false
+            || ! is_bool($data->paid ?? null) || ! is_bool($data->captured ?? null) || ! is_bool($data->disputed ?? null)
+            || ! in_array($data->status ?? null, ['succeeded', 'pending', 'failed'], true)) {
+            throw new StripeUnavailable;
+        }
+        $amount = MinorUnits::integer($data->amount ?? null);
+        $captured = MinorUnits::integer($data->amount_captured ?? null);
+        $refunded = MinorUnits::integer($data->amount_refunded ?? null);
+        if (self::greater($captured, $amount) || self::greater($refunded, $captured)) {
+            throw new StripeUnavailable;
+        }
+
+        return ['id' => self::id($data->id ?? null, 'ch_'), 'paymentIntent' => self::id($data->payment_intent ?? null, 'pi_'),
+            'currency' => self::currency($data->currency ?? null), 'amount' => $amount, 'captured' => $captured,
+            'refunded' => $refunded, 'paid' => $data->paid, 'capturedFully' => $data->captured && $captured === $amount,
+            'status' => $data->status, 'disputed' => $data->disputed, 'test' => true];
+    }
+
+    /** @return Refund */
+    private static function refund(#[\SensitiveParameter] mixed $data): array
+    {
+        if (! $data instanceof stdClass || ($data->object ?? null) !== 'refund'
+            || ! in_array($data->status ?? null, ['pending', 'requires_action', 'succeeded', 'failed', 'canceled'], true)
+            || ! is_int($data->created ?? null) || $data->created < 1) {
+            throw new StripeUnavailable;
+        }
+        $amount = MinorUnits::integer($data->amount ?? null);
+        if ($amount === '0') {
+            throw new StripeUnavailable;
+        }
+
+        return ['id' => self::id($data->id ?? null, 're_'), 'chargeId' => self::id($data->charge ?? null, 'ch_'),
+            'paymentIntent' => self::id($data->payment_intent ?? null, 'pi_'), 'currency' => self::currency($data->currency ?? null),
+            'amount' => $amount, 'status' => $data->status, 'created' => $data->created,
+            'metadata' => self::refundMetadata($data->metadata ?? null)];
+    }
+
+    /** Invalid or external metadata remains unclaimed; callers must not adopt it by amount alone.
+     * @return RefundMetadata|null
+     */
+    private static function refundMetadata(#[\SensitiveParameter] mixed $metadata): ?array
+    {
+        if (! $metadata instanceof stdClass) {
+            return null;
+        }
+        $values = (array) $metadata;
+        $keys = array_keys($values);
+        sort($keys);
+        if ($keys !== ['kitsune_order', 'kitsune_refund', 'kitsune_request']) {
+            return null;
+        }
+        foreach (['kitsune_order' => 32, 'kitsune_refund' => 32, 'kitsune_request' => 64] as $key => $length) {
+            if (! is_string($values[$key]) || preg_match('/\A[a-f0-9]{'.$length.'}\z/D', $values[$key]) !== 1) {
+                return null;
+            }
+        }
+
+        return ['kitsune_order' => $values['kitsune_order'], 'kitsune_refund' => $values['kitsune_refund'],
+            'kitsune_request' => $values['kitsune_request']];
+    }
+
+    private static function currency(#[\SensitiveParameter] mixed $value): string
+    {
+        if (! is_string($value) || preg_match('/\A[a-z]{3}\z/D', $value) !== 1) {
+            throw new StripeUnavailable;
+        }
+
+        return strtoupper($value);
+    }
+
+    private static function greater(string $left, string $right): bool
+    {
+        return strlen($left) > strlen($right) || (strlen($left) === strlen($right) && strcmp($left, $right) > 0);
     }
 }
