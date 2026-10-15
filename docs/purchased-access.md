@@ -2,7 +2,7 @@
 
 The commerce module awards Site-scoped reader access from confirmed **test** orders. Products share their access
 offer across an org's sites; a purchase grants access only on the Site where the order was placed. Live checkout
-remains refused until later refund/dispute effects (#201) and paid-data privacy (#203) are complete.
+remains refused while paid-data privacy (#203) and the remaining first-money gates are incomplete.
 
 ## Configure and freeze an offer
 
@@ -74,5 +74,6 @@ retained export and erasure checks still protect its custody.
 
 Paid and claimed orders cannot be erased until #203 supplies retention and minimization policy. Safe exports
 contain frozen terms, the claim timestamp and per-pass results, excluding reader IDs, original owner proofs,
-manifests, hashes and internal source identities. #201 must reconcile later refunds and disputes with these
-per-order sources; this slice does not automatically revoke access for a later refund or dispute.
+manifests, hashes and internal source identities. [Refunds and disputes](refunds-and-disputes.md) reconcile later
+financial changes against these original per-order sources, preserving independent purchases and complimentary
+access. The current financial access summary appears separately from the initial award history.

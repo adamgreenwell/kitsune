@@ -16,8 +16,10 @@ use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Orders\OrderWriter;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
@@ -50,7 +52,9 @@ final class OrderAdministration
                 }
                 $this->record('commerce.order_erased', $raw);
                 // An audit listener is application code too. It must not restore personal rows behind a successful erase.
-                foreach ([AccessFulfillment::WORK, AccessFulfillment::EFFECTS, OrderClaims::TABLE] as $table) {
+                foreach ([AccessFulfillment::WORK, AccessFulfillment::EFFECTS, OrderClaims::TABLE,
+                    FinancialState::WORK, FinancialState::REFUNDS, FinancialState::OBSERVATIONS,
+                    AccessAdjustments::WORK, AccessAdjustments::EFFECTS] as $table) {
                     if ($connection->getSchemaBuilder()->hasTable($table)
                         && $connection->table($table)->useWritePdo()->where('order_id', $raw->id)->exists()) {
                         throw new OrderRefused;

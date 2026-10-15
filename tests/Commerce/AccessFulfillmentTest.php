@@ -18,6 +18,7 @@ use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutRefused;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
 use Kitsune\Core\Entitlements\EntitlementRefused;
@@ -32,6 +33,7 @@ use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FinancialAccessFixture as FinancialFx;
 use Kitsune\Core\Tests\Fixtures\PaidOrderFixture as PaidFx;
 
 beforeEach(function (): void {
@@ -134,6 +136,24 @@ it('holds historic unknown terms rather than guessing permanent access', functio
         ->and(DB::table('entitlements')->count())->toBe(0);
     expect(app(AccessFulfillment::class)->reconcile($order->reference))->toMatchArray(['state' => 'held', 'category' => 'unknown_terms']);
 });
+
+it('retries an original financial hold without projecting unawarded lines and still checks retained financial custody', function (array $payment): void {
+    $order = FinancialFx::purchase($this->site, (string) $this->reader->id, payment: $payment);
+    $before = DB::table('commerce_orders')->where('id', $order->id)->sole();
+    $receipt = DB::table(PaidOrders::RECEIPTS)->where('order_id', $order->id)->sole();
+    $manifest = json_decode(DB::table(AccessFulfillment::WORK)->where('order_id', $order->id)->value('manifest'), true, flags: JSON_THROW_ON_ERROR);
+    expect($receipt->allocation_state)->toBe('held')
+        ->and($manifest['lines'])->toHaveCount(1)->and($manifest['allocations'])->toBe([]);
+    Fx::owner();
+    expect(app(AccessFulfillment::class)->retryAsOwner($order->reference))
+        ->toBe(['state' => 'held', 'category' => 'financial_hold', 'processed' => 0])
+        ->and(DB::table('commerce_orders')->where('id', $order->id)->sole())->toEqual($before)
+        ->and(DB::table(PaidOrders::RECEIPTS)->where('order_id', $order->id)->sole())->toEqual($receipt)
+        ->and(DB::table(AccessFulfillment::EFFECTS)->where('order_id', $order->id)->count())->toBe(0)
+        ->and(DB::table('entitlements')->count())->toBe(0);
+    DB::table(FinancialState::WORK)->where('order_id', $order->id)->delete();
+    expect(fn () => app(AccessFulfillment::class)->retryAsOwner($order->reference))->toThrow(CheckoutRefused::class);
+})->with(['disputed capture' => [['disputed' => true]], 'already refunded capture' => [['refunded' => '2100']]]);
 
 it('combines repeated names by the latest frozen end and permanent wins without multiplying by units', function (bool $permanent): void {
     $last = $permanent ? ['version' => 1, 'kind' => 'permanent'] : ['version' => 1, 'kind' => 'fixed', 'days' => 60];
@@ -346,6 +366,72 @@ it('rejects changed persisted grant fields after a host observer runs', function
     });
     expect(DB::table('entitlements')->count())->toBe(0)->and(DB::table(AccessFulfillment::EFFECTS)->value('state'))->toBe('pending');
 })->with(['source', 'entitlement', 'reader_id', 'expires_at', 'revoked_at', 'changed_at']);
+
+it('rolls back every initial grant when a later name changes an earlier source row', function (bool $delete): void {
+    $order = accessPurchase($this->site, (string) $this->reader->id,
+        extra: [['entitlement_name' => 'course.second']]);
+    $attacked = false;
+    accessObserve(function ($audit) use ($order, $delete, &$attacked): void {
+        if ($audit->action === EntitlementWriter::GRANTED
+            && DB::table('entitlements')->where('id', $audit->target_id)->value('entitlement') === 'course.second') {
+            $first = DB::table('entitlements')->where('source', 'commerce.order:'.$order->id)->where('entitlement', 'course.purchased');
+            $delete ? $first->delete() : $first->update(['expires_at' => null]);
+            $attacked = true;
+        }
+    }, function () use ($order): void {
+        expect(fn () => app(AccessFulfillment::class)->reconcile($order->reference))->toThrow(CheckoutRefused::class);
+    });
+    expect($attacked)->toBeTrue()->and(DB::table('entitlements')->count())->toBe(0)
+        ->and(DB::table('audit_log')->where('action', EntitlementWriter::GRANTED)->count())->toBe(0)
+        ->and(DB::table(AccessFulfillment::WORK)->value('state'))->toBe('pending')
+        ->and(DB::table(AccessFulfillment::EFFECTS)->where('state', 'pending')->whereNull('processed_at')->count())->toBe(2);
+})->with(['extended to permanent' => false, 'deleted' => true]);
+
+it('preserves an earlier sticky revocation when a later initial grant callback clears it', function (): void {
+    $order = accessPurchase($this->site, (string) $this->reader->id,
+        extra: [['entitlement_name' => 'course.second']]);
+    $source = 'commerce.order:'.$order->id;
+    app(EntitlementWriter::class)->grant($this->reader->id, 'course.purchased', $source, CarbonImmutable::parse('2026-11-14 12:00:00 UTC'));
+    app(EntitlementWriter::class)->revoke($this->reader->id, 'course.purchased', $source);
+    $before = (array) DB::table('entitlements')->sole();
+    $audits = DB::table('audit_log')->count();
+    $attacked = false;
+    accessObserve(function ($audit) use ($source, &$attacked): void {
+        if ($audit->action === EntitlementWriter::GRANTED
+            && DB::table('entitlements')->where('id', $audit->target_id)->value('entitlement') === 'course.second') {
+            DB::table('entitlements')->where('source', $source)->where('entitlement', 'course.purchased')->update(['revoked_at' => null]);
+            $attacked = true;
+        }
+    }, function () use ($order): void {
+        expect(fn () => app(AccessFulfillment::class)->reconcile($order->reference))->toThrow(CheckoutRefused::class);
+    });
+    expect($attacked)->toBeTrue()->and((array) DB::table('entitlements')->sole())->toBe($before)
+        ->and(DB::table('audit_log')->count())->toBe($audits)
+        ->and(DB::table(AccessFulfillment::WORK)->value('state'))->toBe('pending')
+        ->and(DB::table(AccessFulfillment::EFFECTS)->where('state', 'pending')->whereNull('processed_at')->count())->toBe(2);
+});
+
+it('preserves an expired initial source absence across a later grant callback', function (): void {
+    $order = accessPurchase($this->site, (string) $this->reader->id, ['version' => 1, 'kind' => 'fixed', 'days' => 1],
+        extra: [['entitlement_name' => 'course.second', 'offer_terms' => json_encode(['version' => 1, 'kind' => 'fixed', 'days' => 30], JSON_THROW_ON_ERROR)]]);
+    CarbonImmutable::setTestNow('2026-10-16 12:00:00 UTC');
+    $attacked = false;
+    accessObserve(function ($audit) use (&$attacked): void {
+        if ($audit->action === EntitlementWriter::GRANTED) {
+            $second = (array) DB::table('entitlements')->where('id', $audit->target_id)->sole();
+            unset($second['id']);
+            DB::table('entitlements')->insert([...$second, 'entitlement' => 'course.purchased', 'expires_at' => null,
+                'change_token' => str_repeat('a', 64)]);
+            $attacked = true;
+        }
+    }, function () use ($order): void {
+        expect(fn () => app(AccessFulfillment::class)->reconcile($order->reference))->toThrow(CheckoutRefused::class);
+    });
+    expect($attacked)->toBeTrue()->and(DB::table('entitlements')->count())->toBe(0)
+        ->and(DB::table('audit_log')->where('action', EntitlementWriter::GRANTED)->count())->toBe(0)
+        ->and(DB::table(AccessFulfillment::WORK)->value('state'))->toBe('pending')
+        ->and(DB::table(AccessFulfillment::EFFECTS)->where('state', 'pending')->whereNull('processed_at')->count())->toBe(2);
+});
 
 it('rolls back a grant when an audit callback rewrites the frozen effect or purchase', function (string $table): void {
     $order = accessPurchase($this->site, (string) $this->reader->id);

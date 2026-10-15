@@ -17,8 +17,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\OrderClaim;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -237,6 +239,7 @@ final class OrderClaims
                     throw new OrderRefused;
                 }
                 app(AccessFulfillment::class)->claimed($connection, $order);
+                app(AccessAdjustments::class)->claimed($connection, $order);
                 $this->audit($connection, $request, $order, $claim, $reader);
                 $freshModule = $connection->table('modules')->useWritePdo()->where('handle', 'kitsune/commerce')->lockForUpdate()->first();
                 if ($freshModule === null || (array) $freshModule !== (array) $module) {
@@ -324,7 +327,10 @@ final class OrderClaims
         foreach (['commerce_order_lines' => OrderReaderData::MAX_LINES, 'commerce_order_access_tokens' => OrderReaderData::MAX_TOKENS,
             CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS, PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES,
             PaidOrders::OBLIGATIONS => 1, PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS,
-            AccessFulfillment::WORK => 1, AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS] as $table => $bound) {
+            AccessFulfillment::WORK => 1, AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS,
+            FinancialState::WORK => 1, FinancialState::REFUNDS => FinancialState::MAX_REFUNDS,
+            FinancialState::OBSERVATIONS => FinancialState::MAX_OBSERVATIONS,
+            AccessAdjustments::WORK => 1, AccessAdjustments::EFFECTS => AccessFulfillment::MAX_EFFECTS] as $table => $bound) {
             $children = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit($bound + 1)->lockForUpdate()->get();
             if ($children->count() > $bound) {
                 throw new OrderRefused;

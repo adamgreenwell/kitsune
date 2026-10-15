@@ -130,7 +130,7 @@ final class CheckoutReview
     public static function orderHash(#[\SensitiveParameter] array $record): string
     {
         unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
-            $record['access_fulfillment'], $record['access_claim']);
+            $record['access_fulfillment'], $record['access_claim'], $record['financial_state'], $record['financial_access']);
         if (in_array($record['state'] ?? null, ['paid', 'cancelled'], true)) {
             $record['state'] = 'prepared';
             $record['confirmed_total_minor'] = null;

@@ -61,6 +61,9 @@
         </x-filament::section>
         @include('commerce::orders.payment-summary')
         @include('commerce::orders.access-summary', ['operator' => true])
+        @if ($order['payment'] !== null)
+            @include('commerce::orders.financial-actions', ['actions' => $this->financialDetail()])
+        @endif
         @if ($order['payment'] !== null && in_array($order['access_fulfillment']['state'] ?? null, ['initializing', 'pending', 'held'], true))
             <x-filament::section :heading="__('commerce::access.recovery')">
                 <p>{{ __('commerce::access.recovery_help') }}</p>

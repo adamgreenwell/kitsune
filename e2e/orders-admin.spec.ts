@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const path = require('node:path');
-const { php, literal } = require('./storefront-fixture');
+const { artisan, php, literal } = require('./storefront-fixture');
 const { callsMethod } = require('./select-control');
 const { confirmTestOrder } = require('./paid-order-fixture');
 
@@ -21,7 +21,8 @@ function resetFixture() {
         + `foreach([${literal(SITE)},${literal(SIBLING)}] as $slug){`
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
-        + "foreach(['commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_financial_signals','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_listings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(Kitsune\\Core\\Models\\Entry::withoutScopeBecause('Dedicated order browser product cleanup',fn($q)=>$q->withTrashed()->where('org_id',$org->id)->where('type_handle','product')->get()) as $entry){$entry->forceDelete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
 
@@ -36,7 +37,7 @@ function fixtureOrder(siteSlug = SITE) {
         + "'site_snapshot'=>json_encode(['name'=>'Original brand','base_url'=>'https://original.example.test']),"
         + "'quoted_item_net_minor'=>'2000','quoted_shipping_net_minor'=>'0','quoted_tax_minor'=>'200','quoted_total_minor'=>'2200','confirmed_total_minor'=>null,'created_at'=>'2026-10-14 10:00:00','cancelled_at'=>null]);"
         + "DB::table('commerce_order_lines')->insert(['org_id'=>$site->org_id,'site_id'=>$site->id,'order_id'=>$id,'sellable_ref'=>123,'listing_ref'=>456,'entry_ref'=>789,'sku'=>'HISTORICAL-BOARD','title'=>'Original title','quantity'=>1,'unit_price_minor'=>'2000','tax_class'=>'standard','tax_rate_parts'=>100000,'delivery_kind'=>'digital','net_minor'=>'2000','tax_minor'=>'200','gross_minor'=>'2200','entitlement_name'=>null,'offer_terms'=>null]);"
-        + '$order=DB::table("commerce_orders")->where("id",$id)->firstOrFail();app(Kitsune\\Commerce\\Payments\\AccessFulfillment::class)->prepare(DB::connection(),$order);return $reference;});echo $reference;');
+        + '$order=DB::table("commerce_orders")->where("id",$id)->firstOrFail();app(Kitsune\\Commerce\\Payments\\AccessFulfillment::class)->prepare(DB::connection(),$order);app(Kitsune\\Commerce\\Payments\\FinancialState::class)->prepare(DB::connection(),$order);app(Kitsune\\Commerce\\Payments\\AccessAdjustments::class)->prepare(DB::connection(),$order);return $reference;});echo $reference;');
 }
 
 async function submit(page, method, label) {
@@ -273,5 +274,57 @@ test.describe('Owner checkout and order administration', () => {
         expect(audit.violations).toEqual([]);
         await page.goto(`/admin/${SITE}/roles`);
         await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
+    });
+
+    test('saves a confirmed original-unit refund and retains its exact recovery identity when submission is unavailable', async ({ page }, testInfo) => {
+        const reference = fixtureOrder();
+        artisan(['kitsune:blueprint', 'apply', 'storefront', '--org=orders-admin-e2e', '--no-interaction']);
+        php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();`
+            + "$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('An exact refundable browser order site',fn($q)=>$q->whereKey($order->site_id)->firstOrFail());"
+            + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + "auth()->setUser(App\\Models\\User::withoutScopeBecause('The browser fixture owner',fn($q)=>$q->where('email','alpha@kitsune.test')->firstOrFail()));"
+            + "$product=Kitsune\\Commerce\\Models\\Sellable::query()->firstOrFail();"
+            + "app(Kitsune\\Commerce\\Catalogue\\ProductWriter::class)->updateProduct($product->id,['sku'=>'ADMIN-BOARD','price_minor'=>'2000','stock'=>null],'USD',['title'=>'Current product title','slug'=>'refundable-board','status'=>'published','values'=>[]],[],true);"
+            + "$listing=Kitsune\\Commerce\\Models\\Listing::query()->where('sellable_id',$product->id)->firstOrFail();"
+            + "DB::table('commerce_order_lines')->where('order_id',$order->id)->update(['sellable_ref'=>$product->id,'listing_ref'=>$listing->id,'entry_ref'=>$listing->entry_id]);");
+        confirmTestOrder(reference);
+        const allocation = JSON.parse(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();`
+            + "echo json_encode(DB::table('commerce_order_allocations')->where('order_id',$order->id)->first(['awarded','unavailable']));"));
+        expect(Number(allocation.awarded)).toBe(1);
+        expect(Number(allocation.unavailable)).toBe(0);
+        await page.goto(`${ORDERS}/${reference}`);
+        await page.locator('[data-financial-action="request"] summary').click();
+        const form = page.locator('[data-financial-action="request"] form');
+        await page.waitForFunction(() => Boolean((document.querySelector('[data-financial-action="request"] input[type="number"]') as HTMLInputElement & { _x_model?: unknown })?._x_model));
+        await form.getByRole('spinbutton').fill('1');
+        await form.getByLabel('Reason for this adjustment', { exact: true }).fill('Browser owner requested the delivered unit');
+        await form.getByRole('checkbox').check();
+        page.once('dialog', (dialog) => dialog.accept());
+        await submit(page, 'requestRefund', 'Save and submit refund');
+        const saved = JSON.parse(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();`
+            + "$rows=DB::table('commerce_financial_refunds')->where('order_id',$order->id)->get(['reference','amount_minor','state','idempotency_key']);echo json_encode($rows);"));
+        expect(saved).toHaveLength(1);
+        expect(String(saved[0].amount_minor)).toBe('2200');
+        expect(saved[0].idempotency_key).toBe(`kitsune-refund-${saved[0].reference}`);
+        await page.reload();
+        await expect(page.getByText('Refunds and payment reviews', { exact: true }).first()).toBeVisible();
+        await page.getByText('Owner adjustment history and reasons', { exact: true }).click();
+        await expect(page.getByText('Browser owner requested the delivered unit', { exact: true })).toBeVisible();
+        await testInfo.attach('owner-refund-access-status', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        await page.getByText('Recover with the original account key', { exact: true }).click();
+        const recovery = page.locator('form[data-financial-recovery="financial_refund"]');
+        await expect(recovery.locator('[name="attempt_reference"]')).toHaveValue(saved[0].reference);
+        await expect(recovery.locator('[name="password"]')).toHaveValue('');
+        await testInfo.attach('owner-refund-recovery', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        await recovery.locator('[name="password"]').fill('sk_test_financialBrowserNeverSent');
+        await recovery.locator('[name="current_password"]').fill('wrong-financial-owner-password');
+        await Promise.all([
+            page.waitForResponse((reply) => reply.url().endsWith('/historical-recovery') && reply.request().method() === 'POST'),
+            recovery.getByRole('button').click(),
+        ]);
+        await expect(page).toHaveURL(new RegExp(`${ORDERS}/${reference}$`));
+        expect(await page.content()).not.toMatch(/sk_test_financialBrowserNeverSent|wrong-financial-owner-password/);
+        expect(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();echo DB::table('commerce_financial_refunds')->where('order_id',$order->id)->count();`)).toBe('1');
+        expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     });
 });

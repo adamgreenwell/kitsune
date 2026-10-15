@@ -155,6 +155,7 @@ final class EntitlementFixture
             'expires_at' => $expires !== null ? UtcInstant::stored($expires) : null,
             'revoked_at' => $revoked !== null ? UtcInstant::stored($revoked) : null,
             'changed_at' => UtcInstant::stored(CarbonImmutable::now()),
+            'change_token' => bin2hex(random_bytes(32)),
         ]);
     }
 

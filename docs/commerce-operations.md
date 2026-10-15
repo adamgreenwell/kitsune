@@ -275,7 +275,9 @@ erasure until reconciliation; expired/rejected unpaid history can be erased; com
 The org must remain in test mode with its own configured Stripe test key. A basic Session status check alone awaits
 captured-payment proof. Verified confirmation records test paid money and shared stock allocation; unavailable units
 create refund obligations including their allocated tax and shipping. Pending, failed or held refunds remain owed and visible.
-Confirmed test orders now support [purchased access](purchased-access.md). Live checkout remains unavailable
+Confirmed test orders now support [purchased access](purchased-access.md) and [refund/dispute access handling](refunds-and-disputes.md).
+Owners can refund original delivered units, attribute external refunds and recover financial observations without
+changing the invoice or automatically returning stock. Live checkout remains unavailable
 pending #203 paid-data policy and the other first-money gates. Zero-total completion and
 three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
 credential-change freezes and the difference between a provider return page and an authoritative result.

@@ -14,7 +14,7 @@ const atSite = `$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('public o
 
 /** Only the dedicated catalogue fixture org: retained historical snapshots deliberately have no cart/catalogue FK. */
 function clearOrders() {
-    php(atSite + "foreach(['commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts'] as $table){DB::table($table)->where('org_id',$site->org_id)->delete();}"
+    php(atSite + "foreach(['commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_financial_signals','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts'] as $table){DB::table($table)->where('org_id',$site->org_id)->delete();}"
         + "DB::table('commerce_stripe_events')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_routing')->where('org_id',$site->org_id)->delete();DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_orders')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"

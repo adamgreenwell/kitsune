@@ -98,9 +98,16 @@ it('exports safe checkout history through disabled stale commerce without exposi
     $attempt = checkoutPrivacyAttempt($order, 'open');
     $sibling = Orders::plant($this->world['sites']['golfdom-fr'], $reader);
     $siblingAttempt = checkoutPrivacyAttempt($sibling, 'completed');
-    $foreign = Orders::plant($this->world['sites']['rival'], $reader);
-    $foreignAttempt = checkoutPrivacyAttempt($foreign, 'open');
+    app(Context::class)->setSite($this->world['sites']['rival']);
+    try {
+        $foreign = Orders::plant($this->world['sites']['rival'], $reader);
+        $foreignAttempt = checkoutPrivacyAttempt($foreign, 'open');
+    } finally {
+        app(Context::class)->setSite($this->site);
+    }
 
+    expect(app(Context::class)->orgId())->toBe($this->org->getKey())
+        ->and(app(Context::class)->siteId())->toBe($this->site->getKey());
     $orders = app(ReaderExport::class)->for($reader)['module_data']['kitsune/commerce']['orders'];
     $json = json_encode($orders, JSON_THROW_ON_ERROR);
     expect($orders)->toHaveCount(2)

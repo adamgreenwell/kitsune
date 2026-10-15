@@ -48,8 +48,9 @@ it('projects the three signed refund event types without requiring invented Refu
     $signed = refundInboxSigned($seed, $type, changes: ['status' => 'private-untrusted-status', 'instructions_email' => 'private@example.test']);
     $request = app(PaidOrders::class)->refundRequest($seed['row']);
     expect($signed['verified'])->toBe(['id' => 'evt_RefundFixture', 'type' => $type, 'apiVersion' => StripeCheckout::API_VERSION,
+        'financialChargeId' => $seed['receipt']->charge_id, 'financialSubjectId' => 're_Recovery', 'test' => true,
         'refundId' => 're_Recovery', 'orderReference' => $seed['order']->reference, 'refundReference' => $seed['row']->reference,
-        'requestDigest' => $request['metadata']['kitsune_request'], 'test' => true])
+        'requestDigest' => $request['metadata']['kitsune_request']])
         ->and(json_encode($signed['verified'], JSON_THROW_ON_ERROR))->not->toContain('private');
 })->with(['refund.created', 'refund.updated', 'refund.failed']);
 
@@ -159,7 +160,7 @@ it('refuses unknown foreign changed-hash and conflicting Refund bindings before 
     expect(fn () => app(StripeEventInbox::class)->capture($org, $signed['verified'], $signed['raw'], CarbonImmutable::now('UTC')))
         ->toThrow(CheckoutRefused::class);
     expect(DB::table(StripeEventInbox::TABLE)->count())->toBe(0)->and(DB::table(PaidOrders::ATTEMPTS)->value('state'))->toBe('owed');
-})->with(['unknown', 'foreign', 'hash', 'order', 'id']);
+})->with(['foreign', 'hash', 'order', 'id']);
 
 it('requires the exact signed bytes and local refund metadata envelope', function (string $scenario): void {
     $seed = refundRecoverySeed();

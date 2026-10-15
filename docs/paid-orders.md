@@ -72,6 +72,7 @@ in [the webhook guide](stripe-webhooks.md).
 Original invoice lines are immutable. Paid/refund records can be read and exported, including through disabled/stale
 commerce custody, but initial-order erasure cannot remove them. Completed legacy attempts are also fenced until their
 financial state is known. #203 must define retention and minimization before live activation; this slice invents no
-statutory retention period. Refund-driven access changes remain #201 and must use #200's frozen per-order sources
-and immutable guest claims; successful refund status alone does not currently revoke access.
+statutory retention period. [Refund and dispute access handling](refunds-and-disputes.md) uses the frozen per-order
+sources and immutable guest claims. Delivered-unit refunds and unavailable-unit obligations remain distinct;
+external refunds need explicit owner attribution.
 Retained financial and stock history refuses destructive rollback/uninstall.

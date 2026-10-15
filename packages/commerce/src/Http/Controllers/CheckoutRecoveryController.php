@@ -14,7 +14,10 @@ use Filament\Notifications\Notification;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Kitsune\Commerce\Filament\OrderResource;
+use Kitsune\Commerce\Payments\AccessAdjustments;
+use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutReconciler;
+use Kitsune\Commerce\Payments\FinancialReconciler;
 use Kitsune\Commerce\Payments\RefundRecovery;
 use Kitsune\Core\Credentials\Secret;
 use Kitsune\Core\Http\Controllers\CredentialMutationRequest;
@@ -40,7 +43,7 @@ final class CheckoutRecoveryController
         }
         try {
             if ($input['inAddress'] || ! is_string($order) || ! is_string($attempt) || ! is_string($session)
-                || ! in_array($kind, ['checkout', 'refund_reconcile', 'refund_retry'], true)
+                || ! in_array($kind, ['checkout', 'refund_reconcile', 'refund_retry', 'financial_graph', 'financial_refund'], true)
                 || ! is_string($input['value']) || ! is_string($input['password'])
                 || strlen($input['value']) > 255 || strlen($input['password']) > 4096) {
                 throw new \RuntimeException;
@@ -50,9 +53,15 @@ final class CheckoutRecoveryController
                     new Secret($input['value']), $input['password']);
             } elseif ($kind === 'refund_reconcile') {
                 app(RefundRecovery::class)->recoverAsOwner($order, $attempt, new Secret($input['value']), $input['password']);
-            } else {
+            } elseif ($kind === 'refund_retry') {
                 $created = app(RefundRecovery::class)->retryAsOwner($order, new Secret($input['value']), $input['password']);
                 app(RefundRecovery::class)->recoverAsOwner($order, $created['reference'], new Secret($input['value']), $input['password']);
+            } else {
+                app(AccessAdjustments::class)->reconcile($order);
+                app(FinancialReconciler::class)->recoverAsOwner($order, new Secret($input['value']), $input['password'],
+                    $kind === 'financial_refund' ? $attempt : null);
+                app(AccessFulfillment::class)->reconcile($order);
+                app(AccessAdjustments::class)->reconcile($order);
             }
             Notification::make()->success()->title(__('commerce::payments.recovered'))->send();
         } catch (Throwable) {

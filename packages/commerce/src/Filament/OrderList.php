@@ -18,10 +18,14 @@ use Illuminate\Pagination\Paginator;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutMessages;
 use Kitsune\Commerce\Payments\CheckoutRefused;
 use Kitsune\Commerce\Payments\CheckoutWriter;
+use Kitsune\Commerce\Payments\FinancialReadModel;
+use Kitsune\Commerce\Payments\FinancialReconciler;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Tenancy\Context;
 use Livewire\Attributes\Locked;
@@ -45,10 +49,23 @@ final class OrderList extends Page
 
     public bool $recoveryExpire = false;
 
+    /** @var array<int|string,mixed> */
+    public array $refundQuantities = [];
+
+    public string $refundReason = '';
+
+    public bool $refundConfirmed = false;
+
+    public string $externalRefund = '';
+
+    #[Locked]
+    public string $refundRequestKey = '';
+
     public function mount(?string $reference = null): void
     {
         self::authorizeResourceAccess();
         $this->reference = $reference === null ? null : OrderAdministration::reference($reference);
+        $this->refundRequestKey = bin2hex(random_bytes(16));
         if ($this->reference !== null) {
             $this->detail();
         }
@@ -180,5 +197,150 @@ final class OrderList extends Page
             return;
         }
         Notification::make()->title(__('commerce::access.checked'))->success()->send();
+    }
+
+    /** Owner action inputs come from checked original awarded units, never the current catalogue.
+     * @return array<string,mixed>
+     */
+    public function financialDetail(): array
+    {
+        self::authorizeResourceAccess();
+        $reference = OrderAdministration::reference($this->reference);
+        $context = app(Context::class);
+        $connection = (new Order)->getConnection();
+        try {
+            $order = app(OrderReaderData::class)->find($connection, $context->orgId(), $context->siteId(), $reference)
+                ?? throw new OrderRefused;
+
+            return app(FinancialReadModel::class)->forOwner($connection, $order);
+        } catch (Throwable) {
+            abort(503, __('commerce::financial.unavailable'));
+        }
+    }
+
+    public function requestRefund(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        $saved = false;
+        try {
+            if (! $this->refundConfirmed) {
+                throw new OrderRefused;
+            }
+            $reference = OrderAdministration::reference($this->reference);
+            $refund = app(FinancialState::class)->requestAsOwner($reference, $this->selectedUnits(), trim($this->refundReason), $this->refundRequestKey);
+            $saved = true;
+            $this->clearFinancialForm();
+            // Suspend committed local contributions before any provider operation can begin.
+            app(AccessAdjustments::class)->reconcile($reference);
+            app(FinancialReconciler::class)->submit($reference, $refund);
+            app(AccessFulfillment::class)->reconcile($reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+        } catch (Throwable) {
+            $this->addError('order', __($saved ? 'commerce::financial.saved_pending' : 'commerce::financial.refused'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::financial.saved'))->success()->send();
+    }
+
+    public function attributeRefund(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        $saved = false;
+        try {
+            if (! $this->refundConfirmed) {
+                throw new OrderRefused;
+            }
+            $reference = OrderAdministration::reference($this->reference);
+            app(FinancialState::class)->attributeAsOwner($reference, $this->externalRefund, $this->selectedUnits(), trim($this->refundReason));
+            $saved = true;
+            $this->clearFinancialForm();
+            app(AccessAdjustments::class)->reconcile($reference);
+            app(AccessFulfillment::class)->reconcile($reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+        } catch (Throwable) {
+            $this->addError('order', __($saved ? 'commerce::financial.saved_pending' : 'commerce::financial.refused'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::financial.attributed'))->success()->send();
+    }
+
+    public function requestBalanceRefund(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        $saved = false;
+        try {
+            if (! $this->refundConfirmed) {
+                throw new OrderRefused;
+            }
+            $reference = OrderAdministration::reference($this->reference);
+            $refund = app(FinancialState::class)->requestBalanceRefundAsOwner($reference, trim($this->refundReason), $this->refundRequestKey);
+            $saved = true;
+            $this->clearFinancialForm();
+            app(AccessAdjustments::class)->reconcile($reference);
+            app(FinancialReconciler::class)->submit($reference, $refund);
+            app(AccessFulfillment::class)->reconcile($reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+        } catch (Throwable) {
+            $this->addError('order', __($saved ? 'commerce::financial.saved_pending' : 'commerce::financial.refused'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::financial.saved'))->success()->send();
+    }
+
+    public function refreshFinancial(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        try {
+            $reference = OrderAdministration::reference($this->reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+            app(FinancialReconciler::class)->reconcile($reference);
+            app(AccessFulfillment::class)->reconcile($reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+        } catch (Throwable) {
+            $this->addError('order', __('commerce::financial.unavailable'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::financial.checked'))->success()->send();
+    }
+
+    /** @return array<int,int> */
+    private function selectedUnits(): array
+    {
+        if (count($this->refundQuantities) > 20) {
+            throw new OrderRefused;
+        }
+        $selected = [];
+        foreach ($this->refundQuantities as $id => $quantity) {
+            if ((! is_int($id) && preg_match('/\A[1-9][0-9]{0,18}\z/D', $id) !== 1) || (int) $id < 1
+                || (! is_int($quantity) && (! is_string($quantity) || preg_match('/\A(?:0|[1-9][0-9]?)\z/D', $quantity) !== 1))
+                || (int) $quantity < 0 || (int) $quantity > 99) {
+                throw new OrderRefused;
+            }
+            if ((int) $quantity > 0) {
+                $selected[(int) $id] = (int) $quantity;
+            }
+        }
+        if ($selected === []) {
+            throw new OrderRefused;
+        }
+
+        return $selected;
+    }
+
+    private function clearFinancialForm(): void
+    {
+        $this->refundQuantities = [];
+        $this->refundReason = '';
+        $this->refundConfirmed = false;
+        $this->externalRefund = '';
+        $this->refundRequestKey = bin2hex(random_bytes(16));
     }
 }

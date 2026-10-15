@@ -13,9 +13,13 @@ namespace Kitsune\Core\Entitlements;
 use Carbon\CarbonImmutable;
 use Closure;
 use DateTimeInterface;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Connection;
 use Kitsune\Core\Audit\Auditor;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -33,8 +37,9 @@ use Throwable;
  * ⚠️ PER SOURCE. Each decision reads its own source's row and no other, so two sources granted at once give the same two
  * rows in either order, and no source's time is ever carried into another's. A grant never shortens its source, a
  * repeat writes nothing, and a revoked source STAYS revoked: a grant of it answers `StillRevoked`, however late its end
- * — a refunded order's replayed payment gives nothing back. Only `comp()`, an owner deciding now, gives access back, and
- * only through the comp's own row.
+ * — a refunded order's replayed payment gives nothing back. An owner's comp gives through its own row. The separate
+ * verified-order adjustment doors amend this only for proved remaining original contributions: reinstate requires
+ * the exact producer-owned revocation, including a fresh write token, and never recreates an erased row (#201).
  *
  * ⚠️ ORDINARY AUTHORITY, and why nobody signed in is trusted: `EntitlementAuthority`. A public route reaches this writer
  * by design — commerce's webhook — so every caller with nobody signed in must have proved its own authority first;
@@ -66,6 +71,8 @@ final class EntitlementWriter
     public const REINSTATED = 'entitlement.reinstated';
 
     public const REVOKED = 'entitlement.revoked';
+
+    public const REVISED = 'entitlement.revised';
 
     public const ERASED = 'entitlement.erased';
 
@@ -169,17 +176,309 @@ final class EntitlementWriter
                 $siteId = $this->checked(EntitlementRefused::GRANT, $entitlement, producer: true);
                 [$now, $end] = $this->ends(EntitlementRefused::GRANT, $entitlement, $until);
                 $stored = $this->known(EntitlementRefused::GRANT, $entitlement, $reader);
-                $outcome = $this->give(EntitlementRefused::GRANT, $siteId, $stored, $entitlement, $source, $now, $end, producer: true);
-                $verify();
 
-                return $outcome;
+                return $this->give(EntitlementRefused::GRANT, $siteId, $stored, $entitlement, $source, $now, $end, producer: true, verify: $verify);
             });
         });
     }
 
     /**
-     * An owner's grant by hand, under the source `core.comp`. The one door that gives access back after a revocation, and
-     * only through the comp's own row, with the end given now, exactly. Needs an owner signed in: a person's decision,
+     * Reconcile one existing order source to its proved remaining original end, or suspend it. Never inserts,
+     * clears a revocation, or touches another source. An existing revocation is not a producer-owned suspension:
+     * only Revoked means this call stamped one. The caller records that exact token-bearing witness atomically.
+     * Extending an unrevoked source requires its canonical reader to remain present through the complete write.
+     *
+     * @param  Closure():void  $verify  Recheck the frozen order/claim, original contributions and financial work.
+     *
+     * @internal Owner/system commerce recovery only; the signed-in buyer override does not apply.
+     */
+    public function reviseVerifiedOrder(
+        #[\SensitiveParameter] int|string $reader,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+        ?DateTimeInterface $until,
+        bool $suspend,
+        #[\SensitiveParameter] Closure $verify,
+    ): VerifiedOrderResult {
+        return EntitlementAuthority::mapped(EntitlementRefused::REVISE, $entitlement,
+            fn (): VerifiedOrderResult => $this->adjustOrder($reader, $entitlement, $source, $until, $suspend, null, $verify));
+    }
+
+    /**
+     * Restore only an existing exact commerce-owned revocation to its proved remaining original end. No erased
+     * row is recreated; a manual write invalidates the opaque witness even in the same second. An ended offer stays
+     * inactive. The producer proves all blockers cleared before and after the explicit system audit, preserving guards.
+     *
+     * @param  array{id:string,expires_at:?string,revoked_at:string,changed_at:string,change_token:string}  $expectedRevocationWitness
+     * @param  Closure():void  $verify
+     *
+     * @internal Owner/system commerce recovery only; never a general source or buyer reinstatement door.
+     */
+    public function reinstate(
+        #[\SensitiveParameter] int|string $reader,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+        ?DateTimeInterface $until,
+        #[\SensitiveParameter] array $expectedRevocationWitness,
+        #[\SensitiveParameter] Closure $verify,
+    ): VerifiedOrderResult {
+        return EntitlementAuthority::mapped(EntitlementRefused::REINSTATE, $entitlement,
+            fn (): VerifiedOrderResult => $this->adjustOrder($reader, $entitlement, $source, $until, false, $expectedRevocationWitness, $verify));
+    }
+
+    /** @param array<string,mixed>|null $witness
+     * @param  Closure():void  $verify
+     */
+    private function adjustOrder(
+        #[\SensitiveParameter] int|string $reader,
+        string $entitlement,
+        #[\SensitiveParameter] string $source,
+        ?DateTimeInterface $until,
+        bool $suspend,
+        #[\SensitiveParameter] ?array $witness,
+        #[\SensitiveParameter] Closure $verify,
+    ): VerifiedOrderResult {
+        $act = $witness === null ? EntitlementRefused::REVISE : EntitlementRefused::REINSTATE;
+        $connection = (new Entitlement)->getConnection();
+        if ($connection->transactionLevel() < 1 || ! $connection->getPdo()->inTransaction()
+            || preg_match('/\Acommerce\.order:[1-9][0-9]{0,18}\z/D', $source) !== 1) {
+            throw EntitlementRefused::because(EntitlementRefusal::NotASource, $act, $entitlement);
+        }
+
+        return TransactionRecovery::run($connection, function () use ($act, $reader, $entitlement, $source, $until, $suspend, $witness, $verify): VerifiedOrderResult {
+            $authority = $this->adjustmentAuthority($act, $entitlement);
+            if ($witness !== null) {
+                $this->validWitness($witness, $act, $entitlement);
+            }
+            $verify();
+            if ($this->adjustmentAuthority($act, $entitlement) !== $authority) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+            $siteId = $this->context->siteId() ?? throw EntitlementRefused::because(EntitlementRefusal::NoSiteContext, $act, $entitlement);
+            $stored = $this->authority->key($act, $entitlement, $reader);
+            $now = CarbonImmutable::now('UTC')->startOfSecond();
+            $end = $until === null ? null : CarbonImmutable::instance($until)->utc()->startOfSecond();
+            if ($end !== null && (! self::validInstant($end->format(UtcInstant::FORMAT)) || $end->format(UtcInstant::FORMAT) > self::LATEST)) {
+                throw EntitlementRefused::because(EntitlementRefusal::TooFar, $act, $entitlement);
+            }
+            $expired = $end !== null && $end->lessThanOrEqualTo($now);
+            $row = $this->lockedRow($act, $siteId, $stored, $entitlement, $source);
+            $action = null;
+            $outcome = VerifiedOrderOutcome::Missing;
+            $freshReader = false;
+            if ($row !== null) {
+                $this->checkedOrderRow($row, $siteId, $stored, $entitlement, $source, $act);
+                $current = $this->orderWitness($row);
+                $sameEnd = $current['expires_at'] === $end?->format(UtcInstant::FORMAT);
+                $freshReader = $witness !== null || (! $suspend && $current['revoked_at'] === null
+                    && $current['expires_at'] !== null
+                    && ($end === null || $end->format(UtcInstant::FORMAT) > $current['expires_at']));
+                if ($freshReader) {
+                    $readerProof = $this->knownForReinstatement($stored, $act, $entitlement);
+                    if ($this->adjustmentAuthority($act, $entitlement) !== $authority) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                    }
+                    $this->checkRestorationReader($readerProof, $stored, $act, $entitlement);
+                    $this->checkedOrderRow($row, $siteId, $stored, $entitlement, $source, $act);
+                    if ($this->orderWitness($row) !== $current) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                    }
+                }
+                if ($witness !== null) {
+                    if ($current['revoked_at'] === null) {
+                        // A replay of a completed restore never changes the row again.
+                        if (! $sameEnd) {
+                            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                        }
+                        $outcome = $expired ? VerifiedOrderOutcome::Expired : VerifiedOrderOutcome::Unchanged;
+                    } elseif (array_filter($current, static fn (mixed $value, string $key): bool => $witness[$key] !== $value, ARRAY_FILTER_USE_BOTH) !== []) {
+                        $outcome = VerifiedOrderOutcome::StillRevoked;
+                    } elseif ($expired) {
+                        $outcome = VerifiedOrderOutcome::Expired;
+                        if (! $sameEnd) {
+                            $row->forceFill(['expires_at' => $end, 'changed_at' => $now]);
+                            $action = self::REVISED;
+                        }
+                    } else {
+                        $row->forceFill(['expires_at' => $end, 'revoked_at' => null, 'changed_at' => $now]);
+                        [$outcome, $action] = [VerifiedOrderOutcome::Reinstated, self::REINSTATED];
+                    }
+                } else {
+                    $newRevoke = $suspend && $current['revoked_at'] === null;
+                    $outcome = match (true) {
+                        $newRevoke => VerifiedOrderOutcome::Revoked,
+                        $current['revoked_at'] !== null => VerifiedOrderOutcome::StillRevoked,
+                        $expired => VerifiedOrderOutcome::Expired,
+                        ! $sameEnd => VerifiedOrderOutcome::Revised,
+                        default => VerifiedOrderOutcome::Unchanged,
+                    };
+                    if (! $sameEnd || $newRevoke) {
+                        $row->forceFill(['expires_at' => $end, 'changed_at' => $now]);
+                        if ($newRevoke) {
+                            $row->forceFill(['revoked_at' => $now]);
+                        }
+                        $action = $newRevoke ? self::REVOKED : self::REVISED;
+                    }
+                }
+            }
+            $audit = null;
+            $expected = $row?->getAttributes();
+            $targetType = $row?->getMorphClass();
+            if ($row !== null && $action !== null) {
+                $expected = $this->save($row, $act, $entitlement);
+                $audit = $this->auditor->recordForProducerOrFail($action, $row);
+            }
+            $verify();
+            if ($this->adjustmentAuthority($act, $entitlement) !== $authority) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+            if ($freshReader) {
+                $readerProof = $this->knownForReinstatement($stored, $act, $entitlement);
+                if ($this->adjustmentAuthority($act, $entitlement) !== $authority) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                }
+                $this->checkRestorationReader($readerProof, $stored, $act, $entitlement);
+            }
+            if ($row === null && $this->lockedRow($act, $siteId, $stored, $entitlement, $source) !== null) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+            $persistedWitness = $this->checkAdjustmentReadback($row, $expected, $audit, $targetType, $action, $act, $entitlement);
+
+            return new VerifiedOrderResult($outcome, $persistedWitness);
+        });
+    }
+
+    private function adjustmentAuthority(string $act, string $entitlement): string
+    {
+        Permissions::forget();
+        $this->checked($act, $entitlement);
+        $actor = Permissions::currentUser();
+
+        return hash('sha256', json_encode([$this->producerContext(), $actor === null ? null : [$actor::class, (string) $actor->getAuthIdentifier()]], JSON_THROW_ON_ERROR));
+    }
+
+    /** @param array<string,mixed> $witness */
+    private function validWitness(#[\SensitiveParameter] array $witness, string $act, string $entitlement): void
+    {
+        $keys = array_keys($witness);
+        sort($keys);
+        if ($keys !== ['change_token', 'changed_at', 'expires_at', 'id', 'revoked_at']
+            || ! is_string($witness['id']) || preg_match('/\A[1-9][0-9]{0,19}\z/D', $witness['id']) !== 1
+            || ! is_string($witness['change_token']) || preg_match('/\A[a-f0-9]{64}\z/D', $witness['change_token']) !== 1
+            || ! self::validInstant($witness['revoked_at']) || ! self::validInstant($witness['changed_at'])
+            || ($witness['expires_at'] !== null && ! self::validInstant($witness['expires_at']))) {
+            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+        }
+    }
+
+    private function checkedOrderRow(Entitlement $row, int $siteId, #[\SensitiveParameter] string $stored, string $entitlement, #[\SensitiveParameter] string $source, string $act): void
+    {
+        $raw = $row->getAttributes();
+        if ((string) $raw['org_id'] !== (string) $this->context->orgId() || (string) $raw['site_id'] !== (string) $siteId
+            || $raw['reader_id'] !== $stored || $raw['entitlement'] !== $entitlement || $raw['source'] !== $source
+            || ! is_string($raw['change_token'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/D', $raw['change_token']) !== 1
+            || ! self::validInstant($raw['changed_at']) || ($raw['expires_at'] !== null && ! self::validInstant($raw['expires_at']))
+            || ($raw['revoked_at'] !== null && ! self::validInstant($raw['revoked_at']))) {
+            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+        }
+        // A host's retrieved observer can rewrite a model without changing its database row. A forged in-memory
+        // token must never make a manual revocation look like the producer's old witness.
+        $actual = (new Entitlement)->getConnection()->table('entitlements')->useWritePdo()->where('org_id', $this->context->orgId())
+            ->where('site_id', $siteId)->where('reader_id', $stored)->where('entitlement', $entitlement)->where('source', $source)->lockForUpdate()->first();
+        if ($actual === null) {
+            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+        }
+        foreach ($raw as $column => $value) {
+            if (($value === null) !== ($actual->{$column} === null) || ($value !== null && (string) $value !== (string) $actual->{$column})) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+        }
+    }
+
+    /** @return array{id:string,expires_at:?string,revoked_at:?string,changed_at:string,change_token:string} */
+    private function orderWitness(Entitlement $row): array
+    {
+        $raw = $row->getAttributes();
+
+        return ['id' => (string) $raw['id'], 'expires_at' => $raw['expires_at'], 'revoked_at' => $raw['revoked_at'],
+            'changed_at' => $raw['changed_at'], 'change_token' => $raw['change_token']];
+    }
+
+    /** A restoration must not rely on a stale replica, cached guard object or a reader in another database.
+     * @return array{connection:Connection,table:string,key:string,org:int}
+     */
+    private function knownForReinstatement(#[\SensitiveParameter] string $stored, string $act, string $entitlement): array
+    {
+        $model = $this->readers->model() ?? throw EntitlementRefused::because(EntitlementRefusal::NoReaderGuard, $act, $entitlement);
+        $instance = new $model;
+        $connection = (new Entitlement)->getConnection();
+        $org = $this->context->orgId() ?? throw EntitlementRefused::because(EntitlementRefusal::NoOrgContext, $act, $entitlement);
+        if ($instance->getConnection() !== $connection) {
+            throw EntitlementRefused::because(EntitlementRefusal::UnknownReader, $act, $entitlement);
+        }
+        $reader = $instance->newQuery()->useWritePdo()->whereKey($stored)->where('org_id', $org)->lockForUpdate()->first();
+        if (! $reader instanceof Authenticatable || $reader->getConnection() !== $connection
+            || $reader->getTable() !== $instance->getTable() || $reader->getKeyName() !== $instance->getKeyName()
+            || (string) $reader->getAttribute('org_id') !== (string) $org
+            || $this->readers->key($reader->getAuthIdentifier()) !== $stored) {
+            throw EntitlementRefused::because(EntitlementRefusal::UnknownReader, $act, $entitlement);
+        }
+
+        return ['connection' => $connection, 'table' => $instance->getTable(), 'key' => $instance->getKeyName(), 'org' => $org];
+    }
+
+    /** Raw primary read after reader/authority callbacks: no observer can leave a deleted or moved reader as proof.
+     * @param  array{connection:Connection,table:string,key:string,org:int}  $proof
+     */
+    private function checkRestorationReader(#[\SensitiveParameter] array $proof, #[\SensitiveParameter] string $stored, string $act, string $entitlement): void
+    {
+        if ($proof['connection'] !== (new Entitlement)->getConnection() || $proof['org'] !== $this->context->orgId()) {
+            throw EntitlementRefused::because(EntitlementRefusal::UnknownReader, $act, $entitlement);
+        }
+        $actual = $proof['connection']->table($proof['table'])->useWritePdo()->where($proof['key'], $stored)
+            ->where('org_id', $proof['org'])->lockForUpdate()->first();
+        if ($actual === null || (string) $actual->{$proof['key']} !== $stored) {
+            throw EntitlementRefused::because(EntitlementRefusal::UnknownReader, $act, $entitlement);
+        }
+    }
+
+    /** @param array<string,mixed>|null $expected
+     * @return array{id:string,expires_at:?string,revoked_at:?string,changed_at:string,change_token:string}|null
+     */
+    private function checkAdjustmentReadback(?Entitlement $row, #[\SensitiveParameter] ?array $expected, ?AuditLog $audit, ?string $targetType, ?string $action, string $act, string $entitlement): ?array
+    {
+        if ($row === null || $expected === null) {
+            return null;
+        }
+        $instance = new Entitlement;
+        $connection = $instance->getConnection();
+        $key = $expected['id'];
+        $actual = $connection->table($instance->getTable())->useWritePdo()->where('id', $key)->lockForUpdate()->first();
+        if ($actual === null || (string) $row->getKey() !== (string) $key || $row->getConnection() !== $connection
+            || $row->getTable() !== $instance->getTable() || $row->getMorphClass() !== $targetType) {
+            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+        }
+        foreach ($expected as $column => $value) {
+            if (($value === null) !== ($actual->{$column} === null) || ($value !== null && (string) $value !== (string) $actual->{$column})) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+        }
+        if ($audit !== null) {
+            $record = $audit->exists ? $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first() : null;
+            if ($record === null || (string) $record->org_id !== (string) $this->context->orgId() || (string) $record->site_id !== (string) $this->context->siteId()
+                || $record->action !== $action || $record->target_type !== $targetType || (string) $record->target_id !== (string) $key
+                || $record->actor_type !== null || $record->actor_id !== null) {
+                throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+            }
+        }
+
+        return ['id' => (string) $actual->id, 'expires_at' => $actual->expires_at, 'revoked_at' => $actual->revoked_at,
+            'changed_at' => $actual->changed_at, 'change_token' => $actual->change_token];
+    }
+
+    /**
+     * An owner's grant by hand, under the source `core.comp`. Gives access back only through the comp's own row,
+     * with the end given now, exactly. Needs an owner signed in: a person's decision,
      * never a caller's.
      *
      * @throws EntitlementRefused
@@ -338,6 +637,7 @@ final class EntitlementWriter
      * A grant's or a comp's decision, on this source's row alone.
      *
      * @param  EntitlementRefused::GRANT|EntitlementRefused::COMP  $act
+     * @param  Closure():void|null  $verify
      */
     private function give(
         string $act,
@@ -348,20 +648,15 @@ final class EntitlementWriter
         CarbonImmutable $now,
         ?CarbonImmutable $end,
         bool $producer = false,
+        #[\SensitiveParameter] ?Closure $verify = null,
     ): GrantOutcome {
-        return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($act, $siteId, $stored, $entitlement, $source, $now, $end, $producer): GrantOutcome {
+        return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($act, $siteId, $stored, $entitlement, $source, $now, $end, $producer, $verify): GrantOutcome {
+            $orgId = $this->context->orgId();
+            $context = $producer ? $this->producerContext() : null;
             $row = $this->lockedRow($act, $siteId, $stored, $entitlement, $source);
 
             if ($producer && $row !== null) {
-                $attributes = $row->getAttributes();
-                if ((string) $attributes['org_id'] !== (string) $this->context->orgId()
-                    || (string) $attributes['site_id'] !== (string) $siteId || $attributes['reader_id'] !== $stored
-                    || $attributes['entitlement'] !== $entitlement || $attributes['source'] !== $source
-                    || ! self::validInstant($attributes['changed_at'])
-                    || ($attributes['expires_at'] !== null && ! self::validInstant($attributes['expires_at']))
-                    || ($attributes['revoked_at'] !== null && ! self::validInstant($attributes['revoked_at']))) {
-                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
-                }
+                $this->checkedOrderRow($row, $siteId, $stored, $entitlement, $source, $act);
             }
 
             if ($row === null) {
@@ -379,37 +674,54 @@ final class EntitlementWriter
             } elseif ($row->revoked_at !== null) {
                 // A producer repeating itself carries no new information; an owner's comp is a fresh decision.
                 if ($act !== EntitlementRefused::COMP) {
-                    return GrantOutcome::StillRevoked;
+                    if (! $producer) {
+                        return GrantOutcome::StillRevoked;
+                    }
+                    [$outcome, $action] = [GrantOutcome::StillRevoked, null];
+                } else {
+                    // The one place an end moves earlier, and it follows a recorded revoke.
+                    $row->forceFill(['revoked_at' => null, 'expires_at' => $end, 'changed_at' => $now]);
+                    [$outcome, $action] = [GrantOutcome::Reinstated, self::REINSTATED];
                 }
-
-                // The one place an end moves earlier, and it follows a recorded revoke.
-                $row->forceFill(['revoked_at' => null, 'expires_at' => $end, 'changed_at' => $now]);
-                [$outcome, $action] = [GrantOutcome::Reinstated, self::REINSTATED];
             } elseif ($row->expires_at !== null && ($end === null || $end->greaterThan($row->expires_at))) {
                 // A lapsed row of this source too: a same-source renewal, since an end at or before now was refused.
                 $row->forceFill(['expires_at' => $end, 'changed_at' => $now]);
                 [$outcome, $action] = [GrantOutcome::Extended, self::EXTENDED];
             } else {
-                return GrantOutcome::Unchanged;
+                if (! $producer) {
+                    return GrantOutcome::Unchanged;
+                }
+                [$outcome, $action] = [GrantOutcome::Unchanged, null];
             }
 
-            $expected = $row->getAttributes();
-            $orgId = $this->context->orgId();
-            $context = $producer ? $this->producerContext() : null;
-            $this->save($row, $act, $entitlement);
+            $expected = $action === null ? $row->getAttributes() : $this->save($row, $act, $entitlement);
             if ($producer) {
+                if ($verify === null) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                }
                 $connection = $row->getConnection();
+                $table = $row->getTable();
                 $key = $row->getKey();
-                $expected[$row->getKeyName()] = $key;
+                $keyName = $row->getKeyName();
+                $expected[$keyName] = $key;
                 $targetType = $row->getMorphClass();
-                $audit = $this->auditor->recordForProducerOrFail($action, $row);
-                $record = $audit->exists ? $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first() : null;
-                $actual = $connection->table($row->getTable())->useWritePdo()->where('id', $key)->lockForUpdate()->first();
-                if ($actual === null || $record === null || $this->context->orgId() !== $orgId || $this->context->siteId() !== $siteId
-                    || $this->producerContext() !== $context
-                    || (string) $record->org_id !== (string) $orgId || (string) $record->site_id !== (string) $siteId
+                $audit = $action === null ? null : $this->auditor->recordForProducerOrFail($action, $row);
+                // The final proof loads host readers and can invoke their observers. Fence its current row and
+                // producer audit afterwards, including unchanged and still-revoked source replays.
+                $verify();
+                $record = $audit !== null && $audit->exists ? $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first() : null;
+                $actual = $connection->table($table)->useWritePdo()->where('id', $key)->lockForUpdate()->first();
+                if ($actual === null || ($audit !== null && $record === null)
+                    || $row->getConnection() !== $connection || $row->getTable() !== $table
+                    || $row->getKeyName() !== $keyName || (string) $row->getKey() !== (string) $key
+                    || $row->getMorphClass() !== $targetType
+                    || $this->context->orgId() !== $orgId || $this->context->siteId() !== $siteId
+                    || $this->producerContext() !== $context) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
+                }
+                if ($record !== null && ((string) $record->org_id !== (string) $orgId || (string) $record->site_id !== (string) $siteId
                     || $record->action !== $action || $record->target_type !== $targetType
-                    || (string) $record->target_id !== (string) $key || $record->actor_type !== null || $record->actor_id !== null) {
+                    || (string) $record->target_id !== (string) $key || $record->actor_type !== null || $record->actor_id !== null)) {
                     throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
                 }
                 foreach ($expected as $column => $value) {
@@ -419,7 +731,7 @@ final class EntitlementWriter
                     }
                 }
             } else {
-                $this->auditor->recordOrFail($action, $row);
+                $this->auditor->recordOrFail($action ?? throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement), $row);
             }
 
             return $outcome;
@@ -485,7 +797,8 @@ final class EntitlementWriter
             return $row()->whereKey($found->getKey())->lockForUpdate()->first();
         }
 
-        return $act === EntitlementRefused::REVOKE ? $row()->lockForUpdate()->first() : null;
+        return in_array($act, [EntitlementRefused::REVOKE, EntitlementRefused::REVISE, EntitlementRefused::REINSTATE], true)
+            ? $row()->lockForUpdate()->first() : null;
     }
 
     /**
@@ -515,9 +828,13 @@ final class EntitlementWriter
         return $locked;
     }
 
-    /** @param  EntitlementRefused::*  $act */
-    private function save(Entitlement $row, string $act, string $entitlement): void
+    /** @param EntitlementRefused::* $act
+     * @return array<string,mixed> Expected persisted attributes, captured before host callbacks.
+     */
+    private function save(Entitlement $row, string $act, string $entitlement): array
     {
+        $row->forceFill(['change_token' => bin2hex(random_bytes(32))]);
+        $expected = $row->getAttributes();
         self::$writing = true;
 
         try {
@@ -529,6 +846,8 @@ final class EntitlementWriter
         if (! $saved) {
             throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement);
         }
+
+        return $expected;
     }
 
     /** @param  list<int>  $ids */

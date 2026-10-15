@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutReconciler;
 use Kitsune\Commerce\Payments\CheckoutRefused;
@@ -67,6 +68,8 @@ function maintenanceRefund(Site $site): object
     $proof = MaintenancePaid::session($attempt);
     app(OrderLocks::class)->run(fn () => app(PaidOrders::class)->confirm(DB::connection(),
         DB::table('commerce_orders')->where('id', $attempt->order_id)->sole(), $attempt, $proof));
+    // No units were awarded: source adjustment work is already complete, keeping this fixture about refund scheduling.
+    app(AccessAdjustments::class)->reconcile(DB::table('commerce_orders')->where('id', $attempt->order_id)->value('reference'));
 
     return DB::table(PaidOrders::ATTEMPTS)->where('order_id', $attempt->order_id)->sole();
 }

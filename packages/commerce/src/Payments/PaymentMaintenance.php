@@ -70,6 +70,43 @@ final class PaymentMaintenance
                     $work[] = ['kind' => 'access', 'count' => self::counter($access->replay_count), 'id' => (int) $access->id, 'row' => $access];
                 }
             }
+            if (app(FinancialState::class)->schemaAvailable($connection)) {
+                $financial = $connection->table(FinancialState::WORK.' as a')->useWritePdo()->where('a.org_id', $org)
+                    ->whereIn('a.site_id', $sites->keys()->all())
+                    ->whereExists(fn ($q) => $q->selectRaw('1')->from(PaidOrders::RECEIPTS.' as p')->whereColumn('p.order_id', 'a.order_id'))
+                    ->where(fn ($q) => $q->whereNull('a.lease_until')->orWhere('a.lease_until', '<=', $now));
+                if (! $refreshSuccessful) {
+                    $financial->where(function ($q): void {
+                        $q->whereExists(fn ($r) => $r->selectRaw('1')->from(FinancialState::REFUNDS.' as r')->whereColumn('r.order_id', 'a.order_id')->where('r.state', '!=', 'succeeded'))
+                            ->orWhereExists(fn ($o) => $o->selectRaw('1')->from(FinancialState::OBSERVATIONS.' as o')->whereColumn('o.order_id', 'a.order_id')
+                                ->where(fn ($active) => $active->where('o.origin', 'external')->orWhereIn('o.state', ['needs_response', 'under_review', 'lost'])))
+                            ->orWhereExists(fn ($p) => $p->selectRaw('1')->from(PaidOrders::RECEIPTS.' as p')->whereColumn('p.order_id', 'a.order_id')
+                                ->where(fn ($held) => $held->where('p.allocation_state', 'held')->orWhereExists(fn ($s) => $s->selectRaw('1')->from(FinancialSignals::TABLE.' as s')
+                                    ->whereColumn('s.org_id', 'p.org_id')->whereColumn('s.charge_id', 'p.charge_id')->where('s.mode', 'test')->where('s.state', 'unresolved'))));
+                    });
+                }
+                foreach ($financial->orderBy('a.replay_count')->orderBy('a.id')->limit($limit)->get(['a.id', 'a.site_id', 'a.order_id', 'a.replay_count']) as $row) {
+                    $work[] = ['kind' => 'financial', 'count' => self::counter($row->replay_count), 'id' => (int) $row->id, 'row' => $row];
+                }
+                $refunds = $connection->table(FinancialState::REFUNDS.' as r')->useWritePdo()->join(FinancialState::WORK.' as a', 'a.id', '=', 'r.work_id')
+                    ->where('r.org_id', $org)->whereColumn('a.org_id', 'r.org_id')->whereColumn('a.site_id', 'r.site_id')->whereColumn('a.order_id', 'r.order_id')
+                    ->whereIn('r.site_id', $sites->keys()->all())->where('r.origin', 'operator')
+                    ->where(fn ($q) => $q->whereNull('a.lease_until')->orWhere('a.lease_until', '<=', $now));
+                if (! $refreshSuccessful) {
+                    $refunds->whereIn('r.state', ['owed', 'submitting', 'unknown', 'held', 'pending', 'requires_action']);
+                }
+                foreach ($refunds->orderBy('r.replay_count')->orderBy('r.id')->limit($limit)->get(['r.id', 'r.site_id', 'r.order_id', 'r.reference', 'r.replay_count']) as $row) {
+                    $work[] = ['kind' => 'financial_refund', 'count' => self::counter($row->replay_count), 'id' => (int) $row->id, 'row' => $row];
+                }
+            }
+            if (app(AccessAdjustments::class)->schemaAvailable($connection)) {
+                foreach ($connection->table(AccessAdjustments::WORK.' as a')->useWritePdo()->where('a.org_id', $org)
+                    ->whereIn('a.site_id', $sites->keys()->all())->whereIn('a.state', ['awaiting_payment', 'awaiting_claim', 'pending', 'held'])
+                    ->whereExists(fn ($q) => $q->selectRaw('1')->from(PaidOrders::RECEIPTS.' as p')->whereColumn('p.order_id', 'a.order_id'))
+                    ->orderBy('a.replay_count')->orderBy('a.id')->limit($limit)->get(['a.id', 'a.site_id', 'a.order_id', 'a.replay_count']) as $row) {
+                    $work[] = ['kind' => 'source', 'count' => self::counter($row->replay_count), 'id' => (int) $row->id, 'row' => $row];
+                }
+            }
             usort($work, static fn (array $left, array $right): int => $left['count'] <=> $right['count']
                 ?: $left['id'] <=> $right['id'] ?: strcmp($left['kind'], $right['kind']));
             foreach ($work as $candidate) {
@@ -89,9 +126,21 @@ final class PaymentMaintenance
                     } elseif ($candidate['kind'] === 'refund') {
                         $result = app(RefundRecovery::class)->reconcile($order->reference, $attempt->reference);
                         $counts[in_array($result['state'], ['held', 'unknown', 'failed', 'canceled', 'requires_action'], true) ? 'blocked' : 'processed']++;
-                    } else {
+                    } elseif ($candidate['kind'] === 'access') {
                         $result = app(AccessFulfillment::class)->reconcile($order->reference);
                         $counts[$result['state'] === 'processed' ? 'processed' : 'blocked']++;
+                    } elseif ($candidate['kind'] === 'source') {
+                        $result = app(AccessAdjustments::class)->reconcile($order->reference);
+                        $counts[$result['state'] === 'processed' ? 'processed' : 'blocked']++;
+                    } else {
+                        // Applying already-proved negative effects never waits for a current payment key or provider.
+                        app(AccessAdjustments::class)->reconcile($order->reference);
+                        $result = $candidate['kind'] === 'financial_refund'
+                            ? app(FinancialReconciler::class)->submit($order->reference, $attempt->reference)
+                            : app(FinancialReconciler::class)->reconcile($order->reference);
+                        app(AccessFulfillment::class)->reconcile($order->reference);
+                        $access = app(AccessAdjustments::class)->reconcile($order->reference);
+                        $counts[$result['state'] === 'processed' && $access['state'] === 'processed' ? 'processed' : 'blocked']++;
                     }
                 } catch (Throwable) {
                     $counts['blocked']++;
@@ -120,13 +169,17 @@ final class PaymentMaintenance
                 'confirmation' => CheckoutAttempts::TABLE,
                 'refund' => PaidOrders::ATTEMPTS,
                 'access' => AccessFulfillment::WORK,
+                'financial' => FinancialState::WORK,
+                'financial_refund' => FinancialState::REFUNDS,
+                'source' => AccessAdjustments::WORK,
                 default => throw new CheckoutRefused,
             };
             $counter = $candidate['kind'] === 'confirmation' ? 'confirmation_replay_count' : 'replay_count';
             $row = $connection->table($table)->useWritePdo()->where('id', $candidate['id'])->where('org_id', $org)
                 ->where('site_id', $site)->lockForUpdate()->first();
             if ($row === null || self::counter($row->{$counter}) !== $candidate['count']
-                || ($candidate['kind'] !== 'access' && $row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(CarbonImmutable::now('UTC')))) {
+                || (! in_array($candidate['kind'], ['access', 'source', 'financial_refund'], true)
+                    && $row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(CarbonImmutable::now('UTC')))) {
                 return null;
             }
             if ($candidate['kind'] === 'confirmation') {
@@ -135,6 +188,22 @@ final class PaymentMaintenance
                 }
             } elseif ($candidate['kind'] === 'access') {
                 if (! in_array($row->state, ['initializing', 'pending', 'held'], true)) {
+                    return null;
+                }
+            } elseif ($candidate['kind'] === 'source') {
+                if (! in_array($row->state, ['awaiting_payment', 'awaiting_claim', 'pending', 'held'], true)
+                    || ! $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $row->order_id)->exists()) {
+                    return null;
+                }
+            } elseif ($candidate['kind'] === 'financial_refund') {
+                $parent = $connection->table(FinancialState::WORK)->useWritePdo()->where('id', $row->work_id)->where('org_id', $org)
+                    ->where('site_id', $site)->where('order_id', $row->order_id)->lockForUpdate()->first() ?? throw new CheckoutRefused;
+                if ($row->origin !== 'operator' || (! $refreshSuccessful && ! in_array($row->state, ['owed', 'submitting', 'unknown', 'held', 'pending', 'requires_action'], true))
+                    || ($parent->lease_until !== null && CheckoutAttempts::instant($parent->lease_until)->greaterThan(CarbonImmutable::now('UTC')))) {
+                    return null;
+                }
+            } elseif ($candidate['kind'] === 'financial') {
+                if (! $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $row->order_id)->exists()) {
                     return null;
                 }
             } elseif ((! $refreshSuccessful && $row->state === 'succeeded')
@@ -182,19 +251,20 @@ final class PaymentMaintenance
             $connection = (new Order)->getConnection();
             $event = $connection->table(StripeEventInbox::TABLE)->useWritePdo()->where('org_id', $org)->where('id', $id)->where('state', 'processed')
                 ->first(['site_id', 'order_id', 'order_reference', 'refund_reference']);
-            if ($event === null || $event->refund_reference !== null) {
+            if ($event === null) {
                 return;
             }
             $site = Site::query()->useWritePdo()->whereKey($event->site_id)->where('org_id', $org)->first() ?? throw new CheckoutRefused;
             $this->context->setSite($site);
             try {
                 app(AccessFulfillment::class)->reconcile($event->order_reference);
+                app(AccessAdjustments::class)->reconcile($event->order_reference);
             } catch (Throwable) {
                 // Durable independent access work remains available to bounded maintenance and owner retry.
             }
             $attempt = $connection->table(PaidOrders::ATTEMPTS)->useWritePdo()->where('org_id', $org)->where('site_id', $event->site_id)
                 ->where('order_id', $event->order_id)->orderByDesc('id')->first();
-            if ($attempt !== null && in_array($attempt->state, ['owed', 'unknown'], true)) {
+            if ($event->refund_reference === null && $attempt !== null && in_array($attempt->state, ['owed', 'unknown'], true)) {
                 app(RefundRecovery::class)->reconcile($event->order_reference, $attempt->reference);
             }
         } finally {

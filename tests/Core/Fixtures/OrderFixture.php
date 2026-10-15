@@ -16,7 +16,9 @@ use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\Store;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Carts\CartOwner;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Core\Models\Site;
 
 /** Raw historical rows: no current catalogue, commerce runtime, provider call or permissive model cast. */
@@ -56,6 +58,20 @@ final class OrderFixture
             'quoted_total_minor' => '2100', 'confirmed_total_minor' => null, 'created_at' => self::now(), 'cancelled_at' => null,
             ...$overrides];
         $id = DB::table('commerce_orders')->insertGetId($data);
+        if (DB::connection()->getSchemaBuilder()->hasTable(FinancialState::WORK)) {
+            // Historical planting mirrors migration214 without inventing a financial observation or changing Context.
+            DB::table(FinancialState::WORK)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
+                'order_id' => $id, 'order_reference' => $data['reference'], 'revision' => 0, 'basis_hash' => null,
+                'charge_refunded_minor' => null, 'charge_disputed' => null, 'last_observed_at' => null,
+                'lease_token' => null, 'lease_until' => null, 'replay_count' => 0,
+                'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
+        }
+        if (DB::connection()->getSchemaBuilder()->hasTable(AccessAdjustments::WORK)) {
+            DB::table(AccessAdjustments::WORK)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
+                'order_id' => $id, 'state' => $data['state'] === 'paid' ? 'pending' : 'awaiting_payment', 'category' => null,
+                'manifest_hash' => null, 'financial_digest' => null, 'beneficiary_hash' => null,
+                'effect_count' => 0, 'replay_count' => 0, 'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
+        }
         if (DB::connection()->getSchemaBuilder()->hasTable(AccessFulfillment::WORK)) {
             // Historical planting mirrors migration213, including foreign-Site attack fixtures without changing Context.
             DB::table(AccessFulfillment::WORK)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
