@@ -16,6 +16,7 @@ use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Http\Controllers\OrderController;
 use Kitsune\Commerce\Http\Middleware\OrderResponse;
 use Kitsune\Commerce\Payments\CheckoutRoutes;
+use Kitsune\Commerce\Payments\StripeWebhookRoutes;
 use Kitsune\Core\Readers\ReaderRoutes;
 
 /** CartRoutes delegates its checkout/order leaves here; no public route is installed by the provider. @internal */
@@ -38,5 +39,6 @@ final class OrderRoutes
             }
         }
         CheckoutRoutes::register();
+        StripeWebhookRoutes::register();
     }
 }

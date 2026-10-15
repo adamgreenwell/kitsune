@@ -19,6 +19,7 @@ use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Payments\StripeEventInbox;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -322,7 +323,8 @@ final class OrderReaderData implements ModuleReaderData
             ...$totals, 'confirmed_total_minor' => null,
             'created_at' => self::instant($order->created_at), 'cancelled_at' => $order->cancelled_at === null ? null : self::instant($order->cancelled_at),
             'lines' => $items, 'access_links' => $links,
-            'checkout_attempts' => app(CheckoutAttempts::class)->projection($connection, $org, $order, lock: $lock)];
+            'checkout_attempts' => app(CheckoutAttempts::class)->projection($connection, $org, $order, lock: $lock),
+            'stripe_events' => app(StripeEventInbox::class)->projection($connection, $org, $order, lock: $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder

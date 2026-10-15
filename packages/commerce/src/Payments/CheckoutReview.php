@@ -129,7 +129,7 @@ final class CheckoutReview
      */
     public static function orderHash(#[\SensitiveParameter] array $record): string
     {
-        unset($record['checkout_attempts'], $record['access_links']);
+        unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events']);
 
         return hash('sha256', json_encode(self::canonical($record), JSON_THROW_ON_ERROR));
     }

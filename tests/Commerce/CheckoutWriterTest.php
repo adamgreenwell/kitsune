@@ -142,7 +142,7 @@ it('refuses to use a changed credential account or API-version witness for an ex
     expect($result['states'])->toBe($scenario === 'wrong-account' ? ['open', 'uncertain'] : ['open'])
         ->and($result['refusals'])->toHaveCount($scenario === 'wrong-account' ? 0 : 1)
         ->and($result['creates'])->toBe(1)->and($result['gets'])->toBe(0)->and($result['active'])->toBe(1);
-})->with(['wrong-witness', 'wrong-account', 'wrong-api-version']);
+})->with(['wrong-witness', 'wrong-account', 'misfiled-account', 'wrong-api-version']);
 
 it('requires an explicit signed-in owner to reconcile a lost known Session after the automatic retry window', function (string $scenario, bool $owner): void {
     $result = checkoutWriterProbe($scenario);

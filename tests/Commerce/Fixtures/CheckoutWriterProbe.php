@@ -189,7 +189,8 @@ $http = static function (RequestInterface $outbound) use (&$requests, &$creates,
             DB::table('commerce_sellables')->where('id', $product->getKey())->update(['price_minor' => 2100]);
         }
 
-        return new Response(200, ['Content-Type' => 'application/json'], '{"object":"account","id":"acct_FixtureA"}');
+        return new Response(200, ['Content-Type' => 'application/json'], json_encode(['object' => 'account',
+            'id' => $scenario === 'wrong-account' && $creates > 0 ? 'acct_Transplanted' : 'acct_FixtureA'], JSON_THROW_ON_ERROR));
     }
     $create = $path === '/v1/checkout/sessions';
     if ($create) {
@@ -353,12 +354,15 @@ if (str_starts_with($scenario, 'cancel-attempt-')) {
 } elseif ($scenario === 'other-browser') {
     $fresh = OrderFixture::request();
     $call(fn () => $writer->refresh($fresh, $order->reference, $attempt->reference));
-} elseif (in_array($scenario, ['wrong-witness', 'wrong-account', 'wrong-api-version'], true)) {
+} elseif ($scenario === 'wrong-account') {
+    // The provider account changed; the durable account/routing graph itself remains coherent.
+    $call(fn () => $writer->refresh($request, $order->reference, $attempt->reference));
+} elseif (in_array($scenario, ['wrong-witness', 'misfiled-account', 'wrong-api-version'], true)) {
     $column = match ($scenario) {
-        'wrong-witness' => 'credential_witness', 'wrong-account' => 'account_id', default => 'api_version'
+        'wrong-witness' => 'credential_witness', 'misfiled-account' => 'account_id', default => 'api_version'
     };
     $value = match ($scenario) {
-        'wrong-witness' => str_repeat('b', 64), 'wrong-account' => 'acct_Transplanted', default => '2020-01-01'
+        'wrong-witness' => str_repeat('b', 64), 'misfiled-account' => 'acct_Transplanted', default => '2020-01-01'
     };
     DB::table(CheckoutAttempts::TABLE)->where('id', $attempt->id)->update([$column => $value]);
     $call(fn () => $writer->refresh($request, $order->reference, $attempt->reference));

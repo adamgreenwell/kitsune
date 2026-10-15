@@ -159,4 +159,11 @@ final class OrderList extends Page
         }
         Notification::make()->title(__('commerce::payments.recovered'))->success()->send();
     }
+
+    public function historicalRecoveryUrl(): string
+    {
+        self::authorizeResourceAccess();
+
+        return OrderResource::getUrl('historical-recovery');
+    }
 }

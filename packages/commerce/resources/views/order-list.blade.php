@@ -75,8 +75,31 @@
                                 <label class="flex gap-2"><input type="checkbox" wire:model="recoveryExpire">{{ __('commerce::payments.expire_after_recovery') }}</label>
                                 <x-filament::button type="submit">{{ __('commerce::payments.recover') }}</x-filament::button>
                             </form>
+                            <details class="space-y-3">
+                                <summary class="cursor-pointer underline">{{ __('commerce::payments.historical_recover') }}</summary>
+                                <p>{{ __('commerce::payments.historical_help') }}</p>
+                                <form action="{{ $this->historicalRecoveryUrl() }}" method="post" class="space-y-3" autocomplete="off">
+                                    @csrf
+                                    <input type="hidden" name="order_reference" value="{{ $order['reference'] }}">
+                                    <input type="hidden" name="attempt_reference" value="{{ $attempt['reference'] }}">
+                                    <label for="historical-session-{{ $attempt['reference'] }}">{{ __('commerce::payments.session_id') }}</label>
+                                    <input id="historical-session-{{ $attempt['reference'] }}" name="session_id" type="text" maxlength="255" autocomplete="off" class="block w-full rounded-lg border p-2" dir="ltr">
+                                    <label for="historical-key-{{ $attempt['reference'] }}">{{ __('commerce::payments.historical_key') }}</label>
+                                    <input id="historical-key-{{ $attempt['reference'] }}" name="password" type="password" required maxlength="255" autocomplete="new-password" class="block w-full rounded-lg border p-2" dir="ltr">
+                                    <label for="historical-password-{{ $attempt['reference'] }}">{{ __('commerce::payments.owner_password') }}</label>
+                                    <input id="historical-password-{{ $attempt['reference'] }}" name="current_password" type="password" required maxlength="4096" autocomplete="current-password" class="block w-full rounded-lg border p-2">
+                                    <x-filament::button type="submit">{{ __('commerce::payments.historical_recover') }}</x-filament::button>
+                                </form>
+                            </details>
                         @endif
                     </div>
+                @endforeach
+            </x-filament::section>
+        @endif
+        @if ($order['stripe_events'] !== [])
+            <x-filament::section :heading="__('commerce::payments.updates')">
+                @foreach ($order['stripe_events'] as $update)
+                    <p>{{ __('commerce::payments.update_'.$update['state']) }} — {{ __('commerce::payments.update_received') }}: <span dir="ltr">{{ $update['received_at'] }}</span></p>
                 @endforeach
             </x-filament::section>
         @endif

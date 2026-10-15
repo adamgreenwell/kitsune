@@ -57,6 +57,7 @@ final class CheckoutAttempts
     public function deleteTerminal(Connection $connection, int $org, object $order): int
     {
         $this->assertErasable($connection, $org, $order);
+        app(StripeEventInbox::class)->forgetOrder($connection, $org, $order);
         $rows = $this->rows($connection, $org, $order, true);
         foreach ($rows as $row) {
             if ($connection->table(self::TABLE)->where('id', $row->id)->where('org_id', $org)->where('site_id', $order->site_id)
@@ -101,6 +102,8 @@ final class CheckoutAttempts
             if ($active > 1) {
                 throw new CheckoutRefused;
             }
+
+            app(StripeEventInbox::class)->assertOrderCustody($connection, $org, $order, $lock);
 
             return $rows;
         } catch (Throwable) {

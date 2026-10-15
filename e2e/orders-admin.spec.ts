@@ -20,7 +20,7 @@ function resetFixture() {
         + `foreach([${literal(SITE)},${literal(SIBLING)}] as $slug){`
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
-        + "foreach(['commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
 
@@ -160,6 +160,27 @@ test.describe('Owner checkout and order administration', () => {
         expect(php(`echo DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->value('state');`)).toBe('uncertain');
         const audit = await new AxeBuilder({ page }).analyze();
         expect(audit.violations).toEqual([]);
+        await page.getByText('Recover with this checkout’s original Stripe account', { exact: true }).first().click();
+        const form = page.locator('form[action$="/historical-recovery"]');
+        await expect(form).toHaveAttribute('method', 'post');
+        await form.locator('[name="session_id"]').fill('cs_test_browserFixture');
+        const secret = 'sk_test_browserNeverSentToProvider';
+        await form.locator('[name="password"]').fill(secret);
+        await form.locator('[name="current_password"]').fill('wrong-owner-password');
+        const [response] = await Promise.all([
+            page.waitForResponse((reply) => reply.url().endsWith('/historical-recovery') && reply.request().method() === 'POST'),
+            form.getByRole('button', { name: 'Recover with this checkout’s original Stripe account', exact: true }).click(),
+        ]);
+        expect(response.status()).toBe(303);
+        await expect(page).toHaveURL(new RegExp(`${ORDERS}/${reference}$`));
+        expect(await page.content()).not.toContain(secret);
+        expect(await page.content()).not.toContain('wrong-owner-password');
+        await page.getByText('Recover with this checkout’s original Stripe account', { exact: true }).first().click();
+        await expect(page.locator('form[action$="/historical-recovery"] [name="password"]')).toHaveValue('');
+        await expect(page.locator('form[action$="/historical-recovery"] [name="current_password"]')).toHaveValue('');
+        expect(php(`echo DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->value('state');`)).toBe('uncertain');
+        await page.goto(`/admin/${SITE}`);
+        await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
 
     test('rejects editor settings and sibling-site or malformed direct order URLs', async ({ page, browser }) => {
