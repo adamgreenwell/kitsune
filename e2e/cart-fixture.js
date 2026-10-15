@@ -21,9 +21,12 @@ function resetCartFixtures() {
 }
 
 function setCartCourse({ price = '2000', stock = '12', available = true } = {}) {
+    // Explicit fixture stock reset below the production write boundary. Manual runtime changes require staff,
+    // a reviewed balance and a reason through StockWriter; this setup intentionally has no signed-in actor.
     php(atCartSite()
         + "$row=Kitsune\\Commerce\\Models\\Sellable::query()->where('sku','CAT-000')->firstOrFail();"
-        + `app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->updateSellable($row->id,$row->sku,${literal(price)},${stock === null ? 'null' : literal(stock)},$row->currency);`
+        + `app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->updateSellable($row->id,$row->sku,${literal(price)},$row->stock,$row->currency);`
+        + `DB::table('commerce_sellables')->where('org_id',$site->org_id)->where('id',$row->id)->update(['stock'=>${stock === null ? 'null' : `Kitsune\\Commerce\\Money\\MinorUnits::integer(${literal(stock)})`}]);`
         + '$listing=$row->listings()->firstOrFail();'
         + `app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->setAvailability($listing->id,${available ? 'true' : 'false'});`);
 }

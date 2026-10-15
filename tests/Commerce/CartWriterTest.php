@@ -110,8 +110,8 @@ it('rechecks live price and stock and keeps deleted listings removable without c
     $sellable->price_minor = '2500';
     $sellable->saveOrFail();
     expect($this->writer->snapshot($this->request)['total'])->toBe('50.00');
-    $sellable->stock = '1';
-    $sellable->saveOrFail();
+    // Simulate a committed payment changing live stock below the ordinary content/model write door.
+    DB::table('commerce_sellables')->where('org_id', $this->org->id)->where('id', $sellable->getKey())->update(['stock' => '1']);
     $state = $this->writer->snapshot($this->request);
     expect($state['items'][0]['available'])->toBeFalse()->and($state['total'])->toBeNull();
     $sellable->getConnection()->table('commerce_listings')->where('id', $listing)->delete();

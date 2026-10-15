@@ -194,7 +194,7 @@ it('shows only each sites content while price stock and mapping are shared and a
         ->and($first[0]['title'])->toBe('Product BOARD')->and($first[0]['description'])->toBe('A & B')->and($first[0]['held'])->toBeTrue()
         ->and($second[0]['title'])->toBe('Une planche')->and($second[0]['description'])->toBe('French description')->and($second[0]['held'])->toBeFalse()
         ->and($first[0]['price'])->toBe('31.00')->and($second[0]['price'])->toBe('31.00')
-        ->and($first[0]['stock'])->toBe('7')->and($second[0]['stock'])->toBe('7');
+        ->and($first[0]['stock'])->toBe('5')->and($second[0]['stock'])->toBe('5');
 
     $otherOrg = Org::create(['slug' => 'rival', 'name' => 'Rival', 'currency' => 'USD']);
     app(Context::class)->setOrg($otherOrg);

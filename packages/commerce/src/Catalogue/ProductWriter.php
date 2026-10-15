@@ -88,6 +88,13 @@ final class ProductWriter
             Org::query()->useWritePdo()->whereKey($this->context->orgId())->lockForUpdate()->first()
                 ?? throw new RuntimeException('The product org is no longer available.');
             $type = ProductType::current() ?? throw new RuntimeException('Apply and enable Storefront for this site before editing products.');
+            // Ordinary product edits never resubmit a stale stock balance. Adjustments have their own reason/history
+            // writer; read the current value beneath the same Org lock used by payment and inventory writes.
+            if ($id !== null) {
+                $current = Sellable::query()->useWritePdo()->whereKey($id)->lockForUpdate()->first()
+                    ?? throw new RuntimeException('The product is not available in this org.');
+                $commerce['stock'] = $current->stock;
+            }
             $listing = $id === null ? null : $this->listing($id, $type);
             $entry = $listing?->entry()->useWritePdo()->lockForUpdate()->first() ?? new Entry;
 
