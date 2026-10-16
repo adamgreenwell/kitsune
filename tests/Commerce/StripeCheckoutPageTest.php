@@ -37,10 +37,10 @@ it('reviews starts and reconciles a test Session through native root and nested 
     $result = stripeCheckoutPageProbe($scenario, $cached);
     expect(array_column($result['responses'], 'status'))->toBe([200, 303, 200, 303, 200, 200, 303, 200, 200, 422, 422, 303, 200, 200, in_array($scenario, ['expire', 'owner-expire'], true) ? 303 : 422, in_array($scenario, ['expire', 'owner-expire'], true) ? 303 : 422])
         ->and($result['cached'])->toBe($cached)->and($result['getReadOnly'])->toBeTrue()
-        ->and($result['responses'][5]['body'])->toContain('Test total: ', 'USD 24.00', 'about 30 minutes', 'Surf &amp; &lt;course&gt;')
+        ->and($result['responses'][5]['body'])->toContain('Total: ', 'USD 24.00', 'about 30 minutes', 'Surf &amp; &lt;course&gt;')
         ->and($result['responses'][6]['headers']['location'][0])->toStartWith('https://checkout.stripe.com/')
         ->and($result['responses'][6]['headers']['content-security-policy'][0])->toContain("form-action 'self' https://checkout.stripe.com")
-        ->and($result['responses'][12]['body'])->toContain(in_array($scenario, ['expire', 'owner-expire'], true) ? 'Test checkout expired' : 'Test checkout completed')
+        ->and($result['responses'][12]['body'])->toContain(in_array($scenario, ['expire', 'owner-expire'], true) ? 'Checkout expired' : 'Checkout completed')
         ->and($result['orders'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['attempts'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['stock'])->toBe('5')->and($result['grants'])->toBe(0)
         ->and($result['level'])->toBe(0)->and($result['pdo'])->toBeFalse();
     foreach ($result['calls'] as $call) {

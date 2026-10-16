@@ -7,6 +7,7 @@
     <p>{{ __('commerce::checkout.orders_help') }}</p>
     <div role="alert">@error('order') <p>{{ $message }}</p> @enderror</div>
     @if ($this->reference === null)
+        @include('commerce::live-admission')
         <x-filament::section :heading="__('commerce::exports.title')">
             <form action="{{ \Kitsune\Commerce\Filament\OrderResource::getUrl('export') }}" method="post" autocomplete="off" data-order-export style="display:grid;gap:1rem">
                 @csrf
@@ -119,7 +120,7 @@
         @if ($order['refund'] !== null && $order['refund']['attempts'] === [])<p>{{ __('commerce::paid.unrepresentable_refund') }}</p>@endif
         @if ($order['checkout_attempts'] !== [])
             <x-filament::section :heading="__('commerce::payments.history')">
-                <p>{{ __('commerce::payments.test_only') }}</p>
+                <p>{{ __('commerce::payments.mode_'.$order['mode']) }}</p>
                 @foreach ($order['checkout_attempts'] as $attempt)
                     <div class="space-y-3 py-3">
                         <p>{{ __('commerce::payments.attempt') }}: <span dir="ltr">{{ $attempt['reference'] }}</span></p>

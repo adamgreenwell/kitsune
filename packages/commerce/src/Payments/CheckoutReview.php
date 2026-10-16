@@ -59,12 +59,12 @@ final class CheckoutReview
                 if ($outerLevel !== 0) {
                     throw new OrderRefused;
                 }
-                $rates = app(ShippoRates::class)->quote(app(CredentialReader::class)->secret(OrderQuotes::SHIPPO_SLOT), true,
+                $rates = app(ShippoRates::class)->quote(app(CredentialReader::class)->secret(OrderQuotes::SHIPPO_SLOT), StripeMode::isTest($review['record']['mode']),
                     $review['snapshot']['shipFrom'], $review['details']['delivery'], $review['snapshot']['parcels'], $review['record']['currency']);
                 foreach ($rates as $rate) {
                     $original = $review['record']['shipping'];
                     if ($rate['carrier'] === $original['carrier'] && $rate['service'] === $original['service']
-                        && $rate['amountMinor'] === $original['amountMinor'] && $rate['currency'] === $original['currency'] && $rate['test'] === true) {
+                        && $rate['amountMinor'] === $original['amountMinor'] && $rate['currency'] === $original['currency'] && $rate['test'] === StripeMode::isTest($review['record']['mode'])) {
                         $shipping = $rate;
                         break;
                     }
@@ -169,7 +169,7 @@ final class CheckoutReview
         $order = $this->access->owned($request, $reference) ?? throw new OrderRefused;
         $raw = $order->getAttributes();
         $record = $this->privacy->record($order->getConnection(), (object) $raw);
-        if ($record['state'] !== 'prepared' || $record['mode'] !== 'test') {
+        if ($record['state'] !== 'prepared' || ! in_array($record['mode'], ['test', 'live'], true)) {
             throw new OrderRefused;
         }
         $ids = array_map(static fn (array $line): int => CartWriter::integer($line['listing_ref'], PHP_INT_MAX), $record['lines']);
@@ -194,7 +194,7 @@ final class CheckoutReview
             'reader' => $raw['reader_id'], 'cartRef' => (int) $raw['cart_ref'], 'cartVersion' => (int) $raw['cart_version'], 'items' => $items];
         $details = ['email' => $record['contact_email'], 'billing' => $record['billing'], 'delivery' => $record['delivery'] ?? $record['billing']];
         $snapshot = $this->quotes->capture($request, $details, $org, $site, $selection);
-        if ($snapshot['test'] !== true || $snapshot['currency'] !== $record['currency'] || $snapshot['taxMode'] !== $record['tax_mode']) {
+        if ($snapshot['test'] !== StripeMode::isTest($record['mode']) || $snapshot['currency'] !== $record['currency'] || $snapshot['taxMode'] !== $record['tax_mode']) {
             throw new OrderRefused('stale');
         }
         $lines = $snapshot['lines'];

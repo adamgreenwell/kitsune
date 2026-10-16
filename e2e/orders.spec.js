@@ -126,14 +126,14 @@ test('reviews test checkout by keyboard and permits its native POST redirect und
     await add(page);
     await review(page, `checkout-csp-${testInfo.retry}-${Date.now()}@kitsune.test`);
     const path = await prepare(page);
-    await page.getByRole('link', { name: 'Test checkout', exact: true }).click();
+    await page.getByRole('link', { name: 'Checkout', exact: true }).click();
     await expect(page).toHaveURL(`${new URL(page.url()).origin}${path}/payment`);
-    await expect(page.getByRole('heading', { name: 'Test checkout', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Checkout', exact: true })).toBeVisible();
     const reviewed = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `${path}/payment/review`);
-    await page.getByRole('button', { name: 'Review test checkout', exact: true }).focus();
+    await page.getByRole('button', { name: 'Review checkout', exact: true }).focus();
     await page.keyboard.press('Enter');
     expect((await reviewed).headers()['content-security-policy']).toContain("form-action 'self' https://checkout.stripe.com");
-    await expect(page.getByRole('heading', { name: 'Test total: USD 24.00', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Total: USD 24.00', exact: true })).toBeVisible();
     await axe(page);
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -172,7 +172,7 @@ test('reviews test checkout by keyboard and permits its native POST redirect und
     await page.context().setOffline(true);
     await session.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
     try {
-        await page.getByRole('button', { name: 'Continue to Stripe test checkout', exact: true }).focus();
+        await page.getByRole('button', { name: 'Continue to Stripe checkout', exact: true }).focus();
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL(fixtureUrl);
         await expect(page.getByRole('heading', { name: 'Stripe redirect fixture', exact: true })).toBeVisible();
@@ -195,8 +195,8 @@ test('shows unresolved test custody without exposing its Session URL and preserv
     const attempt = plantOpenTestCheckout(reference);
     const response = await page.goto(`${path}/payment/return?session_id=forged-browser-session`);
     expect(response.status()).toBe(200);
-    await expect(page.getByText('Test checkout is open', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Review test checkout', exact: true })).toHaveCount(0);
+    await expect(page.getByText('Checkout is open', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review checkout', exact: true })).toHaveCount(0);
     expect(await page.content()).not.toMatch(/private-checkout-capability|cs_test_|forged-browser-session/);
     await axe(page);
     await page.getByRole('link', { name: 'Back to order', exact: true }).click();
@@ -216,7 +216,7 @@ test('shows unresolved test custody without exposing its Session URL and preserv
     php(atSite + `DB::table('commerce_checkout_attempts')->where('org_id',$site->org_id)->where('site_id',$site->id)->where('reference',${literal(attempt)})`
         + "->update(['state'=>'expired','active_order_id'=>null,'checkout_url'=>null]);");
     await page.goto(`${path}/payment`);
-    await expect(page.getByText('Test checkout expired', { exact: true })).toBeVisible();
+    await expect(page.getByText('Checkout expired', { exact: true })).toBeVisible();
     await page.getByRole('link', { name: 'Back to order', exact: true }).click();
     await page.getByRole('button', { name: 'Erase this unpaid order and its personal data', exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${cart}$`));

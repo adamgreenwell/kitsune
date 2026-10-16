@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Kitsune\Core\Tests\CommerceLifecycleTestCase;
 use Kitsune\Core\Tests\CommerceTestCase;
 use Kitsune\Core\Tests\LevelZeroTestCase;
 use Kitsune\Core\Tests\ReaderTestCase;
@@ -17,6 +18,9 @@ use Kitsune\Core\Tests\UlidHostTestCase;
 uses(TestCase::class)->in(__DIR__.'/Core');
 
 uses(CommerceTestCase::class)->in(__DIR__.'/Commerce');
+
+// Actual outer commits and bounded provider I/O on the default SQLite floor and all supported test engines.
+uses(CommerceLifecycleTestCase::class)->in(__DIR__.'/CommerceLifecycle');
 
 // A host whose users carry ULIDs, run in the same process; the base test case rebuilds the schema between them (#91).
 uses(UlidHostTestCase::class)->in(__DIR__.'/UlidHost');
