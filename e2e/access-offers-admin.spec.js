@@ -54,7 +54,7 @@ function storedTerms() {
 function cleanup() {
     php(atSite() + "$ids=DB::table('commerce_order_lines')->where('org_id',$site->org_id)->where('sku','like','ACCESS-OFFER-%')->pluck('order_id')->unique()->all();"
         + "if(DB::table('commerce_orders')->where('org_id',$site->org_id)->whereIn('id',$ids)->whereNotIn('state',['prepared','cancelled'])->exists()){throw new RuntimeException('Refusing financial fixture deletion.');}"
-        + "foreach(['commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_access_effects','commerce_access_work','commerce_order_claims'] as $table){DB::table($table)->where('org_id',$site->org_id)->whereIn('order_id',$ids)->delete();}"
+        + "foreach(['commerce_privacy_holds','commerce_privacy_deliveries','commerce_privacy_transitions','commerce_order_privacy','commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_access_effects','commerce_access_work','commerce_order_claims'] as $table){DB::table($table)->where('org_id',$site->org_id)->whereIn('order_id',$ids)->delete();}"
         + "DB::table('commerce_orders')->where('org_id',$site->org_id)->whereIn('id',$ids)->delete();"
         + "DB::table('commerce_carts')->where('org_id',$site->org_id)->delete();"
         + "DB::table('commerce_sales_policies')->where('org_id',$site->org_id)->delete();"
