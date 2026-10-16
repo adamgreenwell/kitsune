@@ -35,14 +35,15 @@ final class StripeFinancialGraph
      */
     public function retrieve(Secret $secret, object $receipt, Closure $checkpoint): array
     {
+        StripeMode::isTest($receipt->mode ?? null);
         $checkpoint();
-        $charge = $this->stripe->retrieveCharge($secret, $receipt->charge_id);
+        $charge = $this->stripe->retrieveCharge($secret, $receipt->charge_id, $receipt->mode);
         $this->chargeProof($charge, $receipt);
         $checkpoint();
         $refunds = [];
         $cursor = null;
         for ($pageNumber = 0; $pageNumber < 2; $pageNumber++) {
-            $page = $this->stripe->listRefunds($secret, $receipt->charge_id, $cursor);
+            $page = $this->stripe->listRefunds($secret, $receipt->charge_id, $cursor, mode: $receipt->mode);
             $checkpoint();
             foreach ($page['refunds'] as $refund) {
                 $this->parentProof($refund, $receipt);
@@ -62,7 +63,7 @@ final class StripeFinancialGraph
         $disputes = [];
         $cursor = null;
         for ($pageNumber = 0; $pageNumber < 2; $pageNumber++) {
-            $page = $this->stripe->listDisputes($secret, $receipt->charge_id, $cursor);
+            $page = $this->stripe->listDisputes($secret, $receipt->charge_id, $cursor, mode: $receipt->mode);
             $checkpoint();
             foreach ($page['disputes'] as $dispute) {
                 $this->parentProof($dispute, $receipt);
@@ -79,7 +80,7 @@ final class StripeFinancialGraph
         if ($page['hasMore']) {
             throw new CheckoutRefused('operator');
         }
-        $current = $this->stripe->retrieveCharge($secret, $receipt->charge_id);
+        $current = $this->stripe->retrieveCharge($secret, $receipt->charge_id, $receipt->mode);
         $this->chargeProof($current, $receipt);
         $checkpoint();
         if ($charge !== $current || ($charge['disputed'] && $disputes === [])) {
@@ -106,7 +107,7 @@ final class StripeFinancialGraph
     /** @param Charge $charge */
     private function chargeProof(array $charge, object $receipt): void
     {
-        if ($charge['id'] !== $receipt->charge_id || $charge['paymentIntent'] !== $receipt->payment_intent_id
+        if ($charge['test'] !== StripeMode::isTest($receipt->mode) || $charge['id'] !== $receipt->charge_id || $charge['paymentIntent'] !== $receipt->payment_intent_id
             || $charge['currency'] !== $receipt->currency || $charge['amount'] !== StripeAmounts::toWire($receipt->amount_minor, $receipt->currency)
             || $charge['captured'] !== $charge['amount'] || ! $charge['paid'] || ! $charge['capturedFully'] || $charge['status'] !== 'succeeded') {
             throw new CheckoutRefused('changed');

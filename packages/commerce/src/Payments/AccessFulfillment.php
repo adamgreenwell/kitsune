@@ -628,7 +628,7 @@ final class AccessFulfillment
      */
     private function manifest(Connection $connection, #[\SensitiveParameter] object $order, bool $lock): array
     {
-        if ($order->state !== 'paid' || $order->mode !== 'test') {
+        if ($order->state !== 'paid' || ! in_array($order->mode, ['test', 'live'], true)) {
             throw new CheckoutRefused('changed');
         }
         app(PaidOrders::class)->projection($connection, (int) $order->org_id, $order, $lock);

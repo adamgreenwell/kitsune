@@ -82,7 +82,7 @@ final class PaymentMaintenance
                                 ->where(fn ($active) => $active->where('o.origin', 'external')->orWhereIn('o.state', ['needs_response', 'under_review', 'lost'])))
                             ->orWhereExists(fn ($p) => $p->selectRaw('1')->from(PaidOrders::RECEIPTS.' as p')->whereColumn('p.order_id', 'a.order_id')
                                 ->where(fn ($held) => $held->where('p.allocation_state', 'held')->orWhereExists(fn ($s) => $s->selectRaw('1')->from(FinancialSignals::TABLE.' as s')
-                                    ->whereColumn('s.org_id', 'p.org_id')->whereColumn('s.charge_id', 'p.charge_id')->where('s.mode', 'test')->where('s.state', 'unresolved'))));
+                                    ->whereColumn('s.org_id', 'p.org_id')->whereColumn('s.charge_id', 'p.charge_id')->whereColumn('s.mode', 'p.mode')->where('s.state', 'unresolved'))));
                     });
                 }
                 foreach ($financial->orderBy('a.replay_count')->orderBy('a.id')->limit($limit)->get(['a.id', 'a.site_id', 'a.order_id', 'a.replay_count']) as $row) {

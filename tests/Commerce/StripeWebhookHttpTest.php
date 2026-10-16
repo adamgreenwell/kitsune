@@ -127,3 +127,43 @@ it('refuses unverifiable unbounded foreign and wrong-mode deliveries without raw
     expect($response->getStatusCode())->toBe(400)->and(DB::table('commerce_stripe_events')->count())->toBe(0)
         ->and($request->getContent())->toBe('')->and($request->query->all())->toBe([]);
 })->with(['signature', 'live', 'mode', 'foreign', 'query', 'disabled', 'guard']);
+
+it('accepts signed live financial hints without new-sale admission and partitions minimal custody by mode', function (): void {
+    app(Context::class)->setSite($this->ingress);
+    $key = 'whsec_'.str_repeat('l', 32);
+    CredentialConsoleAuthority::run(app(Context::class), 'set', StripeWebhook::SLOT, CredentialMode::Live, null,
+        fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->set(StripeWebhook::SLOT, CredentialMode::Live, $key, console: $authority));
+    CredentialConsoleAuthority::run(app(Context::class), 'switch', null, CredentialMode::Live, null,
+        fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->switchTo(CredentialMode::Live, console: $authority));
+    $event = ['object' => 'event', 'id' => 'evt_LiveHttpFinancial', 'type' => 'charge.dispute.created',
+        'api_version' => StripeCheckout::API_VERSION, 'livemode' => true,
+        'data' => ['object' => ['object' => 'dispute', 'id' => 'du_LiveHttp', 'charge' => 'ch_LiveHttp', 'livemode' => true,
+            'customer_details' => ['email' => 'private-live@example.test']]]];
+    [$response, $request] = webhookHttp($event, $key);
+    expect($response->getStatusCode())->toBe(200)->and($request->getContent())->toBe('')
+        ->and(DB::table('commerce_stripe_admissions')->count())->toBe(0)
+        ->and(DB::table('commerce_financial_signals')->value('mode'))->toBe('live')
+        ->and(DB::table('commerce_financial_signals')->value('state'))->toBe('unresolved');
+    expect(json_encode(DB::table('commerce_financial_signals')->sole(), JSON_THROW_ON_ERROR))->not->toContain('private-live@example.test', $key);
+    [$duplicate] = webhookHttp($event, $key);
+    expect($duplicate->getStatusCode())->toBe(200)->and(DB::table('commerce_financial_signals')->count())->toBe(1);
+});
+
+it('refuses live-mode ingress signed with a test key or carrying a test snapshot before storing bytes', function (string $kind): void {
+    app(Context::class)->setSite($this->ingress);
+    $liveKey = 'whsec_'.str_repeat('l', 32);
+    CredentialConsoleAuthority::run(app(Context::class), 'set', StripeWebhook::SLOT, CredentialMode::Live, null,
+        fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->set(StripeWebhook::SLOT, CredentialMode::Live, $liveKey, console: $authority));
+    CredentialConsoleAuthority::run(app(Context::class), 'switch', null, CredentialMode::Live, null,
+        fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->switchTo(CredentialMode::Live, console: $authority));
+    $event = $this->event;
+    if ($kind === 'key') {
+        $event['livemode'] = true;
+        $event['data']['object']['livemode'] = true;
+        $event['data']['object']['id'] = 'cs_live_Http';
+    }
+    [$response, $request] = webhookHttp($event, $kind === 'key' ? $this->key : $liveKey);
+    expect($response->getStatusCode())->toBe(400)->and($request->getContent())->toBe('')
+        ->and(DB::table('commerce_stripe_events')->count())->toBe(0)
+        ->and(DB::table('commerce_financial_signals')->count())->toBe(0);
+})->with(['key', 'snapshot']);

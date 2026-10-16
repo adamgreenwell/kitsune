@@ -34,9 +34,10 @@ final class FinancialSignals
     public function capture(Connection $connection, int $org, array $event, #[\SensitiveParameter] string $raw, CarbonImmutable $verifiedAt, ?string $verifiedAccountId = null): array
     {
         self::inside($connection, $org);
-        $expected = ['org_id' => $org, 'mode' => 'test', 'event_id' => $event['id'], 'event_type' => $event['type'],
+        $mode = StripeMode::fromTest($event['test'] ?? null);
+        $expected = ['org_id' => $org, 'mode' => $mode, 'event_id' => $event['id'], 'event_type' => $event['type'],
             'charge_id' => $event['financialChargeId'], 'subject_id' => $event['financialSubjectId'], 'payload_hash' => hash('sha256', $raw)];
-        $rows = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)->where('mode', 'test')
+        $rows = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)->where('mode', $mode)
             ->where('event_id', $event['id'])->limit(2)->lockForUpdate()->get();
         if ($rows->count() > 1) {
             throw new CheckoutRefused;
@@ -49,16 +50,16 @@ final class FinancialSignals
                     throw new CheckoutRefused('changed');
                 }
             }
-            if (app(PrivacyState::class)->replayState($connection, $org, 'test', $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
+            if (app(PrivacyState::class)->replayState($connection, $org, $mode, $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
                 return ['id' => 0, 'duplicate' => true, 'state' => 'erased'];
             }
 
             return ['id' => (int) $row->id, 'duplicate' => true, 'state' => $row->state];
         }
-        if (app(PrivacyState::class)->replayState($connection, $org, 'test', $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
+        if (app(PrivacyState::class)->replayState($connection, $org, $mode, $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
             return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
         }
-        if (count(self::rows($connection, $org, $expected['charge_id'], true)) >= StripeEventInbox::MAX_EVENTS_PER_ORDER) {
+        if (count(self::rows($connection, $org, $expected['charge_id'], true, $mode)) >= StripeEventInbox::MAX_EVENTS_PER_ORDER) {
             throw new CheckoutRefused('limit');
         }
         $now = CarbonImmutable::now('UTC')->startOfSecond();
@@ -82,13 +83,13 @@ final class FinancialSignals
     /** All matching minimal receipts belong in the ledger custody digest, including previously resolved ones.
      * @return list<object>
      */
-    public static function rows(Connection $connection, int $org, string $chargeId, bool $lock = false): array
+    public static function rows(Connection $connection, int $org, string $chargeId, bool $lock = false, string $mode = 'test'): array
     {
-        if (app(Context::class)->orgId() !== $org || preg_match('/\Ach_[A-Za-z0-9_]{1,95}\z/D', $chargeId) !== 1
+        if (! in_array($mode, ['test', 'live'], true) || app(Context::class)->orgId() !== $org || preg_match('/\Ach_[A-Za-z0-9_]{1,95}\z/D', $chargeId) !== 1
             || ! $connection->getSchemaBuilder()->hasColumns(self::TABLE, self::COLUMNS)) {
             throw new CheckoutRefused('setup');
         }
-        $query = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)->where('mode', 'test')
+        $query = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)->where('mode', $mode)
             ->where('charge_id', $chargeId)->orderBy('id')->limit(StripeEventInbox::MAX_EVENTS_PER_ORDER + 1);
         $rows = ($lock ? $query->lockForUpdate() : $query)->get()->all();
         if (count($rows) > StripeEventInbox::MAX_EVENTS_PER_ORDER) {
@@ -107,7 +108,8 @@ final class FinancialSignals
     public static function resolve(Connection $connection, int $org, string $chargeId, array $graph): void
     {
         self::inside($connection, $org);
-        foreach (self::rows($connection, $org, $chargeId, true) as $row) {
+        $mode = StripeMode::fromTest($graph['charge']['test'] ?? null);
+        foreach (self::rows($connection, $org, $chargeId, true, $mode) as $row) {
             $kind = str_starts_with($row->event_type, 'refund.') ? 'refunds' : 'disputes';
             $present = $row->event_type === 'charge.refunded'
                 ? ($graph['charge']['id'] ?? null) === $chargeId
@@ -119,7 +121,7 @@ final class FinancialSignals
                 }
             }
         }
-        self::rows($connection, $org, $chargeId, true);
+        self::rows($connection, $org, $chargeId, true, $mode);
     }
 
     private static function inside(Connection $connection, int $org): void
@@ -131,7 +133,7 @@ final class FinancialSignals
 
     private static function validate(object $row, int $org): void
     {
-        if ((string) $row->org_id !== (string) $org || $row->mode !== 'test' || ! in_array($row->event_type, self::TYPES, true)
+        if ((string) $row->org_id !== (string) $org || ! in_array($row->mode, ['test', 'live'], true) || ! in_array($row->event_type, self::TYPES, true)
             || preg_match('/\Aevt_[A-Za-z0-9_]{1,251}\z/D', $row->event_id) !== 1
             || preg_match('/\Ach_[A-Za-z0-9_]{1,95}\z/D', $row->charge_id) !== 1
             || preg_match('/\A'.(str_starts_with($row->event_type, 'refund.') ? 're_'

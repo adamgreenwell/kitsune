@@ -72,9 +72,10 @@ final class StripeEventInbox
     {
         $this->runtime($connection, $orgId);
         $this->schema($connection, required: true);
+        $mode = StripeMode::fromTest($event['test'] ?? null);
         $hash = hash('sha256', $raw);
         // This also recognizes an erased receipt without recreating its deleted correlation graph.
-        $duplicates = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $orgId)->where('mode', 'test')
+        $duplicates = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $orgId)->where('mode', $mode)
             ->where('event_id', $event['id'])->orderBy('id')->limit(2)->lockForUpdate()->get(self::COLUMNS);
         if ($duplicates->isNotEmpty()) {
             if ($duplicates->count() !== 1) {
@@ -125,7 +126,7 @@ final class StripeEventInbox
             $event = $this->refundEnvelope($connection, $orgId, $event);
         }
         $routes = $connection->table(self::ROUTING)->useWritePdo()->where('org_id', $orgId)
-            ->where('order_reference', $event['orderReference'])->where('attempt_reference', $event['attemptReference'])
+            ->where('mode', $mode)->where('order_reference', $event['orderReference'])->where('attempt_reference', $event['attemptReference'])
             ->orderBy('id')->limit(2)->lockForUpdate()->get();
         if ($routes->isEmpty() && $privacy['purged']) {
             return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
@@ -152,7 +153,7 @@ final class StripeEventInbox
             'api_version' => $event['apiVersion'], 'session_id' => $event['sessionId'], 'account_id' => $route->account_id,
             'refund_reference' => $event['refundReference'] ?? null, 'refund_id' => $event['refundId'] ?? null,
             'financial_charge_id' => $event['financialChargeId'] ?? null, 'financial_subject_id' => $event['financialSubjectId'] ?? null,
-            'mode' => 'test', 'order_reference' => $route->order_reference, 'attempt_reference' => $route->attempt_reference,
+            'mode' => $mode, 'order_reference' => $route->order_reference, 'attempt_reference' => $route->attempt_reference,
             'payload_hash' => $hash, 'raw_payload' => $keepRaw ? $raw : null, 'state' => 'pending', 'replay_count' => 0, 'category' => null,
             'lease_token' => null, 'lease_until' => null, 'verified_at' => self::stored($verifiedAt),
             'received_at' => self::stored($received), 'raw_expires_at' => self::stored($received->addDays(7)),
@@ -571,7 +572,7 @@ final class StripeEventInbox
 
     private function validate(object $row, int $org, ?object $order = null): void
     {
-        if (self::key($row->id ?? null) < 1 || self::key($row->org_id ?? null) !== $org || $row->mode !== 'test'
+        if (self::key($row->id ?? null) < 1 || self::key($row->org_id ?? null) !== $org || ! in_array($row->mode, ['test', 'live'], true)
             || ! self::identifier($row->account_id ?? null, 'acct_') || ! self::identifier($row->event_id ?? null, 'evt_', 255)
             || ! in_array($row->event_type ?? null, ['checkout.session.completed', 'checkout.session.expired', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', ...FinancialSignals::TYPES], true)
             || ! is_string($row->api_version ?? null) || preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\.[a-z]+\z/D', $row->api_version) !== 1
@@ -625,7 +626,7 @@ final class StripeEventInbox
             foreach (['site_id', 'order_id', 'attempt_id'] as $column) {
                 self::key($row->{$column});
             }
-            if (! self::hex($row->order_reference, 32) || ! self::hex($row->attempt_reference, 32) || ! self::identifier($row->session_id, 'cs_test_', 255)
+            if (! self::hex($row->order_reference, 32) || ! self::hex($row->attempt_reference, 32) || ! StripeMode::session($row->session_id, $row->mode)
                 || ($order !== null && (self::key($row->order_id) !== self::key($order->id) || self::key($row->site_id) !== self::key($order->site_id)
                     || $row->order_reference !== $order->reference || $row->mode !== $order->mode))) {
                 throw new CheckoutRefused;
@@ -639,7 +640,7 @@ final class StripeEventInbox
             self::key($row->{$column} ?? null);
         }
         if (self::key($row->org_id) !== $org || ! self::hex($row->order_reference ?? null, 32)
-            || ! self::hex($row->attempt_reference ?? null, 32) || ! self::identifier($row->account_id ?? null, 'acct_') || $row->mode !== 'test'
+            || ! self::hex($row->attempt_reference ?? null, 32) || ! self::identifier($row->account_id ?? null, 'acct_') || ! in_array($row->mode, ['test', 'live'], true)
             || ($order !== null && (self::key($row->order_id) !== self::key($order->id) || self::key($row->site_id) !== self::key($order->site_id)
                 || $row->order_reference !== $order->reference || $row->mode !== $order->mode))) {
             throw new CheckoutRefused;
@@ -686,7 +687,7 @@ final class StripeEventInbox
     private function financialEnvelope(Connection $connection, int $org, array $event): ?array
     {
         $payments = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('org_id', $org)
-            ->where('charge_id', $event['financialChargeId'])->limit(2)->lockForUpdate()->get();
+            ->where('mode', StripeMode::fromTest($event['test']))->where('charge_id', $event['financialChargeId'])->limit(2)->lockForUpdate()->get();
         if ($payments->isEmpty()) {
             return null;
         }
@@ -750,7 +751,7 @@ final class StripeEventInbox
         $obligation = $connection->table(PaidOrders::OBLIGATIONS)->useWritePdo()->where('id', $refund->obligation_id)->first() ?? throw new CheckoutRefused;
         app(PaidOrders::class)->refundAttempt($refund, $obligation, $payment, $order);
         $request = app(PaidOrders::class)->refundRequest($refund);
-        if ((string) $order->org_id !== (string) $org || $order->reference !== $event['orderReference']
+        if ($payment->mode !== StripeMode::fromTest($event['test']) || (string) $order->org_id !== (string) $org || $order->reference !== $event['orderReference']
             || $request['metadata']['kitsune_request'] !== $event['requestDigest']
             || ($refund->refund_id !== null && $refund->refund_id !== $event['refundId'])) {
             throw new CheckoutRefused;
@@ -767,7 +768,7 @@ final class StripeEventInbox
             $base = ['id', 'type', 'apiVersion', 'financialChargeId', 'financialSubjectId', 'test'];
             $metadata = ['refundId', 'orderReference', 'refundReference', 'requestDigest'];
             if (array_diff(array_keys($event), [...$base, ...$metadata]) !== [] || array_diff($base, array_keys($event)) !== []
-                || $event['test'] !== true || ! self::identifier($event['id'], 'evt_', 255)
+                || ! is_bool($event['test']) || ! self::identifier($event['id'], 'evt_', 255)
                 || ! in_array($event['type'], FinancialSignals::TYPES, true) || $event['apiVersion'] !== StripeCheckout::API_VERSION
                 || ! self::identifier($event['financialChargeId'], 'ch_')
                 || ! self::identifier($event['financialSubjectId'], str_starts_with($event['type'], 'refund.') ? 're_'
@@ -782,7 +783,7 @@ final class StripeEventInbox
         }
         if (str_starts_with($event['type'] ?? '', 'refund.')) {
             $keys = ['id', 'type', 'apiVersion', 'refundId', 'orderReference', 'refundReference', 'requestDigest', 'test'];
-            if (count($event) !== count($keys) || array_diff(array_keys($event), $keys) !== [] || $event['test'] !== true
+            if (count($event) !== count($keys) || array_diff(array_keys($event), $keys) !== [] || ! is_bool($event['test'])
                 || ! self::identifier($event['id'], 'evt_', 255) || ! in_array($event['type'], ['refund.created', 'refund.updated', 'refund.failed'], true)
                 || $event['apiVersion'] !== StripeCheckout::API_VERSION || ! self::identifier($event['refundId'], 're_')
                 || ! self::hex($event['orderReference'], 32) || ! self::hex($event['refundReference'], 32) || ! self::hex($event['requestDigest'], 64)) {
@@ -792,9 +793,9 @@ final class StripeEventInbox
             return;
         }
         $keys = ['id', 'type', 'apiVersion', 'sessionId', 'orderReference', 'attemptReference', 'test'];
-        if (count($event) !== count($keys) || array_diff(array_keys($event), $keys) !== [] || $event['test'] !== true
+        if (count($event) !== count($keys) || array_diff(array_keys($event), $keys) !== [] || ! is_bool($event['test'])
             || ! self::identifier($event['id'], 'evt_', 255) || ! in_array($event['type'], ['checkout.session.completed', 'checkout.session.expired', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', 'refund.created', 'refund.updated', 'refund.failed'], true)
-            || $event['apiVersion'] !== StripeCheckout::API_VERSION || ! self::identifier($event['sessionId'], 'cs_test_', 255)
+            || $event['apiVersion'] !== StripeCheckout::API_VERSION || ! StripeMode::session($event['sessionId'], StripeMode::fromTest($event['test']))
             || ! self::hex($event['orderReference'], 32) || ! self::hex($event['attemptReference'], 32)) {
             throw new CheckoutRefused;
         }
@@ -820,7 +821,7 @@ final class StripeEventInbox
             if (! isset($hints[$key])) {
                 continue;
             }
-            $state = app(PrivacyState::class)->replayIdentity($connection, $org, 'test', $kind, $hints[$key], $verifiedAccountId);
+            $state = app(PrivacyState::class)->replayIdentity($connection, $org, StripeMode::fromTest($hints['test'] ?? null), $kind, $hints[$key], $verifiedAccountId);
             if ($state !== null) {
                 foreach (['subject_erased', 'invoice_expired'] as $flag) {
                     $result[$flag] = $result[$flag] || $state[$flag];
@@ -863,7 +864,7 @@ final class StripeEventInbox
     /** @return array<string,mixed> */
     private static function receiptHints(object $row): array
     {
-        return ['financialChargeId' => $row->financial_charge_id, 'orderReference' => $row->order_reference,
+        return ['test' => StripeMode::isTest($row->mode), 'financialChargeId' => $row->financial_charge_id, 'orderReference' => $row->order_reference,
             'attemptReference' => $row->attempt_reference, 'sessionId' => $row->session_id,
             'refundReference' => $row->refund_reference, 'refundId' => $row->refund_id];
     }
@@ -912,7 +913,7 @@ final class StripeEventInbox
         $this->schema($connection, required: true);
         $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->first();
         $version = ModuleDiscovery::version('kitsune/commerce');
-        if ($this->context->orgId() !== $org || ($mode !== null && $mode->mode !== 'test') || $version === null
+        if ($this->context->orgId() !== $org || ($mode !== null && ! in_array($mode->mode, ['test', 'live'], true)) || $version === null
             || ! $connection->table('modules')->useWritePdo()->where('handle', 'kitsune/commerce')->where('is_enabled', true)->where('version', $version)->exists()) {
             throw new CheckoutRefused('changed');
         }

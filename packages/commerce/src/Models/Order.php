@@ -26,6 +26,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property int $site_id
  * @property string $reference
  * @property string $state
+ * @property string $mode
  * @property string $currency
  * @property string|null $reader_id
  * @property string $owner_key

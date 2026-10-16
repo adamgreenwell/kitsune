@@ -177,7 +177,7 @@ final class CheckoutAttempts
     private function validate(object $row, int $org, object $order): void
     {
         if ((string) $row->org_id !== (string) $org || (string) $row->site_id !== (string) $order->site_id
-            || (string) $row->order_id !== (string) $order->id || $order->mode !== 'test' || $row->mode !== 'test'
+            || (string) $row->order_id !== (string) $order->id || ! in_array($order->mode, ['test', 'live'], true) || $row->mode !== $order->mode
             || $row->currency !== $order->currency || ! is_string($row->api_version)
             || preg_match('/\A20[0-9]{2}-[0-9]{2}-[0-9]{2}\.[a-z]{1,16}\z/D', $row->api_version) !== 1
             || ! self::hex($row->reference, 32) || ! self::hex($row->credential_witness, 64)
@@ -198,7 +198,7 @@ final class CheckoutAttempts
             || ($row->lease_token !== null && (! self::hex($row->lease_token, 64) || self::instant($row->lease_until)->lessThan($reviewed)))) {
             throw new CheckoutRefused;
         }
-        if (($row->session_id !== null && (! is_string($row->session_id) || preg_match('/\Acs_test_[A-Za-z0-9_]{1,240}\z/D', $row->session_id) !== 1))
+        if (($row->session_id !== null && (! is_string($row->session_id) || ! StripeMode::session($row->session_id, $row->mode)))
             || (in_array($row->state, ['open', 'expired', 'completed'], true) && $row->session_id === null)
             || ($row->state === 'rejected' && $row->session_id !== null)
             || ($row->checkout_url !== null && ! self::url($row->checkout_url, stripe: true))

@@ -58,7 +58,7 @@ final class RefundRecovery
         return $this->process($orderReference, $attemptReference, knownRefundId: $knownRefundId);
     }
 
-    /** The original account's supplied test key remains transient; no current key or mode is rewritten.
+    /** The original account's supplied original-mode key remains transient; no current key or mode is rewritten.
      * @return array{reference:string,state:string}
      */
     public function recoverAsOwner(string $orderReference, string $attemptReference, Secret $key,
@@ -159,11 +159,11 @@ final class RefundRecovery
                     'graph' => $graph, 'knownRefundId' => $known];
             });
             $secret = $key ?? $captured['secret'];
-            if ($this->stripe->account($secret) !== $captured['frame']['receipt']->account_id) {
+            if ($this->stripe->account($secret, $captured['frame']['receipt']->mode) !== $captured['frame']['receipt']->account_id) {
                 throw new CheckoutRefused('changed');
             }
             $this->check($orderReference, $attemptReference, $captured, $owner, $password);
-            $charge = $this->stripe->retrieveCharge($secret, $captured['frame']['receipt']->charge_id);
+            $charge = $this->stripe->retrieveCharge($secret, $captured['frame']['receipt']->charge_id, $captured['frame']['receipt']->mode);
             $this->chargeProof($charge, $captured['frame']['receipt']);
             $this->check($orderReference, $attemptReference, $captured, $owner, $password);
             $financialIds = [];
@@ -178,7 +178,7 @@ final class RefundRecovery
             $row = $captured['row'];
             $known = $captured['knownRefundId'];
             if ($known !== null) {
-                $refund = $this->stripe->retrieveRefund($secret, $known);
+                $refund = $this->stripe->retrieveRefund($secret, $known, $captured['frame']['receipt']->mode);
                 $this->refundProof($refund, $captured);
                 $this->check($orderReference, $attemptReference, $captured, $owner, $password);
                 if (AllocationAmounts::compare($charge['refunded'], StripeAmounts::toWire($captured['frame']['obligation']->amount_minor, $charge['currency'])) > 0
@@ -193,7 +193,7 @@ final class RefundRecovery
             $cursor = null;
             $conflict = false;
             for ($pageNumber = 0; $pageNumber < 2; $pageNumber++) {
-                $page = $this->stripe->listRefunds($secret, $captured['frame']['receipt']->charge_id, $cursor);
+                $page = $this->stripe->listRefunds($secret, $captured['frame']['receipt']->charge_id, $cursor, mode: $captured['frame']['receipt']->mode);
                 $this->check($orderReference, $attemptReference, $captured, $owner, $password);
                 foreach ($page['refunds'] as $refund) {
                     if (isset($seen[$refund['id']])) {
@@ -242,7 +242,7 @@ final class RefundRecovery
             if (! CheckoutAttempts::instant($captured['row']->first_submitted_at)->addHours(self::RETRY_HOURS)->greaterThan(self::now())) {
                 return $this->finish($orderReference, $attemptReference, $captured, $owner, $password, 'held', null, 'operator');
             }
-            $refund = $this->stripe->createRefund($secret, $this->paid->refundRequest($captured['row']), $captured['row']->idempotency_key);
+            $refund = $this->stripe->createRefund($secret, $this->paid->refundRequest($captured['row']), $captured['row']->idempotency_key, $captured['frame']['receipt']->mode);
             $this->refundProof($refund, $captured);
 
             return $this->finish($orderReference, $attemptReference, $captured, $owner, $password, $refund['status'], $refund['id']);
@@ -361,7 +361,7 @@ final class RefundRecovery
         $row = $this->orders->find($connection, $this->context->orgId() ?? throw new CheckoutRefused,
             $this->context->siteId() ?? throw new CheckoutRefused, $reference, true) ?? throw new CheckoutRefused;
         $this->orders->record($connection, $row);
-        if ($row->state !== 'paid' || $row->mode !== 'test') {
+        if ($row->state !== 'paid' || ! in_array($row->mode, ['test', 'live'], true)) {
             throw new CheckoutRefused('live');
         }
 
@@ -516,7 +516,7 @@ final class RefundRecovery
     /** @param array<string,mixed> $charge */
     private function chargeProof(array $charge, object $receipt): void
     {
-        if ($charge['test'] !== true || $charge['id'] !== $receipt->charge_id || $charge['paymentIntent'] !== $receipt->payment_intent_id
+        if ($charge['test'] !== StripeMode::isTest($receipt->mode) || $charge['id'] !== $receipt->charge_id || $charge['paymentIntent'] !== $receipt->payment_intent_id
             || $charge['currency'] !== $receipt->currency || $charge['amount'] !== StripeAmounts::toWire($receipt->amount_minor, $receipt->currency)
             || $charge['captured'] !== $charge['amount'] || ! $charge['paid'] || ! $charge['capturedFully'] || $charge['status'] !== 'succeeded') {
             throw new CheckoutRefused('changed');
@@ -571,17 +571,8 @@ final class RefundRecovery
     {
         $connection = (new Order)->getConnection();
         $org = $this->context->orgId() ?? throw new CheckoutRefused;
-        $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->first();
-        if ($mode !== null && $mode->mode !== 'test') {
-            throw new CheckoutRefused('live');
-        }
-        $row = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('slot', StripeCheckout::SLOT)
-            ->where('mode', 'test')->lockForUpdate()->first();
-        if ($row === null || ! is_string($row->ciphertext) || $row->ciphertext === '' || ! is_string($row->key_id)) {
-            throw new CheckoutRefused('setup');
-        }
 
-        return hash('sha256', implode("\0", [(string) $row->id, (string) $row->org_id, $row->slot, $row->mode, $row->ciphertext, $row->key_id, $row->changed_at]));
+        return StripeMode::witness($connection, $org, StripeMode::current($connection, $org));
     }
 
     /** @param array<string,mixed> $changes */

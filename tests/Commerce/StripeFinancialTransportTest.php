@@ -166,7 +166,7 @@ final class StripeFinancialTransportTest extends TestCase
 
     private static function receipt(): object
     {
-        return (object) ['charge_id' => 'ch_Fixture', 'payment_intent_id' => 'pi_Fixture', 'currency' => 'USD', 'amount_minor' => '2000'];
+        return (object) ['mode' => 'test', 'charge_id' => 'ch_Fixture', 'payment_intent_id' => 'pi_Fixture', 'currency' => 'USD', 'amount_minor' => '2000'];
     }
 
     private static function charge(): array

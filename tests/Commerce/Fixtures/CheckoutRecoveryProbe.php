@@ -200,7 +200,7 @@ try {
     }
 } catch (CheckoutRefused $refused) {
     $failure = $refused->reason;
-    $safeFailure = $refused->getPrevious() === null && $refused->getMessage() === 'The test checkout is unavailable.';
+    $safeFailure = $refused->getPrevious() === null && $refused->getMessage() === 'Checkout is unavailable.';
 }
 $finalAttempt = (array) DB::table(CheckoutAttempts::TABLE)->where('id', $attempt->id)->first();
 echo json_encode(['states' => $states, 'failure' => $failure, 'safeFailure' => $safeFailure, 'nestedRefusal' => $nestedRefusal,

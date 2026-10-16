@@ -23,7 +23,7 @@ final class CheckoutSession
         foreach ($payload['line_items'] as $item) {
             $total = CartAmounts::add($total, $item['price_data']['unit_amount']);
         }
-        if ($session['test'] !== true || $session['currency'] !== $row->currency || $session['amountTotal'] !== $total
+        if ($session['test'] !== StripeMode::isTest($row->mode) || ! StripeMode::session($session['id'], $row->mode) || $session['currency'] !== $row->currency || $session['amountTotal'] !== $total
             || $session['clientReference'] !== $payload['client_reference_id'] || $session['attemptReference'] !== $row->reference
             || $session['orderReference'] !== $payload['metadata']['kitsune_order'] || $session['expiresAt'] !== $payload['expires_at']
             || $session['id'] !== $sessionId || ($row->session_id !== null && $session['id'] !== $row->session_id)
