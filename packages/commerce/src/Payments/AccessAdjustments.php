@@ -14,6 +14,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
@@ -50,6 +51,7 @@ final class AccessAdjustments
     public function claimed(Connection $connection, #[\SensitiveParameter] object $order): void
     {
         $this->inside($connection, $order);
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         [$work] = $this->checked($connection, $order, true);
         $original = app(AccessFulfillment::class)->forAdjustment($connection, $order);
         if ($order->reader_id !== null || $original['reader'] === null || $original['work']->claim_hash === null) {
@@ -92,6 +94,10 @@ final class AccessAdjustments
     {
         $authority = $this->authority();
         [$work] = $this->checked($connection, $order, true);
+        if ($work->state === 'suppressed') {
+            return ['state' => 'suppressed', 'category' => 'subject_erased', 'processed' => 0];
+        }
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         if ($order->state !== 'paid') {
             return ['state' => 'awaiting_payment', 'category' => null, 'processed' => 0];
         }
@@ -155,6 +161,7 @@ final class AccessAdjustments
             $verify = function () use ($connection, $order, $authority, $before, $reader, $effect, &$expectedSources): void {
                 $this->ready($connection);
                 $this->inside($connection, $order);
+                app(PrivacyState::class)->assertAccessAllowed($connection, $order);
                 // The core writer checks its own row. Other names must survive this callback byte for byte.
                 $this->checkSources($connection, $order, $reader, $expectedSources, $effect->entitlement);
                 if ($this->authority() !== $authority || ! hash_equals($before, $this->digest($connection, $order))) {
@@ -276,8 +283,13 @@ final class AccessAdjustments
         }
         $work = $parents->sole();
         self::child($work, $order);
-        if (! in_array($work->state, ['awaiting_payment', 'awaiting_claim', 'pending', 'held', 'processed'], true)
+        if (! in_array($work->state, ['awaiting_payment', 'awaiting_claim', 'pending', 'held', 'processed', 'suppressed'], true)
             || ($work->category !== null && (! is_string($work->category) || preg_match('/\A[a-z_]{1,32}\z/D', $work->category) !== 1))) {
+            throw new CheckoutRefused('changed');
+        }
+        $erased = app(PrivacyState::class)->checked($connection, $order, $lock)['subject_erased'] ?? false;
+        if (($work->state === 'suppressed') !== $erased
+            || ($erased && ($work->category !== 'subject_erased' || $work->beneficiary_hash !== null))) {
             throw new CheckoutRefused('changed');
         }
         foreach (['manifest_hash', 'financial_digest', 'beneficiary_hash'] as $column) {
@@ -321,6 +333,9 @@ final class AccessAdjustments
                 }
             }
             if ($effect->processed_digest !== null && (! is_string($effect->processed_digest) || preg_match('/\A[a-f0-9]{64}\z/D', $effect->processed_digest) !== 1)) {
+                throw new CheckoutRefused('changed');
+            }
+            if ($erased && $effect->revocation_witness !== null) {
                 throw new CheckoutRefused('changed');
             }
             self::witness($effect->revocation_witness);

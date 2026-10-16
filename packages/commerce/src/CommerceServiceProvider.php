@@ -16,12 +16,14 @@ use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
 use Kitsune\Commerce\Carts\CartSessions;
 use Kitsune\Commerce\Console\CartPruneCommand;
 use Kitsune\Commerce\Console\PaymentReconcileCommand;
+use Kitsune\Commerce\Console\RetentionCommand;
 use Kitsune\Commerce\Console\StripePruneCommand;
 use Kitsune\Commerce\Console\StripeReplayCommand;
 use Kitsune\Commerce\Filament\CheckoutResource;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Filament\RetentionResource;
 use Kitsune\Commerce\Filament\StockResource;
 use Kitsune\Commerce\Orders\CommerceReaderData;
 use Kitsune\Commerce\Orders\OrderQuotes;
@@ -84,7 +86,8 @@ final class CommerceServiceProvider extends ModuleServiceProvider
                 ->group(fn (): string => __('commerce::catalogue.storefront'))->icon('heroicon-o-archive-box')
                 ->url(fn (): string => StockResource::getUrl())->visible(fn (): bool => StockResource::canAccess()),
         );
-        foreach ([CheckoutResource::class => ['Checkout settings', 'heroicon-o-calculator'], OrderResource::class => ['Orders', 'heroicon-o-document-text']] as $resource => [$label, $icon]) {
+        foreach ([CheckoutResource::class => ['Checkout settings', 'heroicon-o-calculator'], OrderResource::class => ['Orders', 'heroicon-o-document-text'],
+            RetentionResource::class => ['Data retention', 'heroicon-o-clock']] as $resource => [$label, $icon]) {
             $this->app->make(AdminSurface::class)->resource($resource)->navigationItem(
                 NavigationItem::make($label)->label(fn (): string => $resource::getPluralModelLabel())
                     ->group(fn (): string => __('commerce::catalogue.storefront'))->icon($icon)
@@ -109,6 +112,11 @@ final class CommerceServiceProvider extends ModuleServiceProvider
     public function readerData(): ModuleReaderData
     {
         return new CommerceReaderData;
+    }
+
+    public function maintenanceCommands(): array
+    {
+        return [RetentionCommand::class];
     }
 
     public function uninstall(): void

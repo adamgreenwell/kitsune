@@ -19,6 +19,7 @@ use Kitsune\Commerce\Models\FinancialWork;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -102,7 +103,7 @@ final class FinancialState
             }
         }
         $basis = $this->basis($connection, $actual, $lock);
-        $basisHash = CheckoutAttempts::digest(array_diff_key($basis, ['checkout' => true]));
+        $basisHash = app(PrivacyState::class)->originalFinancialHash($connection, $actual, $basis);
         if ($work->basis_hash !== null && (! self::hex($work->basis_hash, 64) || ! hash_equals($work->basis_hash, $basisHash))) {
             throw new CheckoutRefused('changed');
         }

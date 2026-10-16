@@ -17,6 +17,8 @@ return [
     'state_pending' => 'Purchased access is waiting to be processed.',
     'state_held' => 'Some purchased access needs review.',
     'state_processed' => 'Purchased access has been checked. Each pass is shown below.',
+    'state_suppressed' => 'Purchased access was withdrawn when the account was erased.',
+    'category_subject_erased' => 'This retained order no longer belongs to a reader account. Its access will not be recreated.',
     'category_financial_hold' => 'The payment needs review before access can be awarded.',
     'category_unknown_terms' => 'An older order has no saved access terms. An operator must review it.',
     'category_unknown_reader' => 'The reader account could not be verified. An operator must review access.',

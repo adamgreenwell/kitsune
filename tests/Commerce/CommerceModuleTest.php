@@ -16,6 +16,7 @@ use Kitsune\Commerce\Filament\CheckoutResource;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
+use Kitsune\Commerce\Filament\RetentionResource;
 use Kitsune\Commerce\Filament\StockResource;
 use Kitsune\Commerce\Models\AccessAdjustmentEffect;
 use Kitsune\Commerce\Models\AccessAdjustmentWork;
@@ -36,9 +37,16 @@ use Kitsune\Commerce\Models\OrderAccessToken;
 use Kitsune\Commerce\Models\OrderAllocation;
 use Kitsune\Commerce\Models\OrderClaim;
 use Kitsune\Commerce\Models\OrderLine;
+use Kitsune\Commerce\Models\OrderPrivacyWork;
 use Kitsune\Commerce\Models\PaymentReceipt;
+use Kitsune\Commerce\Models\PrivacyDelivery;
+use Kitsune\Commerce\Models\PrivacyHold;
+use Kitsune\Commerce\Models\PrivacyTombstone;
+use Kitsune\Commerce\Models\PrivacyTransition;
 use Kitsune\Commerce\Models\RefundAttempt;
 use Kitsune\Commerce\Models\RefundObligation;
+use Kitsune\Commerce\Models\RetentionPolicy;
+use Kitsune\Commerce\Models\RetentionPolicyActivation;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Models\StockMovement;
@@ -74,7 +82,8 @@ it('discovers the real optional commerce package without Laravel auto-discovery'
     $verified = ModuleVerifier::verify($manifest, $path);
 
     expect($verified->passed())->toBeTrue($verified->refusal ?? '')
-        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class, CheckoutRoutingReceipt::class, StripeEvent::class, StockMovement::class, PaymentReceipt::class, OrderAllocation::class, RefundObligation::class, RefundAttempt::class, AccessWork::class, AccessEffect::class, OrderClaim::class, AccessAdjustmentEffect::class, AccessAdjustmentWork::class, FinancialWork::class, FinancialRefund::class, FinancialObservation::class, FinancialSignal::class])
+        ->and($verified->models)->toEqualCanonicalizing([Sellable::class, Listing::class, Cart::class, CartLine::class, CommerceSettings::class, TaxRate::class, SalesPolicy::class, Order::class, OrderLine::class, OrderAccessToken::class, CheckoutAttempt::class, CheckoutRoutingReceipt::class, StripeEvent::class, StockMovement::class, PaymentReceipt::class, OrderAllocation::class, RefundObligation::class, RefundAttempt::class, AccessWork::class, AccessEffect::class, OrderClaim::class, AccessAdjustmentEffect::class, AccessAdjustmentWork::class, FinancialWork::class, FinancialRefund::class, FinancialObservation::class, FinancialSignal::class,
+            RetentionPolicy::class, RetentionPolicyActivation::class, OrderPrivacyWork::class, PrivacyDelivery::class, PrivacyHold::class, PrivacyTombstone::class, PrivacyTransition::class])
         ->and($verified->examined)->toContain(CommerceServiceProvider::class, CommerceCustody::class);
 });
 
@@ -104,7 +113,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(17);
+        ->and(glob($path.'/*.php'))->toHaveCount(19);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);
@@ -122,8 +131,8 @@ it('registers enabled commerce on a headless host without needing a panel or ser
 
     expect(app()->getProviders(CommerceServiceProvider::class))->toHaveCount(1)
         ->and(Module::isEnabled(COMMERCE_MODULE))->toBeTrue()
-        ->and(app(AdminSurface::class)->resources())->toBe([ProductResource::class, CurrencyResource::class, StockResource::class, CheckoutResource::class, OrderResource::class])
-        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(5);
+        ->and(app(AdminSurface::class)->resources())->toBe([ProductResource::class, CurrencyResource::class, StockResource::class, CheckoutResource::class, OrderResource::class, RetentionResource::class])
+        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(6);
     expect(collect(app('router')->getRoutes()->getRoutes())->filter(static fn (Route $route): bool => str_starts_with($route->getName() ?? '', 'commerce.payments.')))->toBeEmpty()
         ->and((new ReflectionClass(CheckoutRoutes::class))->getDocComment())->toContain('@internal');
 });

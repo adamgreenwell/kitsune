@@ -10,12 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Readers;
 
+use Closure;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Models\Entitlement;
+use Kitsune\Core\Tenancy\Context;
 
 /**
  * One reader of the org in context, erased from every store core knows of (ADR-020) — their entitlements on every site
@@ -58,22 +60,56 @@ final class ReaderErasure
     public function erase(#[\SensitiveParameter] int|string $reader): array
     {
         return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($reader): array {
-            $grants = $this->entitlements->forget($reader);
+            $org = $this->authority->org(EntitlementRefused::FORGET);
+            $site = app(Context::class)->siteId();
+            $grantErasure = $this->entitlements->forgetWithWitness($reader);
+            $grants = $grantErasure['erased'];
             $found = $this->readers->find($reader);
             $address = $found !== null ? EmailAddress::normalise($found->readerEmail()) : null;
 
-            $links = $this->tokens->forgetSubject(ReaderTokens::RECOVER, $this->authority->filedKey(EntitlementRefused::FORGET, $reader))
-                + ($address !== null ? $this->tokens->forgetSubject(ReaderTokens::REGISTER, $address) : 0);
+            $key = $this->authority->filedKey(EntitlementRefused::FORGET, $reader);
+            $recoveryErasure = $this->tokens->forgetSubjectWithWitness(ReaderTokens::RECOVER, $key);
+            $registrationErasure = $address === null ? null : $this->tokens->forgetSubjectWithWitness(ReaderTokens::REGISTER, $address);
+            $links = $recoveryErasure['erased'] + ($registrationErasure['erased'] ?? 0);
 
-            app(ReaderModuleData::class)->erase($reader);
-
-            $account = $this->readers->find($reader, lock: true);
-
-            if ($account !== null) {
-                ReaderAccounts::mapped(static fn () => $account->eraseAccount());
+            if (app(Context::class)->orgId() !== $org || app(Context::class)->siteId() !== $site) {
+                throw new ReaderModuleDataUnavailable('erase');
             }
+            $accountErased = false;
+            /** @var Closure|null $accountProof */
+            $accountProof = null;
+            app(ReaderModuleData::class)->erase($reader, afterErase: function () use ($reader, &$accountErased, &$accountProof): void {
+                $account = $this->readers->find($reader, lock: true);
+                if ($account === null) {
+                    return;
+                }
+                // Capture host metadata before any deleting/deleted observer. Final readback is raw and invokes no
+                // host contract/model callback after modules have proved their retained representations.
+                $accountConnection = $account->getConnection();
+                $native = $accountConnection->getPdo();
+                $table = $account->getTable();
+                $keyName = $account->getKeyName();
+                $key = $account->getKey();
+                $accountProof = static function () use ($accountConnection, $native, $table, $keyName, $key): void {
+                    // This exact primary key was owned and captured above. Even a foreign-Org transplant must be
+                    // absent; the query returns no row or personal fields from another Org.
+                    if ($accountConnection->getPdo() !== $native || $accountConnection->table($table)->useWritePdo()->where($keyName, $key)->exists()) {
+                        throw new ReaderModuleDataUnavailable('erase');
+                    }
+                };
+                ReaderAccounts::mapped(static fn () => $account->eraseAccount());
+                $accountErased = true;
+            });
+            EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, static function () use ($grantErasure, $recoveryErasure, $registrationErasure, $accountProof): void {
+                $accountProof?->__invoke();
+                $grantErasure['verify']();
+                $recoveryErasure['verify']();
+                if ($registrationErasure !== null) {
+                    $registrationErasure['verify']();
+                }
+            });
 
-            return ['grants' => $grants, 'links' => $links, 'account' => $account !== null];
+            return ['grants' => $grants, 'links' => $links, 'account' => $accountErased];
         });
     }
 

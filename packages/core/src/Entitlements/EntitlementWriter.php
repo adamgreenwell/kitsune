@@ -24,6 +24,7 @@ use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use PDO;
 use Throwable;
 
 /**
@@ -545,32 +546,163 @@ final class EntitlementWriter
      */
     public function forget(#[\SensitiveParameter] int|string $reader): int
     {
-        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($reader): int {
+        return $this->forgetWithWitness($reader)['erased'];
+    }
+
+    /**
+     * Exact identities erased by this producer, for a later raw proof after host account callbacks. The ordinary
+     * int-returning door remains unchanged. The enclosing coordinator owns the transaction and callback authority.
+     *
+     * @return array{erased:int,verify:Closure():void}
+     *
+     * @internal First-party account erasure only; no general subject discovery or restoration contract.
+     */
+    public function forgetWithWitness(#[\SensitiveParameter] int|string $reader): array
+    {
+        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($reader): array {
             $orgId = $this->authority->org(EntitlementRefused::FORGET);
             $this->authority->authorise(EntitlementRefused::FORGET, null);
             $key = $this->authority->filedKey(EntitlementRefused::FORGET, $reader);
+            $connection = (new Entitlement)->getConnection();
 
-            return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($orgId, $key): int {
+            return TransactionRecovery::run($connection, function () use ($connection, $orgId, $key): array {
+                $pdo = $connection->getPdo();
                 $siteIds = $this->lockSites(null, EntitlementRefused::FORGET, null);
-
-                // A current read, for `lockedRow()`'s reason: a row committed since a caller's snapshot is erased too.
+                // These are the actual current locked rows erased below, not a preliminary reader discovery.
                 $rows = Entitlement::withoutScopeBecause(
                     'erasing one reader\'s entitlements across their organisation\'s sites (ADR-020)',
                     fn ($query) => $query->where('org_id', $orgId)->whereIn('site_id', $siteIds)->where('reader_id', $key)->orderBy('id')->lockForUpdate()->get(),
                 );
-
-                if ($rows->isEmpty()) {
-                    return 0;
+                $ids = $rows->modelKeys();
+                if ($ids !== []) {
+                    $this->erase($ids);
+                    // The deleted model keeps its key; the audit identifies the row without retaining its reader.
+                    foreach ($rows as $row) {
+                        $this->auditor->recordOrFail(self::ERASED, $row);
+                    }
                 }
+                $context = $this->context;
+                $verify = static function () use ($connection, $pdo, $context, $orgId, $key, $ids): void {
+                    if ($context->orgId() !== $orgId || $connection->getPdo() !== $pdo || $connection->transactionLevel() < 1 || ! $pdo->inTransaction()
+                        || $connection->table('entitlements')->useWritePdo()->where('org_id', $orgId)->where('reader_id', $key)->exists()) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                    }
+                    foreach (array_chunk($ids, 100) as $chunk) {
+                        // Globally unique captured primary identities cannot hide under a changed Org or reader.
+                        if ($connection->table('entitlements')->useWritePdo()->whereIn('id', $chunk)->exists()) {
+                            throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                        }
+                    }
+                };
 
-                $this->erase($rows->modelKeys());
+                $verify();
 
-                // The deleted model keeps its key, so "the system erased entitlement 812" survives the row.
+                return ['erased' => $rows->count(), 'verify' => $verify];
+            });
+        });
+    }
+
+    /**
+     * Retire only inactive rows of one proved, finally retired order. This never erases another source or reader.
+     * The producer owns the surrounding Org/Site transaction and proves financial closure, original access expiry,
+     * holds and durable replay suppression before and after audit callbacks. No host reader lookup is required.
+     *
+     * @param  Closure():void  $verify
+     *
+     * @internal First-party commerce retention only; no general source-erasure or host extension contract.
+     */
+    public function retireVerifiedOrderSource(#[\SensitiveParameter] string $source, #[\SensitiveParameter] Closure $verify): int
+    {
+        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($source, $verify): int {
+            $connection = (new Entitlement)->getConnection();
+            if ($connection->transactionLevel() < 1 || ! $connection->getPdo()->inTransaction()
+                || (new AuditLog)->getConnection() !== $connection
+                || preg_match('/\Acommerce\.order:[1-9][0-9]{0,18}\z/D', $source) !== 1) {
+                throw EntitlementRefused::because(EntitlementRefusal::NotASource, EntitlementRefused::FORGET);
+            }
+
+            return TransactionRecovery::run($connection, function () use ($connection, $source, $verify): int {
+                $pdo = $connection->getPdo();
+                $identity = function (): array {
+                    Permissions::forget();
+                    $this->authority->authorise(EntitlementRefused::FORGET, null);
+                    $actor = Permissions::currentUser();
+
+                    return [$this->authority->org(EntitlementRefused::FORGET), $this->authority->site(EntitlementRefused::FORGET, null),
+                        $actor === null ? null : $actor::class, $actor === null ? null : (string) $actor->getAuthIdentifier(), $this->producerContext()];
+                };
+                $authority = $identity();
+                [$orgId, $siteId] = $authority;
+                $this->lockSites([$siteId], EntitlementRefused::FORGET, null);
+                $verify();
+                $read = fn () => $connection->table('entitlements')->useWritePdo()->where('org_id', $orgId)
+                    ->where('site_id', $siteId)->where('source', $source)->orderBy('id')->limit(21)->lockForUpdate()->get();
+                $rows = $read();
+                if ($rows->count() > 20) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+                $expected = $rows->map(static fn (object $row): array => get_object_vars($row))->all();
+                $now = CarbonImmutable::now('UTC')->startOfSecond()->format('Y-m-d H:i:s');
+                $targetType = (new Entitlement)->getMorphClass();
+                // This is only a global opaque insertion high-water mark; no other Org's audit content is read.
+                $auditFloor = (int) $connection->table('audit_log')->useWritePdo()->max('id');
+                $models = [];
                 foreach ($rows as $row) {
-                    $this->auditor->recordOrFail(self::ERASED, $row);
+                    if (preg_match('/\A[1-9][0-9]{0,18}\z/D', (string) $row->id) !== 1 || (string) (int) $row->id !== (string) $row->id
+                        || ! is_string($row->reader_id) || ReaderGuard::stored($row->reader_id) !== $row->reader_id
+                        || ! EntitlementName::isName($row->entitlement) || ! self::validInstant($row->changed_at)
+                        || ! is_string($row->change_token) || preg_match('/\A[a-f0-9]{64}\z/D', $row->change_token) !== 1
+                        || ($row->expires_at !== null && ! self::validInstant($row->expires_at))
+                        || ($row->revoked_at !== null && ! self::validInstant($row->revoked_at))
+                        || ($row->revoked_at === null && ($row->expires_at === null || $row->expires_at > $now))) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                    }
+                    $model = (new Entitlement)->newFromBuilder(get_object_vars($row), $connection->getName());
+                    if ($model->getConnection() !== $connection || $model->getTable() !== 'entitlements'
+                        || $model->getKeyName() !== 'id' || (string) $model->getKey() !== (string) $row->id || $model->getMorphClass() !== $targetType) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                    }
+                    $models[] = $model;
+                }
+                if ($identity() !== $authority || $read()->map(static fn (object $row): array => get_object_vars($row))->all() !== $expected) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+                $this->erase(array_map(static fn (array $row): int => (int) $row['id'], $expected),
+                    'retiring only inactive rows of one verified order source in the current Org and Site (ADR-040, #203)');
+                $audits = [];
+                foreach ($models as $index => $model) {
+                    $audits[] = ['record' => $this->auditor->recordForProducerOrFail(self::ERASED, $model), 'target_id' => $expected[$index]['id']];
+                }
+                if ($identity() !== $authority) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+                $verify();
+                if ($identity() !== $authority) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+                $actor = Permissions::currentUser();
+                if (! self::hasOriginalTransaction($connection, $pdo)
+                    || ($actor === null ? null : $actor::class) !== $authority[2]
+                    || ($actor === null ? null : (string) $actor->getAuthIdentifier()) !== $authority[3]
+                    || $this->producerContext() !== $authority[4]
+                    || $this->context->orgId() !== $orgId || $this->context->siteId() !== $siteId || $read()->isNotEmpty()
+                    || $connection->table('entitlements')->useWritePdo()->whereIn('id', array_column($expected, 'id'))->exists()
+                    || ! $connection->table('sites')->useWritePdo()->where('org_id', $orgId)->where('id', $siteId)->exists()) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+                foreach ($audits as $audit) {
+                    $model = $audit['record'];
+                    $record = $model->exists && $model->getConnection() === $connection && $model->getTable() === 'audit_log'
+                        && $model->getKeyName() === 'id' ? $connection->table('audit_log')->useWritePdo()->where('id', $model->getKey())->lockForUpdate()->first() : null;
+                    if ($record === null || (string) (int) $record->id !== (string) $record->id || (int) $record->id <= $auditFloor
+                        || (string) $record->org_id !== (string) $orgId || (string) $record->site_id !== (string) $siteId
+                        || $record->action !== self::ERASED || $record->target_type !== $targetType || (string) $record->target_id !== (string) $audit['target_id']
+                        || $record->actor_type !== null || $record->actor_id !== null) {
+                        throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                    }
                 }
 
-                return $rows->count();
+                return count($expected);
             });
         });
     }
@@ -738,6 +870,14 @@ final class EntitlementWriter
         });
     }
 
+    /** The native transaction can change during host callbacks; each proof must observe it afresh.
+     * @phpstan-impure
+     */
+    private static function hasOriginalTransaction(Connection $connection, PDO $pdo): bool
+    {
+        return $connection->getPdo() === $pdo && $connection->transactionLevel() > 0 && $pdo->inTransaction();
+    }
+
     private function producerContext(): string
     {
         return hash('sha256', json_encode([$this->context->org()?->getAttributes(), $this->context->site()?->getAttributes()], JSON_THROW_ON_ERROR));
@@ -851,13 +991,13 @@ final class EntitlementWriter
     }
 
     /** @param  list<int>  $ids */
-    private function erase(array $ids): void
+    private function erase(array $ids, string $reason = 'erasing one reader\'s entitlements across their organisation\'s sites (ADR-020)'): void
     {
         self::$erasing = true;
 
         try {
             Entitlement::withoutScopeBecause(
-                'erasing one reader\'s entitlements across their organisation\'s sites (ADR-020)',
+                $reason,
                 fn ($query) => $query->whereKey($ids)->delete(),
             );
         } finally {

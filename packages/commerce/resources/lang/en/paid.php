@@ -18,6 +18,7 @@ return [
     'held' => 'Allocation on hold',
     'held_disputed' => 'The payment is disputed. Product allocation needs review.',
     'held_external_refund' => 'A refund already exists for this payment. Product allocation needs review.',
+    'held_privacy_erased' => 'Payment arrived after the account was erased. An owner must review the payment and arrange any refund; products and access have not been awarded.',
     'awarded' => 'Allocated units',
     'unavailable' => 'Unavailable units',
     'refund' => 'Refund',

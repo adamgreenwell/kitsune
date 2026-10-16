@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -281,6 +282,15 @@ it('refuses to mint without a site in context', function (): void {
 
 it('names no address, key or hash when the table fails', function (): void {
     DB::statement('DROP TABLE reader_tokens');
+    if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+        // This deliberate DDL implicitly committed the test wrapper. Open a fresh native transaction so this probe
+        // reaches the missing-table SQL boundary; a genuinely ended host transaction must still refuse first.
+        $native = DB::connection()->getPdo();
+        expect($native->inTransaction())->toBeFalse();
+        $native->beginTransaction();
+        // The DDL also committed this test's fixtures. Rebuild the disposable schema before the next test.
+        RefreshDatabaseState::$migrated = false;
+    }
 
     app(Context::class)->forget()->setSite($this->world['sites']['golfdom']);
 
@@ -295,4 +305,41 @@ it('names no address, key or hash when the table fails', function (): void {
     // Each engine has its own SQLSTATE for a missing table; the address is in none of them.
     expect($message)->toMatch('/^The reader link table could not be read or written \(SQLSTATE [0-9A-Z]{5}\)\.$/D')
         ->and($previous)->toBeNull();
+});
+
+it('refuses link erasure before any link query when the native enclosing transaction has ended', function (): void {
+    app(Context::class)->forget()->setSite($this->world['sites']['golfdom']);
+    $connection = DB::connection();
+    $native = $connection->getPdo();
+    $level = $connection->transactionLevel();
+    $queries = 0;
+    DB::listen(static function (QueryExecuted $query) use (&$queries): void {
+        $queries += str_contains($query->sql, 'reader_tokens') ? 1 : 0;
+    });
+    $native->rollBack();
+    try {
+        expect(fn () => app(ReaderTokens::class)->forgetSubject(ReaderTokens::REGISTER, 'subscriber@kitsune.test'))
+            ->toThrow(RuntimeException::class, 'already ended the transaction');
+        expect($connection->transactionLevel())->toBe($level)->and($native->inTransaction())->toBeFalse()->and($queries)->toBe(0);
+    } finally {
+        // Keep the same test wrapper level with a live native transaction for normal teardown.
+        $native->beginTransaction();
+    }
+});
+
+it('returns an exact locked producer witness while preserving the ordinary integer erasure and other Orgs links', function (): void {
+    $key = (string) $this->reader->getKey();
+    app(Context::class)->setSite($this->world['sites']['golfdom']);
+    app(ReaderTokens::class)->mint(ReaderTokens::RECOVER, $key);
+    app(Context::class)->setSite($this->world['sites']['rival']);
+    app(ReaderTokens::class)->mint(ReaderTokens::RECOVER, $key);
+    $other = (array) DB::table('reader_tokens')->where('org_id', $this->world['rival']->getKey())->sole();
+    app(Context::class)->setSite($this->world['sites']['golfdom']);
+    DB::transaction(function () use ($key): void {
+        $result = app(ReaderTokens::class)->forgetSubjectWithWitness(ReaderTokens::RECOVER, $key);
+        expect($result['erased'])->toBe(1)->and($result['verify'])->toBeInstanceOf(Closure::class);
+        $result['verify']();
+        expect(app(ReaderTokens::class)->forgetSubject(ReaderTokens::RECOVER, $key))->toBe(0);
+    });
+    expect(tokensRows())->toBe([$other]);
 });

@@ -29,15 +29,15 @@
             <dl class="space-y-2">
                 <div><dt class="font-medium">{{ __('commerce::checkout.state') }}</dt><dd>{{ __('commerce::checkout.'.$order['state']) }}</dd></div>
                 <div><dt class="font-medium">{{ __('commerce::checkout.mode') }}</dt><dd>{{ __('commerce::checkout.'.$order['mode']) }}</dd></div>
-                <div><dt class="font-medium">{{ __('commerce::checkout.contact_email') }}</dt><dd>{{ $order['contact_email'] }}</dd></div>
+                @if ($order['contact_email'] !== null)<div><dt class="font-medium">{{ __('commerce::checkout.contact_email') }}</dt><dd>{{ $order['contact_email'] }}</dd></div>@endif
                 <div><dt class="font-medium">{{ __('commerce::checkout.created') }}</dt><dd>{{ $this->instant($order['reference'], $order['created_at']) }}</dd></div>
             </dl>
         </x-filament::section>
         @foreach (['billing', 'delivery'] as $kind)
             @if ($order[$kind] !== null)
                 <x-filament::section :heading="__('commerce::checkout.'.($kind === 'billing' ? 'billing' : 'delivery_address'))">
-                    <p>{{ $order[$kind]['name'] }}</p>
-                    @foreach ($order[$kind]['address'] as $part) @if ($part !== '')<p>{{ $part }}</p>@endif @endforeach
+                    @if (isset($order[$kind]['name']))<p>{{ $order[$kind]['name'] }}</p>@endif
+                    @foreach ($order[$kind]['address'] ?? [] as $part) @if ($part !== '')<p>{{ $part }}</p>@endif @endforeach
                 </x-filament::section>
             @endif
         @endforeach
@@ -61,6 +61,7 @@
         </x-filament::section>
         @include('commerce::orders.payment-summary')
         @include('commerce::orders.access-summary', ['operator' => true])
+        @include('commerce::orders.privacy-summary', ['order' => $order])
         @if ($order['payment'] !== null)
             @include('commerce::orders.financial-actions', ['actions' => $this->financialDetail()])
         @endif

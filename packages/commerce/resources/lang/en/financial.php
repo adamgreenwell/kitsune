@@ -71,6 +71,8 @@ return [
     'access_awaiting_claim' => 'Waiting for the order to be claimed',
     'access_held' => 'Access needs review',
     'access_processed' => 'The current order access has been checked.',
+    'access_suppressed' => 'Order access was withdrawn when the account was erased.',
+    'category_subject_erased' => 'The account and its purchased access have been removed. Checking payment again will not restore them.',
     'effect_pending' => 'Waiting for the access check',
     'effect_live' => 'Pass retained',
     'effect_revised' => 'Pass adjusted to the remaining original term',

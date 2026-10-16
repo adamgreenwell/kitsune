@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Commerce\Filament;
 
+use Illuminate\Database\Connection;
+use Illuminate\Database\Eloquent\Model;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
@@ -21,6 +23,8 @@ use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Core\Audit\Auditor;
+use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
 
@@ -50,7 +54,7 @@ final class OrderAdministration
                 if ($this->privacy->eraseRecord($connection, $raw) !== 1) {
                     throw new OrderRefused;
                 }
-                $this->record('commerce.order_erased', $raw);
+                $audit = $this->record($connection, 'commerce.order_erased', $raw);
                 // An audit listener is application code too. It must not restore personal rows behind a successful erase.
                 foreach ([AccessFulfillment::WORK, AccessFulfillment::EFFECTS, OrderClaims::TABLE,
                     FinancialState::WORK, FinancialState::REFUNDS, FinancialState::OBSERVATIONS,
@@ -69,6 +73,7 @@ final class OrderAdministration
                     || ! $this->ready() || $this->context->orgId() !== (int) $raw->org_id || $this->context->siteId() !== (int) $raw->site_id) {
                     throw new OrderRefused;
                 }
+                $this->assertRecorded($connection, $audit);
             });
         } catch (Throwable) {
             throw new OrderRefused;
@@ -82,12 +87,60 @@ final class OrderAdministration
         return $reference;
     }
 
-    private function record(string $action, #[\SensitiveParameter] object $raw): void
+    /** @return array{audit:AuditLog,identity:array<string,int|string|null>} */
+    private function record(Connection $connection, string $action, #[\SensitiveParameter] object $raw): array
     {
-        $model = (new Order)->newFromBuilder((array) $raw);
-        if (! $this->auditor->recordOrFail($action, $model)->exists) {
+        if ($connection !== (new AuditLog)->getConnection() || $connection->transactionLevel() < 1
+            || ! $connection->getPdo()->inTransaction()) {
             throw new OrderRefused;
         }
+        $target = new Order;
+        $actor = $this->actorIdentity();
+        // Freeze the intended identity before hydration or audit listeners can change either model or context.
+        $identity = ['org_id' => (int) $raw->org_id, 'site_id' => (int) $raw->site_id,
+            'action' => $action, 'target_type' => $target->getMorphClass(), 'target_id' => (string) $raw->id,
+            'actor_type' => $actor['type'], 'actor_id' => $actor['id']];
+        $audit = $this->auditor->recordOrFail($action, $target->newFromBuilder((array) $raw));
+        if ($actor !== $this->actorIdentity()) {
+            throw new OrderRefused;
+        }
+
+        return ['audit' => $audit, 'identity' => $identity];
+    }
+
+    /** The final primary read also detects a post-save listener that rewrites or deletes the stored audit.
+     * @param  array{audit:AuditLog,identity:array<string,int|string|null>}  $record
+     */
+    private function assertRecorded(Connection $connection, array $record): void
+    {
+        $audit = $record['audit'];
+        if (! $audit->exists || $audit->getConnection() !== $connection || $audit->getTable() !== AuditLog::TABLE
+            || $audit->getKeyName() !== 'id' || (! is_int($audit->getKey()) && ! is_string($audit->getKey()))) {
+            throw new OrderRefused;
+        }
+        $stored = $connection->table(AuditLog::TABLE)->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first();
+        if ($stored === null || (string) $stored->id !== (string) $audit->getKey()) {
+            throw new OrderRefused;
+        }
+        foreach ($record['identity'] as $column => $expected) {
+            $actual = in_array($column, ['org_id', 'site_id'], true) ? (int) $stored->{$column} : $stored->{$column};
+            if ($actual !== $expected) {
+                throw new OrderRefused;
+            }
+        }
+    }
+
+    /** @return array{type:string,id:string} */
+    private function actorIdentity(): array
+    {
+        Permissions::forget();
+        $actor = Permissions::currentUser() ?? throw new OrderRefused;
+        $id = $actor->getAuthIdentifier();
+        if (! is_int($id) && ! is_string($id)) {
+            throw new OrderRefused;
+        }
+
+        return ['type' => $actor instanceof Model ? $actor->getMorphClass() : $actor::class, 'id' => (string) $id];
     }
 
     /** Authority can change in a host's audit listener and must be read again afterward.

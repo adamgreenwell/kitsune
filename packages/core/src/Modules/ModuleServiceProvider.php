@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Modules;
 
+use Illuminate\Console\Command;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Readers\Contracts\ModuleReaderData;
 use RuntimeException;
@@ -76,6 +77,21 @@ abstract class ModuleServiceProvider extends ServiceProvider
     public function readerData(): ?ModuleReaderData
     {
         return null;
+    }
+
+    /**
+     * Operator commands for retained data, including disabled or stale installations.
+     * Called on a fresh unregistered provider. Declare command classes only: no runtime bindings or DDL.
+     * Commands must be concrete with no required constructor arguments; resolve services in handle(), after admission.
+     * Each command must independently check its installed receipt, schema, authority and scope when it runs.
+     *
+     * @return list<class-string<Command>>
+     *
+     * @internal First-party privacy integration only; no public module extension contract before v1.2.
+     */
+    public function maintenanceCommands(): array
+    {
+        return [];
     }
 
     /**

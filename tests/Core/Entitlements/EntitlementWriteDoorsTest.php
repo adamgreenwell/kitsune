@@ -225,10 +225,10 @@ it('arms each window in one private place, reached from its own doors alone, and
         ->and((new ReflectionMethod(EntitlementWriter::class, 'erase'))->isPrivate())->toBeTrue()
         ->and(preg_match('/self::\$writing = true;\s*try \{\s*\$saved = \$row->save\(\);\s*\} finally \{\s*self::\$writing = false;\s*\}/', $source))->toBe(1)
         ->and(preg_match('/self::\$erasing = true;\s*try \{.*?\} finally \{\s*self::\$erasing = false;\s*\}/s', $source))->toBe(1)
-        // Only the ordinary grant, exact verified-order grant and comp reach give(); no new save or erase window.
+        // Only the ordinary grant, exact verified-order grant and comp reach give(); witnessed erasure and exact-source retirement share the private erase window.
         ->and(entitlementWriterMethodsHolding('$this->save('))->toBe(['adjustOrder', 'revoke', 'give'])
         ->and(entitlementWriterMethodsHolding('$this->give('))->toBe(['grant', 'grantVerifiedOrder', 'comp'])
-        ->and(entitlementWriterMethodsHolding('$this->erase('))->toBe(['forget'])
+        ->and(entitlementWriterMethodsHolding('$this->erase('))->toBe(['forgetWithWitness', 'retireVerifiedOrderSource'])
         ->and(preg_match_all('/->save\(|[\'"]save[\'"]/', $source))->toBe(4)
         ->and(preg_match_all('/->delete\(|[\'"]delete[\'"]/', $source))->toBe(1)
         ->and((new ReflectionProperty(EntitlementWriter::class, 'writing'))->isPrivate())->toBeTrue()
@@ -264,9 +264,9 @@ it('takes the org\'s row shared and the sites\' in ascending order, and reads a 
     $lockSites = substr($lockSites, 0, (int) strpos($lockSites, "\n    }\n"));
 
     $give = entitlementWriterMethodSource('give');
-    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['checkedOrderRow', 'knownForReinstatement', 'checkRestorationReader', 'checkAdjustmentReadback', 'checkAdjustmentReadback', 'forget', 'give', 'give', 'lockedRow', 'lockedRow', 'lockSites'])
+    expect(entitlementWriterMethodsHolding('lockForUpdate('))->toBe(['checkedOrderRow', 'knownForReinstatement', 'checkRestorationReader', 'checkAdjustmentReadback', 'checkAdjustmentReadback', 'forgetWithWitness', 'retireVerifiedOrderSource', 'retireVerifiedOrderSource', 'give', 'give', 'lockedRow', 'lockedRow', 'lockSites'])
         ->and(entitlementWriterMethodsHolding('sharedLock('))->toBe(['lockSites'])
-        ->and(entitlementWriterMethodsHolding('$this->lockSites('))->toBe(['forget', 'lockedRow'])
+        ->and(entitlementWriterMethodsHolding('$this->lockSites('))->toBe(['forgetWithWitness', 'retireVerifiedOrderSource', 'lockedRow'])
         ->and(entitlementWriterMethodsHolding('$this->lockedRow('))->toBe(['adjustOrder', 'adjustOrder', 'revoke', 'give'])
         // The org's row shared, before the sites, which are taken exclusively in ascending order.
         ->and(preg_match('/Org::query\(\).*->sharedLock\(\).*\n.*\n\s*\$locked = Site::query\(\)/', $lockSites))->toBe(1)

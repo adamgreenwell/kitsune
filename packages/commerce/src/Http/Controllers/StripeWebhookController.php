@@ -103,7 +103,7 @@ final class StripeWebhookController
 
         // Laravel sends Response (Symfony calls fastcgi_finish_request) before invoking termination callbacks.
         // Non-FPM hosts deliberately leave the committed receipt for the bounded operator replay command.
-        if (PHP_SAPI === 'fpm-fcgi' && function_exists('fastcgi_finish_request')) {
+        if ($receipt['id'] > 0 && $receipt['state'] !== 'erased' && PHP_SAPI === 'fpm-fcgi' && function_exists('fastcgi_finish_request')) {
             $org = app(Context::class)->org();
             $site = app(Context::class)->site();
             app()->terminating(static function () use ($receipt, $org, $site): void {
