@@ -1,6 +1,6 @@
 # Paid order retention and privacy
 
-The #203 implementation is ready for review. Live checkout remains disabled. The operator states the applicable
+The #203 implementation is merged through #285. Live checkout remains disabled. The operator states the applicable
 policy; Kitsune supplies enforcement and makes no jurisdictional retention choice.
 
 ## Recorded policy

@@ -136,4 +136,19 @@ receipt is stale. Each invocation independently checks retained custody and scop
 
 See [the retention guide](../../docs/paid-retention-and-privacy.md) for checked minimization, final purge, replay
 suppression and quarantined backup restoration. Local cleanup does not delete provider records or backups. The
-slice is implemented and locally qualified in the review candidate; merge and live checkout acceptance remain separate.
+slice is merged through #285; live checkout acceptance remains separate.
+
+### Commerce history exports
+
+The #202 slice adds native owner-only JSONL/CSV downloads on the selected Site's **Orders** page and the cold
+`kitsune:commerce-export --org=<slug> --format=jsonl|csv --limit=100` command. The CLI optionally accepts an exact
+`--site=<handle>` and remains available with installed commerce disabled or stale. Each checked artifact contains
+at most 100 orders and 16 MiB, with a completion record and scoped continuation cursor. Financial history is the
+default; `--include-billing` or the owner's checkbox adds only permitted retained paid-invoice fields. Delivery
+holds, email, secrets and raw provider custody are excluded. Original prices, units, tax, refunds and access come
+from checked historical records, independently of the current catalogue and providers.
+
+See [the export guide](../../docs/commerce-exports.md) for the versioned linked-record layout, reader/guest boundary,
+spreadsheet guarding, page consistency and portability limits. The full local gate, native export suite and
+owner-browser checks passed in the review candidate; review and merge remain pending. This does not enable live
+checkout, supply an importer or replace quarantined backup erasure replay.
