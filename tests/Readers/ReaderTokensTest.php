@@ -296,3 +296,20 @@ it('names no address, key or hash when the table fails', function (): void {
     expect($message)->toMatch('/^The reader link table could not be read or written \(SQLSTATE [0-9A-Z]{5}\)\.$/D')
         ->and($previous)->toBeNull();
 });
+
+it('returns an exact locked producer witness while preserving the ordinary integer erasure and other Orgs links', function (): void {
+    $key = (string) $this->reader->getKey();
+    app(Context::class)->setSite($this->world['sites']['golfdom']);
+    app(ReaderTokens::class)->mint(ReaderTokens::RECOVER, $key);
+    app(Context::class)->setSite($this->world['sites']['rival']);
+    app(ReaderTokens::class)->mint(ReaderTokens::RECOVER, $key);
+    $other = (array) DB::table('reader_tokens')->where('org_id', $this->world['rival']->getKey())->sole();
+    app(Context::class)->setSite($this->world['sites']['golfdom']);
+    DB::transaction(function () use ($key): void {
+        $result = app(ReaderTokens::class)->forgetSubjectWithWitness(ReaderTokens::RECOVER, $key);
+        expect($result['erased'])->toBe(1)->and($result['verify'])->toBeInstanceOf(Closure::class);
+        $result['verify']();
+        expect(app(ReaderTokens::class)->forgetSubject(ReaderTokens::RECOVER, $key))->toBe(0);
+    });
+    expect(tokensRows())->toBe([$other]);
+});

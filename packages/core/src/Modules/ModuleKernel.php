@@ -10,10 +10,12 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Modules;
 
+use Illuminate\Console\Command;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use ReflectionClass;
 use Throwable;
 
 /**
@@ -57,8 +59,14 @@ final class ModuleKernel
 
     public static function boot(Application $app): void
     {
-        foreach (self::receipts() as $handle => $version) {
-            $manifest = self::manifestFor($handle, $version);
+        foreach (self::receipts() as $handle => $receipt) {
+            if ($app->runningInConsole()) {
+                self::maintenanceFor($handle, $app);
+            }
+            if (! $receipt['enabled']) {
+                continue;
+            }
+            $manifest = self::manifestFor($handle, $receipt['version']);
 
             if ($manifest !== null) {
                 self::registerFor($manifest, $app);
@@ -78,9 +86,9 @@ final class ModuleKernel
     }
 
     /**
-     * The enabled receipts, handle => recorded version.
+     * Installed receipts, read from the primary. Disablement removes runtime, not retained personal data.
      *
-     * @return array<string, string>
+     * @return array<string, array{version:string,enabled:bool}>
      */
     private static function receipts(): array
     {
@@ -92,10 +100,16 @@ final class ModuleKernel
             // This installation-wide bootstrap precedes DatabaseServiceProvider::boot(), which attaches
             // Eloquent's connection resolver. The database manager is already bound during registration.
             // Modules are genuinely global; this read introduces no Org/Site scope bypass.
-            return DB::table('modules')
-                ->where('is_enabled', true)
-                ->pluck('version', 'handle')
-                ->all();
+            $receipts = [];
+            foreach (DB::table('modules')->useWritePdo()->orderBy('handle')->get(['handle', 'version', 'is_enabled']) as $row) {
+                if (! is_string($row->handle) || ! is_string($row->version)
+                    || ! in_array($row->is_enabled, [true, false, 0, 1, '0', '1'], true)) {
+                    throw new \RuntimeException('An installed module receipt is malformed.');
+                }
+                $receipts[$row->handle] = ['version' => $row->version, 'enabled' => (bool) $row->is_enabled];
+            }
+
+            return $receipts;
         } catch (Throwable $e) {
             /*
              * ⚠️ THIS WAS "NOT A TRY/CATCH" UNTIL RUNNING IT PROVED OTHERWISE, and ADR-038 is amended rather
@@ -155,6 +169,36 @@ final class ModuleKernel
         Log::warning("Kitsune did not register the module [{$handle}]: {$reason}.");
 
         return null;
+    }
+
+    /** Declaring cold command classes never registers or boots the module's runtime provider. */
+    private static function maintenanceFor(string $handle, Application $app): void
+    {
+        try {
+            $manifest = ModuleDiscovery::read($handle);
+            if (! $manifest instanceof ModuleManifest) {
+                return;
+            }
+            $provider = new $manifest->provider($app);
+            $commands = $provider->maintenanceCommands();
+            if (! array_is_list($commands)) {
+                throw new \RuntimeException;
+            }
+            foreach ($commands as $command) {
+                if (! is_string($command) || ! is_subclass_of($command, Command::class)) {
+                    throw new \RuntimeException;
+                }
+                $definition = new ReflectionClass($command);
+                if (! $definition->isInstantiable() || ($definition->getConstructor()?->getNumberOfRequiredParameters() ?? 0) !== 0) {
+                    throw new \RuntimeException;
+                }
+            }
+            if ($commands !== []) {
+                $provider->commands($commands);
+            }
+        } catch (Throwable) {
+            Log::warning("Kitsune could not declare retained-data commands for module [{$handle}].");
+        }
     }
 
     private static function registerFor(ModuleManifest $manifest, Application $app): void

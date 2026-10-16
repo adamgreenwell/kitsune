@@ -138,7 +138,57 @@ final class ReaderTokens
     /** Deletes this subject's link for this purpose, live or not — how many went. */
     public function forgetSubject(string $purpose, #[\SensitiveParameter] string $subject): int
     {
-        return self::mapped(static fn () => ReaderToken::query()->where('purpose', $purpose)->where('subject', $subject)->delete());
+        return $this->forgetSubjectWithWitness($purpose, $subject)['erased'];
+    }
+
+    /**
+     * Erase actual locked rows, retaining their opaque IDs for account-last final verification.
+     * The returned raw proof runs within the caller's enclosing transaction after host deletion callbacks.
+     *
+     * @return array{erased:int,verify:Closure():void}
+     *
+     * @internal First-party whole-reader erasure only; not a new public reader privacy contract.
+     */
+    public function forgetSubjectWithWitness(string $purpose, #[\SensitiveParameter] string $subject): array
+    {
+        return self::mapped(function () use ($purpose, $subject): array {
+            $org = $this->context->orgId() ?? throw new LogicException('Reader link erasure requires an Org in context.');
+            $connection = (new ReaderToken)->getConnection();
+
+            return TransactionRecovery::run($connection, function () use ($connection, $org, $purpose, $subject): array {
+                $native = $connection->getPdo();
+                $rows = $connection->table('reader_tokens')->useWritePdo()->where('org_id', $org)
+                    ->where('purpose', $purpose)->where('subject', $subject)->orderBy('id')->lockForUpdate()->pluck('id')->all();
+                $erased = 0;
+                foreach (array_chunk($rows, 100) as $ids) {
+                    $erased += $connection->table('reader_tokens')->where('org_id', $org)->where('purpose', $purpose)
+                        ->where('subject', $subject)->whereIn('id', $ids)->delete();
+                }
+                if ($erased !== count($rows)) {
+                    throw new RuntimeException('Reader link erasure did not remove its captured rows.');
+                }
+                $verify = function () use ($connection, $native, $org, $purpose, $subject, $rows): void {
+                    self::mapped(function () use ($connection, $native, $org, $purpose, $subject, $rows): void {
+                        if ($connection->getPdo() !== $native || $connection->transactionLevel() < 1 || ! $native->inTransaction()
+                            || $this->context->orgId() !== $org
+                            || $connection->table('reader_tokens')->useWritePdo()->where('org_id', $org)
+                                ->where('purpose', $purpose)->where('subject', $subject)->exists()) {
+                            throw new RuntimeException('Erased reader link custody changed.');
+                        }
+                        foreach (array_chunk($rows, 100) as $ids) {
+                            // IDs were captured from this Org's actual producer rows. A foreign-scope transplant
+                            // must also be absent; the read exposes no other Org's subject or token material.
+                            if ($connection->table('reader_tokens')->useWritePdo()->whereIn('id', $ids)->exists()) {
+                                throw new RuntimeException('An erased reader link reappeared.');
+                            }
+                        }
+                    });
+                };
+                $verify();
+
+                return ['erased' => $erased, 'verify' => $verify];
+            });
+        });
     }
 
     /**

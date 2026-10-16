@@ -191,14 +191,14 @@ it('logs, reports and dispatches nothing', function (): void {
     }
 });
 
-it('offers the writer\'s doors and nothing more: no duration, no shortening, no reinstating a producer\'s source', function (): void {
+it('offers only the ordinary writer doors and checked internal order and erasure doors', function (): void {
     $public = array_map(
         static fn (ReflectionMethod $method): string => $method->getName(),
         (new ReflectionClass(EntitlementWriter::class))->getMethods(ReflectionMethod::IS_PUBLIC),
     );
     sort($public);
 
-    expect($public)->toBe(['__construct', 'comp', 'forget', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'reinstate', 'reviseVerifiedOrder', 'revoke']);
+    expect($public)->toBe(['__construct', 'comp', 'forget', 'forgetWithWitness', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'reinstate', 'retireVerifiedOrderSource', 'reviseVerifiedOrder', 'revoke']);
 });
 
 it('reaches the writer from the owner\'s page alone, and the export from nowhere in the admin or over HTTP', function (): void {

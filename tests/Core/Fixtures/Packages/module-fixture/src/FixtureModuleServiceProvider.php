@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Fixture\Module;
 
 use Filament\Navigation\NavigationItem;
+use Illuminate\Console\Command;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -30,6 +31,11 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
 
     /** A privacy-only adapter, returned without registering or booting the runtime provider. */
     public static ?ModuleReaderData $readerDataStore = null;
+
+    /** @var list<class-string<Command>> */
+    public static array $maintenanceClasses = [];
+
+    public static int $maintenanceReads = 0;
 
     /**
      * Makes `install()` write a row and THEN throw, so a test can prove the hook and the receipt commit
@@ -100,6 +106,13 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
         self::$calls[] = 'reader-data';
 
         return self::$readerDataStore;
+    }
+
+    public function maintenanceCommands(): array
+    {
+        self::$maintenanceReads++;
+
+        return self::$maintenanceClasses;
     }
 
     public function migrationPath(): ?string
