@@ -29,9 +29,10 @@ final class StripeWebhook
     /** @param list<Secret> $secrets
      * @return array<string,mixed>
      */
-    public function verify(#[\SensitiveParameter] string $raw, #[\SensitiveParameter] string $header, array $secrets, int $now): array
+    public function verify(#[\SensitiveParameter] string $raw, #[\SensitiveParameter] string $header, array $secrets, int $now, string $mode = 'test'): array
     {
         try {
+            $test = StripeMode::isTest($mode);
             if ($raw === '' || strlen($raw) > self::MAX_BODY || $header === '' || strlen($header) > self::MAX_HEADER
                 || count($secrets) < 1 || count($secrets) > 2) {
                 throw new CheckoutRefused;
@@ -75,7 +76,7 @@ final class StripeWebhook
                 throw new CheckoutRefused;
             }
             $event = json_decode($raw, true, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
-            if (! is_array($event) || ($event['object'] ?? null) !== 'event' || ($event['livemode'] ?? null) !== false
+            if (! is_array($event) || ($event['object'] ?? null) !== 'event' || ($event['livemode'] ?? null) !== ! $test
                 || ($event['api_version'] ?? null) !== StripeCheckout::API_VERSION || ($event['account'] ?? null) !== null
                 || ($event['context'] ?? null) !== null || ! self::identifier($event['id'] ?? null, 'evt_')
                 || ! in_array($event['type'] ?? null, ['checkout.session.completed', 'checkout.session.expired',
@@ -93,11 +94,11 @@ final class StripeWebhook
                 if (! is_array($session) || ($session['object'] ?? null) !== $kind
                     || ! self::identifier($session['id'] ?? null, $prefix) || strlen($session['id']) > 100
                     || ! self::identifier($charge, 'ch_') || strlen($charge) > 100
-                    || (! $refund && ($session['livemode'] ?? null) !== false)) {
+                    || (! $refund && ($session['livemode'] ?? null) !== ! $test)) {
                     throw new CheckoutRefused;
                 }
                 $result = ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
-                    'financialChargeId' => $charge, 'financialSubjectId' => $session['id'], 'test' => true];
+                    'financialChargeId' => $charge, 'financialSubjectId' => $session['id'], 'test' => $test];
                 $metadata = $session['metadata'] ?? [];
                 if ($refund && is_array($metadata) && array_intersect(['kitsune_order', 'kitsune_refund', 'kitsune_request'], array_keys($metadata)) !== []) {
                     if (! self::reference($metadata['kitsune_order'] ?? null) || ! self::reference($metadata['kitsune_refund'] ?? null)
@@ -112,8 +113,8 @@ final class StripeWebhook
 
                 return $result;
             }
-            if (! is_array($session) || ($session['object'] ?? null) !== 'checkout.session' || ($session['livemode'] ?? null) !== false
-                || ($session['mode'] ?? null) !== 'payment' || ! self::identifier($session['id'] ?? null, 'cs_test_')
+            if (! is_array($session) || ($session['object'] ?? null) !== 'checkout.session' || ($session['livemode'] ?? null) !== ! $test
+                || ($session['mode'] ?? null) !== 'payment' || ! StripeMode::session($session['id'] ?? null, $mode)
                 || ! self::reference($session['metadata']['kitsune_order'] ?? null)
                 || ! self::reference($session['metadata']['kitsune_attempt'] ?? null)
                 || ($session['client_reference_id'] ?? null) !== $session['metadata']['kitsune_order']) {
@@ -122,7 +123,7 @@ final class StripeWebhook
 
             return ['id' => $event['id'], 'type' => $event['type'], 'apiVersion' => $event['api_version'],
                 'sessionId' => $session['id'], 'orderReference' => $session['metadata']['kitsune_order'],
-                'attemptReference' => $session['metadata']['kitsune_attempt'], 'test' => true];
+                'attemptReference' => $session['metadata']['kitsune_attempt'], 'test' => $test];
         } catch (Throwable) {
             // Neither signatures, payloads nor provider text may survive in an exception chain.
             throw new CheckoutRefused;

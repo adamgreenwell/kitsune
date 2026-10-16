@@ -663,7 +663,7 @@ final class OrderPrivacy
             $rows[$table] = array_map(get_object_vars(...), $this->state->children($connection, $table, $order, $limit, true));
         }
         $charge = $rows[PaidOrders::RECEIPTS][0]['charge_id'] ?? null;
-        $signals = $charge === null ? [] : array_map(get_object_vars(...), FinancialSignals::rows($connection, (int) $order->org_id, $charge, true));
+        $signals = $charge === null ? [] : array_map(get_object_vars(...), FinancialSignals::rows($connection, (int) $order->org_id, $charge, true, $order->mode));
         $work = $rows[PrivacyState::TABLE][0];
         $guards = $work['guard_keys'] === null ? [] : $this->state->guardFrame($connection, $order, (object) $work);
 

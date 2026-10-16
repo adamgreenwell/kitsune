@@ -1,12 +1,10 @@
-# Stripe test checkout
+# Stripe checkout
 
-The first Stripe slice opens **test-mode, hosted, card-only Checkout** for an owned prepared order. Stripe handles
-the payment form. Kitsune keeps the exact reviewed order and a durable attempt before requesting a Stripe Session.
-No card details enter Kitsune.
-
-Live checkout remains unavailable until verified completion/replay (#198), stock/refund obligations (#199) and
-pending/charged privacy (#203) are implemented. Entitlement products also need the offer and guest-claim policy
-in #200. Setting a live key or switching an org to live mode does not enable live checkout.
+Commerce opens hosted, card-only Checkout for an owned prepared order. Test mode remains the default. Live
+Session creation additionally requires [explicit owner admission](live-stripe-admission.md), after the completed
+payment, stock/refund, access, privacy and export slices. Saving live keys or switching modes alone admits no sales.
+Stripe handles the payment form; Kitsune keeps the exact reviewed order and a durable attempt before requesting a
+Session. No card details enter Kitsune. Real provider qualification and activation remain separate operations.
 
 ## Configure an org
 
@@ -29,7 +27,7 @@ Never place its value in the command line, a URL, a ticket or a committed file. 
 
 ## Review and open Checkout
 
-Prepare an order from the site's cart, then open its test checkout page. **Review checkout** is a CSRF-protected
+Prepare an order from the site's cart, then open its checkout page. **Review checkout** is a CSRF-protected
 POST. It checks the order's current products, availability, stock, tax and mode; physical delivery is quoted again
 outside database locks. A recovered guest can review the exact order without owning the original cart. A changed
 purchase requires a fresh order rather than rewriting retained history or silently charging a different total.
@@ -60,8 +58,7 @@ identity, verified account, mode and credential witness. A timeout, interrupted 
 commit can leave it **creating** or **uncertain**. Use the same order's status/retry action; do not create a new
 attempt merely because a browser did not receive a response. Concurrent requests observe a short operation lease.
 
-An open Session may be resumed through an authorized POST that retrieves its current server state. **Expire test
-checkout** first reconciles and then explicitly expires an open Session at Stripe. Returning from Stripe, using
+An open Session may be resumed through an authorized POST that retrieves its current server state. **Expire checkout** first reconciles and then explicitly expires an open Session at Stripe. Returning from Stripe, using
 its Back link, closing a tab or passing the local expiry time does not prove payment or expiry. GETs only display
 local state; they make no provider call and never change payment, stock or access.
 
@@ -82,8 +79,8 @@ witnesses, leases and raw provider responses do not.
 ## Operator recovery
 
 An org owner can open the order's admin detail, select an attempt and reconcile it or request expiry. If the process
-lost the Session ID, copy the **test Session ID** from Stripe's dashboard into the recovery form. Kitsune retrieves
-it server-side and checks account, test mode, exact amount/currency, order and attempt metadata before storing it.
+lost the Session ID, copy the **Session ID** from Stripe's dashboard into the recovery form. Kitsune retrieves
+it server-side and checks original account and mode, exact amount/currency, order and attempt metadata before storing it.
 An arbitrary Session ID grants no ownership and cannot replace a different already-known Session.
 
 An unidentified attempt is replayed only within 23 hours of its creation, inside Stripe's documented minimum
@@ -95,7 +92,7 @@ Changing the org mode, replacing a key, resealing it under another application k
 the pinned API version can refuse runtime recovery. The durable attempt remains; it is not reassigned to the new
 account or deleted. Re-enable the same module and investigate through the original provider account. Historical
 credential/event recovery now has a separate explicit owner action: expand **Recover with this checkout’s original
-Stripe account**, provide a test key for the original account and your fresh Kitsune password. It retrieves only the
+Stripe account**, provide a key for the original account and mode and your fresh Kitsune password. It retrieves only the
 original Session, using a checked verified receipt when its ID was lost, or the ID you supply. The transient key is
 discarded; no credential/witness is rewritten, no new Session is created and buyer recovery stays frozen. A different
 account or API version is refused. Export remains available independently of runtime mode/credential eligibility.

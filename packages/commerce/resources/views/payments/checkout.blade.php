@@ -7,7 +7,7 @@
 
 @section('content')
     <h1>{{ $t('title') }}</h1>
-    <p>{{ $t('test_only') }}</p>
+    @if (isset($order))<p>{{ $t('mode_'.$order['mode']) }}</p>@endif
     @if ($error !== null)<p role="alert">{{ $t($error) }}</p>@endif
     @if ($notice !== null)<p role="status">{{ $t($notice) }}</p>@endif
     @if (isset($order))
@@ -25,7 +25,7 @@
                     <button type="submit">{{ $t('continue') }}</button>
                 </form>
             </section>
-        @elseif ($order['state'] === 'prepared' && $order['mode'] === 'test' && ! $pending && ! $completed)
+        @elseif ($order['state'] === 'prepared' && ! $pending && ! $completed)
             <p>{{ $t('review_help') }}</p>
             <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/payment/review">@csrf<button type="submit">{{ $t('review') }}</button></form>
         @endif

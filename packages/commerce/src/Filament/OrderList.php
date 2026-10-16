@@ -26,6 +26,7 @@ use Kitsune\Commerce\Payments\CheckoutWriter;
 use Kitsune\Commerce\Payments\FinancialReadModel;
 use Kitsune\Commerce\Payments\FinancialReconciler;
 use Kitsune\Commerce\Payments\FinancialState;
+use Kitsune\Commerce\Payments\LiveStripeAdmission;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Tenancy\Context;
 use Livewire\Attributes\Locked;
@@ -68,6 +69,17 @@ final class OrderList extends Page
         $this->refundRequestKey = bin2hex(random_bytes(16));
         if ($this->reference !== null) {
             $this->detail();
+        }
+    }
+
+    /** @return array{state:string,version:?string,account:?string,admittedAt:?string} */
+    public function liveAdmission(): array
+    {
+        self::authorizeResourceAccess();
+        try {
+            return app(LiveStripeAdmission::class)->statusForOwner();
+        } catch (Throwable) {
+            return ['state' => 'unavailable', 'version' => null, 'account' => null, 'admittedAt' => null];
         }
     }
 

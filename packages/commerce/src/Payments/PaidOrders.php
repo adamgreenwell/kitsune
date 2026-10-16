@@ -38,7 +38,7 @@ final class PaidOrders
     {
         $context = app(Context::class);
         if ($connection->transactionLevel() < 1 || $context->orgId() !== (int) $order->org_id
-            || $context->siteId() !== (int) $order->site_id || $order->mode !== 'test'
+            || $context->siteId() !== (int) $order->site_id || ! in_array($order->mode, ['test', 'live'], true)
             || ! in_array($order->state, ['prepared', 'cancelled', 'paid'], true)) {
             throw new CheckoutRefused;
         }
@@ -47,7 +47,7 @@ final class PaidOrders
         CheckoutSession::assertMatches($attempt, $session, $session['id']);
         $payment = $session['payment'] ?? null;
         if (CheckoutSession::state($session) !== 'completed' || ! is_array($payment)
-            || ($payment['test'] ?? null) !== true || StripeAmounts::fromWire($payment['amount'], $order->currency) !== MinorUnits::integer($order->quoted_total_minor)
+            || ($payment['test'] ?? null) !== StripeMode::isTest($order->mode) || StripeAmounts::fromWire($payment['amount'], $order->currency) !== MinorUnits::integer($order->quoted_total_minor)
             || $payment['received'] !== $payment['amount'] || $payment['captured'] !== $payment['amount']
             || strtoupper($payment['currency']) !== $order->currency) {
             throw new CheckoutRefused('changed');
@@ -73,7 +73,7 @@ final class PaidOrders
         $now = self::now();
         $held = $erased || $payment['disputed'] || $payment['refunded'] !== '0';
         $id = $connection->table(self::RECEIPTS)->insertGetId(['org_id' => $order->org_id, 'site_id' => $order->site_id,
-            'order_id' => $order->id, 'attempt_id' => $attempt->id, 'account_id' => $attempt->account_id, 'mode' => 'test',
+            'order_id' => $order->id, 'attempt_id' => $attempt->id, 'account_id' => $attempt->account_id, 'mode' => $order->mode,
             'api_version' => $attempt->api_version, 'session_id' => $session['id'], 'payment_intent_id' => $payment['intentId'],
             'charge_id' => $payment['chargeId'], 'currency' => $order->currency, 'amount_minor' => $charged,
             'allocation_state' => $held ? 'held' : 'allocated', 'category' => $held ? ($erased ? 'privacy_erased' : ($payment['disputed'] ? 'disputed' : 'external_refund')) : null,
@@ -159,7 +159,7 @@ final class PaidOrders
             throw new CheckoutRefused;
         }
         $context = app(Context::class);
-        if ($context->orgId() !== (int) $order->org_id || $context->siteId() !== (int) $order->site_id || $order->mode !== 'test') {
+        if ($context->orgId() !== (int) $order->org_id || $context->siteId() !== (int) $order->site_id || ! in_array($order->mode, ['test', 'live'], true)) {
             throw new CheckoutRefused;
         }
         $owed = $connection->table(self::OBLIGATIONS)->useWritePdo()->where('id', $obligation)->lockForUpdate()->first() ?? throw new CheckoutRefused;
@@ -205,7 +205,7 @@ final class PaidOrders
             $attempt = $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $row->attempt_id)->first() ?? throw new CheckoutRefused;
             self::child($attempt, $order);
             if ($row->account_id !== $attempt->account_id || $row->session_id !== $attempt->session_id
-                || $row->mode !== 'test' || $order->mode !== 'test' || $row->api_version !== $attempt->api_version
+                || $row->mode !== $order->mode || $attempt->mode !== $order->mode || ! in_array($order->mode, ['test', 'live'], true) || $row->api_version !== $attempt->api_version
                 || $row->currency !== $order->currency || MinorUnits::integer($row->amount_minor) !== MinorUnits::integer($order->quoted_total_minor)
                 || ! in_array($row->allocation_state, ['allocated', 'held'], true)
                 || ($row->allocation_state === 'allocated' && $row->category !== null)
@@ -336,7 +336,7 @@ final class PaidOrders
                 'owed_minor' => $latest?->state === 'succeeded' ? '0' : $total, 'attempts' => $history];
         }
 
-        return ['payment' => ['amount_minor' => MinorUnits::integer($receipt->amount_minor), 'mode' => 'test',
+        return ['payment' => ['amount_minor' => MinorUnits::integer($receipt->amount_minor), 'mode' => $receipt->mode,
             'allocation_state' => $receipt->allocation_state, 'category' => $receipt->category,
             'verified_at' => CheckoutAttempts::instant($receipt->verified_at)->format('Y-m-d\TH:i:s\Z')],
             'allocations' => $allocations, 'refund' => $refund];

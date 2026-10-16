@@ -17,6 +17,6 @@ final class CheckoutRefused extends RuntimeException
 {
     public function __construct(public readonly string $reason = 'unavailable')
     {
-        parent::__construct('The test checkout is unavailable.');
+        parent::__construct('Checkout is unavailable.');
     }
 }

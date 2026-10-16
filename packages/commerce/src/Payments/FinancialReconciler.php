@@ -120,7 +120,7 @@ final class FinancialReconciler
             };
             $receipt = (object) $captured['basis']['receipt'];
             $checkpoint();
-            if ($this->stripe->account($secret) !== $receipt->account_id) {
+            if ($this->stripe->account($secret, $receipt->mode) !== $receipt->account_id) {
                 throw new CheckoutRefused('changed');
             }
             $checkpoint();
@@ -133,7 +133,7 @@ final class FinancialReconciler
                         (int) $captured['order']->org_id, $captured['order'], $captured['refund']);
                 });
                 if ($hint !== null && $captured['refund']->refund_id === null) {
-                    $hinted = $this->stripe->retrieveRefund($secret, $hint);
+                    $hinted = $this->stripe->retrieveRefund($secret, $hint, $receipt->mode);
                     $checkpoint();
                     if ($hinted['chargeId'] !== $receipt->charge_id || $hinted['paymentIntent'] !== $receipt->payment_intent_id
                         || $hinted['currency'] !== $receipt->currency || $hinted['amount'] !== $captured['request']['amount']
@@ -167,7 +167,7 @@ final class FinancialReconciler
             $refund = $captured['refund'];
             $known = $refund->refund_id;
             if ($known !== null) {
-                $current = $this->stripe->retrieveRefund($secret, $known);
+                $current = $this->stripe->retrieveRefund($secret, $known, $receipt->mode);
                 $checkpoint();
             } else {
                 if (in_array($refund->state, ['failed', 'canceled', 'succeeded', 'held'], true)
@@ -183,7 +183,7 @@ final class FinancialReconciler
                         $captured['credential_witness'] ?? $witness);
                 });
                 $checkpoint();
-                $current = $this->stripe->createRefund($secret, $captured['request'], $captured['idempotency_key']);
+                $current = $this->stripe->createRefund($secret, $captured['request'], $captured['idempotency_key'], $receipt->mode);
                 $checkpoint();
             }
 
@@ -265,18 +265,8 @@ final class FinancialReconciler
     {
         $connection = (new Order)->getConnection();
         $org = $this->context->orgId() ?? throw new CheckoutRefused;
-        $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->first();
-        if ($mode !== null && $mode->mode !== 'test') {
-            throw new CheckoutRefused('live');
-        }
-        $row = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('slot', StripeCheckout::SLOT)
-            ->where('mode', 'test')->lockForUpdate()->first();
-        if ($row === null || ! is_string($row->ciphertext) || $row->ciphertext === '' || ! is_string($row->key_id)) {
-            throw new CheckoutRefused('setup');
-        }
 
-        return hash('sha256', implode("\0", [(string) $row->id, (string) $row->org_id, $row->slot, $row->mode,
-            $row->ciphertext, $row->key_id, $row->changed_at]));
+        return StripeMode::witness($connection, $org, StripeMode::current($connection, $org));
     }
 
     private function checkoutWitness(object $order, object $receipt): string
@@ -284,7 +274,7 @@ final class FinancialReconciler
         $row = (new Order)->getConnection()->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $receipt->attempt_id)
             ->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->lockForUpdate()->first();
         if ($row === null || $row->account_id !== $receipt->account_id || $row->session_id !== $receipt->session_id
-            || $row->api_version !== StripeCheckout::API_VERSION || $row->mode !== 'test'
+            || $row->api_version !== StripeCheckout::API_VERSION || $row->mode !== $order->mode
             || ! is_string($row->credential_witness) || preg_match('/\A[a-f0-9]{64}\z/D', $row->credential_witness) !== 1) {
             throw new CheckoutRefused('changed');
         }

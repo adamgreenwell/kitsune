@@ -162,13 +162,13 @@ test.describe('Owner checkout and order administration', () => {
             + "'lease_token'=>null,'lease_until'=>null,'created_at'=>$now->format('Y-m-d H:i:s'),'updated_at'=>$now->format('Y-m-d H:i:s')]);echo $reference;");
         await page.goto(`${ORDERS}/${reference}`);
         await expect(page.getByText(attempt, { exact: true })).toBeVisible();
-        await expect(page.getByText('Test checkout outcome needs checking', { exact: true })).toBeVisible();
+        await expect(page.getByText('Checkout outcome needs checking', { exact: true })).toBeVisible();
         const input = page.getByRole('textbox', { name: 'Session ID (only if missing)', exact: true });
         await input.fill('not-a-session');
-        const expire = page.getByRole('checkbox', { name: 'Expire the open test Session after checking it', exact: true });
+        const expire = page.getByRole('checkbox', { name: 'Expire the open Session after checking it', exact: true });
         await expire.check();
-        await submit(page, 'recoverAttempt', 'Check test Session');
-        await expect(page.getByRole('alert').filter({ hasText: 'Test checkout could not be completed.' })).toBeVisible();
+        await submit(page, 'recoverAttempt', 'Check Session');
+        await expect(page.getByRole('alert').filter({ hasText: 'Checkout could not be completed.' })).toBeVisible();
         await expect(input).toHaveValue('');
         await expect(expire).not.toBeChecked();
         expect(await page.content()).not.toContain('not-a-session');
@@ -197,7 +197,7 @@ test.describe('Owner checkout and order administration', () => {
         // A previously completed test attempt has no paid receipt yet. It keeps original-account recovery available.
         php(`DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->update(['state'=>'completed','active_order_id'=>null,'session_id'=>'cs_test_browserFixture']);`);
         await page.reload();
-        await expect(page.getByRole('button', { name: 'Check test Session', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Check Session', exact: true })).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Erase unpaid order', exact: true })).toHaveCount(0);
         await page.getByText('Recover with this checkout’s original Stripe account', { exact: true }).first().click();
         await expect(page.locator('form[action$="/historical-recovery"] [name="password"]')).toBeVisible();

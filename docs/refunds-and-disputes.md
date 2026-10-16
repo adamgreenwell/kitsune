@@ -1,8 +1,9 @@
 # Refunds and disputes
 
-Commerce reconciles refunds and formal payment disputes against confirmed **test** orders. Live checkout remains
-disabled while paid-data privacy (#203) and the remaining first-money gates are incomplete. This workflow does
-not require an always-on worker or change the original invoice, allocation, access offer or guest claim.
+Commerce reconciles refunds and formal payment disputes against the confirmed purchase's original Stripe
+account and mode. [Revoking live admission](live-stripe-admission.md) blocks new sales while this existing financial
+lifecycle continues. It requires no always-on worker and preserves the original invoice, allocation, access offer
+and guest claim.
 
 ## Refund delivered units
 

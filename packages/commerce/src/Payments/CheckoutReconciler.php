@@ -29,7 +29,7 @@ use Throwable;
 
 /**
  * Reconcile a recorded TEST Session and confirm captured payments under the original custody.
- * Provider reads retain #197's current-mode/witness rule; a fresh owner can explicitly supply a transient test key.
+ * Provider reads retain #197's current-mode/witness rule; a fresh owner can explicitly supply a transient original-mode key.
  * An expired attempt or completed attempt with a paid receipt can finish local receipt bookkeeping without I/O.
  * Provider calls occur after the claim commits. Every durable graph and owner proof is checked around the I/O.
  *
@@ -71,7 +71,7 @@ final class CheckoutReconciler
             $this->outside();
             self::reference($orderReference);
             self::reference($attemptReference);
-            if ($sessionId !== '' && preg_match('/\Acs_test_[A-Za-z0-9_]{1,240}\z/D', $sessionId) !== 1) {
+            if ($sessionId !== '' && preg_match('/\Acs_(?:test|live)_[A-Za-z0-9_]{1,240}\z/D', $sessionId) !== 1) {
                 throw new CheckoutRefused;
             }
             $owner = $key !== null;
@@ -92,7 +92,7 @@ final class CheckoutReconciler
                 if (! $owner && ($row->state === 'expired' || ($row->state === 'completed'
                     && app(PaidOrders::class)->receipt($order->getConnection(), (object) $order->getAttributes(), true) !== null))) {
                     // A prior verified reconciliation (including explicit historical owner recovery) already
-                    // settled this exact test Session. Finish its receipt without reopening old credential custody.
+                    // settled this exact Session. Finish its receipt without reopening old credential custody.
                     return ['terminal' => self::result($row)];
                 }
                 $witness = $owner ? null : $this->witness();
@@ -122,12 +122,12 @@ final class CheckoutReconciler
             }
             $secret = $key ?? $captured['secret'];
             $this->outside();
-            if ($this->stripe->account($secret) !== $captured['row']->account_id) {
+            if ($this->stripe->account($secret, $captured['row']->mode) !== $captured['row']->account_id) {
                 throw new CheckoutRefused('changed');
             }
             // Account lookup is itself I/O: revocation or a credential change must stop the next provider read too.
             $this->locks->run(fn () => $this->checked($orderReference, $attemptReference, $captured, $owner, $password));
-            $session = $this->stripe->retrievePaid($secret, $captured['sessionId']);
+            $session = $this->stripe->retrievePaid($secret, $captured['sessionId'], $captured['row']->mode);
             CheckoutSession::assertMatches($captured['row'], $session, $captured['sessionId']);
 
             return $this->locks->run(function () use ($orderReference, $attemptReference, $captured, $session, $owner, $password): array {
@@ -192,7 +192,7 @@ final class CheckoutReconciler
         $row = $this->orders->find($connection, $this->context->orgId() ?? throw new CheckoutRefused,
             $this->context->siteId() ?? throw new CheckoutRefused, $reference, true) ?? throw new CheckoutRefused;
         $this->orders->record($connection, $row);
-        if (! in_array($row->state, ['prepared', 'cancelled', 'paid'], true) || $row->mode !== 'test') {
+        if (! in_array($row->state, ['prepared', 'cancelled', 'paid'], true) || ! in_array($row->mode, ['test', 'live'], true)) {
             throw new CheckoutRefused('live');
         }
 
@@ -259,16 +259,8 @@ final class CheckoutReconciler
     {
         $connection = (new Order)->getConnection();
         $org = $this->context->orgId() ?? throw new CheckoutRefused;
-        $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->first();
-        if ($mode !== null && $mode->mode !== 'test') {
-            throw new CheckoutRefused('live');
-        }
-        $row = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('slot', StripeCheckout::SLOT)->where('mode', 'test')->lockForUpdate()->first();
-        if ($row === null || ! is_string($row->ciphertext) || $row->ciphertext === '' || ! is_string($row->key_id)) {
-            throw new CheckoutRefused('setup');
-        }
 
-        return hash('sha256', implode("\0", [(string) $row->id, (string) $row->org_id, $row->slot, $row->mode, $row->ciphertext, $row->key_id, $row->changed_at]));
+        return StripeMode::witness($connection, $org, StripeMode::current($connection, $org));
     }
 
     /** @param array<string,mixed> $changes */

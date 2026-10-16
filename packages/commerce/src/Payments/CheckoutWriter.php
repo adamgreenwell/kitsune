@@ -33,7 +33,7 @@ use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
 
-/** Durable TEST-only Session orchestration. No provider I/O under a transaction, payment state, stock or access writes. @internal */
+/** Durable explicitly admitted live or test Session orchestration. No provider I/O under a transaction, payment state, stock or access writes. @internal */
 final class CheckoutWriter
 {
     public function __construct(private readonly OrderLocks $locks, private readonly CheckoutReview $reviews,
@@ -74,20 +74,25 @@ final class CheckoutWriter
                     throw new CheckoutRefused('limit');
                 }
 
-                return ['witness' => $this->witness(), 'orderHash' => $approved['orderHash']];
+                return ['witness' => $this->witness(), 'orderHash' => $approved['orderHash'], 'mode' => $order->mode,
+                    'account' => $order->mode === 'live' ? app(LiveStripeAdmission::class)->forNewCheckout() : null];
             });
             if (isset($first['existing'])) {
                 return $this->operate($request, $reference, $first['existing']);
             }
             // Account discovery creates no Session and happens before claiming an immutable create request.
             $secret = $this->secret($first['witness']);
-            $account = $this->stripe->account($secret);
+            $account = $this->stripe->account($secret, $first['mode']);
             $captured = $this->locked(function () use ($request, $reference, $review, $first, $account): array {
                 $approved = $this->reviews->approve($request, $reference, $review);
                 if (! hash_equals($first['orderHash'], $approved['orderHash']) || ! hash_equals($first['witness'], $this->witness())) {
                     throw new CheckoutRefused('changed');
                 }
                 $order = $approved['order'];
+                if ($order->mode !== $first['mode'] || ($order->mode === 'live'
+                    && ($account !== $first['account'] || app(LiveStripeAdmission::class)->forNewCheckout($account) !== $account))) {
+                    throw new CheckoutRefused('changed');
+                }
                 $rows = $this->attempts->rows($order->getConnection(), (int) $order->org_id, (object) $order->getAttributes(), true);
                 foreach ($rows as $row) {
                     if ($row->active_order_id !== null || $row->state === 'completed') {
@@ -101,11 +106,14 @@ final class CheckoutWriter
                 $attempt = bin2hex(random_bytes(16));
                 $site = $this->context->site() ?? throw new CheckoutRefused;
                 $base = (ReaderLinks::origin($site) ?? throw new CheckoutRefused).($site->path_prefix ?? '');
+                if ($order->mode === 'live' && parse_url($base, PHP_URL_SCHEME) !== 'https') {
+                    throw new CheckoutRefused('setup');
+                }
                 // Stripe's remote minimum is 30m. Allow at most one setup minute, show exact expiry, never extend on retry.
                 $expires = $now->addSeconds(1860);
                 $payload = CheckoutAttempts::payload($approved['record'], $attempt, $expires->timestamp, $base);
                 $data = ['org_id' => $order->org_id, 'site_id' => $order->site_id, 'order_id' => $order->getKey(),
-                    'reference' => $attempt, 'active_order_id' => $order->getKey(), 'mode' => 'test', 'currency' => $approved['record']['currency'],
+                    'reference' => $attempt, 'active_order_id' => $order->getKey(), 'mode' => $order->mode, 'currency' => $approved['record']['currency'],
                     'account_id' => $account, 'api_version' => StripeCheckout::API_VERSION, 'credential_witness' => $first['witness'], 'state' => 'creating',
                     'request_payload' => json_encode($payload, JSON_THROW_ON_ERROR), 'request_hash' => CheckoutAttempts::digest($payload),
                     'order_hash' => $approved['orderHash'], 'session_id' => null, 'checkout_url' => null,
@@ -160,7 +168,7 @@ final class CheckoutWriter
         return $this->safe(function () use ($reference, $attempt, $sessionId, $expire): array {
             $reference = self::reference($reference);
             $attempt = self::reference($attempt);
-            if ($sessionId !== null && preg_match('/\Acs_test_[A-Za-z0-9_]{1,240}\z/D', $sessionId) !== 1) {
+            if ($sessionId !== null && preg_match('/\Acs_(?:test|live)_[A-Za-z0-9_]{1,240}\z/D', $sessionId) !== 1) {
                 throw new CheckoutRefused;
             }
             $result = $this->operate(null, $reference, $attempt, knownSession: $sessionId);
@@ -210,9 +218,12 @@ final class CheckoutWriter
     private function perform(?Request $request, string $reference, object $captured, string $operation, bool $first, ?string $knownSession = null): array
     {
         $this->outside();
-        $this->locked(function () use ($request, $reference, $captured): void {
+        $this->locked(function () use ($request, $reference, $captured, $operation): void {
             $order = $this->owned($request, $reference);
             $this->unchanged($captured, $order);
+            if ($operation === 'create' && $captured->mode === 'live') {
+                app(LiveStripeAdmission::class)->forNewCheckout($captured->account_id);
+            }
             $row = $this->find($order, $captured->reference);
             if ($row->lease_token !== $captured->lease_token || ! hash_equals($row->request_hash, $captured->request_hash)
                 || ! hash_equals($row->order_hash, CheckoutReview::orderHash(app(OrderReaderData::class)->record($order->getConnection(), (object) $order->getAttributes())))
@@ -224,14 +235,24 @@ final class CheckoutWriter
         $rejected = false;
         try {
             $secret = $this->secret($captured->credential_witness);
-            if (! $first && $this->stripe->account($secret) !== $captured->account_id) {
+            if (! $first && $this->stripe->account($secret, $captured->mode) !== $captured->account_id) {
                 throw new CheckoutRefused('changed');
             }
+            $this->locked(function () use ($request, $reference, $captured, $operation): void {
+                $order = $this->owned($request, $reference);
+                $this->unchanged($captured, $order);
+                if (! hash_equals($captured->credential_witness, $this->witness())) {
+                    throw new CheckoutRefused('changed');
+                }
+                if ($operation === 'create' && $captured->mode === 'live') {
+                    app(LiveStripeAdmission::class)->forNewCheckout($captured->account_id);
+                }
+            });
             $idempotency = 'kitsune-checkout-'.$captured->org_id.'-'.$captured->site_id.'-'.$captured->reference;
             $session = match ($operation) {
-                'create' => $this->stripe->create($secret, CheckoutAttempts::request($captured), $idempotency),
-                'retrieve' => $this->stripe->retrieve($secret, $captured->session_id ?? $knownSession ?? throw new CheckoutRefused),
-                'expire' => $this->stripe->expire($secret, $captured->session_id ?? throw new CheckoutRefused, $idempotency.'-expire'),
+                'create' => $this->stripe->create($secret, CheckoutAttempts::request($captured), $idempotency, $captured->mode),
+                'retrieve' => $this->stripe->retrieve($secret, $captured->session_id ?? $knownSession ?? throw new CheckoutRefused, $captured->mode),
+                'expire' => $this->stripe->expire($secret, $captured->session_id ?? throw new CheckoutRefused, $idempotency.'-expire', $captured->mode),
                 default => throw new CheckoutRefused,
             };
             $this->matchSession($captured, $session, $knownSession);
@@ -280,7 +301,7 @@ final class CheckoutWriter
         foreach ($payload['line_items'] as $item) {
             $total = CartAmounts::add($total, $item['price_data']['unit_amount']);
         }
-        if ($session['test'] !== true || $session['currency'] !== $row->currency || $session['amountTotal'] !== $total
+        if ($session['test'] !== StripeMode::isTest($row->mode) || ! StripeMode::session($session['id'], $row->mode) || $session['currency'] !== $row->currency || $session['amountTotal'] !== $total
             || $session['clientReference'] !== $payload['client_reference_id'] || $session['attemptReference'] !== $row->reference
             || $session['orderReference'] !== $payload['metadata']['kitsune_order'] || $session['expiresAt'] !== $payload['expires_at']
             || ($row->session_id !== null && $session['id'] !== $row->session_id) || ($knownSession !== null && $session['id'] !== $knownSession)
@@ -304,7 +325,7 @@ final class CheckoutWriter
         } else {
             $order = app(OrderAccess::class)->owned($request, $reference) ?? throw new CheckoutRefused;
         }
-        if ($order->getAttributes()['state'] !== 'prepared' || $order->getAttributes()['mode'] !== 'test') {
+        if ($order->getAttributes()['state'] !== 'prepared' || ! in_array($order->getAttributes()['mode'], ['test', 'live'], true)) {
             throw new CheckoutRefused('live');
         }
 
@@ -324,20 +345,12 @@ final class CheckoutWriter
     {
         $connection = (new Order)->getConnection();
         $org = $this->context->orgId() ?? throw new CheckoutRefused;
-        $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->first();
-        if ($mode !== null && $mode->mode !== 'test') {
-            throw new CheckoutRefused('live');
-        }
         $receipt = $connection->table('modules')->useWritePdo()->where('handle', 'kitsune/commerce')->where('is_enabled', true)->lockForUpdate()->first();
         if ($receipt === null || $receipt->version !== ModuleDiscovery::version('kitsune/commerce')) {
             throw new CheckoutRefused;
         }
-        $row = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('slot', StripeCheckout::SLOT)->where('mode', 'test')->lockForUpdate()->first();
-        if ($row === null || ! is_string($row->ciphertext) || $row->ciphertext === '' || ! is_string($row->key_id)) {
-            throw new CheckoutRefused('setup');
-        }
 
-        return hash('sha256', implode("\0", [(string) $row->id, (string) $row->org_id, $row->slot, $row->mode, $row->ciphertext, $row->key_id, $row->changed_at]));
+        return StripeMode::witness($connection, $org, StripeMode::current($connection, $org));
     }
 
     private function secret(string $witness): Secret

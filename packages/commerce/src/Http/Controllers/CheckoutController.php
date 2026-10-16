@@ -137,7 +137,7 @@ final class CheckoutController
             try {
                 return $this->view(['error' => 'unavailable'], 503);
             } catch (Throwable) {
-                return response('Test checkout unavailable. Please try again shortly.', 503);
+                return response('Checkout unavailable. Please try again shortly.', 503);
             }
         }
     }

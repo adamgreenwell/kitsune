@@ -124,7 +124,7 @@ final class FinancialState
         }
         foreach ($observations as $observation) {
             if ((string) $observation->work_id !== (string) $work->id || $observation->account_id !== ($basis['receipt']['account_id'] ?? null)
-                || $observation->mode !== 'test' || $observation->currency !== $actual->currency
+                || $observation->mode !== $actual->mode || $observation->currency !== $actual->currency
                 || ! in_array($observation->kind, ['refund', 'dispute'], true)
                 || ! self::identifier($observation->object_id, $observation->kind === 'refund' ? 're_' : 'du_')
                 || ! in_array($observation->state, $observation->kind === 'refund' ? self::REFUND_STATES : self::DISPUTE_STATES, true)
@@ -153,7 +153,7 @@ final class FinancialState
 
         $signals = [];
         if (isset($basis['receipt']['charge_id'])) {
-            $signals = FinancialSignals::rows($connection, (int) $actual->org_id, $basis['receipt']['charge_id'], $lock);
+            $signals = FinancialSignals::rows($connection, (int) $actual->org_id, $basis['receipt']['charge_id'], $lock, $actual->mode);
         }
 
         $unavailableObligations = $this->rows($connection, PaidOrders::OBLIGATIONS, $actual, 1, $lock);
@@ -485,7 +485,7 @@ final class FinancialState
         $frame = $this->checked($connection, $order, true);
         $receipt = $frame['basis']['receipt'] ?? throw new CheckoutRefused;
         $charge = $graph['charge'] ?? null;
-        if (! is_array($charge) || ($charge['test'] ?? null) !== true || ($charge['id'] ?? null) !== $receipt['charge_id']
+        if (! is_array($charge) || ($charge['test'] ?? null) !== StripeMode::isTest($order->mode) || ($charge['id'] ?? null) !== $receipt['charge_id']
             || ($charge['paymentIntent'] ?? null) !== $receipt['payment_intent_id'] || ($charge['currency'] ?? null) !== $receipt['currency']
             || ($charge['amount'] ?? null) !== StripeAmounts::toWire($receipt['amount_minor'], $receipt['currency'])
             || ($charge['captured'] ?? null) !== $charge['amount'] || ($charge['paid'] ?? null) !== true
@@ -531,7 +531,7 @@ final class FinancialState
         foreach ($graph['disputes'] as $dispute) {
             if (! is_array($dispute) || ! self::identifier($dispute['id'] ?? null, 'du_')
                 || ($dispute['chargeId'] ?? null) !== $receipt['charge_id'] || ($dispute['paymentIntent'] ?? null) !== $receipt['payment_intent_id']
-                || ($dispute['currency'] ?? null) !== $receipt['currency'] || ($dispute['test'] ?? null) !== true
+                || ($dispute['currency'] ?? null) !== $receipt['currency'] || ($dispute['test'] ?? null) !== StripeMode::isTest($order->mode)
                 || ! in_array($dispute['status'] ?? null, self::DISPUTE_STATES, true)
                 || ! is_int($dispute['created'] ?? null) || $dispute['created'] < 1 || isset($seen['dispute:'.$dispute['id']])) {
                 throw new CheckoutRefused('changed');
@@ -986,7 +986,7 @@ final class FinancialState
             }
             $connection->table(self::OBSERVATIONS)->insert(['org_id' => $order->org_id, 'site_id' => $order->site_id,
                 'order_id' => $order->id, 'work_id' => $frame['work']->id, 'account_id' => $frame['basis']['receipt']['account_id'],
-                'mode' => 'test', 'currency' => $order->currency, ...$values]);
+                'mode' => $order->mode, 'currency' => $order->currency, ...$values]);
         } elseif ($connection->table(self::OBSERVATIONS)->where('id', $existing->id)->where('org_id', $order->org_id)
             ->where('site_id', $order->site_id)->where('order_id', $order->id)->update($values) > 1) {
             throw new CheckoutRefused('changed');

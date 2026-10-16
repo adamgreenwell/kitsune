@@ -1,8 +1,9 @@
 # Purchased access
 
-The commerce module awards Site-scoped reader access from confirmed **test** orders. Products share their access
-offer across an org's sites; a purchase grants access only on the Site where the order was placed. Live checkout
-remains refused while paid-data privacy (#203) and the remaining first-money gates are incomplete.
+The commerce module awards Site-scoped reader access from confirmed orders, retaining each purchase's original
+account and mode. Products share their access offer across an Org's Sites; a purchase grants access only on its
+selling Site. New live sales require [explicit owner admission](live-stripe-admission.md); test payments can also
+change stock and purchased access within the installation.
 
 ## Configure and freeze an offer
 

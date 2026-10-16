@@ -17,6 +17,7 @@ use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Payments\CheckoutRefused;
 use Kitsune\Commerce\Payments\PaymentMaintenance;
 use Kitsune\Commerce\Payments\StripeEventInbox;
+use Kitsune\Commerce\Payments\StripeMode;
 use Kitsune\Commerce\Payments\StripeWebhook;
 use Kitsune\Core\Credentials\CredentialReader;
 use Kitsune\Core\Credentials\CredentialUnavailability;
@@ -66,11 +67,12 @@ final class StripeWebhookController
                 $connection = (new Credential)->getConnection();
                 $mode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->value('mode');
                 $module = Module::query()->useWritePdo()->where('handle', 'kitsune/commerce')->lockForUpdate()->first();
-                if (($mode !== null && $mode !== 'test') || $module === null || ! $module->is_enabled
+                StripeMode::isTest($mode ?? 'test');
+                if (($mode !== null && ! in_array($mode, ['test', 'live'], true)) || $module === null || ! $module->is_enabled
                     || $module->version !== ModuleDiscovery::version('kitsune/commerce')) {
                     throw new CheckoutRefused;
                 }
-                $rows = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('mode', 'test')
+                $rows = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('mode', $mode ?? 'test')
                     ->whereIn('slot', [StripeWebhook::SLOT, StripeWebhook::PREVIOUS_SLOT])->orderBy('slot')->lockForUpdate()->get();
                 $before = hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
                 $reader = app(CredentialReader::class);
@@ -83,11 +85,11 @@ final class StripeWebhookController
                     }
                 }
                 $now = CarbonImmutable::now('UTC')->startOfSecond();
-                $event = app(StripeWebhook::class)->verify($raw, $header, $secrets, $now->timestamp);
+                $event = app(StripeWebhook::class)->verify($raw, $header, $secrets, $now->timestamp, $mode ?? 'test');
                 unset($secrets);
                 $verified = true;
                 $receipt = app(StripeEventInbox::class)->capture($org, $event, $raw, $now);
-                $after = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('mode', 'test')
+                $after = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('mode', $mode ?? 'test')
                     ->whereIn('slot', [StripeWebhook::SLOT, StripeWebhook::PREVIOUS_SLOT])->orderBy('slot')->lockForUpdate()->get();
                 $currentMode = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->value('mode');
                 if (! hash_equals($before, hash('sha256', json_encode($after, JSON_THROW_ON_ERROR))) || $currentMode !== $mode
