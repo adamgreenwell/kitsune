@@ -7,6 +7,24 @@
     <p>{{ __('commerce::checkout.orders_help') }}</p>
     <div role="alert">@error('order') <p>{{ $message }}</p> @enderror</div>
     @if ($this->reference === null)
+        <x-filament::section :heading="__('commerce::exports.title')">
+            <form action="{{ \Kitsune\Commerce\Filament\OrderResource::getUrl('export') }}" method="post" autocomplete="off" data-order-export style="display:grid;gap:1rem">
+                @csrf
+                <p>{{ __('commerce::exports.help') }}</p>
+                <div><label for="order-export-format" style="display:block;margin-bottom:.375rem">{{ __('commerce::exports.format') }}</label>
+                    <x-filament::input.wrapper><x-filament::input.select id="order-export-format" name="format">
+                        @foreach (['jsonl', 'csv'] as $format)<option value="{{ $format }}">{{ __('commerce::exports.'.$format) }}</option>@endforeach
+                    </x-filament::input.select></x-filament::input.wrapper></div>
+                <div><label for="order-export-limit" style="display:block;margin-bottom:.375rem">{{ __('commerce::exports.limit') }}</label>
+                    <x-filament::input.wrapper><x-filament::input id="order-export-limit" name="limit" type="number" min="1" max="100" value="100" required /></x-filament::input.wrapper></div>
+                <div><label for="order-export-cursor" style="display:block;margin-bottom:.375rem">{{ __('commerce::exports.cursor') }}</label>
+                    <x-filament::input.wrapper><x-filament::input id="order-export-cursor" name="cursor" type="text" :maxlength="\Kitsune\Commerce\Exports\ExportCursor::MAX_BYTES" dir="ltr" aria-describedby="order-export-cursor-help" /></x-filament::input.wrapper>
+                    <p id="order-export-cursor-help">{{ __('commerce::exports.cursor_help') }}</p></div>
+                <div><label style="display:flex;align-items:flex-start;gap:.625rem"><input type="checkbox" name="include_billing" value="1" aria-describedby="order-export-billing-help" style="margin-top:.25rem">{{ __('commerce::exports.billing') }}</label>
+                    <p id="order-export-billing-help">{{ __('commerce::exports.billing_help') }}</p></div>
+                <x-filament::button type="submit" style="justify-self:start">{{ __('commerce::exports.download') }}</x-filament::button>
+            </form>
+        </x-filament::section>
         @php($orders = $this->orders())
         <x-filament::section :heading="__('commerce::checkout.orders_title')">
             <div class="overflow-x-auto"><table class="w-full text-start">

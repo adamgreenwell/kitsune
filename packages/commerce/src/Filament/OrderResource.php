@@ -16,6 +16,7 @@ use Filament\Resources\Pages\PageRegistration;
 use Filament\Resources\Resource;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Commerce\Http\Controllers\CheckoutRecoveryController;
+use Kitsune\Commerce\Http\Controllers\OrderExportController;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Core\Tenancy\Context;
 
@@ -47,6 +48,7 @@ final class OrderResource extends Resource
         parent::routes($panel, function () use ($registerPageRoutes): void {
             $registerPageRoutes?->__invoke();
             Route::post('/historical-recovery', CheckoutRecoveryController::class)->name('historical-recovery');
+            Route::post('/export', OrderExportController::class)->name('export');
         });
     }
 

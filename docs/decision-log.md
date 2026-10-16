@@ -6345,6 +6345,50 @@ Final eligible order retirement uses a narrow internal `EntitlementWriter::retir
 
 Core entitlement and reader-link erasure retain their existing integer-count APIs and gain internal producer witnesses for account erasure. The witness captures the actual locked row identities the producer deletes, with its original native transaction connection. After the host callback, raw primary reads check current-subject absence and globally unique original-ID absence, so changing an Org/source/subject stamp cannot disguise resurrection. It is an in-memory proof within the existing transaction, not a durable subject registry, a second erasure pass or backup orchestration.
 
+### Amendment — Bounded commerce history exports, 2026-10-16 (#202)
+
+**Adam's choices.** The first operator export provides native owner-only admin downloads and an installed-data
+CLI, in structured JSONL and spreadsheet CSV. Financial history is the default. Retained billing fields require
+an explicit opt-in and remain constrained by each invoice's frozen policy and actual surviving representation;
+contact email and the separate delivery hold never become invoice-export fields. Existing reader/guest export
+contracts and current ownership checks remain; ReaderAccount does not grow. The #203 retention implementation
+and #275 audit prerequisite are now merged through #285; live-provider admission remains separate.
+
+**Technical defaults and audience.** A separate version-1 normalized ledger wraps checked original order, line,
+payment, allocation, refund/dispute, access and privacy summaries. It does not change the base order projection
+used by original purchase/review commitments. Original line references disambiguate duplicate titles. Commerce
+customer references are pseudonymous and Org-specific, not a claim of anonymity; missing host readers and changed
+catalogue products do not prevent historical operator export. Secrets, raw provider custody, capabilities and
+freeform operator reasons are excluded. Billing opt-in can export only permitted paid-invoice survivors: unknown
+policy and computed expiry without a manual legal hold supply no billing fields; delivery/financial custody alone
+does not extend their invoice purpose.
+
+Admin downloads cover the selected Site and independently prove a current primary owner. The cold console command
+requires an exact Org, optionally one Site, and admits the host system or a current owner. A reader cannot supply system authority, and a non-owner
+is refused; a separately verified owner can coexist with a reader session. Each complete artifact is bounded to 100 orders and 16 MiB, checked before response bytes, with a final
+post-host-callback raw custody/receipt fence. Org→Site→Order primary locking reads preserve current custody within a
+page even inside a host repeatable-read transaction. Org-wide Site scans are batched; work grows with Site count.
+The scoped/profile-bound cursor is a locator rather than authority. Its captured maximum excludes later appended
+orders, and retained records can disappear between pages. This is not a global atomic snapshot.
+
+Both formats share explicit linked entity records, exact minor-unit strings, UTC dates and a required completion
+record. CSV uses fixed quoted columns and reversible spreadsheet formula guarding; JSONL preserves exact scalar
+and null types. The existing whole-reader API still aggregates an array, so large operator jobs use the paged
+ledger. The [export guide](commerce-exports.md) documents field/audience classification, completeness, paging,
+spreadsheet limits and recovery/import boundaries. No provider call, runtime worker, new host-model method,
+automatic importer or live checkout activation is introduced.
+
+**Local qualification, 2026-10-16.** The full `composer ci` gate passed on PHP 8.5.10 / SQLite:
+9,972 tests, 52,608 assertions and 50 explicit skips; root and skeleton Pint and PHPStan passed. The seven-file
+export suite passed on MySQL 8.4.7 and MariaDB 10.6.28 with 180 tests / 1,060 assertions each; PostgreSQL 18.6
+passed 177 / 1,013 with three explicit MySQL-family-only skips. Both real repeatable-read cases and the unsigned
+ID-capacity case ran on MySQL/MariaDB. All 731 checked source hashes/modes matched around native qualification;
+all 73 data tables per engine were empty afterward and the three owned containers/volumes were removed.
+The 18-case owner-browser baseline and the final seven-case corrected-source export run passed first attempts,
+with parsed JSONL/CSV downloads, billing opt-in, cursor/scope/role refusals, navigation and Axe; protected checkout
+paths were restored exactly. These are local candidate checks, separate from PR CI, maintainer merge and live
+provider/deployment acceptance.
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**

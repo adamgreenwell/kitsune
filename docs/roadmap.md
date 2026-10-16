@@ -436,7 +436,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       [ADR-040, amended 2026-10-06 twice](decision-log.md)*
 - [x] **Payment credential prerequisites** (#195, #196): operation-bound current-owner/password checks for live
       changes, native POST confirmation, explicit console recovery, bounded audited key rotation and the strict
-      credential-key release gate. Test Stripe checkout and verified events are described below; paid-state retention remains pending.
+      credential-key release gate. Test Stripe checkout and verified events are described below; paid-state retention is implemented in #203; the export gate follows in #202.
 - [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
       ~~sellable record referencing it~~ *site listing linking the site's own content to an org-owned sellable*;
       money is integer minor units, one currency per org. *Catalogue design, 2026-10-13 — ADR-040, Adam's decisions
@@ -473,9 +473,10 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       disputes](refunds-and-disputes.md) (#201) add owner-selected delivered-unit refunds, explicit external-refund
       attribution, current financial observations and recoverable source suspension, revision and restoration.
       Stock returns remain separate reasoned adjustments. [Paid order retention and privacy](paid-retention-and-privacy.md)
-      (#203) is implemented in the review candidate: explicit versioned retention clocks, selected invoice billing
-      fields, separate delivery/legal/financial holds, account unlinking and replay suppression. Local PHP and
-      owner-browser qualification passed; maintainer review, merge and live checkout acceptance remain owed.
+      (#203) is merged through #285: explicit versioned retention clocks, selected invoice billing
+      fields, separate delivery/legal/financial holds, account unlinking and replay suppression. [Commerce exports](commerce-exports.md)
+      (#202) are implemented and locally qualified in the review candidate: owner admin and cold CLI, JSONL/CSV financial history with explicit policy-limited
+      billing opt-in. The full local gate, native export suite and owner-browser checks passed; maintainer review, merge and live checkout acceptance remain owed.
       Zero completion is deferred.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
