@@ -15,6 +15,7 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
 use Kitsune\Commerce\Carts\CartSessions;
 use Kitsune\Commerce\Console\CartPruneCommand;
+use Kitsune\Commerce\Console\ExportCommand;
 use Kitsune\Commerce\Console\PaymentReconcileCommand;
 use Kitsune\Commerce\Console\RetentionCommand;
 use Kitsune\Commerce\Console\StripePruneCommand;
@@ -116,7 +117,7 @@ final class CommerceServiceProvider extends ModuleServiceProvider
 
     public function maintenanceCommands(): array
     {
-        return [RetentionCommand::class];
+        return [RetentionCommand::class, ExportCommand::class];
     }
 
     public function uninstall(): void
