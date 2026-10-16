@@ -6410,9 +6410,9 @@ Historical API witnesses retain their exact encoding and never acquire the admis
 
 **Implementation defaults, not new product answers:** account readiness requires all of `charges_enabled`,
 `payouts_enabled`, `details_submitted`; the native form lives on Storefront → Orders; new live return origins use
-HTTPS; current/previous webhook credential resealing or overlap changes also invalidate admission. Returning from
-test mode to live can use existing consent only while its exact admitted credential/module revisions still match;
-mode switching creates no consent and never undoes revocation. No generic alternate-mode CredentialReader is added.
+HTTPS; current/previous webhook credential resealing or overlap changes also invalidate admission. A mode change
+requires fresh admission on return to live. The current mode row and last audited transition fence same-second
+mode cycles, while unrelated/foreign audits leave consent alone; pruning that audit can require readmission. No generic alternate-mode CredentialReader is added.
 
 The concrete transport, verified event ingress and immutable custody now partition strict test/live mode across
 Session, PaymentIntent, Charge, refund/dispute observations, access, privacy tombstones and exports. Webhook ingress
@@ -6421,7 +6421,7 @@ and a transient original-account/mode key. Revocation alone leaves current-mode 
 verified payloads retain the seven-day maximum; current retention/access decisions are unchanged. The
 [live admission guide](live-stripe-admission.md) records limits and the separate qualification sequence.
 
-**Local source qualification, 2026-10-16.** Full `composer ci` passed on PHP 8.5.10 / SQLite: 10,041 passed,
+**Initial local source qualification, 2026-10-16 (before the final mode-cycle fence).** Full `composer ci` passed on PHP 8.5.10 / SQLite: 10,041 passed,
 53,179 assertions and 50 explicit skips, with root/skeleton Pint and PHPStan passing. Native MySQL 8.4.7 and
 MariaDB 10.6.28 each passed 343 / 2,184 assertions with 12 existing SQLite-specific skips; PostgreSQL 18.6 passed
 342 / 2,179 with those 12 plus one existing MySQL-family-only check. All 39 admission/provider lifecycle tests
@@ -6433,6 +6433,18 @@ versions/credentials, permissions, navigation and Axe; all 18 protected checkout
 Runtime and test source remained frozen through qualification; final edits updated current guides and recorded
 these results. PR CI, maintainer review and separately authorized provider/HTTPS qualification remain distinct.
 No real Org was admitted and no provider charge, deployment or release was performed.
+
+**Final mode-cycle-safe qualification, 2026-10-16.** The corrected admission additionally binds the current mode
+row and last audited mode transition. Same-second test/live cycles invalidate consent both after admission and
+during account verification; historical API witnesses stay unchanged. The full gate was rerun: 10,043 passed /
+53,206 assertions / 50 unchanged explicit skips, plus root/skeleton Pint and PHPStan. Native MySQL 8.4.7 and
+MariaDB 10.6.28 each passed 345 / 2,211 assertions with 12 existing exclusions; PostgreSQL 18.6 passed 344 / 2,206
+with 13. All 41 actual-commit lifecycle cases ran without skips on every engine. All 74 data tables were empty,
+three newly owned containers/volumes were removed and 755 checked source hashes/modes matched. The final native
+admin browser run passed 21/21 without retries/skips/flakes; the unchanged public checkout surface retains its
+11/11 baseline. All 18 protected browser paths were restored exactly. Final edits after the rerun only record this
+qualification. The initial candidate/CI was superseded; final PR CI and real provider/HTTPS qualification remain
+separate, and no real Org was activated.
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 

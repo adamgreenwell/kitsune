@@ -154,3 +154,33 @@ it('rolls back missing or altered persisted admission audits', function (string 
         ->and(DB::table(LiveStripeAdmission::TABLE)->count())->toBe(0)
         ->and(DB::table(AuditLog::TABLE)->where('action', 'commerce.live_stripe_admitted')->count())->toBe(0);
 })->with(['audit', 'row']);
+
+it('requires fresh admission after a same-second test and live mode cycle without changing API custody', function (): void {
+    $seed = liveAdmissionSeed();
+    $service = app(LiveStripeAdmission::class);
+    $service->admit(null, Fx::PASSWORD);
+    $version = $service->statusForOwner()['version'];
+    $before = DB::table('org_credential_modes')->sole()->changed_at;
+    $witness = app(OrderLocks::class)->run(fn () => StripeMode::witness(DB::connection(), (int) $seed['org']->id, 'live'));
+    app(CredentialWriter::class)->switchTo(CredentialMode::Test);
+    app(CredentialWriter::class)->switchTo(CredentialMode::Live, Fx::PASSWORD);
+    expect(DB::table('org_credential_modes')->sole()->changed_at)->toBe($before)
+        ->and($service->statusForOwner()['state'])->toBe('stale')
+        ->and(app(OrderLocks::class)->run(fn () => StripeMode::witness(DB::connection(), (int) $seed['org']->id, 'live')))->toBe($witness);
+    expect(fn () => liveAdmissionGate())->toThrow(CheckoutRefused::class);
+    $service->admit($version, Fx::PASSWORD);
+    expect(liveAdmissionGate())->toBe('acct_LiveFixture');
+});
+
+it('fences a same-second mode cycle during account verification before committing consent', function (): void {
+    $seed = liveAdmissionSeed();
+    $before = DB::table('org_credential_modes')->sole()->changed_at;
+    $seed['provider']->hook = static function (): void {
+        app(CredentialWriter::class)->switchTo(CredentialMode::Test);
+        app(CredentialWriter::class)->switchTo(CredentialMode::Live, Fx::PASSWORD);
+    };
+    expect(fn () => app(LiveStripeAdmission::class)->admit(null, Fx::PASSWORD))->toThrow(CheckoutRefused::class)
+        ->and(DB::table('org_credential_modes')->sole()->changed_at)->toBe($before)
+        ->and(DB::table(LiveStripeAdmission::TABLE)->count())->toBe(0)
+        ->and(DB::table(AuditLog::TABLE)->where('action', 'commerce.live_stripe_admitted')->count())->toBe(0);
+});

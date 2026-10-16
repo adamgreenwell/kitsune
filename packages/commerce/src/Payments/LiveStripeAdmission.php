@@ -21,9 +21,11 @@ use Kitsune\Core\Credentials\CredentialAuthentication;
 use Kitsune\Core\Credentials\CredentialReader;
 use Kitsune\Core\Credentials\CredentialUnavailability;
 use Kitsune\Core\Credentials\CredentialUnavailable;
+use Kitsune\Core\Credentials\CredentialWriter;
 use Kitsune\Core\Credentials\FreshCredentialAuthentication;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\OrgCredentialMode;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
@@ -209,6 +211,12 @@ final class LiveStripeAdmission
         if (StripeMode::current($connection, $org) !== 'live') {
             throw new CheckoutRefused('live');
         }
+        $modeRow = $connection->table('org_credential_modes')->useWritePdo()->where('org_id', $org)->lockForUpdate()->first() ?? throw new CheckoutRefused;
+        // changed_at has second precision. The existing audited mode transition also changes identity when
+        // test→live happens in that same second; unrelated audits and other Orgs never alter this witness.
+        $modeAudit = $connection->table(AuditLog::TABLE)->useWritePdo()->where('org_id', $org)
+            ->where('target_type', (new OrgCredentialMode)->getMorphClass())->where('target_id', (string) $modeRow->id)
+            ->whereIn('action', [CredentialWriter::MODE_LIVE, CredentialWriter::MODE_TEST])->orderByDesc('id')->lockForUpdate()->first(['id']);
         $module = $connection->table('modules')->useWritePdo()->where('handle', 'kitsune/commerce')
             ->where('is_enabled', true)->where('version', ModuleDiscovery::version('kitsune/commerce'))->lockForUpdate()->first();
         $rows = $connection->table('credentials')->useWritePdo()->where('org_id', $org)->where('mode', 'live')
@@ -223,7 +231,8 @@ final class LiveStripeAdmission
             throw new CheckoutRefused;
         }
 
-        return hash('sha256', json_encode(['version' => 1, 'org' => $org, 'api' => StripeCheckout::API_VERSION,
+        return hash('sha256', json_encode(['version' => 2, 'org' => $org, 'api' => StripeCheckout::API_VERSION,
+            'mode' => [(array) $modeRow, $modeAudit === null ? null : (string) $modeAudit->id],
             'module' => [$module->id, $module->version], 'credentials' => $rows->all()], JSON_THROW_ON_ERROR));
     }
 

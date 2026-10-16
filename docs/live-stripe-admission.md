@@ -34,9 +34,11 @@ revisions of the live API/current/previous webhook credentials. Replacing, remov
 those revisions requires fresh owner verification for new Session creation, even when the plaintext is unchanged.
 A missing schema, disabled/stale module, wrong mode, unusable secret or mismatched account refuses new sales.
 
-Switching to test mode makes an existing live admission inactive. Returning to live with exactly the same admitted
-credential/module revisions can use that existing consent; switching modes never creates a missing admission or
-undoes an explicit revocation. Revoke consent explicitly when the intention is to withdraw it across mode changes.
+Switching to test mode invalidates live admission. Returning to live requires a separate fresh admission, even
+when the same keys and module version remain. The witness includes the current mode row and its last audited mode
+transition, so two switches in one second cannot revive consent. Mode-audit retention can also make consent stale;
+an owner can explicitly verify and admit again without restoring old audit rows. No generic alternate-mode
+CredentialReader is introduced, and historical API-key custody is unaffected.
 
 New live return URLs must use the Site's configured HTTPS origin. The browser's success/cancel return still cannot
 confirm payment. No-cost completion remains deferred to #288; a zero final total produces the existing clear
