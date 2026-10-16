@@ -256,31 +256,30 @@ Reader exports and account erasure include every retained reader-owned order acr
 disabled or its receipt stale. Missing recorded storage, inconsistent children or unknown future financial states refuse
 complete erasure rather than silently skipping rows. Guests download/erase through exact browser or email proof. Erasing
 a prepared/cancelled order removes invoice/contact/delivery data, lines and links; these states have no financial retention
-exemption. No statutory retention period is invented. The test paid-state writer explicitly refuses complete erasure of financial custody. Live activation must establish
-the explicit invoice retention and nonrequired-data erasure policy in #203. Uninstall/rollback also refuse retained order/configuration
+exemption. No statutory retention period is invented. The [paid-data privacy policy](paid-retention-and-privacy.md) controls financial custody, selected invoice survivors
+and account unlinking for both original modes; no statutory period is supplied. Uninstall/rollback also refuse retained order/configuration
 rows; export and explicit cleanup remain the operator's maintenance responsibility.
 
-## Stripe test checkout
+## Stripe checkout
 
-Verified test events now have a [durable inbox and bounded replay](stripe-webhooks.md). Hosts must install the early
-request guard before exposing the webhook URL. Full verified payloads expire after seven days; operators run the
-bounded prune command regularly for physical removal. Explicit owner recovery can check an older test Session after
-a key or mode change using a transient key for its original Stripe account. Live checkout stays off. Verified test payments now allocate stock and create unavailable-unit refund obligations; see [paid orders](paid-orders.md).
+Verified events have a [durable inbox and bounded replay](stripe-webhooks.md). Install the early request guard
+before exposing the webhook URL. Full verified payloads expire after seven days; operators run bounded pruning
+regularly for physical removal. Fresh-owner recovery can check an older purchase after a key or mode change using
+a transient key for its original Stripe account and mode. Verified payments allocate shared stock and create
+unavailable-unit refund obligations; see [paid orders](paid-orders.md).
 
-Prepared orders now offer a [test checkout workflow](stripe-checkout.md): fresh buyer review, hosted cards,
-immutable accepted amounts, durable retries, current server reconciliation and explicit expiry. Returning guests
-use exact order proof rather than needing their original cart. An unresolved attempt blocks cancellation and
-erasure until reconciliation; expired/rejected unpaid history can be erased; completed and paid records remain retained pending #203.
+Prepared orders offer [hosted card checkout](stripe-checkout.md), fresh buyer review, immutable accepted amounts,
+durable retries, current server reconciliation and explicit expiry. Returning guests use exact order proof.
+An unresolved attempt blocks cancellation and erasure until reconciliation; paid records follow their explicit
+retention policy. Browser return alone never confirms captured payment.
 
-The org must remain in test mode with its own configured Stripe test key. A basic Session status check alone awaits
-captured-payment proof. Verified confirmation records test paid money and shared stock allocation; unavailable units
-create refund obligations including their allocated tax and shipping. Pending, failed or held refunds remain owed and visible.
-Confirmed test orders now support [purchased access](purchased-access.md) and [refund/dispute access handling](refunds-and-disputes.md).
-Owners can refund original delivered units, attribute external refunds and recover financial observations without
-changing the invoice or automatically returning stock. Live checkout remains unavailable
-pending #203 paid-data policy and the other first-money gates. Zero-total completion and
-three-decimal provider currencies remain deferred. See the guide for exact currency conversion, operator recovery,
-credential-change freezes and the difference between a provider return page and an authoritative result.
+Test mode is the default. Live keys and a mode switch do not admit sales: use the separate password-confirmed
+owner action in [live admission](live-stripe-admission.md). Revocation stops new Session creation while existing
+verified financial recovery continues. Provider and HTTPS qualification, real Org activation, deployment and
+release are separate steps. Confirmed orders support [purchased access](purchased-access.md) and
+[refund/dispute access handling](refunds-and-disputes.md). Owners refund original delivered units or attribute
+external refunds without changing the invoice or automatically returning stock. Zero-total completion and
+three-decimal provider currencies remain deferred.
 
 ## Shared stock adjustments
 

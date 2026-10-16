@@ -1,13 +1,14 @@
-# Test paid orders, stock and refunds
+# Paid orders, stock and refunds
 
-Live checkout remains disabled. This slice exercises captured-payment confirmation and refunds in Stripe test mode;
-it does not establish real provider sandbox or production qualification or invoice retention.
-[Purchased access](purchased-access.md) now consumes its confirmed payment and positively allocated units.
+Confirmed purchases retain their original Stripe account and mode across stock allocation, refund and access
+recovery. Test mode remains the default; new live sales require [explicit owner admission](live-stripe-admission.md).
+Provider qualification and real Org activation remain separate. [Purchased access](purchased-access.md) consumes
+confirmed payment and positively allocated units; [paid retention](paid-retention-and-privacy.md) governs erasure.
 
 ## Confirmation and availability
 
 A signed event is a reconciliation signal. Kitsune retrieves the original account and expands the original Checkout
-Session's PaymentIntent and latest Charge. Exact account, test mode, identity, currency, reviewed money and captured
+Session's PaymentIntent and latest Charge. Exact account, original mode, identity, currency, reviewed money and captured
 amount must match. The browser return is read-only. A basic Session status check can show completed while the order
 still awaits this stronger proof. Owners can use historical checkout recovery; operators can run bounded catch-up.
 
@@ -39,7 +40,7 @@ submission. Afterwards it may only adopt one exact matching provider refund from
 hint. A missing list result, multiple matches, conflicting IDs or external refund amounts require attention, never a
 replacement key. A known Refund ID is retrieved directly. Provider calls hold no database transaction.
 
-An owner may check or submit the existing refund using a transient test key for its original account and a fresh
+An owner may check or submit the existing refund using a transient original-mode key for its original account and a fresh
 local password. **Authorize another refund attempt** is available only after freshly verifying the previous attempt
 failed or was canceled. It retains the prior receipt and permits one new identity; uncertain attempts cannot use it.
 Keys/passwords travel in native body-only POSTs and never through Livewire state, history, URLs or exported data.
@@ -56,7 +57,7 @@ php artisan kitsune:payments-reconcile --org=<slug> --limit=100 --seconds=30
 php artisan kitsune:payments-reconcile --org=<slug> --limit=100 --seconds=30 --refresh-successful
 ```
 
-The first command catches up old completed test checkouts and owed refunds; the second also refreshes successful
+The first command catches up old completed checkouts and owed refunds; the second also refreshes successful
 refunds for later failure. Durable claim counts prevent blocked old work monopolizing repeated bounded invocations.
 The time budget stops starting new operations; an in-flight bounded provider request can finish after it. Module
 installation/version, original account, active mode and credential witness must still agree. Explicit fresh-owner
@@ -71,7 +72,7 @@ in [the webhook guide](stripe-webhooks.md).
 
 Original invoice lines are immutable. Paid/refund records can be read and exported, including through disabled/stale
 commerce custody, but initial-order erasure cannot remove them. Completed legacy attempts are also fenced until their
-financial state is known. #203 must define retention and minimization before live activation; this slice invents no
+financial state is known. [Paid retention and privacy](paid-retention-and-privacy.md) supplies explicit policy enforcement; Kitsune invents no
 statutory retention period. [Refund and dispute access handling](refunds-and-disputes.md) uses the frozen per-order
 sources and immutable guest claims. Delivered-unit refunds and unavailable-unit obligations remain distinct;
 external refunds need explicit owner attribution.

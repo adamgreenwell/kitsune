@@ -1,9 +1,10 @@
-# Verified Stripe test events
+# Verified Stripe events
 
-Commerce receives signed snapshot events into a durable org inbox, acknowledges the committed receipt, then checks
-the original Stripe Session. This remains a test workflow. Exact captured-payment proof now records confirmed money, allocates shared stock
-once and creates unavailable-item refund obligations. Purchased access is not granted yet. Live checkout stays off
-until the remaining first-money gates. See [paid confirmation and refunds](paid-orders.md).
+Commerce receives signed snapshot events into a durable Org inbox, acknowledges the committed receipt, then checks
+the original Stripe Session or financial graph. Strict test/live mode follows the original purchase. Current Org
+signing keys verify ingress; a payload cannot choose its mode. Admission revocation blocks new sales while existing
+verified lifecycle work continues. After a mode/key change, original-account owner recovery remains explicit.
+See [live admission](live-stripe-admission.md), [paid orders](paid-orders.md) and [purchased access](purchased-access.md).
 
 ## Host and Stripe setup
 
@@ -90,13 +91,13 @@ ID, so blocked old receipts cannot monopolize each bounded batch. Active leases 
 reports retryable/blocked/pending work in its selected batch; successful batches do not claim the whole org is clear.
 An exhausted row/time budget may leave additional rows; invoke again until the inbox is clear.
 
-Every replay requires commerce enabled with a matching installation receipt and the org still in test mode. Provider
+Every replay requires commerce enabled with a matching installation receipt and a valid current Org credential mode. Provider
 reconciliation of unresolved attempts additionally requires the original current-mode credential witness. A
 replacement/reseal or changed mode blocks that automated provider path. Owners can use
-the explicit historical recovery form with a transient test key and fresh local password while the org remains in
+the explicit historical recovery form with a transient original-mode key and fresh local password while the org remains in
 another mode. It proves the original account, retrieves only the same Session and rechecks the complete durable graph
 and current ownership around provider I/O. It never installs the key, changes the old witness or creates a Session.
-After historical recovery verifies a completed or expired attempt, normal test-mode replay can finish its local
+After historical recovery verifies a completed or expired attempt, normal stored-event replay can finish its local
 receipt bookkeeping without reading an old key or contacting Stripe; its exact terminal binding cannot be regressed.
 A check returning open or uncertain leaves the unresolved fence and original-witness restriction in force. The
 historical action retrieves only: it does not expire an open Session or create another one.
@@ -119,7 +120,7 @@ checked privacy workflow for terminal order erasure. No raw payload is exposed b
 Terminal test-order erasure atomically clears raw bytes, Session/order/attempt correlations and routing receipts,
 retaining only a minimal dedup tombstone. Redelivery cannot restore erased order data. Pending/uncertain attempts still
 fence cancellation and erasure. Retained inbox/routing rows refuse module rollback or uninstall; disabling preserves
-custody. These are test records, with no invented invoice-retention exemption.
+custody. Paid records follow their [explicit retention policy](paid-retention-and-privacy.md); original mode supplies no invoice-retention exemption.
 
 ## Verification limits
 

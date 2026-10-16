@@ -1,6 +1,8 @@
 # Commerce history exports
 
-The #202 export slice provides owner downloads and an installed-data CLI. Live checkout remains disabled.
+The #202 export slice is merged through #286 and provides owner downloads and an installed-data CLI. Original
+test/live mode remains part of financial history; [live admission](live-stripe-admission.md) and provider
+qualification are separate from export authority.
 Exports read the retained purchase, payment, refund, access and privacy records; they do not fetch the current
 catalogue, contact a payment/shipping provider or run reconciliation or retention maintenance.
 

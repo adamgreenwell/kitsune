@@ -6389,6 +6389,51 @@ with parsed JSONL/CSV downloads, billing opt-in, cursor/scope/role refusals, nav
 paths were restored exactly. These are local candidate checks, separate from PR CI, maintainer merge and live
 provider/deployment acceptance.
 
+### Amendment — Explicit live Stripe admission, 2026-10-16 (#287)
+
+**Adam's choices.** Live mode requires a separate owner action with fresh password confirmation and authenticated
+Stripe account verification. Saving a live key or changing the credential mode creates no admission. Replacing
+either API or webhook secret requires fresh admission for new checkouts. Revocation blocks new checkouts while
+existing verified confirmations, stock/refunds, disputes, access and privacy recovery continue.
+
+This supersedes the earlier test-only delivery restriction for the complete source path, leaving its staged
+reasoning visible above. The prerequisite export issue #202 is merged in #286 (`3b466909138a7f1d5a482666533dff1d7cceadc1`).
+A source candidate, green CI and a verified account response remain separate from provider/TLS qualification,
+a real Org's owner admission, publication, deployment and release authorization. #288 still owns free completion.
+
+One Org-shared admission row records versioned owner consent, account ID, times and a credential revision digest.
+It changes atomically with its checked persisted audit. Account verification runs between committed transactions;
+each phase independently checks fresh owner membership, role, password, Context, primary PDO and original state.
+A competing revocation fences even a first admission. New live create attempts and uncertain create retries check
+current admission again before remote creation; an already-started provider operation may still return a fact.
+Historical API witnesses retain their exact encoding and never acquire the admission or webhook-secret digest.
+
+**Implementation defaults, not new product answers:** account readiness requires all of `charges_enabled`,
+`payouts_enabled`, `details_submitted`; the native form lives on Storefront → Orders; new live return origins use
+HTTPS; current/previous webhook credential resealing or overlap changes also invalidate admission. Returning from
+test mode to live can use existing consent only while its exact admitted credential/module revisions still match;
+mode switching creates no consent and never undoes revocation. No generic alternate-mode CredentialReader is added.
+
+The concrete transport, verified event ingress and immutable custody now partition strict test/live mode across
+Session, PaymentIntent, Charge, refund/dispute observations, access, privacy tombstones and exports. Webhook ingress
+uses only the resolved Org's current-mode signing keys. Old-mode recovery after a switch still needs a fresh owner
+and a transient original-account/mode key. Revocation alone leaves current-mode financial recovery intact. Raw
+verified payloads retain the seven-day maximum; current retention/access decisions are unchanged. The
+[live admission guide](live-stripe-admission.md) records limits and the separate qualification sequence.
+
+**Local source qualification, 2026-10-16.** Full `composer ci` passed on PHP 8.5.10 / SQLite: 10,041 passed,
+53,179 assertions and 50 explicit skips, with root/skeleton Pint and PHPStan passing. Native MySQL 8.4.7 and
+MariaDB 10.6.28 each passed 343 / 2,184 assertions with 12 existing SQLite-specific skips; PostgreSQL 18.6 passed
+342 / 2,179 with those 12 plus one existing MySQL-family-only check. All 39 admission/provider lifecycle tests
+actually ran without skips on every engine, with real outer commits and fake HTTP through the bounded parser.
+All 74 data tables per engine were empty afterward; the three owned containers and volumes were removed.
+The 749 checked source hashes/modes matched around native qualification. Final admin browser checks passed
+21/21 and public checkout checks 11/11, without retries/skips/flakes, including native password forms, stale
+versions/credentials, permissions, navigation and Axe; all 18 protected checkout paths were restored exactly.
+Runtime and test source remained frozen through qualification; final edits updated current guides and recorded
+these results. PR CI, maintainer review and separately authorized provider/HTTPS qualification remain distinct.
+No real Org was admitted and no provider charge, deployment or release was performed.
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**
