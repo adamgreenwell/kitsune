@@ -181,8 +181,7 @@ final class OrderPrivacy
                     $oldFields = PrivacyState::decode($before['work']->retained_billing_fields)['fields'];
                     $fields = array_values(array_intersect($oldFields, $policy->billingFields));
                     $selected = $billing === null ? null : PrivacyState::selectedBilling($billing, $fields);
-                    $connection->table('commerce_orders')->where('id', $order->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)
-                        ->update(['billing' => $selected === null ? null : PrivacyState::encode($selected)]);
+                    $this->state->updateRow($connection, 'commerce_orders', $order, $order, ['billing' => $selected === null ? null : PrivacyState::encode($selected)]);
                     $this->state->seal($connection, $this->fresh($connection, $order), $before['commitments'], []);
                 }
             }, reason: $reason, policyBefore: $before['policy']?->configHash, policyAfter: $policy->configHash);
@@ -516,9 +515,7 @@ final class OrderPrivacy
             }
             $connection->table('commerce_order_access_tokens')->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete();
             $connection->table(StripeEventInbox::TABLE)->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->update(['raw_payload' => null]);
-            if ($connection->table('commerce_orders')->where('id', $order->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)->update($changes) !== 1) {
-                throw new RetentionRefused;
-            }
+            $this->state->updateRow($connection, 'commerce_orders', $order, $order, $changes);
             $current = $this->fresh($connection, $order);
             $this->state->seal($connection, $current, $commitments, $flags);
             $this->state->remember($connection, $current);
@@ -732,10 +729,7 @@ final class OrderPrivacy
     /** @param array<string,mixed> $changes */
     private function updateChild(Connection $connection, string $table, object $order, object $row, array $changes): void
     {
-        PrivacyState::child($row, $order);
-        if ($connection->table($table)->where('id', $row->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->update($changes) !== 1) {
-            throw new RetentionRefused;
-        }
+        $this->state->updateRow($connection, $table, $order, $row, $changes);
     }
 
     private function fresh(Connection $connection, object $order): object

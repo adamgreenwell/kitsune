@@ -88,10 +88,10 @@ provider-side or operator backup deletion. Preview with
 `php artisan kitsune:commerce-retention --org=<slug> --limit=100`; add `--apply` to perform eligible work. The
 limit must be 1 through 1000.
 
-Full local `composer ci` passed 9,788 tests / 51,577 assertions, with 47 explicit driver/condition skips; configured
-PHPStan and Pint passed. Skeleton Pint and `git diff --check` passed. The focused native owner browser run passed
-all 15 checks without retries, including policy versions, historical adoption, account minimization, legal/delivery
-holds and Axe scans.
+Full local `composer ci` passed 9,795 tests / 51,595 assertions, with 47 explicit driver/condition skips;
+configured PHPStan and Pint passed. Skeleton Pint and `git diff --check` passed. The focused native owner
+browser run passed all 15 checks without retries, including policy versions, historical adoption, account
+minimization, legal/delivery holds and Axe scans.
 
 CI, maintainer review, merge and live-provider acceptance remain separate; the review PR records CI results.
 The physical SQLite backup drill verifies manual request reapplication on a separate restored file. It does not

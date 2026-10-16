@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use App\Providers\AppServiceProvider;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\OrderPrivacyWork;
@@ -20,6 +21,7 @@ use Kitsune\Commerce\Models\PrivacyTransition;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutReview;
@@ -414,3 +416,63 @@ it('rolls an owner privacy intent back if its audit callback changes the install
         ->and(DB::table(PrivacyState::HOLDS)->where('order_id', $order->id)->count())->toBe(0)
         ->and((array) DB::table('modules')->where('handle', 'kitsune/commerce')->sole())->toBe($module);
 })->with([[['is_enabled' => false]], [['version' => 'callback-mutated']]]);
+
+it('proves an idempotent paid freeze by exact persisted custody when an unchanged native update affects zero rows', function (): void {
+    $order = retentionCustodyPurchase($this);
+    $before = (array) DB::table(PrivacyState::TABLE)->where('order_id', $order->id)->sole();
+    $affected = DB::table(PrivacyState::TABLE)->where('order_id', $order->id)->update(['confirmed_at' => $before['confirmed_at']]);
+    expect($affected)->toBe(in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true) ? 0 : 1);
+    app(OrderLocks::class)->run(function () use ($order): void {
+        app(PrivacyState::class)->freezePaid(DB::connection(), $order);
+        app(PrivacyState::class)->freezePaid(DB::connection(), $order);
+    });
+    expect((array) DB::table(PrivacyState::TABLE)->where('order_id', $order->id)->sole())->toBe($before);
+});
+
+it('clears an already empty source revocation witness while retaining exact producer custody', function (): void {
+    $order = retentionCustodyPurchase($this);
+    app(AccessFulfillment::class)->reconcile($order->reference);
+    app(AccessAdjustments::class)->reconcile($order->reference);
+    $effect = DB::table(AccessAdjustments::EFFECTS)->where('order_id', $order->id)->sole();
+    expect($effect->revocation_witness)->toBeNull();
+    app(ReaderErasure::class)->erase((string) $this->reader->id);
+    expect(app(PrivacyState::class)->checked(DB::connection(), DB::table('commerce_orders')->where('id', $order->id)->sole())['subject_erased'])->toBeTrue()
+        ->and(DB::table(AccessAdjustments::EFFECTS)->where('id', $effect->id)->value('revocation_witness'))->toBeNull();
+});
+
+it('refuses a disappeared transplanted or otherwise altered row even when a native write affects zero rows', function (string $mutation): void {
+    $order = OrderFixture::plant($this->site);
+    $work = DB::table(PrivacyState::TABLE)->where('order_id', $order->id)->sole();
+    $sibling = Site::create(['handle' => 'row-proof-sibling', 'slug' => 'row-proof-sibling', 'name' => 'Sibling', 'base_url' => 'https://row-proof-sibling.example.test']);
+    $armed = true;
+    DB::connection()->beforeExecuting(function (string $query) use (&$armed, $mutation, $work, $sibling): void {
+        if (! $armed || ! str_starts_with(strtolower(ltrim($query)), 'update') || ! str_contains($query, PrivacyState::TABLE)) {
+            return;
+        }
+        $armed = false;
+        $row = DB::table(PrivacyState::TABLE)->where('id', $work->id);
+        match ($mutation) {
+            'deleted' => $row->delete(),
+            'wrong_scope' => $row->update(['site_id' => $sibling->id]),
+            'other_column' => $row->update(['subject_key' => str_repeat('f', 64)]),
+        };
+    });
+    expect(fn () => DB::transaction(fn () => app(PrivacyState::class)->update(DB::connection(), $order, $work, ['revision' => 1])))
+        ->toThrow(RetentionRefused::class);
+    expect((array) DB::table(PrivacyState::TABLE)->where('id', $work->id)->sole())->toBe((array) $work);
+})->with(['deleted', 'wrong_scope', 'other_column']);
+
+it('refuses a canceled persisted change even when the original update reports one affected row', function (): void {
+    $order = OrderFixture::plant($this->site);
+    $work = DB::table(PrivacyState::TABLE)->where('order_id', $order->id)->sole();
+    $armed = true;
+    DB::listen(function (QueryExecuted $query) use (&$armed, $work): void {
+        if ($armed && str_starts_with(strtolower(ltrim($query->sql)), 'update') && str_contains($query->sql, PrivacyState::TABLE)) {
+            $armed = false;
+            DB::table(PrivacyState::TABLE)->where('id', $work->id)->update(['revision' => $work->revision]);
+        }
+    });
+    expect(fn () => DB::transaction(fn () => app(PrivacyState::class)->update(DB::connection(), $order, $work, ['revision' => 1])))
+        ->toThrow(RetentionRefused::class);
+    expect((array) DB::table(PrivacyState::TABLE)->where('id', $work->id)->sole())->toBe((array) $work);
+});

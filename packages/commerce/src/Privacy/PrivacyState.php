@@ -15,6 +15,7 @@ use Illuminate\Database\Connection;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\BillingDetails;
 use Kitsune\Commerce\Orders\OrderReaderData;
+use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutReview;
@@ -237,9 +238,18 @@ final class PrivacyState
         if (! $this->schemaAvailable($connection)) {
             return null;
         }
+        // Nested original-hash/billing bridges are authoritative inside the caller's real transaction too.
+        // A primary PDO alone does not escape an older InnoDB consistent snapshot; locking reads do.
+        $lock = $lock || $connection->transactionLevel() > 0;
         if ($connection !== (new Order)->getConnection() || ($lock && ($connection->transactionLevel() < 1 || ! $connection->getPdo()->inTransaction()))
-            || $this->context->orgId() !== (int) $order->org_id
-            || ! $connection->table('sites')->useWritePdo()->where('id', $order->site_id)->where('org_id', $order->org_id)->exists()) {
+            || $this->context->orgId() !== (int) $order->org_id) {
+            throw new RetentionRefused;
+        }
+        $org = $connection->table('orgs')->useWritePdo()->where('id', $order->org_id)
+            ->when($lock, fn ($query) => $query->sharedLock())->first(['id']);
+        $site = $connection->table('sites')->useWritePdo()->where('id', $order->site_id)->where('org_id', $order->org_id)
+            ->when($lock, fn ($query) => $query->sharedLock())->first(['id']);
+        if ($org === null || $site === null) {
             throw new RetentionRefused;
         }
         $actual = $connection->table('commerce_orders')->useWritePdo()->where('id', $order->id)
@@ -750,20 +760,26 @@ final class PrivacyState
     /** @return array<string,mixed> */
     public static function financialBasis(Connection $connection, object $order): array
     {
+        $lock = $connection->transactionLevel() > 0;
+        if ($lock && ! $connection->getPdo()->inTransaction()) {
+            throw new RetentionRefused;
+        }
         $actual = $connection->table('commerce_orders')->useWritePdo()->where('id', $order->id)->where('org_id', $order->org_id)
-            ->where('site_id', $order->site_id)->first() ?? throw new RetentionRefused;
+            ->where('site_id', $order->site_id)->when($lock, fn ($query) => $query->lockForUpdate())->first() ?? throw new RetentionRefused;
         if (self::orderDigest($actual) !== self::orderDigest($order)) {
             throw new RetentionRefused;
         }
         $order = $actual;
-        $receipts = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->limit(2)->get();
+        $receipts = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->limit(2)
+            ->when($lock, fn ($query) => $query->lockForUpdate())->get();
         if ($receipts->count() > 1) {
             throw new RetentionRefused;
         }
         $receipt = $receipts->first();
         $rows = [];
         foreach (['commerce_order_lines', PaidOrders::ALLOCATIONS] as $table) {
-            $children = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit(21)->get();
+            $children = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit(21)
+                ->when($lock, fn ($query) => $query->lockForUpdate())->get();
             if ($children->count() > 20) {
                 throw new RetentionRefused;
             }
@@ -888,11 +904,70 @@ final class PrivacyState
     /** @param array<string,mixed> $changes */
     public function update(Connection $connection, object $order, object $work, array $changes): void
     {
+        $this->updateRow($connection, self::TABLE, $order, $work, [...$changes, 'updated_at' => self::now()]);
+    }
+
+    /** Matched/changed row counts differ across drivers. Neither one proves the intended row still exists.
+     * @param  array<string,mixed>  $changes
+     */
+    public function updateRow(Connection $connection, string $table, object $order, object $row, array $changes): void
+    {
         $this->inside($connection, $order);
-        if ($connection->table(self::TABLE)->where('id', $work->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)
-            ->where('order_id', $order->id)->update([...$changes, 'updated_at' => self::now()]) !== 1) {
+        if (! in_array($table, [self::TABLE, self::DELIVERIES, self::HOLDS, AccessFulfillment::WORK,
+            AccessAdjustments::WORK, AccessAdjustments::EFFECTS, CheckoutAttempts::TABLE, 'commerce_orders'], true)
+            || array_diff(array_keys($changes), array_keys(get_object_vars($row))) !== []
+            || array_intersect(array_keys($changes), ['id', 'org_id', 'site_id', 'order_id', 'work_id', 'access_effect_id',
+                'reference', 'order_reference', 'created_at']) !== []) {
             throw new RetentionRefused;
         }
+        if ($table === 'commerce_orders') {
+            if ((string) $row->id !== (string) $order->id || (string) $row->org_id !== (string) $order->org_id
+                || (string) $row->site_id !== (string) $order->site_id) {
+                throw new RetentionRefused;
+            }
+        } else {
+            self::child($row, $order);
+        }
+        $native = $connection->getPdo();
+        $query = $connection->table($table)->useWritePdo()->where('id', $row->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)
+            ->when($table !== 'commerce_orders', fn ($query) => $query->where('order_id', $order->id));
+        $before = (clone $query)->lockForUpdate()->first();
+        if ($before === null || self::rowDigest($before) !== self::rowDigest($row)) {
+            throw new RetentionRefused;
+        }
+        $affected = (clone $query)->update($changes);
+        $after = (clone $query)->lockForUpdate()->first();
+        $this->inside($connection, $order);
+        if (! in_array($affected, [0, 1], true) || $connection->getPdo() !== $native || $after === null
+            || self::rowDigest($after) !== self::rowDigest((object) [...get_object_vars($row), ...$changes])) {
+            throw new RetentionRefused;
+        }
+    }
+
+    /** Compare complete raw custody, allowing only semantic JSON ordering and native integer representation.
+     * No absent row, scope change, canceled write or unrelated changed column can pass this proof.
+     */
+    private static function rowDigest(object $row): string
+    {
+        $frame = get_object_vars($row);
+        foreach (['policy_snapshot', 'commitments', 'guard_keys', 'retained_billing_fields', 'billing', 'delivery', 'shipping',
+            'site_snapshot', 'payload', 'manifest', 'claim_binding', 'revocation_witness'] as $key) {
+            if (isset($frame[$key])) {
+                $frame[$key] = self::decode($frame[$key]);
+            }
+        }
+        foreach (['id', 'org_id', 'site_id', 'order_id', 'work_id', 'access_effect_id', 'effect_count', 'replay_count', 'revision',
+            'maintenance_count', 'cart_ref', 'cart_version', 'active_order_id', 'quoted_item_net_minor', 'quoted_shipping_net_minor',
+            'quoted_tax_minor', 'quoted_total_minor', 'confirmed_total_minor'] as $key) {
+            if (isset($frame[$key])) {
+                if ((! is_int($frame[$key]) && ! is_string($frame[$key])) || preg_match('/\A(?:0|[1-9][0-9]*)\z/D', (string) $frame[$key]) !== 1) {
+                    throw new RetentionRefused;
+                }
+                $frame[$key] = (string) $frame[$key];
+            }
+        }
+
+        return CheckoutAttempts::digest($frame);
     }
 
     public static function child(object $row, object $order): void
