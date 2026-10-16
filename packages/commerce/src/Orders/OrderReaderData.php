@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Commerce\Orders;
 
 use Carbon\CarbonImmutable;
+use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\Request;
@@ -25,6 +26,8 @@ use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialReadModel;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\StripeEventInbox;
+use Kitsune\Commerce\Privacy\OrderPrivacy;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -57,6 +60,11 @@ final class OrderReaderData implements ModuleReaderData
         'tax_minor', 'gross_minor', 'entitlement_name', 'offer_terms'];
 
     private const TOKEN_COLUMNS = ['id', 'org_id', 'site_id', 'order_id', 'token_hash', 'expires_at', 'created_at', 'consumed_at'];
+
+    /** @var list<int> Successful physical deletions, captured by the same adapter's final erasure witness. */
+    private array $deletedOrderIds = [];
+
+    public function __construct(private ?OrderPrivacy $privacy = null) {}
 
     public function export(Connection $connection, int $orgId, #[\SensitiveParameter] string $reader): array
     {
@@ -92,11 +100,45 @@ final class OrderReaderData implements ModuleReaderData
             $this->readerOwnership($connection, $order, $reader, lock: true);
             $this->project($connection, $orgId, $order, lock: true);
         }
+        $deleted = 0;
+        $privacy = $this->privacy ??= app(OrderPrivacy::class);
         foreach ($orders as $order) {
-            $this->delete($connection, $orgId, $order);
+            // Retained invoice/uncertain-provider custody is minimized before carts or the host account leave.
+            // The module contract counts physically deleted parents; a retained minimized order contributes zero.
+            $result = $privacy->eraseForSubject($connection, $order, $reader);
+            if ($result['deleted']) {
+                $deleted++;
+                $this->deletedOrderIds[] = (int) $order->id;
+            } elseif (! $result['minimized']) {
+                $this->delete($connection, $orgId, $order);
+                $deleted++;
+                $this->deletedOrderIds[] = (int) $order->id;
+            }
         }
 
-        return $orders->count();
+        return $deleted;
+    }
+
+    /** The same instance retains exact producer IDs; reader rediscovery alone cannot prove detached data absent. */
+    public function erasureVerification(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Closure
+    {
+        $schema = $this->schemaAvailable($connection);
+        $orders = ($this->privacy ??= app(OrderPrivacy::class))->verificationForSubject($connection, $org, $reader);
+        $deleted = $this->deletedOrderIds;
+        $this->deletedOrderIds = [];
+
+        return function () use ($connection, $schema, $orders, $deleted): void {
+            if ($this->schemaAvailable($connection) !== $schema) {
+                throw new RuntimeException('The order data store changed during erasure.');
+            }
+            $orders();
+            foreach (array_chunk($deleted, 100) as $ids) {
+                // Parent IDs are globally unique. A callback cannot hide resurrection by changing its Org/reader stamp.
+                if ($connection->table('commerce_orders')->useWritePdo()->whereIn('id', $ids)->exists()) {
+                    throw new RuntimeException('An erased order parent reappeared.');
+                }
+            }
+        };
     }
 
     /** Guest privacy is by this order's verified ownership, never by an email address alone.
@@ -223,29 +265,40 @@ final class OrderReaderData implements ModuleReaderData
         $siteQuery = $connection->table('sites')->useWritePdo()->where('org_id', $org)->where('id', $order->site_id);
         $orgRow = ($lock ? $orgQuery->lockForUpdate() : $orgQuery)->first();
         $site = ($lock ? $siteQuery->lockForUpdate() : $siteQuery)->first();
+        // Only the independent checked receipt authorizes a nullable or partial personal-data representation.
+        // It seals the exact sanitized row; immutable purchase totals and line validation below remain mandatory.
+        $privacy = app(PrivacyState::class)->checked($connection, $order, $lock);
+        $subjectErased = $privacy !== null && $privacy['subject_erased'];
+        $minimized = $subjectErased || ($privacy !== null && $privacy['invoice_expired']);
         if (self::writtenKey($order->id) === null || (int) $order->id < 1 || self::writtenKey($order->org_id) !== $org
             || self::writtenKey($order->site_id) === null || $site === null
             || ! self::hex($order->reference, 32) || ! self::hex($order->owner_key, 64)
             || ! self::hex($order->request_key, 64) || ! self::hex($order->request_digest, 64) || ! self::hex($order->snapshot_hash, 64)
-            || self::writtenKey($order->cart_ref) === null || (int) $order->cart_ref < 1
-            || self::writtenKey($order->cart_version) === null || (int) $order->cart_version < 0
+            || ($subjectErased ? ($order->cart_ref !== null || $order->cart_version !== null)
+                : (self::writtenKey($order->cart_ref) === null || (int) $order->cart_ref < 1
+                    || self::writtenKey($order->cart_version) === null || (int) $order->cart_version < 0))
             || ! in_array($order->state, ['prepared', 'cancelled', 'paid'], true)
             || ($order->state === 'paid'
                 ? ($order->active_cart_key !== null || MinorUnits::integer($order->confirmed_total_minor) !== MinorUnits::integer($order->quoted_total_minor))
                 : $order->confirmed_total_minor !== null)
             || ! in_array($order->mode, ['test', 'live'], true) || ! Currencies::supports($order->currency) || $orgRow === null || $orgRow->currency !== $order->currency || ! in_array($order->tax_mode, ['inclusive', 'exclusive'], true)
-            || ! is_string($order->contact_email) || EmailAddress::normalise($order->contact_email) !== $order->contact_email
+            || ($minimized ? $order->contact_email !== null
+                : (! is_string($order->contact_email) || EmailAddress::normalise($order->contact_email) !== $order->contact_email))
+            || ($subjectErased && $order->reader_id !== null)
             || ($order->reader_id !== null && (! is_string($order->reader_id) || ReaderGuard::stored($order->reader_id) !== $order->reader_id
                 || ! hash_equals(CartOwner::readerKey($order->reader_id), $order->owner_key)))
-            || ($order->state === 'prepared' && (! self::hex($order->active_cart_key, 64) || $order->cancelled_at !== null))
+            || ($order->state === 'prepared' && (($subjectErased ? $order->active_cart_key !== null : ! self::hex($order->active_cart_key, 64)) || $order->cancelled_at !== null))
             || ($order->state === 'cancelled' && ($order->active_cart_key !== null || $order->cancelled_at === null))) {
             throw new RuntimeException('The retained order ownership or state is inconsistent.');
         }
-        if ($order->state === 'prepared' && ! hash_equals(hash('sha256', $order->owner_key."\0".$order->cart_ref."\0".$order->cart_version), $order->active_cart_key)) {
+        if ($order->state === 'prepared' && ! $subjectErased && ! hash_equals(hash('sha256', $order->owner_key."\0".$order->cart_ref."\0".$order->cart_version), $order->active_cart_key)) {
             throw new RuntimeException('The retained active order identity is inconsistent.');
         }
-        $billing = BillingDetails::from(self::json($order->billing));
+        $billing = $minimized ? app(PrivacyState::class)->billing($connection, $order) : BillingDetails::from(self::json($order->billing));
         $delivery = $order->delivery === null ? null : BillingDetails::from(self::json($order->delivery));
+        if ($minimized && $delivery !== null) {
+            throw new RuntimeException('The minimized order delivery is inconsistent.');
+        }
         $siteSnapshot = self::json($order->site_snapshot);
         if (array_diff(array_keys($siteSnapshot), ['name', 'base_url']) !== []
             || ! self::text($siteSnapshot['name'] ?? null, 255) || ! self::text($siteSnapshot['base_url'] ?? null, 2048)) {
@@ -305,7 +358,7 @@ final class OrderReaderData implements ModuleReaderData
                 'net_minor' => MinorUnits::integer($line->net_minor), 'tax_minor' => MinorUnits::integer($line->tax_minor),
                 'gross_minor' => MinorUnits::integer($line->gross_minor), 'entitlement_name' => $line->entitlement_name, 'offer_terms' => $offer];
         }
-        if (($order->shipping !== null) !== $physical || ($delivery !== null) !== $physical) {
+        if (($order->shipping !== null) !== $physical || (! $minimized && ($delivery !== null) !== $physical)) {
             throw new RuntimeException('The retained order delivery is inconsistent.');
         }
         $shipping = $order->shipping === null ? null : self::shipping(self::json($order->shipping), $order->currency, $order->mode);
@@ -344,7 +397,8 @@ final class OrderReaderData implements ModuleReaderData
             'access_claim' => $claim === null ? null : ['claimed_at' => self::instant($claim->claimed_at)],
             ...app(AccessFulfillment::class)->projection($connection, $org, $order, lock: $lock),
             ...app(FinancialReadModel::class)->projection($connection, $org, $order, lock: $lock),
-            ...app(AccessAdjustments::class)->projection($connection, $org, $order, lock: $lock)];
+            ...app(AccessAdjustments::class)->projection($connection, $org, $order, lock: $lock),
+            ...app(PrivacyState::class)->projection($connection, $order, $lock)];
     }
 
     private function orders(Connection $connection, int $org, #[\SensitiveParameter] string $reader): Builder
@@ -401,6 +455,7 @@ final class OrderReaderData implements ModuleReaderData
         app(AccessAdjustments::class)->deleteUnpaid($connection, $order);
         app(FinancialReadModel::class)->deleteUnpaid($connection, $order);
         app(AccessFulfillment::class)->deleteUnpaid($connection, $order);
+        app(PrivacyState::class)->deleteUnpaid($connection, $order);
         foreach (['commerce_order_access_tokens', 'commerce_order_lines'] as $table) {
             $expected = $connection->table($table)->useWritePdo()->where('order_id', $order->id)->count();
             if ($connection->table($table)->where('org_id', $org)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete() !== $expected) {

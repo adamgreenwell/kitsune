@@ -14,7 +14,9 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Collection;
 use Kitsune\Commerce\Carts\CartAmounts;
+use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use stdClass;
 use Throwable;
 
@@ -200,7 +202,7 @@ final class CheckoutAttempts
             || (in_array($row->state, ['open', 'expired', 'completed'], true) && $row->session_id === null)
             || ($row->state === 'rejected' && $row->session_id !== null)
             || ($row->checkout_url !== null && ! self::url($row->checkout_url, stripe: true))
-            || ($row->state === 'open' && $row->checkout_url === null)) {
+            || ($row->state === 'open' && $row->checkout_url === null && ! (app(PrivacyState::class)->checked((new Order)->getConnection(), $order)['subject_erased'] ?? false) && ! (app(PrivacyState::class)->checked((new Order)->getConnection(), $order)['invoice_expired'] ?? false))) {
             throw new CheckoutRefused;
         }
         $payload = self::request($row);

@@ -3748,6 +3748,27 @@ on every engine rather than treating manifest verification as that proof.
 
 ---
 
+### Amendment — Installed-data maintenance commands, 2026-10-15 (#203)
+
+Disablement removes a module's runtime, not the personal data it already holds. The previous runtime-only
+command registration meant a disabled or stale commerce installation could not expose a normal operator
+retention command. Re-enabling commerce just to remove retained data is the wrong dependency.
+
+`ModuleServiceProvider::maintenanceCommands()` is a first-party, internal metadata hook beside `readerData()`.
+On console boot, the kernel reads installed receipts from the primary and asks a fresh **unregistered** provider
+for command classes, even when its runtime is disabled or its recorded version is stale. It does not call that
+provider's register or boot hooks, publish resources/routes, bind credentials or issue DDL. The entire class list
+is checked before any command is declared. Commands independently verify the installed receipt, schema, current
+Org and operation authority when invoked. A stale runtime is not permission to operate on an unchecked schema.
+
+Runtime registration still requires an enabled receipt, matching Composer version and valid manifest. Web boot
+never asks for maintenance commands. Missing tables still mean a fresh installation, and an unreachable database
+still declines without making onboarding depend on a service. This adds no worker or external resource.
+
+The narrow command factory is internal until the v1.2 extension freeze. `ReaderAccount` and its erasure contract
+are unchanged. Focused kernel regressions exercise real command invocation with disabled/stale receipts, no
+receipt, invalid declarations and fresh provider boot ordering; full feature qualification remains separate.
+
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
 **Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Amended 2026-10-04 — the merge, as built**: a later version may only add, and one new pre-flight refusal; see the end of this entry · **Amended 2026-10-04 — Marketing Site 1.1.0, as built**: a meta description, and ADR-030's second condition met; see the end of this entry · **Amended 2026-10-05 — the reverse, as built**: one action on the existing command, removing only what a blueprint created and nothing holds data or authority for; see the end of this entry · **Amended 2026-10-05 — the DAM, as built**: `EntryTypeDeclaration` gains `isMedia` and the manifest one key, the first declaration parameter and manifest key since 2026-10-02; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
@@ -6258,6 +6279,71 @@ call. Native database and browser qualification are reported with the pull reque
 or establishes production acceptance.
 
 ---
+
+### Amendment — Operator retention and paid-data minimization, 2026-10-15 (#203)
+
+**Adam's choices.** Each Org explicitly records a retention policy; there is no legal period supplied by Kitsune.
+The supported clocks are whole UTC days from first durable payment confirmation, or whole years after the local
+payment year ends. A year-end policy explicitly records an IANA timezone; later Site settings cannot move that
+boundary. Zero is an explicit operator choice, not a default or a claim about a jurisdiction's requirements.
+
+Policies are immutable versions. Activation affects future orders only. Existing orders keep their recorded
+version until an owner explicitly adopts a chosen replacement with a reason and confirmation. Historical paid
+orders without a policy remain held for explicit adoption. Neither a code upgrade nor an Org's new default can
+quietly shorten historical retention.
+
+The earlier baseline named buyer name, billing address and amount. The personal invoice profile is now an
+**operator-selected allowlist of billing name/address fields**. Contact email and separate delivery details are
+not invoice fields. Money, tax, original purchase commitments and minimum recovery evidence have distinct purposes;
+retaining a hash or provider identifier does not make purchase-linked data anonymous. Kitsune enforces the stated
+policy and does not decide which fields a particular controller is legally obliged to keep.
+
+**Erasure and operational holds.** Account erasure removes the account, links and access, while policy-selected
+invoice fields may remain in restricted records. If a physical order still needs delivery, only essential delivery
+and contact details remain in a separate purpose-bound hold, with a reason and review date, until an owner explicitly
+confirms completion. Payment and availability allocation are not evidence that a parcel was delivered. A review
+date calls for review; it does not authorize silently deleting needed data or releasing a hold.
+
+Open disputes, unsettled/unknown refunds and unresolved provider custody block final retirement. Owners may also
+place a separate legal hold with a reason and review date. Releasing a manual hold never overrides an unresolved
+financial case. Non-required reader data can still be minimized while the necessary financial evidence is held.
+Invoice expiry does not terminate an otherwise valid pass: minimum access/replay evidence may remain for that
+contract, independently of the invoice's personal fields. Account erasure instead durably suppresses claims,
+grants and reinstatement, including when the host later reuses the same reader key.
+
+**A checked transition, not a broken invoice.** Original invoice, review, financial and source commitments are
+not rewritten as if altered data were the original purchase. A versioned privacy receipt checks the sanctioned
+redacted representation independently of the preserved original commitments. Personal bytes are actually removed
+from order, claim and work records; keeping an old JSON blob behind a different column is not minimization.
+A captured payment first discovered after account erasure is held for explicit balance-refund recovery, with no
+new stock award or access grant. No fixed term restarts and no other order or complimentary source is reassigned.
+
+Order/Charge/source privacy tombstones are needed as well as event-ID deduplication. A later signed event can have
+a new event ID for the same retired purchase. It may not recreate erased orders, claims or grants, or retain a fresh
+copy of a buyer payload after subject erasure. Essential financial reconciliation remains possible while its own
+purpose is unresolved; final retirement leaves only the minimum negative replay evidence.
+
+**Bounded operator work and restore boundary.** Retention work is previewable, bounded and rerunnable without a
+worker, and remains reachable for installed data while runtime commerce is disabled or stale. The existing
+whole-reader adapter runs in core's account-last transaction without widening `ReaderAccount`; a minimized retained
+parent is not reported as a deleted parent. The narrow #275 persisted erasure-audit identity repair is a prerequisite.
+
+Backups remain a separate boundary. Operators keep request/retirement records outside the restored backup, restore
+in quarantine, reapply the recorded erasures and policy/hold choices, then verify suppression before reopening
+webhooks and customer traffic. General subject discovery and automatic `erasure_log` restore orchestration remain
+v1.1 work; this amendment does not claim that a schema-only log already performs it. Local minimization also does
+not prove Stripe/Shippo or operator backup copies were erased. Seven-day raw webhook expiry remains its existing,
+separate clock and never extends invoice retention.
+
+This records the settled policy and implementation boundaries. #203 is implemented and locally qualified in
+the review candidate; maintainer review, merge and provider/live acceptance remain separate. The
+[retention guide](paid-retention-and-privacy.md) records local qualification and restore limits. Live checkout remains disabled.
+
+The account-last transaction gains an optional internal first-party module erasure witness: core captures it after module cleanup, invokes the host account deletion callback, and checks the same witness before committing. Commerce freezes exact retained order identities, redacted custody and the full negative guard set. Rediscovery by an already removed reader link is insufficient. When the host account shares the connection, a host callback that corrupts or reintroduces those records must roll back erasure, rather than leave an erased account beside unreadable personal bytes. A host account on another database retains the existing two-transaction limitation; no distributed atomicity is added. ReaderAccount is unchanged; arbitrary third-party modules and general erasure-log replay are not newly certified by this seam.
+
+Final eligible order retirement uses a narrow internal `EntitlementWriter::retireVerifiedOrderSource()` door. The owner/system producer proves settled financial custody, expired/removed original promises, holds and negative replay guards in its existing Org/Site transaction. Core refuses an active row, audits and removes only inactive rows of that exact reserved order source, and rereads both the source and original primary identities after callbacks. This removes expired/refunded reader links without granting commerce a general entitlement-table deletion path or touching complimentary and other-order sources.
+
+Core entitlement and reader-link erasure retain their existing integer-count APIs and gain internal producer witnesses for account erasure. The witness captures the actual locked row identities the producer deletes, with its original native transaction connection. After the host callback, raw primary reads check current-subject absence and globally unique original-ID absence, so changing an Org/source/subject stamp cannot disguise resurrection. It is an in-memory proof within the existing transaction, not a durable subject registry, a second erasure pass or backup orchestration.
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 

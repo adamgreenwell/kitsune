@@ -12,6 +12,7 @@ namespace Kitsune\Commerce\Payments;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Tenancy\Context;
 
 /** Durable signature-verified hints, including the interval before a payment receipt exists. @internal */
@@ -30,7 +31,7 @@ final class FinancialSignals
      * @param  array<string,mixed>  $event
      * @return array{id:int,duplicate:bool,state:string}
      */
-    public function capture(Connection $connection, int $org, array $event, #[\SensitiveParameter] string $raw, CarbonImmutable $verifiedAt): array
+    public function capture(Connection $connection, int $org, array $event, #[\SensitiveParameter] string $raw, CarbonImmutable $verifiedAt, ?string $verifiedAccountId = null): array
     {
         self::inside($connection, $org);
         $expected = ['org_id' => $org, 'mode' => 'test', 'event_id' => $event['id'], 'event_type' => $event['type'],
@@ -48,8 +49,14 @@ final class FinancialSignals
                     throw new CheckoutRefused('changed');
                 }
             }
+            if (app(PrivacyState::class)->replayState($connection, $org, 'test', $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
+                return ['id' => 0, 'duplicate' => true, 'state' => 'erased'];
+            }
 
             return ['id' => (int) $row->id, 'duplicate' => true, 'state' => $row->state];
+        }
+        if (app(PrivacyState::class)->replayState($connection, $org, 'test', $expected['charge_id'], $verifiedAccountId)['purged'] ?? false) {
+            return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
         }
         if (count(self::rows($connection, $org, $expected['charge_id'], true)) >= StripeEventInbox::MAX_EVENTS_PER_ORDER) {
             throw new CheckoutRefused('limit');

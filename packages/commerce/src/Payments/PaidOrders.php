@@ -15,6 +15,7 @@ use Illuminate\Database\Connection;
 use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Inventory\StockWriter;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Tenancy\Context;
 
 /** Atomic test-payment receipt, one availability decision and its exact refund obligation. @internal */
@@ -41,6 +42,8 @@ final class PaidOrders
             || ! in_array($order->state, ['prepared', 'cancelled', 'paid'], true)) {
             throw new CheckoutRefused;
         }
+        $privacy = app(PrivacyState::class)->checked($connection, $order, true);
+        $erased = $privacy['subject_erased'] ?? false;
         CheckoutSession::assertMatches($attempt, $session, $session['id']);
         $payment = $session['payment'] ?? null;
         if (CheckoutSession::state($session) !== 'completed' || ! is_array($payment)
@@ -68,12 +71,12 @@ final class PaidOrders
         }
         $charged = StripeAmounts::fromWire($payment['amount'], $order->currency);
         $now = self::now();
-        $held = $payment['disputed'] || $payment['refunded'] !== '0';
+        $held = $erased || $payment['disputed'] || $payment['refunded'] !== '0';
         $id = $connection->table(self::RECEIPTS)->insertGetId(['org_id' => $order->org_id, 'site_id' => $order->site_id,
             'order_id' => $order->id, 'attempt_id' => $attempt->id, 'account_id' => $attempt->account_id, 'mode' => 'test',
             'api_version' => $attempt->api_version, 'session_id' => $session['id'], 'payment_intent_id' => $payment['intentId'],
             'charge_id' => $payment['chargeId'], 'currency' => $order->currency, 'amount_minor' => $charged,
-            'allocation_state' => $held ? 'held' : 'allocated', 'category' => $held ? ($payment['disputed'] ? 'disputed' : 'external_refund') : null,
+            'allocation_state' => $held ? 'held' : 'allocated', 'category' => $held ? ($erased ? 'privacy_erased' : ($payment['disputed'] ? 'disputed' : 'external_refund')) : null,
             'verified_at' => $now]);
         if (! $held) {
             $lines = $connection->table('commerce_order_lines')->useWritePdo()->where('order_id', $order->id)
@@ -143,7 +146,9 @@ final class PaidOrders
             throw new CheckoutRefused;
         }
         $paidOrder = (object) [...get_object_vars($order), 'state' => 'paid', 'confirmed_total_minor' => $charged, 'active_cart_key' => null];
+        app(PrivacyState::class)->paidTransition($connection, $order, $paidOrder);
         app(AccessFulfillment::class)->freeze($connection, $paidOrder);
+        app(PrivacyState::class)->freezePaid($connection, $paidOrder);
         app(PaidConfirmationAudit::class)->record($connection, $paidOrder);
     }
 
@@ -204,9 +209,12 @@ final class PaidOrders
                 || $row->currency !== $order->currency || MinorUnits::integer($row->amount_minor) !== MinorUnits::integer($order->quoted_total_minor)
                 || ! in_array($row->allocation_state, ['allocated', 'held'], true)
                 || ($row->allocation_state === 'allocated' && $row->category !== null)
-                || ($row->allocation_state === 'held' && ! in_array($row->category, ['disputed', 'external_refund'], true))
+                || ($row->allocation_state === 'held' && ! in_array($row->category, ['disputed', 'external_refund', 'privacy_erased'], true))
                 || preg_match('/\Api_[A-Za-z0-9_]{1,95}\z/D', $row->payment_intent_id) !== 1
                 || preg_match('/\Ach_[A-Za-z0-9_]{1,95}\z/D', $row->charge_id) !== 1) {
+                throw new CheckoutRefused;
+            }
+            if ($row->category === 'privacy_erased' && ! (app(PrivacyState::class)->checked($connection, $order, $lock)['subject_erased'] ?? false)) {
                 throw new CheckoutRefused;
             }
             CheckoutAttempts::instant($row->verified_at);

@@ -21,6 +21,7 @@ use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialState;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -99,6 +100,7 @@ final class OrderWriter
                     'confirmed_total_minor' => null, 'created_at' => $now, 'cancelled_at' => null];
                 $connection = (new Order)->getConnection();
                 $id = $connection->table('commerce_orders')->insertGetId($data);
+                app(PrivacyState::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 app(AccessFulfillment::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 app(AccessAdjustments::class)->prepare($connection, (object) [...$data, 'id' => $id]);
                 $lineIds = [];

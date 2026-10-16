@@ -19,6 +19,7 @@ use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\FinancialState;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Models\Site;
 
 /** Raw historical rows: no current catalogue, commerce runtime, provider call or permissive model cast. */
@@ -78,6 +79,12 @@ final class OrderFixture
                 'order_id' => $id, 'state' => $data['state'] === 'paid' ? 'initializing' : 'awaiting_payment',
                 'category' => null, 'manifest' => null, 'manifest_hash' => null, 'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null,
                 'effect_count' => 0, 'replay_count' => 0, 'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
+        }
+        if (DB::connection()->getSchemaBuilder()->hasTable(PrivacyState::TABLE)) {
+            // Historical rows have an explicit unknown policy, exactly as migration218; never borrow Context.
+            DB::table(PrivacyState::TABLE)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
+                'order_id' => $id, 'order_reference' => $data['reference'],
+                'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
         }
         DB::table('commerce_order_lines')->insert(['org_id' => $site->org_id, 'site_id' => $site->getKey(), 'order_id' => $id,
             'sellable_ref' => 7, 'listing_ref' => 8, 'entry_ref' => 9, 'sku' => 'SAVED-COURSE', 'title' => 'Saved course title',

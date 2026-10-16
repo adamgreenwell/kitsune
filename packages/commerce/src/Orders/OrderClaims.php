@@ -22,6 +22,7 @@ use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -210,6 +211,7 @@ final class OrderClaims
                 $order = app(OrderReaderData::class)->find($connection, $this->context->orgId() ?? throw new OrderRefused, $this->context->siteId() ?? throw new OrderRefused, $reference, true)
                     ?? throw new OrderRefused;
                 app(OrderReaderData::class)->project($connection, (int) $order->org_id, $order, true);
+                app(PrivacyState::class)->assertAccessAllowed($connection, $order);
                 $reader = $this->freshReader($request, $connection);
                 $key = app(ReaderGuard::class)->key($reader->getAuthIdentifier()) ?? throw new OrderRefused;
                 $existing = $this->forOrder($connection, $order, true);
@@ -291,6 +293,7 @@ final class OrderClaims
 
     private function audit(Connection $connection, Request $request, object $order, object $claim, Model&Authenticatable&ReaderAccount $reader): void
     {
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         $graph = $this->graph($connection, $order);
         $context = $this->contextProof();
         $binding = ReaderSessions::binding($reader);
@@ -321,6 +324,7 @@ final class OrderClaims
         if ((array) $order !== (array) $expected) {
             throw new OrderRefused;
         }
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         $rows = ['order' => (array) $order, 'claim' => (array) $this->forOrder($connection, $order, true),
             'org' => (array) $connection->table('orgs')->useWritePdo()->where('id', $order->org_id)->lockForUpdate()->first(),
             'site' => (array) $connection->table('sites')->useWritePdo()->where('id', $order->site_id)->where('org_id', $order->org_id)->lockForUpdate()->first()];

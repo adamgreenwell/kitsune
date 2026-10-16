@@ -108,11 +108,32 @@ Prepared orders preserve their own currency witness, product references, names, 
 and bounded invoice/delivery details. They can be cancelled, exported or erased, and are visible under
 **Storefront → Orders** and `/cart/orders` for their current owner. Exact submission replay returns the original
 snapshot; one prepared order claims an owned cart revision. No payment, stock reservation/decrement, access grant,
-legal invoice number or confirmed amount is created. Future charged states must first add their explicit retention
-policy and verified-payment workflow.
+legal invoice number or confirmed amount is created by preparation. Confirmed test payments, stock allocation,
+refund/dispute recovery and source-bound purchased access are separate verified workflows. Live checkout remains disabled.
 
 Guests receive a one-use email link lasting thirty minutes. GET does not consume it; an explicit confirmation
 POST grants thirty minutes of access to that exact order/site. The original browser's cart ownership also permits
 access. Guest email matches never attach orders to a reader. Reader export/erasure includes orders even while
 commerce is disabled; proof-backed guest export downloads the saved snapshot, while erasure removes the complete unpaid order and its links. Production
 order preparation, including signed-in readers, refuses a mail transport that only logs or keeps messages. No queue worker is required.
+
+
+### Paid order retention and privacy
+
+The retention slice (#203) adds the owner-only **Data retention** page to create immutable, explicitly configured
+policies and activate one for newly prepared orders. Payment confirmation starts the recorded clock: whole UTC
+days, or whole years after the payment year ends in a frozen IANA timezone. There is no legal default. Existing
+orders keep their recorded version until an owner explicitly adopts a selected replacement.
+
+Only selected billing name/address fields can remain with an invoice after account erasure. Essential contact and
+delivery details for an unfinished physical order stay in a separate purpose-bound hold until owner-confirmed
+completion. A review date does not release a delivery, financial or legal hold. Account erasure withdraws reader
+links, guest proofs and access sources; it does not rewrite money, tax, verified payment or refund history.
+
+Preview a bounded batch with `php artisan kitsune:commerce-retention --org=<slug> --limit=100`; add `--apply` to
+perform its eligible work. This installed-data command remains available when commerce is disabled or its runtime
+receipt is stale. Each invocation independently checks retained custody and scope. No scheduler or worker is required.
+
+See [the retention guide](../../docs/paid-retention-and-privacy.md) for checked minimization, final purge, replay
+suppression and quarantined backup restoration. Local cleanup does not delete provider records or backups. The
+slice is implemented and locally qualified in the review candidate; merge and live checkout acceptance remain separate.

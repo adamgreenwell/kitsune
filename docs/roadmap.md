@@ -472,7 +472,10 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       guest purchases through explicit signed-in claims. Historical unknown terms remain held. [Refunds and
       disputes](refunds-and-disputes.md) (#201) add owner-selected delivered-unit refunds, explicit external-refund
       attribution, current financial observations and recoverable source suspension, revision and restoration.
-      Stock returns remain separate reasoned adjustments. Live checkout and paid-state privacy (#203) remain owed.
+      Stock returns remain separate reasoned adjustments. [Paid order retention and privacy](paid-retention-and-privacy.md)
+      (#203) is implemented in the review candidate: explicit versioned retention clocks, selected invoice billing
+      fields, separate delivery/legal/financial holds, account unlinking and replay suppression. Local PHP and
+      owner-browser qualification passed; maintainer review, merge and live checkout acceptance remain owed.
       Zero completion is deferred.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*

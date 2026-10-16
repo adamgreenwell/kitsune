@@ -18,6 +18,7 @@ use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
@@ -74,7 +75,7 @@ final class AccessFulfillment
     {
         $this->inside($connection, $order);
         $work = $this->parent($connection, $order, true);
-        if (! in_array($work->state, ['awaiting_payment', 'initializing'], true)) {
+        if (! in_array($work->state, ['awaiting_payment', 'initializing'], true) && ! ($work->state === 'suppressed' && $work->manifest === null)) {
             $this->checked($connection, $order, true);
 
             return;
@@ -91,19 +92,22 @@ final class AccessFulfillment
                 'category' => $definition['known'] ? null : 'unknown_terms', 'processed_at' => null]);
         }
         $claim = $this->claim($connection, $order, true);
+        $erased = app(PrivacyState::class)->checked($connection, $order, true)['subject_erased'] ?? false;
         $state = match (true) {
+            $erased => 'suppressed',
             $manifest['allocation_state'] === 'held' => 'held',
             $manifest['definitions'] === [] => 'processed',
             $order->reader_id === null && $claim === null => 'awaiting_claim',
             default => 'pending',
         };
-        $category = $state === 'held' ? 'financial_hold' : null;
+        $category = $erased ? 'subject_erased' : ($state === 'held' ? 'financial_hold' : null);
         $this->update($connection, $order, $work, ['manifest' => self::encode($manifest),
             'manifest_hash' => CheckoutAttempts::digest($manifest), 'effect_count' => count($manifest['definitions']),
             'claim_binding' => $claim === null ? null : self::encode(get_object_vars($claim)),
             'claim_hash' => $claim === null ? null : CheckoutAttempts::digest(get_object_vars($claim)),
             'claim_reader_id' => $claim?->reader_id,
             'state' => $state, 'category' => $category]);
+        app(PrivacyState::class)->freezePaid($connection, $order);
         $this->checked($connection, $order, true);
     }
 
@@ -111,6 +115,7 @@ final class AccessFulfillment
     public function claimed(Connection $connection, #[\SensitiveParameter] object $order): void
     {
         $this->inside($connection, $order);
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         $work = $this->parent($connection, $order, true);
         if ($order->reader_id !== null || $order->state !== 'paid') {
             throw new CheckoutRefused('changed');
@@ -183,6 +188,16 @@ final class AccessFulfillment
         $this->ready($connection);
         $order = $connection->table('commerce_orders')->useWritePdo()->where('org_id', $this->context->orgId())
             ->where('site_id', $this->context->siteId())->where('reference', $reference)->lockForUpdate()->first() ?? throw new CheckoutRefused;
+        $privacy = app(PrivacyState::class)->checked($connection, $order, true);
+        if ($privacy !== null && $privacy['subject_erased']) {
+            if ($request !== null) {
+                throw new CheckoutRefused;
+            }
+            $this->genericAuthority();
+            [$suppressed] = $this->checked($connection, $order, true);
+
+            return ['state' => $suppressed->state, 'category' => $suppressed->category, 'processed' => 0];
+        }
         $authority = $this->admission($connection, $order, $request);
         $work = $this->parent($connection, $order, true);
         if ($work->state === 'initializing') {
@@ -375,6 +390,7 @@ final class AccessFulfillment
 
     private function admission(Connection $connection, #[\SensitiveParameter] object $order, ?Request $request): string
     {
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         if ($request === null) {
             return $this->genericAuthority();
         }
@@ -465,6 +481,19 @@ final class AccessFulfillment
     {
         $work = $this->parent($connection, $order, $lock);
         $effects = $this->effects($connection, $order, $lock);
+        $erased = app(PrivacyState::class)->checked($connection, $order, $lock)['subject_erased'] ?? false;
+        if (($work->state === 'suppressed') !== $erased
+            || ($erased && ($work->category !== 'subject_erased' || $work->claim_binding !== null
+                || $work->claim_hash !== null || $work->claim_reader_id !== null))) {
+            throw new CheckoutRefused('changed');
+        }
+        if ($erased && $work->manifest === null) {
+            if ($order->state === 'paid' || $work->manifest_hash !== null || $effects !== [] || self::counter($work->effect_count) !== 0) {
+                throw new CheckoutRefused('changed');
+            }
+
+            return [$work, [], null];
+        }
         if (in_array($work->state, ['awaiting_payment', 'initializing'], true)) {
             if ($work->manifest !== null || $work->manifest_hash !== null || $work->claim_binding !== null || $work->claim_hash !== null || $work->claim_reader_id !== null
                 || $effects !== [] || self::counter($work->effect_count, self::MAX_EFFECTS) !== 0 || $work->category !== null
@@ -479,8 +508,8 @@ final class AccessFulfillment
             throw new CheckoutRefused('changed');
         }
         $manifest = self::decode($work->manifest);
-        if (! hash_equals($work->manifest_hash, CheckoutAttempts::digest($manifest))
-            || ! hash_equals($work->manifest_hash, CheckoutAttempts::digest($this->manifest($connection, $order, $lock)))
+        if (! hash_equals($work->manifest_hash, app(PrivacyState::class)->originalAccessManifestHash($connection, $order, $manifest))
+            || ! hash_equals($work->manifest_hash, app(PrivacyState::class)->originalAccessManifestHash($connection, $order, $this->manifest($connection, $order, $lock)))
             || count($effects) !== self::counter($work->effect_count, self::MAX_EFFECTS)
             || count($effects) !== count($manifest['definitions'])) {
             throw new CheckoutRefused('changed');
@@ -514,12 +543,12 @@ final class AccessFulfillment
             throw new CheckoutRefused('changed');
         }
         $terminal = array_filter($effects, static fn (object $effect): bool => in_array($effect->state, ['pending', 'held'], true)) === [];
-        if (($work->state === 'processed') !== ($terminal && $manifest['allocation_state'] === 'allocated')
+        if (! $erased && (($work->state === 'processed') !== ($terminal && $manifest['allocation_state'] === 'allocated')
             || ($work->state === 'awaiting_claim' && ($order->reader_id !== null || $claim !== null || $effects === []))
             || ($work->state === 'pending' && ($order->reader_id === null && $claim === null))
             || ($work->state === 'held' && ! in_array($work->category, ['financial_hold', 'unknown_terms', 'unknown_reader', 'reader_guard', 'retryable', 'grant_refused'], true))
             || ($work->state !== 'held' && $work->category !== null)
-            || ($manifest['allocation_state'] === 'held' && ($work->state !== 'held' || $work->category !== 'financial_hold' || $effects !== []))) {
+            || ($manifest['allocation_state'] === 'held' && ($work->state !== 'held' || $work->category !== 'financial_hold' || $effects !== [])))) {
             throw new CheckoutRefused('changed');
         }
 
@@ -570,7 +599,7 @@ final class AccessFulfillment
         self::counter($work->replay_count);
         CheckoutAttempts::instant($work->created_at);
         CheckoutAttempts::instant($work->updated_at);
-        if (! in_array($work->state, ['awaiting_payment', 'initializing', 'awaiting_claim', 'pending', 'held', 'processed'], true)) {
+        if (! in_array($work->state, ['awaiting_payment', 'initializing', 'awaiting_claim', 'pending', 'held', 'processed', 'suppressed'], true)) {
             throw new CheckoutRefused('changed');
         }
 
@@ -652,6 +681,7 @@ final class AccessFulfillment
     /** The canonical beneficiary must still exist in this Org; a reader from another database cannot join this commit. */
     private function beneficiary(Connection $connection, #[\SensitiveParameter] object $order, bool $lock): string
     {
+        app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         $reader = $order->reader_id ?? $this->claim($connection, $order, $lock)?->reader_id;
         $guard = app(ReaderGuard::class);
         if ($guard->fault() !== null) {

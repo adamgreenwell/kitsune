@@ -16,6 +16,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Support\Collection;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderReaderData;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleDiscovery;
@@ -60,80 +61,115 @@ final class StripeEventInbox
             }
             $connection = (new Order)->getConnection();
 
-            return $this->locked($connection, $orgId, function () use ($connection, $orgId, $event, $raw, $verifiedAt): array {
-                $this->runtime($connection, $orgId);
-                $this->schema($connection, required: true);
-                $hash = hash('sha256', $raw);
-                // This also recognizes an erased receipt without recreating its deleted correlation graph.
-                $duplicates = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $orgId)->where('mode', 'test')
-                    ->where('event_id', $event['id'])->orderBy('id')->limit(2)->lockForUpdate()->get(self::COLUMNS);
-                if ($duplicates->isNotEmpty()) {
-                    if ($duplicates->count() !== 1) {
-                        throw new CheckoutRefused;
-                    }
-                    $duplicate = $duplicates->sole();
-                    $this->validate($duplicate, $orgId);
-                    if (! hash_equals($duplicate->payload_hash, $hash)) {
-                        throw new CheckoutRefused('changed');
-                    }
-                    $this->expireRaw($connection, $duplicate);
-
-                    return ['id' => self::key($duplicate->id), 'duplicate' => true, 'state' => $duplicate->state];
-                }
-                if (isset($event['financialChargeId'])) {
-                    $envelope = $this->financialEnvelope($connection, $orgId, $event);
-                    if ($envelope === null) {
-                        $signal = app(FinancialSignals::class)->capture($connection, $orgId, $event, $raw, $verifiedAt);
-
-                        return ['id' => 0, 'duplicate' => $signal['duplicate'], 'state' => 'unresolved'];
-                    }
-                    $event = $envelope;
-                    if (isset($event['financialChargeId'])) {
-                        app(FinancialSignals::class)->capture($connection, $orgId, $event, $raw, $verifiedAt);
-                    }
-                }
-                if (isset($event['refundReference']) && ! isset($event['financialChargeId'])) {
-                    $event = $this->refundEnvelope($connection, $orgId, $event);
-                }
-                $routes = $connection->table(self::ROUTING)->useWritePdo()->where('org_id', $orgId)
-                    ->where('order_reference', $event['orderReference'])->where('attempt_reference', $event['attemptReference'])
-                    ->orderBy('id')->limit(2)->lockForUpdate()->get();
-                if ($routes->count() !== 1) {
-                    throw new CheckoutRefused;
-                }
-                $route = $routes->sole();
-                $this->route($route, $orgId);
-                $this->graph($connection, $route, $event['sessionId']);
-                // Admission and projection share one bound. The Org lock prevents concurrent inserts passing it.
-                if ($connection->table(self::TABLE)->useWritePdo()->where('order_id', $route->order_id)->count() >= self::MAX_EVENTS_PER_ORDER) {
-                    throw new CheckoutRefused('limit');
-                }
-                $received = self::now();
-                $row = ['org_id' => $orgId, 'site_id' => $route->site_id, 'order_id' => $route->order_id,
-                    'attempt_id' => $route->attempt_id, 'event_id' => $event['id'], 'event_type' => $event['type'],
-                    'api_version' => $event['apiVersion'], 'session_id' => $event['sessionId'], 'account_id' => $route->account_id,
-                    'refund_reference' => $event['refundReference'] ?? null, 'refund_id' => $event['refundId'] ?? null,
-                    'financial_charge_id' => $event['financialChargeId'] ?? null, 'financial_subject_id' => $event['financialSubjectId'] ?? null,
-                    'mode' => 'test', 'order_reference' => $route->order_reference, 'attempt_reference' => $route->attempt_reference,
-                    'payload_hash' => $hash, 'raw_payload' => $raw, 'state' => 'pending', 'replay_count' => 0, 'category' => null,
-                    'lease_token' => null, 'lease_until' => null, 'verified_at' => self::stored($verifiedAt),
-                    'received_at' => self::stored($received), 'raw_expires_at' => self::stored($received->addDays(7)),
-                    'processed_at' => null, 'updated_at' => self::stored($received)];
-                $id = $connection->table(self::TABLE)->insertGetId($row);
-                $stored = $this->find($connection, $orgId, (int) $id, true);
-                $retained = $connection->table(self::TABLE)->useWritePdo()->where('id', $id)->where('org_id', $orgId)->value('raw_payload');
-                if (! is_string($retained) || ! hash_equals($hash, hash('sha256', $retained))) {
-                    throw new CheckoutRefused;
-                }
-                foreach (array_diff_key($row, ['raw_payload' => true]) as $key => $value) {
-                    if (($value === null) !== ($stored->{$key} === null) || ($value !== null && (string) $value !== (string) $stored->{$key})) {
-                        throw new CheckoutRefused;
-                    }
-                }
-
-                return ['id' => (int) $id, 'duplicate' => false, 'state' => 'pending'];
-            });
+            return $this->locked($connection, $orgId, fn (): array => $this->captureLocked($connection, $orgId, $event, $raw, $verifiedAt));
         });
+    }
+
+    /** @param array<string,mixed> $event
+     * @return array{id:int,duplicate:bool,state:string}
+     */
+    private function captureLocked(Connection $connection, int $orgId, array $event, #[\SensitiveParameter] string $raw, CarbonImmutable $verifiedAt): array
+    {
+        $this->runtime($connection, $orgId);
+        $this->schema($connection, required: true);
+        $hash = hash('sha256', $raw);
+        // This also recognizes an erased receipt without recreating its deleted correlation graph.
+        $duplicates = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $orgId)->where('mode', 'test')
+            ->where('event_id', $event['id'])->orderBy('id')->limit(2)->lockForUpdate()->get(self::COLUMNS);
+        if ($duplicates->isNotEmpty()) {
+            if ($duplicates->count() !== 1) {
+                throw new CheckoutRefused;
+            }
+            $duplicate = $duplicates->sole();
+            $this->validate($duplicate, $orgId);
+            if (! hash_equals($duplicate->payload_hash, $hash)) {
+                throw new CheckoutRefused('changed');
+            }
+            $privacy = $this->receiptPrivacy($connection, $orgId, $duplicate);
+            if ($privacy['purged']) {
+                $duplicate = $this->eraseReceipt($connection, $duplicate);
+            } elseif ($privacy['rawless']) {
+                $this->clearRaw($connection, $duplicate);
+            }
+            $this->expireRaw($connection, $duplicate);
+
+            return ['id' => self::key($duplicate->id), 'duplicate' => true, 'state' => $duplicate->state];
+        }
+        $privacy = $this->replayPrivacy($connection, $orgId, $event);
+        $financialPrivacy = null;
+        if (isset($event['financialChargeId'])) {
+            $envelope = $this->financialEnvelope($connection, $orgId, $event);
+            if ($envelope === null) {
+                if ($privacy['purged']) {
+                    // No current receipt proves an account: quarantine only, never reconstruct a retired graph.
+                    return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
+                }
+                $signal = app(FinancialSignals::class)->capture($connection, $orgId, $event, $raw, $verifiedAt);
+
+                return ['id' => 0, 'duplicate' => $signal['duplicate'], 'state' => $signal['state'] === 'erased' ? 'erased' : 'unresolved'];
+            }
+            $financialPrivacy = $this->replayPrivacy($connection, $orgId, $event, $envelope['account_id']);
+            if ($financialPrivacy['purged']) {
+                return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
+            }
+            $event = $envelope['event'];
+            if (isset($event['financialChargeId'])) {
+                app(FinancialSignals::class)->capture($connection, $orgId, $event, $raw, $verifiedAt, $envelope['account_id']);
+            }
+        }
+        if (isset($event['refundReference']) && ! isset($event['financialChargeId'])) {
+            if ($privacy['purged'] && ! $connection->table(PaidOrders::ATTEMPTS)->useWritePdo()->where('org_id', $orgId)
+                ->where('reference', $event['refundReference'])->exists()) {
+                return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
+            }
+            $event = $this->refundEnvelope($connection, $orgId, $event);
+        }
+        $routes = $connection->table(self::ROUTING)->useWritePdo()->where('org_id', $orgId)
+            ->where('order_reference', $event['orderReference'])->where('attempt_reference', $event['attemptReference'])
+            ->orderBy('id')->limit(2)->lockForUpdate()->get();
+        if ($routes->isEmpty() && $privacy['purged']) {
+            return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
+        }
+        if ($routes->count() !== 1) {
+            throw new CheckoutRefused;
+        }
+        $route = $routes->sole();
+        $this->route($route, $orgId);
+        $graphPrivacy = $this->graph($connection, $route, $event['sessionId']);
+        $provedPrivacy = $this->replayPrivacy($connection, $orgId, $event, $route->account_id);
+        if ($provedPrivacy['purged']) {
+            return ['id' => 0, 'duplicate' => false, 'state' => 'erased'];
+        }
+        $keepRaw = ! ($provedPrivacy['rawless'] || ($financialPrivacy['rawless'] ?? false)
+            || $graphPrivacy['subject_erased'] || $graphPrivacy['invoice_expired']);
+        // Admission and projection share one bound. The Org lock prevents concurrent inserts passing it.
+        if ($connection->table(self::TABLE)->useWritePdo()->where('order_id', $route->order_id)->count() >= self::MAX_EVENTS_PER_ORDER) {
+            throw new CheckoutRefused('limit');
+        }
+        $received = self::now();
+        $row = ['org_id' => $orgId, 'site_id' => $route->site_id, 'order_id' => $route->order_id,
+            'attempt_id' => $route->attempt_id, 'event_id' => $event['id'], 'event_type' => $event['type'],
+            'api_version' => $event['apiVersion'], 'session_id' => $event['sessionId'], 'account_id' => $route->account_id,
+            'refund_reference' => $event['refundReference'] ?? null, 'refund_id' => $event['refundId'] ?? null,
+            'financial_charge_id' => $event['financialChargeId'] ?? null, 'financial_subject_id' => $event['financialSubjectId'] ?? null,
+            'mode' => 'test', 'order_reference' => $route->order_reference, 'attempt_reference' => $route->attempt_reference,
+            'payload_hash' => $hash, 'raw_payload' => $keepRaw ? $raw : null, 'state' => 'pending', 'replay_count' => 0, 'category' => null,
+            'lease_token' => null, 'lease_until' => null, 'verified_at' => self::stored($verifiedAt),
+            'received_at' => self::stored($received), 'raw_expires_at' => self::stored($received->addDays(7)),
+            'processed_at' => null, 'updated_at' => self::stored($received)];
+        $id = $connection->table(self::TABLE)->insertGetId($row);
+        $stored = $this->find($connection, $orgId, (int) $id, true);
+        $retained = $connection->table(self::TABLE)->useWritePdo()->where('id', $id)->where('org_id', $orgId)->value('raw_payload');
+        if ($keepRaw ? (! is_string($retained) || ! hash_equals($hash, hash('sha256', $retained))) : $retained !== null) {
+            throw new CheckoutRefused;
+        }
+        foreach (array_diff_key($row, ['raw_payload' => true]) as $key => $value) {
+            if (($value === null) !== ($stored->{$key} === null) || ($value !== null && (string) $value !== (string) $stored->{$key})) {
+                throw new CheckoutRefused;
+            }
+        }
+
+        return ['id' => (int) $id, 'duplicate' => false, 'state' => 'pending'];
     }
 
     /** Called inside the same Org→Site→Order transaction that inserts an immutable attempt. */
@@ -213,12 +249,22 @@ final class StripeEventInbox
             $captured = $this->locked($connection, $org, function () use ($connection, $org, $id, &$claimed): object {
                 $this->runtime($connection, $org);
                 $row = $this->find($connection, $org, $id, true);
+                $privacy = $this->receiptPrivacy($connection, $org, $row);
+                if ($privacy['purged']) {
+                    return $this->eraseReceipt($connection, $row);
+                }
+                if ($privacy['rawless']) {
+                    $this->clearRaw($connection, $row);
+                }
                 $this->expireRaw($connection, $row);
                 if (in_array($row->state, ['processed', 'erased'], true)
                     || ($row->lease_until !== null && CheckoutAttempts::instant($row->lease_until)->greaterThan(self::now()))) {
                     return $row;
                 }
-                $this->graph($connection, $row, $row->session_id);
+                $graphPrivacy = $this->graph($connection, $row, $row->session_id);
+                if ($graphPrivacy['subject_erased'] || $graphPrivacy['invoice_expired']) {
+                    $this->clearRaw($connection, $row);
+                }
                 $count = self::writtenKey($row->replay_count) ?? throw new CheckoutRefused;
                 if ($count >= 2147483647) {
                     throw new CheckoutRefused('operator');
@@ -601,8 +647,10 @@ final class StripeEventInbox
         CheckoutAttempts::instant($row->created_at);
     }
 
-    /** Independent graph check, with the recorded Site in context, never the ingress Site. */
-    private function graph(Connection $connection, object $receipt, ?string $sessionId = null): void
+    /** Independent graph check, with the recorded Site in context, never the ingress Site.
+     * @return array{subject_erased:bool,invoice_expired:bool}
+     */
+    private function graph(Connection $connection, object $receipt, ?string $sessionId = null): array
     {
         $org = self::key($receipt->org_id);
         $beforeOrg = $this->context->org();
@@ -622,6 +670,9 @@ final class StripeEventInbox
                 || ($sessionId !== null && $attempt->session_id !== null && $attempt->session_id !== $sessionId)) {
                 throw new CheckoutRefused;
             }
+            $privacy = app(PrivacyState::class)->checked($connection, $order, true);
+
+            return ['subject_erased' => $privacy['subject_erased'] ?? false, 'invoice_expired' => $privacy['invoice_expired'] ?? false];
         } finally {
             $this->context->forget();
             $beforeSite !== null ? $this->context->setSite($beforeSite) : $this->context->setOrg($beforeOrg);
@@ -630,7 +681,7 @@ final class StripeEventInbox
 
     /** A signed hint selects no Site or order until the exact original receipt proves its Charge relation.
      * @param  array<string,mixed>  $event
-     * @return array<string,mixed>|null
+     * @return array{event:array<string,mixed>,account_id:string}|null
      */
     private function financialEnvelope(Connection $connection, int $org, array $event): ?array
     {
@@ -659,7 +710,7 @@ final class StripeEventInbox
                 }
                 unset($legacy['financialChargeId'], $legacy['financialSubjectId']);
 
-                return $legacy;
+                return ['event' => $legacy, 'account_id' => $payment->account_id];
             }
             $locals = $connection->table(FinancialState::REFUNDS)->useWritePdo()->where('org_id', $org)
                 ->where('reference', $event['refundReference'])->limit(2)->lockForUpdate()->get();
@@ -679,7 +730,8 @@ final class StripeEventInbox
             }
         }
 
-        return [...$event, 'orderReference' => $order->reference, 'attemptReference' => $attempt->reference, 'sessionId' => $payment->session_id];
+        return ['event' => [...$event, 'orderReference' => $order->reference, 'attemptReference' => $attempt->reference, 'sessionId' => $payment->session_id],
+            'account_id' => $payment->account_id];
     }
 
     /** @param array<string,mixed> $event
@@ -754,6 +806,98 @@ final class StripeEventInbox
         if ($connection->table(self::TABLE)->where('id', $row->id)->where('org_id', $row->org_id)->update($changes) !== 1) {
             throw new CheckoutRefused;
         }
+    }
+
+    /** Verified signatures give hints, not account authority. Unknown-account matches only suppress or quarantine.
+     * @param  array<string,mixed>  $hints
+     * @return array{subject_erased:bool,invoice_expired:bool,purged:bool,rawless:bool}
+     */
+    private function replayPrivacy(Connection $connection, int $org, array $hints, ?string $verifiedAccountId = null): array
+    {
+        $result = ['subject_erased' => false, 'invoice_expired' => false, 'purged' => false, 'rawless' => false];
+        foreach (['financialChargeId' => 'charge', 'orderReference' => 'order', 'attemptReference' => 'attempt',
+            'sessionId' => 'session', 'refundReference' => 'refund', 'refundId' => 'refund'] as $key => $kind) {
+            if (! isset($hints[$key])) {
+                continue;
+            }
+            $state = app(PrivacyState::class)->replayIdentity($connection, $org, 'test', $kind, $hints[$key], $verifiedAccountId);
+            if ($state !== null) {
+                foreach (['subject_erased', 'invoice_expired'] as $flag) {
+                    $result[$flag] = $result[$flag] || $state[$flag];
+                }
+                $result['rawless'] = $result['rawless'] || $state['subject_erased'] || $state['invoice_expired'] || $state['purged'];
+                // Local references are unique per Site, so an Org-wide match alone cannot retire sibling work.
+                if (in_array($key, ['financialChargeId', 'sessionId', 'refundId'], true)) {
+                    $result['purged'] = $result['purged'] || $state['purged'];
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /** Existing custody proves its own account before a tombstone may retire it.
+     * @return array{subject_erased:bool,invoice_expired:bool,purged:bool,rawless:bool}
+     */
+    private function receiptPrivacy(Connection $connection, int $org, object $row): array
+    {
+        $hints = self::receiptHints($row);
+        $unknown = $this->replayPrivacy($connection, $org, $hints);
+        if ($row->state === 'erased' || ! $unknown['rawless']) {
+            return $unknown;
+        }
+        if (! $connection->table('commerce_orders')->useWritePdo()->where('id', $row->order_id)->exists()) {
+            if (! $unknown['purged']) {
+                throw new CheckoutRefused;
+            }
+
+            return $unknown;
+        }
+        $graph = $this->graph($connection, $row, $row->session_id);
+        $proved = $this->replayPrivacy($connection, $org, $hints, $row->account_id);
+        $proved['rawless'] = $proved['rawless'] || $graph['subject_erased'] || $graph['invoice_expired'];
+
+        return $proved;
+    }
+
+    /** @return array<string,mixed> */
+    private static function receiptHints(object $row): array
+    {
+        return ['financialChargeId' => $row->financial_charge_id, 'orderReference' => $row->order_reference,
+            'attemptReference' => $row->attempt_reference, 'sessionId' => $row->session_id,
+            'refundReference' => $row->refund_reference, 'refundId' => $row->refund_id];
+    }
+
+    private function clearRaw(Connection $connection, object $row): void
+    {
+        $connection->table(self::TABLE)->where('id', $row->id)->where('org_id', $row->org_id)->whereNotNull('raw_payload')->update(['raw_payload' => null]);
+        if ($connection->table(self::TABLE)->useWritePdo()->where('id', $row->id)->where('org_id', $row->org_id)->value('raw_payload') !== null) {
+            throw new CheckoutRefused;
+        }
+    }
+
+    private function eraseReceipt(Connection $connection, object $row): object
+    {
+        if ($row->state === 'erased') {
+            $this->clearRaw($connection, $row);
+
+            return $row;
+        }
+        $changes = ['site_id' => null, 'order_id' => null, 'attempt_id' => null,
+            'order_reference' => null, 'attempt_reference' => null, 'session_id' => null, 'refund_reference' => null, 'refund_id' => null,
+            'financial_charge_id' => null, 'financial_subject_id' => null, 'raw_payload' => null,
+            'state' => 'erased', 'category' => null, 'lease_token' => null, 'lease_until' => null,
+            'processed_at' => null, 'updated_at' => self::stored(self::now())];
+        $this->update($connection, $row, $changes);
+        $this->clearRaw($connection, $row);
+        $stored = $this->find($connection, (int) $row->org_id, (int) $row->id, true);
+        foreach (array_diff_key($changes, ['raw_payload' => true]) as $key => $value) {
+            if ($stored->{$key} !== $value) {
+                throw new CheckoutRefused;
+            }
+        }
+
+        return $stored;
     }
 
     private function expireRaw(Connection $connection, object $row): void

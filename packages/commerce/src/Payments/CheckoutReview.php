@@ -23,6 +23,7 @@ use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Commerce\Shipping\ShippoRates;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -129,8 +130,30 @@ final class CheckoutReview
      */
     public static function orderHash(#[\SensitiveParameter] array $record): string
     {
+        $connection = (new Order)->getConnection();
+        $org = app(Context::class)->orgId();
+        if ($org !== null && is_string($record['reference'] ?? null) && app(PrivacyState::class)->schemaAvailable($connection)) {
+            $rows = $connection->table('commerce_orders')->useWritePdo()->join('sites', 'sites.id', '=', 'commerce_orders.site_id')
+                ->where('commerce_orders.org_id', $org)->where('sites.org_id', $org)->where('sites.handle', $record['site'] ?? null)
+                ->where('commerce_orders.reference', $record['reference'])->select('commerce_orders.*')->limit(2)->get();
+            if ($rows->count() !== 1) {
+                throw new OrderRefused;
+            }
+            $order = $rows->sole();
+
+            return app(PrivacyState::class)->originalCheckoutHash($connection, $order, $record);
+        }
+
+        return self::unmodifiedOrderHash($record);
+    }
+
+    /** Pure original projection commitment; privacy bridging is intentionally outside this function.
+     * @param  array<string,mixed>  $record
+     */
+    public static function unmodifiedOrderHash(#[\SensitiveParameter] array $record): string
+    {
         unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
-            $record['access_fulfillment'], $record['access_claim'], $record['financial_state'], $record['financial_access']);
+            $record['access_fulfillment'], $record['access_claim'], $record['financial_state'], $record['financial_access'], $record['privacy']);
         if (in_array($record['state'] ?? null, ['paid', 'cancelled'], true)) {
             $record['state'] = 'prepared';
             $record['confirmed_total_minor'] = null;

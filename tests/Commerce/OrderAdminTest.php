@@ -14,12 +14,16 @@ use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Filament\OrderAdministration;
 use Kitsune\Commerce\Filament\OrderList;
 use Kitsune\Commerce\Filament\OrderResource;
+use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
+use Kitsune\Commerce\Payments\StripeEventInbox;
+use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Module;
@@ -29,6 +33,7 @@ use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as OrderAdminFx;
 use Kitsune\Core\Tests\Fixtures\PaidOrderFixture;
+use Kitsune\Core\Tests\Fixtures\StripeInboxFixture;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function (): void {
@@ -62,6 +67,8 @@ function orderAdminFixture(int $org, int $site, array $overrides = []): string
         'quoted_item_net_minor' => '2000', 'quoted_shipping_net_minor' => '0', 'quoted_tax_minor' => '200', 'quoted_total_minor' => '2200',
         'confirmed_total_minor' => null, 'created_at' => '2026-10-14 10:00:00', 'cancelled_at' => null,
     ], $overrides));
+    DB::table(PrivacyState::TABLE)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
+        'order_reference' => $reference, 'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
     DB::table(AccessFulfillment::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
         'state' => 'awaiting_payment', 'category' => null, 'manifest' => null, 'manifest_hash' => null,
         'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null, 'effect_count' => 0, 'replay_count' => 0,
@@ -180,6 +187,11 @@ it('cancels once without changing snapshots and then erases all checked unpaid o
     }
     expect(AuditLog::query()->where('action', 'commerce.order_erased')->count())->toBe(1)
         ->and(json_encode(AuditLog::query()->get()->toArray()))->not->toContain('Private Buyer')->not->toContain('private-buyer');
+    expect((array) DB::table(AuditLog::TABLE)->where('action', 'commerce.order_erased')->sole())->toMatchArray([
+        'org_id' => $this->org->id, 'site_id' => $this->site->id, 'action' => 'commerce.order_erased',
+        'actor_type' => $this->owner->getMorphClass(), 'actor_id' => (string) $this->owner->getAuthIdentifier(),
+        'target_type' => (new Order)->getMorphClass(), 'target_id' => (string) $raw['id'],
+    ]);
 });
 
 it('rolls back cancellation or erasure if its audit is cancelled', function (string $action): void {
@@ -199,6 +211,129 @@ it('rolls back cancellation or erasure if its audit is cancelled', function (str
         }
     }
 })->with(['cancel', 'erase']);
+
+/** The complete order custody and audit rows, before and after a failed erasure.
+ * @return array<string,list<array<string,mixed>>>
+ */
+function orderAdminErasureGraph(int $order): array
+{
+    $graph = ['commerce_orders' => DB::table('commerce_orders')->where('id', $order)->get()->map(fn (object $row): array => (array) $row)->all()];
+    foreach (['commerce_order_lines', 'commerce_order_access_tokens', CheckoutAttempts::TABLE, StripeEventInbox::ROUTING,
+        AccessFulfillment::WORK, AccessFulfillment::EFFECTS, FinancialState::WORK, FinancialState::REFUNDS,
+        FinancialState::OBSERVATIONS, AccessAdjustments::WORK, AccessAdjustments::EFFECTS,
+        PrivacyState::TABLE, PrivacyState::TRANSITIONS, PrivacyState::DELIVERIES, PrivacyState::HOLDS] as $table) {
+        $graph[$table] = DB::table($table)->where('order_id', $order)->orderBy('id')->get()->map(fn (object $row): array => (array) $row)->all();
+    }
+    $graph[AuditLog::TABLE] = DB::table(AuditLog::TABLE)->orderBy('id')->get()->map(fn (object $row): array => (array) $row)->all();
+
+    return $graph;
+}
+
+it('rolls back erased terminal checkout custody when its audit identity is misfiled', function (string $phase, string $column): void {
+    $this->site->update(['base_url' => 'https://order-audit.test']);
+    $attempt = StripeInboxFixture::attempt($this->site, state: 'expired');
+    $order = DB::table('commerce_orders')->where('id', $attempt->order_id)->sole();
+    $foreign = OrderAdminFx::org('foreign-audit');
+    $foreignSite = Site::create(['handle' => 'foreign', 'slug' => 'foreign-audit', 'name' => 'Foreign', 'locale' => 'en']);
+    app(Context::class)->setSite($this->site);
+    Permissions::forget();
+    $replacement = match ($column) {
+        'org_id' => $foreign->id,
+        'site_id' => $foreignSite->id,
+        'action' => 'commerce.misfiled',
+        'target_type' => Site::class,
+        'target_id', 'actor_id' => '999999',
+        'actor_type' => Site::class,
+    };
+    $before = orderAdminErasureGraph($order->id);
+    $events = AuditLog::getEventDispatcher();
+    $name = 'eloquent.'.$phase.': '.AuditLog::class;
+    $old = $events->getRawListeners()[$name] ?? [];
+    $observed = false;
+    $events->listen($name, static function (AuditLog $audit) use (&$observed, $phase, $column, $replacement): void {
+        if ($audit->action === 'commerce.order_erased') {
+            $observed = true;
+            if ($phase === 'creating') {
+                $audit->setAttribute($column, $replacement);
+            } else {
+                // Leave the returned model intact: only a primary persisted read can see this corruption.
+                DB::table(AuditLog::TABLE)->where('id', $audit->getKey())->update([$column => $replacement]);
+            }
+        }
+    });
+    try {
+        expect(fn () => app(OrderAdministration::class)->erase($order->reference))->toThrow(OrderRefused::class);
+        expect($observed)->toBeTrue()->and(orderAdminErasureGraph($order->id))->toBe($before);
+    } finally {
+        $events->forget($name);
+        foreach ($old as $listener) {
+            $events->listen($name, $listener);
+        }
+    }
+})->with([
+    ['creating', 'org_id'], ['creating', 'site_id'], ['creating', 'action'], ['creating', 'target_type'],
+    ['creating', 'target_id'], ['creating', 'actor_type'], ['creating', 'actor_id'],
+    ['created', 'org_id'], ['created', 'site_id'], ['created', 'action'], ['created', 'target_type'],
+    ['created', 'target_id'], ['created', 'actor_type'], ['created', 'actor_id'],
+]);
+
+it('rolls back erased terminal checkout custody when its persisted audit disappears or moves', function (bool $move): void {
+    $this->site->update(['base_url' => 'https://order-audit.test']);
+    $attempt = StripeInboxFixture::attempt($this->site, state: 'expired');
+    $order = DB::table('commerce_orders')->where('id', $attempt->order_id)->sole();
+    $before = orderAdminErasureGraph($order->id);
+    $events = AuditLog::getEventDispatcher();
+    $name = 'eloquent.created: '.AuditLog::class;
+    $old = $events->getRawListeners()[$name] ?? [];
+    $observed = false;
+    AuditLog::created(static function (AuditLog $audit) use (&$observed, $move): void {
+        if ($audit->action !== 'commerce.order_erased') {
+            return;
+        }
+        $observed = true;
+        $row = DB::table(AuditLog::TABLE)->where('id', $audit->getKey());
+        if ($move) {
+            $row->update(['id' => $audit->getKey() + 1000000]);
+        } else {
+            $row->delete();
+        }
+    });
+    try {
+        expect(fn () => app(OrderAdministration::class)->erase($order->reference))->toThrow(OrderRefused::class);
+        expect($observed)->toBeTrue()->and(orderAdminErasureGraph($order->id))->toBe($before);
+    } finally {
+        $events->forget($name);
+        foreach ($old as $listener) {
+            $events->listen($name, $listener);
+        }
+    }
+})->with([false, true]);
+
+it('refuses an erasure audit that switches to another still-authorized owner', function (): void {
+    $otherOwner = OrderAdminFx::member(email: 'other-owner@orders.test');
+    Auth::guard('web')->login($this->owner);
+    Permissions::forget();
+    $order = DB::table('commerce_orders')->where('reference', $this->reference)->sole();
+    $before = orderAdminErasureGraph($order->id);
+    $events = AuditLog::getEventDispatcher();
+    $name = 'eloquent.created: '.AuditLog::class;
+    $old = $events->getRawListeners()[$name] ?? [];
+    AuditLog::created(static function (AuditLog $audit) use ($otherOwner): void {
+        if ($audit->action === 'commerce.order_erased') {
+            Auth::guard('web')->login($otherOwner);
+            Permissions::forget();
+        }
+    });
+    try {
+        expect(fn () => app(OrderAdministration::class)->erase($this->reference))->toThrow(OrderRefused::class);
+        expect(OrderResource::canAccess())->toBeTrue()->and(orderAdminErasureGraph($order->id))->toBe($before);
+    } finally {
+        $events->forget($name);
+        foreach ($old as $listener) {
+            $events->listen($name, $listener);
+        }
+    }
+});
 
 it('refuses incompatible paid or corrupt financial custody instead of erasing or exposing it', function (array $change): void {
     DB::table('commerce_orders')->where('reference', $this->reference)->update($change);
