@@ -17,6 +17,8 @@ use Kitsune\Commerce\Catalogue\ProductType;
 use Kitsune\Commerce\Catalogue\ProductWriter;
 use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
+use Kitsune\Commerce\Offers\OfferTerms;
+use Kitsune\Commerce\Persistence\GuardedCatalogueBuilder;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Database\EntryWriteReads;
@@ -417,6 +419,8 @@ it('rejects final callback corruption and restores the entire atomic product wri
             'disabled' => DB::table('entry_type_availability')->insert(['entry_type_id' => $this->type->getKey(), 'scope_type' => 'site', 'scope_id' => $this->site->getKey(), 'is_enabled' => false]),
             'storage unlocked' => DB::table('field_storage')->where('org_id', $this->org->getKey())->update(['is_locked' => false]),
             'stock' => DB::table('commerce_sellables')->where('id', $listing->sellable_id)->update(['stock' => 999]),
+            'product timestamp' => DB::table('commerce_sellables')->where('id', $listing->sellable_id)->update(['updated_at' => now()->addMinute()]),
+            'listing timestamp' => DB::table('commerce_listings')->where('id', $listing->id)->update(['updated_at' => now()->addMinute()]),
             'entry' => DB::table('entries')->where('id', $listing->entry_id)->update(['title' => 'Tampered']),
             'revision' => DB::table('entry_revisions')->where('entry_id', $listing->entry_id)->update(['title' => 'Tampered']),
             'relations' => DB::table('entry_relations')->where('source_entry_id', $listing->entry_id)->delete(),
@@ -433,7 +437,7 @@ it('rejects final callback corruption and restores the entire atomic product wri
         : fn () => $this->writer->updateProduct($row->getKey(), [...$this->commerce, 'price_minor' => '2300'], 'USD', [...$this->content, 'title' => 'After', 'status' => 'published'], ['product_images' => [$target->getKey()]], true);
     expect($write)->toThrow(RuntimeException::class)->and($mutations)->toBe(1)->and($state())->toEqual($before)
         ->and(EntryWriteReads::active())->toBeFalse()->and(app(RecordedRevisions::class)->held())->toBe(0);
-})->with(['create', 'update'])->with(['field', 'storage', 'receipt', 'disabled', 'stock', 'entry', 'revision', 'relations', 'audit', 'module', 'membership', 'role', 'actor', 'currency', 'storage unlocked']);
+})->with(['create', 'update'])->with(['field', 'storage', 'receipt', 'disabled', 'stock', 'entry', 'revision', 'relations', 'audit', 'module', 'membership', 'role', 'actor', 'currency', 'storage unlocked', 'product timestamp', 'listing timestamp']);
 
 it('preserves an already earned storage lock when this product carries no field data', function (): void {
     $this->writer->createProduct([...$this->commerce, 'sku' => 'HOLDER'], 'USD', $this->content);
@@ -446,3 +450,42 @@ it('preserves an already earned storage lock when this product carries no field 
     expect(fn () => $this->writer->createProduct($this->commerce, 'USD', [...$this->content, 'slug' => 'empty', 'values' => []]))
         ->toThrow(RuntimeException::class)->and([productState(), DB::table('field_storage')->orderBy('id')->get()->all()])->toEqual($before);
 });
+
+it('keeps the persisted product witness when a same-second update crosses the SQL timestamp boundary', function (string $change): void {
+    $instant = now()->startOfSecond();
+    $this->travelTo($instant);
+    try {
+        $commerce = [...$this->commerce, 'entitlement_name' => 'course.surf', 'offer_terms' => ['version' => 1, 'kind' => 'fixed', 'days' => 30]];
+        $content = [...$this->content, 'status' => 'published'];
+        $row = $this->writer->createProduct($commerce, 'USD', $content);
+        $crossings = 0;
+        // Move time only after Eloquent collected dirty values, during the builder's locking validation.
+        // No sleep or runner speed is needed to expose its later automatic timestamp generation.
+        DB::listen(function () use ($instant, &$crossings): void {
+            foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $frame) {
+                if (($frame['class'] ?? null) === GuardedCatalogueBuilder::class
+                    && ($frame['function'] ?? null) === 'guardSave') {
+                    $crossings++;
+                    $this->travelTo($instant->copy()->addSecond());
+                    break;
+                }
+            }
+        });
+        $changed = match ($change) {
+            'price' => [...$commerce, 'price_minor' => '2500'],
+            'offer' => [...$commerce, 'offer_terms' => ['version' => 1, 'kind' => 'permanent']],
+            default => $commerce,
+        };
+        $saved = $this->writer->updateProduct($row->getKey(), $changed, 'USD', $content, [], $change === 'availability');
+        $listing = $saved->listings()->firstOrFail();
+        expect($crossings)->toBeGreaterThan(0)
+            ->and($saved->price_minor)->toBe($changed['price_minor'])
+            ->and(OfferTerms::normalize($saved->offer_terms))->toBe($changed['offer_terms'])
+            ->and($saved->attributesToArray())->toBe($saved->fresh()->attributesToArray())
+            ->and($listing->is_available)->toBe($change === 'availability')
+            ->and($listing->updated_at->equalTo($instant))->toBeTrue()
+            ->and(AuditLog::query()->where('action', $change === 'availability' ? 'commerce.listing_availability_changed' : 'commerce.sellable_updated')->count())->toBe(1);
+    } finally {
+        $this->travelBack();
+    }
+})->with(['price', 'offer', 'availability']);

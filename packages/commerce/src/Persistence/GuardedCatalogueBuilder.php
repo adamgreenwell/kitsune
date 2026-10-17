@@ -34,6 +34,15 @@ final class GuardedCatalogueBuilder extends ScopedBuilder
     {
         $this->guardSave($values);
 
+        // Eloquent omits an unchanged same-second timestamp from its dirty attributes. Its builder would
+        // then generate a second timestamp after our locking validation, possibly in the next second,
+        // leaving the saved model different from SQL. Preserve the timestamp chosen by the instance save.
+        $model = $this->getModel();
+        $column = $model->getUpdatedAtColumn();
+        if ($model->usesTimestamps() && $column !== null && ! array_key_exists($column, $values)) {
+            $values[$column] = $model->getAttributes()[$column];
+        }
+
         return parent::update($values);
     }
 

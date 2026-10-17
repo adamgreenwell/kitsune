@@ -6568,6 +6568,14 @@ frames; a changed connection, lost Laravel transaction level or Org/Site context
 expected unlocked-to-locked transition is separate from its frozen schema shape: a previously earned lock
 cannot disappear, and storage holding the final product's data must still be locked after callbacks.
 
+**CI follow-up, 2026-10-17 (#294).** A deterministic clock-boundary probe reproduced PostgreSQL CI's
+shared-product refusal: Eloquent omits an unchanged same-second `updated_at` from the dirty values,
+then its builder generates a later timestamp after locking validation. SQL and the instance differ only
+in that timestamp. Catalogue instance updates now explicitly send the timestamp already chosen by the
+model; the final full-row witnesses still include timestamps and refuse genuine callback changes. Price,
+offer-term and listing-availability updates cross the boundary without sleeps in the regression, while
+late product/listing timestamp substitutions still abort and roll back the complete write.
+
 The real InnoDB cases cover rival-committed create/edit, required rich text/images, adapted promoted slug
 provenance, sanitization and original-value history, stock preservation, and current refusals after owner
 role/membership revocation, module/type disablement, malformed receipt/storage or moved content. Ordinary
