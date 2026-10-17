@@ -477,7 +477,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       attribution, current financial observations and recoverable source suspension, revision and restoration.
       Stock returns remain separate reasoned adjustments. Owner-only retained stock history (#279) adds bounded historical SKU/product/date browsing after product removal; editors retain current Site listing restrictions. [Paid order retention and privacy](paid-retention-and-privacy.md)
       (#203) is merged through #285: explicit versioned retention clocks, selected invoice billing
-      fields, separate delivery/legal/financial holds, account unlinking and replay suppression. [Commerce exports](commerce-exports.md)
+      fields, separate delivery/legal/financial holds, account unlinking and replay suppression. Checkout-history and retained-order presentation (#283) distinguishes Session completion, verified payment, current access and retained financial custody without promising withdrawn reader downloads. [Commerce exports](commerce-exports.md)
       (#202) are merged through #286: owner admin and cold CLI, JSONL/CSV financial history with explicit policy-limited
       billing opt-in. [Live Stripe admission](live-stripe-admission.md) (#287) adds separate owner/password/account consent and preserves existing financial recovery after revocation. Source qualification and review are tracked in #287; real provider qualification and Org activation remain separate.
       [Free order completion](free-order-completion-design.md) (#288) is merged through #290: distinct

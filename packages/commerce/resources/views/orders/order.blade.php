@@ -7,7 +7,7 @@
 
 @section('content')
     <h1>{{ $t('title') }}</h1>
-    <dl><dt>{{ $t('reference') }}</dt><dd dir="ltr">{{ $order['reference'] }}</dd><dt>{{ $t('state') }}</dt><dd>{{ $order['state'] === 'paid' ? __('commerce::paid.paid', [], 'en') : $t($order['state']) }}</dd></dl>
+    <dl><dt>{{ $t('reference') }}</dt><dd dir="ltr">{{ $order['reference'] }}</dd><dt>{{ $t('state') }}</dt><dd>{{ $order['state'] === 'paid' ? __('commerce::paid.'.($order['mode'] === 'live' ? 'paid_live' : 'paid'), [], 'en') : $t($order['state']) }}</dd></dl>
     <p>{{ $t($order['mode'].'_mode') }}</p>
     @if ($order['payment'] === null && $order['state'] !== 'completed_free')<p>{{ $t('unpaid') }}</p>@endif
     @include('commerce::orders.payment-summary')

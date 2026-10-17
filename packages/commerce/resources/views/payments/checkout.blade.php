@@ -34,6 +34,7 @@
         @if ($attempts !== [])
             <section class="summary" aria-labelledby="history-heading">
                 <h2 id="history-heading">{{ $t('history') }}</h2>
+                <p>{{ $t('history_help') }}</p>
                 @foreach ($attempts as $attempt)
                     <article class="content">
                         <dl><dt>{{ $t('attempt') }}</dt><dd dir="ltr">{{ $attempt['reference'] }}</dd>

@@ -6588,6 +6588,21 @@ Qualification and merge state are recorded on [#291](https://github.com/adamgree
 and its linked pull request. This correction changes neither commerce policy nor provider admission,
 activation, deployment or release authority.
 
+
+### Amendment — Checkout history and retained-order presentation, 2026-10-17 (#283)
+
+Checkout completion, captured-payment confirmation and current purchased access remain separate facts.
+Checkout history now states that distinction without promising a grant or denying one that the checked
+access summary already shows. Payment headings and notices use the immutable order's recorded mode,
+including old orders viewed after the Org changes mode; test payments still explicitly move no real money.
+
+The shared paid-order footer describes financial retention separately from account data. It no longer
+promises reader exports on an owner's retained/minimized order page or conflates the unavailable single-order
+erasure action with account erasure. Existing owned buyer download forms and withdrawn reader/guest proofs
+keep their existing authority. Awarded, awaiting-claim, held, expired, refunded/disputed and no-offer summaries
+retain their checked states. This is presentation only: no financial, entitlement, claim, privacy or live-admission
+transition changes. Qualification and the pending maintainer merge are tracked on #283 and its linked PR.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

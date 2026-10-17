@@ -268,7 +268,7 @@ test('keeps a paid guests exact proof and safe export while showing unavailable-
     await expect(page.locator('[data-refund-owed]')).toHaveText('USD 24.00');
     await expect(page.getByRole('button', { name: 'Cancel this order', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Erase this unpaid order and its personal data', exact: true })).toHaveCount(0);
-    await expect(page.getByText(/^Cancellation and erasure are unavailable for this paid test order\./)).toBeVisible();
+    await expect(page.getByText(/^Payment and refund history is retained separately from account data\./)).toBeVisible();
     expect(await page.content()).not.toMatch(new RegExp(`${fixture.session}|${fixture.charge}|${fixture.intent}`));
     const downloaded = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Download my order data', exact: true }).click();

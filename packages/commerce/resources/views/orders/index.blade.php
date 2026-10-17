@@ -8,7 +8,7 @@
 @section('content')
     <h1>{{ $t('orders') }}</h1>
     @if ($orders === [])<p>{{ $t('empty') }}</p>@endif
-    <ul>@foreach ($orders as $order)<li><a href="{{ $cartPath }}/orders/{{ $order['reference'] }}">{{ $order['reference'] }}</a> — {{ $order['state'] === 'paid' ? __('commerce::paid.paid', [], 'en') : $t($order['state']) }} — {{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</li>@endforeach</ul>
+    <ul>@foreach ($orders as $order)<li><a href="{{ $cartPath }}/orders/{{ $order['reference'] }}">{{ $order['reference'] }}</a> — {{ $order['state'] === 'paid' ? __('commerce::paid.'.($order['mode'] === 'live' ? 'paid_live' : 'paid'), [], 'en') : $t($order['state']) }} — {{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</li>@endforeach</ul>
     <nav class="pages" aria-label="{{ $t('orders') }}">@if ($page > 1)<a href="{{ $cartPath }}/orders?page={{ $page - 1 }}">{{ $t('previous') }}</a>@endif @if ($hasNext)<a href="{{ $cartPath }}/orders?page={{ $page + 1 }}">{{ $t('next') }}</a>@endif</nav>
     <p><a href="{{ $cartPath }}">{{ $t('back') }}</a></p>
 @endsection

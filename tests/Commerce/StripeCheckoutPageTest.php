@@ -41,6 +41,7 @@ it('reviews starts and reconciles a test Session through native root and nested 
         ->and($result['responses'][6]['headers']['location'][0])->toStartWith('https://checkout.stripe.com/')
         ->and($result['responses'][6]['headers']['content-security-policy'][0])->toContain("form-action 'self' https://checkout.stripe.com")
         ->and($result['responses'][12]['body'])->toContain(in_array($scenario, ['expire', 'owner-expire'], true) ? 'Checkout expired' : 'Checkout completed')
+        ->and($result['responses'][12]['body'])->toContain('Checkout completion alone does not confirm payment. Purchased access follows the current access check.')
         ->and($result['orders'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['attempts'])->toBe(in_array($scenario, ['expire', 'owner-expire'], true) ? 0 : 1)->and($result['stock'])->toBe('5')->and($result['grants'])->toBe(0)
         ->and($result['level'])->toBe(0)->and($result['pdo'])->toBeFalse();
     foreach ($result['calls'] as $call) {
