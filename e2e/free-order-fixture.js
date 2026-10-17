@@ -56,10 +56,14 @@ function facts() {
         + "'allocation'=>DB::table('commerce_order_allocations')->where('org_id',$org->id)->first(['awarded','unavailable'])]);"));
 }
 
-async function prepare(page) {
+async function prepare(page, quantity = 1) {
     await page.goto(`/${SITE}/catalogue`);
     await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Free browser course', exact: true }) })
         .getByRole('button', { name: 'Add to cart', exact: true }).click();
+    if (quantity !== 1) {
+        await page.getByRole('spinbutton', { name: 'Quantity for Free browser course', exact: true }).fill(String(quantity));
+        await page.getByRole('button', { name: 'Update quantity', exact: true }).click();
+    }
     await page.getByRole('link', { name: 'Prepare an order', exact: true }).click();
     await page.getByLabel('Email for order access', { exact: true }).fill('free-browser-buyer@example.test');
     const billing = page.getByRole('group', { name: 'Billing details', exact: true });

@@ -241,6 +241,7 @@ it('removes and restores exact original units without refunding restocking or re
     $duplicate = $corrections->changeAsOwner($s['order']->reference, [$line => [1, 2, 3]], 'remove', 0, 'Withdraw original free units.', $key, true);
     app(AccessAdjustments::class)->reconcile($s['order']->reference);
     expect($duplicate)->toBe($first)->and(DB::table('entitlements')->value('revoked_at'))->not->toBeNull();
+    expect(app(OrderReaderData::class)->record(DB::connection(), DB::table('commerce_orders')->sole())['free_access_corrections']['selected_units'])->toBe([$line => [1, 2, 3]]);
     CarbonImmutable::setTestNow(CarbonImmutable::now('UTC')->addDays(2));
     $corrections->changeAsOwner($s['order']->reference, [$line => [2]], 'restore', 1, 'Restore one original unit.', str_repeat('b', 32), true);
     app(AccessAdjustments::class)->reconcile($s['order']->reference);
@@ -249,6 +250,7 @@ it('removes and restores exact original units without refunding restocking or re
         ->and((string) DB::table('commerce_sellables')->value('stock'))->toBe('2')
         ->and(DB::table(PaidOrders::ATTEMPTS)->count())->toBe(0)
         ->and(DB::table(FreeAccessCorrections::TABLE)->count())->toBe(2);
+    expect(app(OrderReaderData::class)->record(DB::connection(), DB::table('commerce_orders')->sole())['free_access_corrections']['selected_units'])->toBe([$line => [1, 3]]);
 });
 
 it('minimizes a completed free guest order with negative claim evidence and original retention custody', function (): void {

@@ -9,9 +9,11 @@
         <legend>{{ __('commerce::paid.allocations') }}</legend>
         @foreach ($order['allocations'] as $allocation)
             @for ($unit = 1; $unit <= $allocation['awarded']; $unit++)
+                @php($removed = in_array($unit, $order['free_access_corrections']['selected_units'][$allocation['line_ref']] ?? [], true))
                 <label class="flex items-center gap-3">
                     <input type="checkbox" wire:model="freeUnits" value="{{ $allocation['line_ref'] }}:{{ $unit }}">
                     <span>{{ $allocation['sku'] }} — {{ __('commerce::free.unit') }} {{ $unit }}</span>
+                    <span>{{ __($removed ? 'commerce::free.removed' : 'commerce::free.active') }}</span>
                 </label>
             @endfor
         @endforeach

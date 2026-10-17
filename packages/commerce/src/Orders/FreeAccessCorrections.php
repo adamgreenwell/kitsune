@@ -207,7 +207,7 @@ final class FreeAccessCorrections
         }
         $plan = $this->plan($connection, $order, $lock);
 
-        return ['free_access_corrections' => ['revision' => $plan['revision'], 'removed_units' => $plan['removed_units'],
+        return ['free_access_corrections' => ['revision' => $plan['revision'], 'removed_units' => $plan['removed_units'], 'selected_units' => $plan['selected_units'],
             'history' => array_map(static fn (object $row): array => ['reference' => $row->reference, 'action' => $row->action,
                 'created_at' => CheckoutAttempts::instant($row->created_at)->format('Y-m-d\TH:i:s\Z')], $plan['history'])]];
     }

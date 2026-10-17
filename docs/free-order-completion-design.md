@@ -21,7 +21,8 @@ award. Free completion records no Stripe Session, payment or refund and needs no
 
 The order shows its original completion instant, awarded and unavailable quantities. Guests explicitly
 sign in/register and claim using secure order proof. Fixed terms include the time before a guest claims.
-Owners use the order's free-access controls to select original unit numbers, enter a reason and confirm
+Owners see each awarded unit’s current retained/removed state and use the order's free-access controls
+to select original unit numbers, enter a reason and confirm
 removal or restoration. Those local effects commit atomically with the correction. Reload a stale form;
 retrying a saved request cannot apply it twice. Restoring an expired unit does not add time. Stock stays
 unchanged until its separate adjustment workflow is used.
@@ -72,7 +73,7 @@ provider call. Physical quote review keeps the already configured carrier-quote 
 PR #289's merged implementation does not activate any real Org. Issue #287 remains open for separately
 authorized real provider/HTTPS qualification; #288 does not require a live Stripe admission.
 
-## Local qualification (2026-10-16)
+## Initial candidate qualification (2026-10-16, `b5c132c`)
 
 The targeted native suite passed 375 tests / 2,106 assertions on MySQL 8.4.7 and MariaDB 10.6.28,
 and 374 / 2,101 on PostgreSQL 18.6. All 32 new real-commit lifecycle cases and three independent-process
@@ -93,3 +94,22 @@ Full `composer ci` passed on PHP 8.5.10 / SQLite: 10,080 tests / 53,396 assertio
 explicit driver/condition skips. Configured PHPStan and root Pint passed; skeleton Pint and
 `git diff --check` passed afterward. The checked source hashes/modes matched around the complete gate.
 Only documentation of these results changed afterward. PR CI and maintainer merge remain separate gates.
+
+## Unit-state review follow-through
+
+Automated review identified that identical unchecked unit checkboxes hid which original units were
+valid restoration targets after a reload. The checked correction projection now exposes exact removed
+unit numbers; the owner view labels every awarded unit as retained or removed. The browser journey
+removes one of two units, reloads, checks both distinct states, restores the removed unit and reloads
+again, while checking that stock and provider records remain unchanged. The original correction chain,
+terms and stock rules are unchanged.
+
+The reviewed candidate passed full `composer ci` on PHP 8.5.10 / SQLite: 10,080 tests / 53,398 assertions,
+with the same 50 existing explicit driver/condition skips. PHPStan, root/skeleton Pint, whitespace and
+frozen-source checks passed. Fresh native qualification passed 375 tests / 2,108 assertions each on
+MySQL 8.4.7 and MariaDB 10.6.28, and 374 / 2,103 on PostgreSQL 18.6. All 35 free-order cases passed
+without exclusions on each engine. The 749 checked source files stayed unchanged throughout native
+qualification; all 77 application data tables were empty afterward and owned containers/volumes were
+removed. The expanded native browser regression run again passed all 29 checks without retries, skips
+or flakes and restored all 18 protected runtime paths exactly. Only documentation of these results
+changed after the frozen-source gates. Fresh PR CI and maintainer review/merge remain separate gates.
