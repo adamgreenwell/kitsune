@@ -6136,6 +6136,30 @@ refund failure. None of these measurements makes a real Stripe call or enables l
 
 ---
 
+### Amendment — Owner visibility of retained stock history, 2026-10-17 (#279)
+
+The #199 ledger already retains immutable SKU, product reference, reason, staff identifier and order/line
+provenance after product removal. Its original Stock screen only reached history through a current product.
+Owners now have a separate read-only page at `storefront/stock/history`, across the current Org's sites,
+without requiring a live product, listing or Storefront schema. This implements #279's owner-only boundary;
+ordinary editors still need the current Site's coherent listing and view/update grants on its product type.
+No additional permission subject, public host call or product restoration is introduced.
+
+Implementation defaults: exact canonical historical SKU and/or product reference, inclusive UTC calendar dates,
+25 results and one lookahead per page, canonical pages 1–10,000, newest timestamp then ID. Org-leading time,
+SKU/time and product/time indexes serve these reads. Each service read binds the current Org explicitly and
+checks Site custody and fresh owner authority; a historical reference never joins a live product or staff row.
+A planted reference cannot reveal another Org's current product, staff name/email or buyer details. Source
+movement and order/line references remain identifiers, not links granting access to another record.
+
+#203's selected billing-field retention concerns buyers. This page adds no personal fields or new retention
+clock: it projects the already-retained immutable operational reasons and staff IDs, with no name/email lookup.
+Reasons continue to require the existing instruction to exclude personal information. Buyer erasure/minimization
+and once-only stock allocation provenance are unchanged. There is no restocking, refund, automatic cleanup,
+product recreation or provider activation in this read surface. The earlier Stock screen reasoning above remains.
+
+---
+
 ### Amendment — Purchased access terms and explicit guest claims, 2026-10-15 (#200)
 
 **Adam's decisions, before implementation.** Offers are permanent or a configured number of whole days. A day is
@@ -6543,6 +6567,14 @@ registers, permission memo and current-write frame are cleared on failure and su
 frames; a changed connection, lost Laravel transaction level or Org/Site context cannot reuse a frame's proof. Storage's
 expected unlocked-to-locked transition is separate from its frozen schema shape: a previously earned lock
 cannot disappear, and storage holding the final product's data must still be locked after callbacks.
+
+**CI follow-up, 2026-10-17 (#294).** A deterministic clock-boundary probe reproduced PostgreSQL CI's
+shared-product refusal: Eloquent omits an unchanged same-second `updated_at` from the dirty values,
+then its builder generates a later timestamp after locking validation. SQL and the instance differ only
+in that timestamp. Catalogue instance updates now explicitly send the timestamp already chosen by the
+model; the final full-row witnesses still include timestamps and refuse genuine callback changes. Price,
+offer-term and listing-availability updates cross the boundary without sleeps in the regression, while
+late product/listing timestamp substitutions still abort and roll back the complete write.
 
 The real InnoDB cases cover rival-committed create/edit, required rich text/images, adapted promoted slug
 provenance, sanitization and original-value history, stock preservation, and current refusals after owner

@@ -46,7 +46,7 @@ final class StockResource extends Resource
     /** @return array<string, PageRegistration> */
     public static function getPages(): array
     {
-        return ['index' => StockList::route('/'), 'detail' => StockList::route('/{reference}')];
+        return ['index' => StockList::route('/'), 'history' => StockHistory::route('/history'), 'detail' => StockList::route('/{reference}')];
     }
 
     public static function getPluralModelLabel(): string

@@ -457,7 +457,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       retained at sign-out. The host independently places its private cart page; current prices/stock are not
       reserved. Revision checks, bounded cleanup and reader export/erasure custody are included. The cart
       decisions and implementation defaults are separate in ADR-040. The #272 follow-through proves current
-      cart parents under an older host snapshot. The #291 candidate completes current product schema, content,
+      cart parents under an older host snapshot. The #291 correction, merged through #293, completes current product schema, content,
       relation, revision and authority witnesses, with real rival regressions and final-callback rollback.
       The order slice
       [#194](https://github.com/adamgreenwell/kitsune/issues/194) adds prepared/cancelled snapshots with their own
@@ -475,7 +475,7 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       guest purchases through explicit signed-in claims. Historical unknown terms remain held. [Refunds and
       disputes](refunds-and-disputes.md) (#201) add owner-selected delivered-unit refunds, explicit external-refund
       attribution, current financial observations and recoverable source suspension, revision and restoration.
-      Stock returns remain separate reasoned adjustments. [Paid order retention and privacy](paid-retention-and-privacy.md)
+      Stock returns remain separate reasoned adjustments. Owner-only retained stock history (#279) adds bounded historical SKU/product/date browsing after product removal; editors retain current Site listing restrictions. [Paid order retention and privacy](paid-retention-and-privacy.md)
       (#203) is merged through #285: explicit versioned retention clocks, selected invoice billing
       fields, separate delivery/legal/financial holds, account unlinking and replay suppression. [Commerce exports](commerce-exports.md)
       (#202) are merged through #286: owner admin and cold CLI, JSONL/CSV financial history with explicit policy-limited

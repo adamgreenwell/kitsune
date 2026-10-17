@@ -113,7 +113,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(21);
+        ->and(glob($path.'/*.php'))->toHaveCount(22);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);
@@ -132,7 +132,7 @@ it('registers enabled commerce on a headless host without needing a panel or ser
     expect(app()->getProviders(CommerceServiceProvider::class))->toHaveCount(1)
         ->and(Module::isEnabled(COMMERCE_MODULE))->toBeTrue()
         ->and(app(AdminSurface::class)->resources())->toBe([ProductResource::class, CurrencyResource::class, StockResource::class, CheckoutResource::class, OrderResource::class, RetentionResource::class])
-        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(6);
+        ->and(app(AdminSurface::class)->navigationItems())->toHaveCount(7);
     expect(collect(app('router')->getRoutes()->getRoutes())->filter(static fn (Route $route): bool => str_starts_with($route->getName() ?? '', 'commerce.payments.')))->toBeEmpty()
         ->and((new ReflectionClass(CheckoutRoutes::class))->getDocComment())->toContain('@internal');
 });

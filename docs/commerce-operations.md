@@ -295,3 +295,16 @@ balance. Owners can adjust the org's products; members with view and update gran
 product type can adjust its coherent listings. The shared balance affects all selling sites. This grants no access
 to price, currency, credentials, checkout settings or orders. Ordinary product edits preserve existing stock; initial
 product creation still accepts its opening balance. Historical ledger rows survive product removal.
+
+
+Owners can open **Storefront → Retained stock history** to inspect movements across the Org's sites after a
+product or its listings have been removed. Filter by an exact historical SKU, a numeric product reference,
+and/or an inclusive UTC date range. Results show 25 movements per page, newest first (up to page 10,000).
+The ledger shows finite/untracked balances, allocated quantities where applicable, source identifiers,
+recorded reasons and staff IDs. Historical references do not imply the product still exists, recreate it,
+or expose a current balance. The page has no stock/refund action.
+
+Product editors keep the existing Stock screen and its current Site listing restrictions; the retained-history
+page is owner-only. It retains the same operational reasons and staff references already recorded by the ledger,
+without looking up names/emails or adding buyer details. Keep personal information out of adjustment reasons.
+Buyer retention and erasure do not remove the once-only order/line stock provenance.

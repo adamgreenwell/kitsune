@@ -23,6 +23,7 @@ use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Credentials\FreshCredentialAuthentication;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Tenancy\Context;
@@ -180,6 +181,108 @@ final class StockWriter
                 return $result;
             });
         });
+    }
+
+    /** Owners alone may browse retained history without any live product or listing. */
+    public function canBrowseHistory(): bool
+    {
+        try {
+            return $this->locks->run(function (): bool {
+                $this->runtime((new StockMovement)->getConnection());
+                app(FreshCredentialAuthentication::class)->confirm(null, requirePassword: false);
+
+                return true;
+            });
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /** Exact historical identifiers, inclusive UTC calendar dates; no LIKE wildcards or inferred live relationship.
+     * @param  array<string,mixed>  $filters
+     * @return array<string,string>
+     */
+    public static function historyFilters(array $filters): array
+    {
+        if (array_diff(array_keys($filters), ['sku', 'product', 'from', 'to']) !== []) {
+            throw new StockRefused;
+        }
+        $result = [];
+        foreach ($filters as $key => $value) {
+            if (! is_string($value)) {
+                throw new StockRefused;
+            }
+            if ($value === '') {
+                continue;
+            }
+            $result[$key] = match ($key) {
+                'sku' => Sellable::skuValue(strtoupper(trim($value))),
+                'product' => (string) Sellable::catalogueKey($value),
+                default => self::historyDate($value),
+            };
+        }
+        if (isset($result['from'], $result['to']) && $result['from'] > $result['to']) {
+            throw new StockRefused;
+        }
+
+        return $result;
+    }
+
+    /** Bounded owner-only projection. Historical references are labels, never joins into live catalogue or staff rows.
+     * @param  array<string,mixed>  $filters
+     * @return list<array<string,mixed>>
+     */
+    public function retainedHistory(array $filters = [], int $offset = 0, int $limit = 26): array
+    {
+        return $this->safe(function () use ($filters, $offset, $limit): array {
+            $filters = self::historyFilters($filters);
+            if ($offset < 0 || $offset > 249975 || $limit < 1 || $limit > 26) {
+                throw new StockRefused;
+            }
+
+            return $this->locks->run(function () use ($filters, $offset, $limit): array {
+                $connection = (new StockMovement)->getConnection();
+                $this->runtime($connection);
+                $authentication = app(FreshCredentialAuthentication::class);
+                $proof = $authentication->confirm(null, requirePassword: false);
+                $query = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $this->context->orgId());
+                foreach (['sku' => 'sku', 'product' => 'sellable_ref'] as $filter => $column) {
+                    if (isset($filters[$filter])) {
+                        $query->where($column, $filters[$filter]);
+                    }
+                }
+                if (isset($filters['from'])) {
+                    $query->where('created_at', '>=', $filters['from'].' 00:00:00');
+                }
+                if (isset($filters['to'])) {
+                    $query->where('created_at', '<=', $filters['to'].' 23:59:59');
+                }
+                $rows = $query->orderByDesc('created_at')->orderByDesc('id')->offset($offset)->limit($limit)->lockForUpdate()->get();
+                $result = [];
+                foreach ($rows as $row) {
+                    $this->validateMovement($connection, $row);
+                    $result[] = [...self::projection($row), 'sku' => $row->sku, 'productReference' => (string) $row->sellable_ref,
+                        'orderReference' => $row->order_reference, 'lineReference' => $row->line_reference === null ? null : (string) $row->line_reference];
+                }
+                $this->runtime($connection);
+                $authentication->assertCurrent($proof);
+
+                return $result;
+            });
+        });
+    }
+
+    private static function historyDate(string $value): string
+    {
+        if (preg_match('/\A[1-9][0-9]{3}-[0-9]{2}-[0-9]{2}\z/D', $value) !== 1) {
+            throw new StockRefused;
+        }
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $value, new \DateTimeZone('UTC'));
+        if ($date === false || $date->format('Y-m-d') !== $value) {
+            throw new StockRefused;
+        }
+
+        return $value;
     }
 
     /** Existing OrderLocks transaction owns the authoritative allocation. Repeating one line is a checked no-op. */
