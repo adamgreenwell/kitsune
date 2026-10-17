@@ -15,6 +15,7 @@ use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
+use Kitsune\Core\Database\EntryWriteReads;
 
 /**
  * Uniqueness checked through Eloquent, so global scopes apply.
@@ -80,7 +81,7 @@ final class ScopedUnique implements ValidationRule
             ($this->using)($query);
         }
 
-        if ($query->exists()) {
+        if (EntryWriteReads::exists($query)) {
             $fail('validation.unique')->translate(['attribute' => $attribute]);
         }
     }

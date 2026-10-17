@@ -16,10 +16,13 @@ use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Models\AuditLog;
+use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -75,7 +78,6 @@ final class ProductWriter
      */
     private function write(?int $id, #[\SensitiveParameter] array $commerce, mixed $quote, array $content, array $relations, mixed $available): Sellable
     {
-        $this->refuseWithoutAuthority();
         $this->onlyKeys($commerce, ['sku', 'price_minor', 'stock', 'entitlement_name', 'offer_terms']);
         $this->onlyKeys($content, ['title', 'slug', 'status', 'values']);
 
@@ -83,80 +85,167 @@ final class ProductWriter
             throw new RuntimeException('Product availability must be a boolean.');
         }
 
-        return TransactionRecovery::run((new Sellable)->getConnection(), function () use ($id, $commerce, $quote, $content, $relations, $available): Sellable {
-            // Agree with CatalogueWriter and OrgCurrency before taking any content or relation lock.
-            Org::query()->useWritePdo()->whereKey($this->context->orgId())->lockForUpdate()->first()
-                ?? throw new RuntimeException('The product org is no longer available.');
-            $type = ProductType::current() ?? throw new RuntimeException('Apply and enable Storefront for this site before editing products.');
-            // Ordinary product edits never resubmit a stale stock balance. Adjustments have their own reason/history
-            // writer; read the current value beneath the same Org lock used by payment and inventory writes.
-            $current = null;
-            if ($id !== null) {
-                $current = Sellable::query()->useWritePdo()->whereKey($id)->lockForUpdate()->first()
-                    ?? throw new RuntimeException('The product is not available in this org.');
-                $commerce['stock'] = $current->stock;
+        $connection = (new Sellable)->getConnection();
+        try {
+            return TransactionRecovery::run($connection, fn (): Sellable => app(EntryWriteReads::class)->run(
+                $connection,
+                fn (): Sellable => $this->writeCurrent($id, $commerce, $quote, $content, $relations, $available),
+            ));
+        } finally {
+            Permissions::forget();
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $commerce
+     * @param  array<string, mixed>  $content
+     * @param  array<string, mixed>  $relations
+     */
+    private function writeCurrent(?int $id, #[\SensitiveParameter] array $commerce, mixed $quote, array $content, array $relations, bool $available): Sellable
+    {
+        // Agree with CatalogueWriter and OrgCurrency before taking any content or relation lock.
+        Org::query()->useWritePdo()->whereKey($this->context->orgId())->lockForUpdate()->first()
+            ?? throw new RuntimeException('The product org is no longer available.');
+        Permissions::forget();
+        $this->refuseWithoutAuthority();
+        $type = ProductType::current(true) ?? throw new RuntimeException('Apply and enable Storefront for this site before editing products.');
+        // Ordinary product edits never resubmit a stale stock balance. Adjustments have their own reason/history
+        // writer; read the current value beneath the same Org lock used by payment and inventory writes.
+        $current = null;
+        if ($id !== null) {
+            $current = Sellable::query()->useWritePdo()->whereKey($id)->lockForUpdate()->first()
+                ?? throw new RuntimeException('The product is not available in this org.');
+            $commerce['stock'] = $current->stock;
+        }
+        $schema = $this->schemaWitness($type);
+        $actor = $this->actorWitness();
+        $listing = $id === null ? null : $this->listing($id, $type);
+        $entry = $listing?->entry()->useWritePdo()->lockForUpdate()->first() ?? new Entry;
+
+        if (! $entry->exists) {
+            $entry->forceFill(['entry_type_id' => $type->getKey()]);
+        }
+
+        $content = $this->validateContent($type, $entry, $content, $relations, $available);
+        // Older first-party payloads omit the mapping; do not turn their content edit into a shared offer change.
+        $offer = array_key_exists('entitlement_name', $commerce) ? [$commerce['entitlement_name']] : [];
+        if (array_key_exists('offer_terms', $commerce)) {
+            $offer = [array_key_exists('entitlement_name', $commerce) ? $commerce['entitlement_name'] : $current?->entitlement_name, $commerce['offer_terms']];
+        }
+        $sellable = $id === null
+            ? $this->catalogue->createSellable($commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer)
+            : $this->catalogue->updateSellable($id, $commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer);
+
+        $this->revisions->open($entry->exists ? (int) $entry->getKey() : null);
+
+        try {
+            $entry->forceFill($content);
+
+            if (! $entry->save()) {
+                throw new RuntimeException('The product content save was cancelled.');
             }
-            $listing = $id === null ? null : $this->listing($id, $type);
-            $entry = $listing?->entry()->useWritePdo()->lockForUpdate()->first() ?? new Entry;
 
-            if (! $entry->exists) {
-                $entry->forceFill(['entry_type_id' => $type->getKey()]);
-            }
+            $entry->writeRelationsAndReconcile(function () use ($entry, $type, $relations): void {
+                foreach ($this->fields($type) as $field) {
+                    $storage = $field->fieldStorage;
 
-            $content = $this->validateContent($type, $entry, $content, $relations, $available);
-            // Older first-party payloads omit the mapping; do not turn their content edit into a shared offer change.
-            $offer = array_key_exists('entitlement_name', $commerce) ? [$commerce['entitlement_name']] : [];
-            if (array_key_exists('offer_terms', $commerce)) {
-                $offer = [array_key_exists('entitlement_name', $commerce) ? $commerce['entitlement_name'] : $current?->entitlement_name, $commerce['offer_terms']];
-            }
-            $sellable = $id === null
-                ? $this->catalogue->createSellable($commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer)
-                : $this->catalogue->updateSellable($id, $commerce['sku'] ?? null, $commerce['price_minor'] ?? null, $commerce['stock'] ?? null, $quote, ...$offer);
-
-            $this->revisions->open($entry->exists ? (int) $entry->getKey() : null);
-
-            try {
-                $entry->forceFill($content);
-
-                if (! $entry->save()) {
-                    throw new RuntimeException('The product content save was cancelled.');
-                }
-
-                $entry->writeRelationsAndReconcile(function () use ($entry, $type, $relations): void {
-                    foreach ($this->fields($type) as $field) {
-                        $storage = $field->fieldStorage;
-
-                        if ($this->types->get($storage->type)->strategy() === StorageStrategy::Relational
-                            && array_key_exists($storage->handle, $relations)) {
-                            $entry->syncFieldRelations($storage, $this->relationIds($relations[$storage->handle]));
-                        }
+                    if ($this->types->get($storage->type)->strategy() === StorageStrategy::Relational
+                        && array_key_exists($storage->handle, $relations)) {
+                        $entry->syncFieldRelations($storage, $this->relationIds($relations[$storage->handle]));
                     }
-                });
-
-                $entry = $entry->fresh() ?? throw new RuntimeException('The product content is no longer available.');
-
-                if ((string) $entry->entry_type_id !== (string) $type->getKey()
-                    || (string) $entry->org_id !== (string) $this->context->orgId()
-                    || $entry->site_id === null || (string) $entry->site_id !== (string) $this->context->siteId()) {
-                    throw new RuntimeException('The saved content no longer belongs to this site\'s Storefront product type.');
                 }
+            });
 
-                $this->validateContent($type, $entry, [], [], $available);
-                $this->refuseMissingRevision($entry);
+            $entry = Entry::query()->useWritePdo()->whereKey($entry->getKey())->where('org_id', $this->context->orgId())->where('site_id', $this->context->siteId())->lockForUpdate()->first() ?? throw new RuntimeException('The product content is no longer available.');
 
-                if (! $this->auditor->recordOrFail('commerce.product_content_saved', $entry)->exists) {
-                    throw new RuntimeException('The product content audit save was cancelled.');
-                }
-
-                $listing === null
-                    ? $this->catalogue->createListing($sellable->getKey(), $entry->getKey(), $available)
-                    : $this->catalogue->setAvailability($listing->getKey(), $available);
-
-                return $sellable;
-            } finally {
-                $this->revisions->discard();
+            if ((string) $entry->entry_type_id !== (string) $type->getKey()
+                || (string) $entry->org_id !== (string) $this->context->orgId()
+                || $entry->site_id === null || (string) $entry->site_id !== (string) $this->context->siteId()) {
+                throw new RuntimeException('The saved content no longer belongs to this site\'s Storefront product type.');
             }
-        });
+
+            $this->validateContent($type, $entry, [], [], $available);
+            $this->refuseMissingRevision($entry);
+
+            $entryProof = $entry->getRawOriginal();
+            $relationProof = $entry->relationState();
+            $audit = $this->auditor->recordOrFail('commerce.product_content_saved', $entry);
+            if (! $audit->exists) {
+                throw new RuntimeException('The product content audit save was cancelled.');
+            }
+
+            $savedListing = $listing === null
+                ? $this->catalogue->createListing($sellable->getKey(), $entry->getKey(), $available)
+                : $this->catalogue->setAvailability($listing->getKey(), $available);
+
+            // Every callback has now run. Re-prove the complete save beneath the original Org lock.
+            Permissions::forget();
+            if ($this->actorWitness() !== $actor) {
+                throw new RuntimeException('The product writer actor changed during the save.');
+            }
+            $this->refuseWithoutAuthority();
+            $finalType = ProductType::current(true) ?? throw new RuntimeException('The product schema is no longer available.');
+            $finalSchema = $this->schemaWitness($finalType);
+            if ($schema['shape'] !== $finalSchema['shape'] || array_diff($schema['locked'], $finalSchema['locked']) !== []) {
+                throw new RuntimeException('The product schema changed during the save.');
+            }
+            $freshSellable = Sellable::query()->useWritePdo()->whereKey($sellable->getKey())->lockForUpdate()->first();
+            if ($freshSellable === null || $this->orderedKeys($freshSellable->attributesToArray()) !== $this->orderedKeys($sellable->attributesToArray())) {
+                throw new RuntimeException('The shared product changed during the save.');
+            }
+            $freshSellable->refuseInvalidCatalogueValues();
+            $finalListing = $this->listing((int) $sellable->getKey(), $finalType);
+            if ($finalListing === null || $this->orderedKeys($finalListing->attributesToArray()) !== $this->orderedKeys($savedListing->attributesToArray())) {
+                throw new RuntimeException('The product listing changed during the save.');
+            }
+            $finalEntry = $finalListing->entry()->useWritePdo()->lockForUpdate()->first();
+            if ($finalEntry === null || $finalEntry->getRawOriginal() !== $entryProof || $this->orderedKeys($finalEntry->relationState()) !== $this->orderedKeys($relationProof)) {
+                throw new RuntimeException('The product content changed during the save.');
+            }
+            $this->validateContent($finalType, $finalEntry, [], [], $available);
+            $this->refuseMissingRevision($finalEntry);
+            $this->refuseUnlockedStorageHoldingData($finalType, $finalEntry);
+            $finalAudit = AuditLog::query()->useWritePdo()->whereKey($audit->getKey())->lockForUpdate()->first();
+            if ($finalAudit === null || $this->orderedKeys($finalAudit->attributesToArray()) !== $this->orderedKeys($audit->attributesToArray())) {
+                throw new RuntimeException('The product content audit changed during the save.');
+            }
+
+            return $freshSellable;
+        } finally {
+            $this->revisions->discard();
+        }
+    }
+
+    /** Recheck lock-on-data after the final callbacks, without repairing a corrupted proof. */
+    private function refuseUnlockedStorageHoldingData(EntryType $type, Entry $entry): void
+    {
+        foreach ($this->fields($type) as $field) {
+            $storage = $field->fieldStorage;
+            if ($storage->is_locked) {
+                continue;
+            }
+            $value = match ($storage->strategy()) {
+                StorageStrategy::Promoted => $entry->getAttribute((string) $storage->promotedColumn()),
+                StorageStrategy::Relational => $entry->linkedIdsForField($storage),
+                StorageStrategy::Inline => ($entry->values ?? [])[$storage->handle] ?? null,
+            };
+            // The same empty-value contract Entry uses when arming storage on save.
+            if ($value !== null && $value !== '' && $value !== []) {
+                throw new RuntimeException('Field storage holding product data became unlocked during the save.');
+            }
+        }
+    }
+
+    /** @return array{class:class-string,id:string|null}|null */
+    private function actorWitness(): ?array
+    {
+        $actor = Permissions::currentUser();
+        if ($actor === null) {
+            return null;
+        }
+        $key = Permissions::userKey($actor->getAuthIdentifier(), $actor::class);
+
+        return ['class' => $actor::class, 'id' => $key === null ? null : (string) $key];
     }
 
     private function refuseWithoutAuthority(): void
@@ -164,7 +253,7 @@ final class ProductWriter
         $actor = Permissions::currentUser();
 
         if ($this->context->orgId() === null || $this->context->siteId() === null
-            || ($actor !== null && ! Permissions::isOwner($actor)) || ! Module::isEnabled('kitsune/commerce')) {
+            || ($actor !== null && ! Permissions::isOwner($actor)) || Module::query()->useWritePdo()->where('handle', 'kitsune/commerce')->where('is_enabled', true)->lockForUpdate()->first() === null) {
             throw new RuntimeException('Product writes require an enabled commerce module and the current site\'s org owner or system.');
         }
     }
@@ -180,9 +269,9 @@ final class ProductWriter
             return null;
         }
 
-        $listing = Listing::query()->useWritePdo()->whereKey($retained->getKey())->first();
-        $entry = $listing?->entry()->useWritePdo()->first();
-
+        $retained->refuseInvalidCatalogueValues();
+        $listing = $retained;
+        $entry = $listing->entry()->useWritePdo()->lockForUpdate()->first();
         if ($entry === null || (int) $entry->entry_type_id !== (int) $type->getKey()) {
             throw new RuntimeException('The retained listing no longer points to this site\'s Storefront product content.');
         }
@@ -261,7 +350,7 @@ final class ProductWriter
     /** A silently cancelled revision insert/update must roll back the combined product save too. */
     private function refuseMissingRevision(Entry $entry): void
     {
-        $revision = $entry->revisions()->useWritePdo()->latest('id')->first();
+        $revision = $entry->revisions()->useWritePdo()->latest('id')->lockForUpdate()->first();
 
         if ($revision === null) {
             throw new RuntimeException('The product content revision was not saved.');
@@ -301,17 +390,40 @@ final class ProductWriter
     /** @return list<Field> */
     private function fields(EntryType $type): array
     {
-        $fields = $type->fields()->with('fieldStorage')->orderBy('ordering')->get()
-            ->filter(static fn (Field $field): bool => $field->fieldStorage instanceof FieldStorage)
-            ->values()->all();
+        $fields = $type->fields()->lockForUpdate()->with(['fieldStorage' => static fn ($query) => $query->lockForUpdate()])->orderBy('ordering')->get()->all();
 
         foreach ($fields as $field) {
+            if (! $field->fieldStorage instanceof FieldStorage) {
+                throw new RuntimeException('The product schema is missing field storage.');
+            }
+            $field->fieldStorage->guardShape();
             if ($field->fieldStorage->org_id !== null && $field->fieldStorage->org_id !== $type->org_id) {
                 throw new RuntimeException('The product schema references another org\'s field storage.');
             }
         }
 
         return $fields;
+    }
+
+    /** @return array{shape:array<string, mixed>,locked:list<int>} */
+    private function schemaWitness(EntryType $type): array
+    {
+        $receipt = Blueprint::query()->useWritePdo()->where('handle', 'storefront')->lockForUpdate()->first();
+        $fields = [];
+        $locked = [];
+        foreach ($this->fields($type) as $field) {
+            $definition = $field->getRawOriginal();
+            $storage = $field->fieldStorage->getRawOriginal();
+            if ($field->fieldStorage->is_locked) {
+                $locked[] = (int) $field->fieldStorage->getKey();
+            }
+            unset($definition['updated_at'], $storage['updated_at'], $storage['is_locked']);
+            $fields[] = [$definition, $storage];
+        }
+        $definition = $type->getRawOriginal();
+        unset($definition['updated_at']);
+
+        return ['shape' => ['type' => $definition, 'receipt' => $receipt?->getRawOriginal(), 'fields' => $fields], 'locked' => $locked];
     }
 
     /** @return list<int> */

@@ -19,6 +19,11 @@ use Kitsune\Core\Tenancy\Context;
 /** The completed Storefront receipt identifies the adaptable product type, even after an owner renames it. @internal */
 final class ProductType
 {
+    /**
+     * Resolve mutable persisted receipt and availability state afresh.
+     *
+     * @phpstan-impure
+     */
     public static function current(bool $current = false): ?EntryType
     {
         $context = app(Context::class);

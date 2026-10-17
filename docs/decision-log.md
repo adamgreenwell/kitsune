@@ -6512,6 +6512,50 @@ making only that preflight current then fails Entry creation because `type_handl
 that the complete schema/content/revision path needs qualification; a preflight-only patch is not the fix.
 The experiment changed no repository source. The earlier order reasoning remains visible above.
 
+### Amendment — Current product/schema witnesses inside a host transaction, 2026-10-17 (#291)
+
+The cart amendment above intentionally left the product seam open. The real rival regression reproduces
+its ordinary Storefront preflight refusal on MySQL 8.4.7 and MariaDB 10.6.28. Making that preflight current
+alone is insufficient: Entry's type-handle derivation, field/storage conversion, relation guards and
+revision readbacks must also see the same current schema. The earlier failed experiment remains evidence,
+not a claim that a preflight-only fix shipped.
+
+ProductWriter now opens one internal, request-scoped current-write frame inside its existing recoverable
+transaction. Org is locked first; current Site, Storefront receipt/type/availability and the shared product
+are proved before content and relation writes. Selected Entry, permission, validation and revision
+witnesses use the write connection and locking reads while that frame is active. A membership query's
+inner pivot proof is locking when its outer query is locking: an outer `FOR UPDATE` alone does not refresh
+an ordinary InnoDB `EXISTS`. Existence/cardinality witnesses use bounded row reads instead of pretending
+a locking aggregate can make its inputs current. Model scopes, explicit Org/Site fences and existing
+key-proven reload boundaries remain intact. No blanket read-scope removal or isolation-level switch is
+introduced. Ordinary presentation queries retain their consistent-read behavior.
+
+Retained listings still bypass only their redundant `catalogue_coherence` read subquery, followed by
+current exact-parent validation. Fields with missing, foreign or malformed storage refuse rather than
+silently disappearing from validation. Inline conversion/sanitization, promoted provenance, relational
+choices, lock-on-data and one coherent revision per submission all use the selected current witnesses.
+Product edits continue to preserve current stock; adjustments retain their separate reason/history path.
+
+After the final content/listing audit callback, the writer rechecks owner/system identity and authority,
+module enablement, current type/receipt/field shape, shared product and currency, exact listing/content,
+relations, revision and content-audit readback. Invalid or changed proof aborts the complete save. Revision
+registers, permission memo and current-write frame are cleared on failure and success, including nested
+frames; a changed connection, lost Laravel transaction level or Org/Site context cannot reuse a frame's proof. Storage's
+expected unlocked-to-locked transition is separate from its frozen schema shape: a previously earned lock
+cannot disappear, and storage holding the final product's data must still be locked after callbacks.
+
+The real InnoDB cases cover rival-committed create/edit, required rich text/images, adapted promoted slug
+provenance, sanitization and original-value history, stock preservation, and current refusals after owner
+role/membership revocation, module/type disablement, malformed receipt/storage or moved content. Ordinary
+reads still retain the host's older snapshot. Final-callback regressions cover create and edit rollback;
+existing cross-site and cross-org attacks remain exercised. SQLite and PostgreSQL retain compatibility
+at their supported/default transaction behavior; this does not claim that PostgreSQL REPEATABLE READ
+can see a row inserted after its snapshot. The default suite requires no new service or worker.
+
+Qualification and merge state are recorded on [#291](https://github.com/adamgreenwell/kitsune/issues/291)
+and its linked pull request. This correction changes neither commerce policy nor provider admission,
+activation, deployment or release authority.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

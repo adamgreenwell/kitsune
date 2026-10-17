@@ -50,6 +50,7 @@ use Kitsune\Core\Credentials\CredentialReader;
 use Kitsune\Core\Credentials\CredentialSlots;
 use Kitsune\Core\Credentials\CredentialStates;
 use Kitsune\Core\Credentials\CredentialWriter;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -93,6 +94,9 @@ final class KitsuneServiceProvider extends ServiceProvider
          * long-lived worker — which is the unbounded-map finding one step further on.
          */
         $this->app->scoped(RecordedRevisions::class, static fn (): RecordedRevisions => new RecordedRevisions);
+
+        // Selected current witnesses exist only for the atomic write that opens their frame.
+        $this->app->scoped(EntryWriteReads::class);
 
         /*
          * The entries whose files a rolled-back withdrawal moved, waiting to be put back — ADR-042 decision 5. Scoped

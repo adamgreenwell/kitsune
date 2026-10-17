@@ -457,7 +457,8 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       retained at sign-out. The host independently places its private cart page; current prices/stock are not
       reserved. Revision checks, bounded cleanup and reader export/erasure custody are included. The cart
       decisions and implementation defaults are separate in ADR-040. The #272 follow-through proves current
-      cart parents under an older host snapshot; the separately measured product/schema write path is #291.
+      cart parents under an older host snapshot. The #291 candidate completes current product schema, content,
+      relation, revision and authority witnesses, with real rival regressions and final-callback rollback.
       The order slice
       [#194](https://github.com/adamgreenwell/kitsune/issues/194) adds prepared/cancelled snapshots with their own
       currency witness, exact tax, operator country/region rates, org-selected inclusive/exclusive prices,

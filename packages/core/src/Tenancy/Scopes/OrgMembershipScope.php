@@ -50,11 +50,13 @@ final class OrgMembershipScope implements Scope
 
         // whereExists rather than a join: a join would multiply rows for a
         // user in several orgs and quietly change every count() in the admin.
-        $builder->whereExists(function ($query) use ($context, $table, $key): void {
+        $builder->whereExists(function ($query) use ($context, $table, $key, $builder): void {
             $query->selectRaw('1')
                 ->from($this->through->table)
                 ->whereColumn($this->through->table.'.'.$this->through->foreignKey, $table.'.'.$key)
-                ->where($this->through->table.'.'.$this->through->orgKey, $context->orgId());
+                ->where($this->through->table.'.'.$this->through->orgKey, $context->orgId())
+                // FOR UPDATE must reach the membership proof too; ordinary outer reads stay consistent.
+                ->when($builder->getQuery()->lock === true, static fn ($query) => $query->lockForUpdate());
         });
     }
 }

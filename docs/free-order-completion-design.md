@@ -120,4 +120,5 @@ changed after the frozen-source gates. Fresh PR CI and maintainer review/merge r
 `a6d9ad549a9892e43ca056fd438aaf22cc13415a`, with only the expected CLA skip. Both full browser runs passed
 390 tests. The unit-state review thread was resolved and the final merge check found no conflicts.
 PR #290 merged at `a73ce4256e9e438b88e60125a8eb0b4cf05cc57a`; #288 is closed. Real provider qualification
-remains on #287. The next commerce follow-through is #272, with the measured product path tracked in #291.
+remains on #287. The cart-parent follow-through is #272. Its separately measured product/schema path is addressed by the #291
+candidate; ADR-040 preserves both the original failed preflight-only experiment and the complete write correction.
