@@ -251,7 +251,7 @@ test.describe('Owner checkout and order administration', () => {
         await expect(page.locator('[data-refund-owed]')).toHaveText('USD 22.00');
         await expect(page.getByRole('button', { name: 'Cancel unpaid order', exact: true })).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Erase unpaid order', exact: true })).toHaveCount(0);
-        await expect(page.getByText(/^Cancellation and erasure are unavailable for this paid test order\./)).toBeVisible();
+        await expect(page.getByText(/^Payment and refund history is retained separately from account data\./)).toBeVisible();
         expect(await page.content()).not.toMatch(new RegExp(`${fixture.session}|${fixture.charge}|${fixture.intent}`));
         await page.getByText('Check or submit refund', { exact: true }).first().click();
         const form = page.locator('form[data-refund-recovery="refund_reconcile"]');
@@ -385,6 +385,9 @@ test.describe('Owner checkout and order administration', () => {
             + 'app(Kitsune\\Core\\Readers\\ReaderErasure::class)->erase(' + literal(reader) + ');');
         await page.goto(ORDERS + '/' + reference);
         await expect(page.locator('[data-privacy-summary]').getByText('Account and access ownership have been removed from this retained order.', { exact: true })).toBeVisible();
+        await expect(page.getByText('Checkout completion alone does not confirm payment. Purchased access follows the current access check.', { exact: true })).toBeVisible();
+        await expect(page.getByText(/^Payment and refund history is retained separately from account data\./)).toBeVisible();
+        expect(await page.content()).not.toMatch(/You can still download your order data|purchased access is not granted yet/);
         await expect(page.getByText('Historical Buyer', { exact: true })).toBeVisible();
         await expect(page.getByText('US', { exact: true }).first()).toBeVisible();
         expect(await page.content()).not.toMatch(/admin-buyer@example\.test|10 Historical Ocean Road|42 Essential Delivery Road/);

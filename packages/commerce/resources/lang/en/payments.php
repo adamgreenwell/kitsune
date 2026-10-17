@@ -22,7 +22,7 @@ return [
     'review_help' => 'Review the current prices, tax and delivery before opening Stripe checkout. Changed or expired prices require a fresh order review.',
     'review' => 'Review checkout', 'commitment' => 'The exact amounts below will be fixed for this Stripe Session for about 30 minutes. Stock is not reserved.',
     'continue' => 'Continue to Stripe checkout', 'total' => 'Total', 'order' => 'Back to order',
-    'history' => 'Checkout history', 'attempt' => 'Checkout reference', 'state' => 'Status', 'expires' => 'Session expiry (UTC)',
+    'history' => 'Checkout history', 'history_help' => 'Checkout completion alone does not confirm payment. Purchased access follows the current access check.', 'attempt' => 'Checkout reference', 'state' => 'Status', 'expires' => 'Session expiry (UTC)',
     'creating' => 'Starting checkout', 'open' => 'Checkout is open', 'uncertain' => 'Checkout outcome needs checking',
     'expired' => 'Checkout expired', 'rejected' => 'Checkout was not created', 'completed' => 'Checkout completed',
     'resume' => 'Check and resume checkout', 'expire' => 'Expire checkout',

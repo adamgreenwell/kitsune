@@ -33,7 +33,7 @@
                 <thead><tr>@foreach (['reference', 'state', 'mode', 'total', 'created'] as $field)<th scope="col" class="p-3 text-start">{{ __('commerce::checkout.'.$field) }}</th>@endforeach</tr></thead>
                 <tbody>@forelse ($orders as $order)
                     <tr><td class="p-3"><a class="underline" href="{{ \Kitsune\Commerce\Filament\OrderResource::getUrl('detail', ['reference' => $order['reference']]) }}">{{ $order['reference'] }}</a></td>
-                        <td class="p-3">{{ __('commerce::checkout.'.$order['state']) }}</td>
+                        <td class="p-3">{{ __('commerce::checkout.'.($order['state'] === 'paid' && $order['mode'] === 'live' ? 'paid_live' : $order['state'])) }}</td>
                         <td class="p-3">{{ __('commerce::checkout.'.$order['mode']) }}</td>
                         <td class="p-3">{{ $order['currency'] }} {{ \Kitsune\Commerce\Money\MinorUnits::format($order['quoted_total_minor'], $order['currency']) }}</td>
                         <td class="p-3">{{ $this->instant($order['reference'], $order['created_at']) }}</td></tr>
@@ -46,7 +46,7 @@
         <a class="underline" href="{{ \Kitsune\Commerce\Filament\OrderResource::getUrl() }}">{{ __('commerce::checkout.back_orders') }}</a>
         <x-filament::section :heading="$order['reference']">
             <dl class="space-y-2">
-                <div><dt class="font-medium">{{ __('commerce::checkout.state') }}</dt><dd>{{ __('commerce::checkout.'.$order['state']) }}</dd></div>
+                <div><dt class="font-medium">{{ __('commerce::checkout.state') }}</dt><dd>{{ __('commerce::checkout.'.($order['state'] === 'paid' && $order['mode'] === 'live' ? 'paid_live' : $order['state'])) }}</dd></div>
                 <div><dt class="font-medium">{{ __('commerce::checkout.mode') }}</dt><dd>{{ __('commerce::checkout.'.$order['mode']) }}</dd></div>
                 @if ($order['contact_email'] !== null)<div><dt class="font-medium">{{ __('commerce::checkout.contact_email') }}</dt><dd>{{ $order['contact_email'] }}</dd></div>@endif
                 <div><dt class="font-medium">{{ __('commerce::checkout.created') }}</dt><dd>{{ $this->instant($order['reference'], $order['created_at']) }}</dd></div>
@@ -75,7 +75,7 @@
                 @foreach (['quoted_item_net_minor' => 'net', 'quoted_shipping_net_minor' => 'shipping', 'quoted_tax_minor' => 'tax', 'quoted_total_minor' => 'total'] as $field => $label)
                     <div><dt class="font-medium">{{ __('commerce::checkout.'.$label) }}</dt><dd>{{ $order['currency'] }} {{ \Kitsune\Commerce\Money\MinorUnits::format($order[$field], $order['currency']) }}</dd></div>
                 @endforeach
-                <div><dt class="font-medium">{{ __('commerce::checkout.payment') }}</dt><dd>{{ __($order['payment'] === null ? 'commerce::checkout.not_charged' : 'commerce::paid.paid') }}</dd></div>
+                <div><dt class="font-medium">{{ __('commerce::checkout.payment') }}</dt><dd>{{ __($order['payment'] === null ? 'commerce::checkout.not_charged' : 'commerce::paid.'.($order['mode'] === 'live' ? 'paid_live' : 'paid')) }}</dd></div>
             </dl>
         </x-filament::section>
         @include('commerce::orders.payment-summary')
@@ -124,6 +124,7 @@
         @if ($order['checkout_attempts'] !== [])
             <x-filament::section :heading="__('commerce::payments.history')">
                 <p>{{ __('commerce::payments.mode_'.$order['mode']) }}</p>
+                <p>{{ __('commerce::payments.history_help') }}</p>
                 @foreach ($order['checkout_attempts'] as $attempt)
                     <div class="space-y-3 py-3">
                         <p>{{ __('commerce::payments.attempt') }}: <span dir="ltr">{{ $attempt['reference'] }}</span></p>

@@ -14,9 +14,9 @@
     </section>
 @endif
 @if ($order['payment'] !== null)
-    <section class="space-y-3" aria-label="{{ __('commerce::paid.paid', [], 'en') }}" data-payment-summary>
-        <h2 class="font-semibold">{{ __('commerce::paid.paid', [], 'en') }}</h2>
-        <p>{{ __('commerce::paid.test_help', [], 'en') }}</p>
+    <section class="space-y-3" aria-label="{{ __('commerce::paid.'.($order['mode'] === 'live' ? 'paid_live' : 'paid'), [], 'en') }}" data-payment-summary>
+        <h2 class="font-semibold">{{ __('commerce::paid.'.($order['mode'] === 'live' ? 'paid_live' : 'paid'), [], 'en') }}</h2>
+        <p>{{ __('commerce::paid.'.($order['mode'] === 'live' ? 'live_help' : 'test_help'), [], 'en') }}</p>
         <p>{{ __('commerce::paid.amount', [], 'en') }}: <span dir="ltr">{{ $order['currency'] }} {{ \Kitsune\Commerce\Money\MinorUnits::format($order['payment']['amount_minor'], $order['currency']) }}</span></p>
         <p>{{ __('commerce::paid.verified', [], 'en') }}: <span dir="ltr">{{ $order['payment']['verified_at'] }}</span></p>
         <h3 class="font-semibold">{{ __('commerce::paid.allocations', [], 'en') }}</h3>

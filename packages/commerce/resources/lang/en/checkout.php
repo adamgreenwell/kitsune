@@ -36,7 +36,7 @@ return [
     'orders_title' => 'Orders', 'orders_help' => 'Orders retain the prices, tax, delivery and product details quoted at the time. Payment, allocation and refund status are shown for each order.',
     'reference' => 'Order reference', 'state' => 'Status', 'total' => 'Quoted total', 'created' => 'Created', 'view_order' => 'View order', 'empty_orders' => 'No orders on this site yet.',
     'prepared' => 'Awaiting payment', 'cancelled' => 'Cancelled', 'mode' => 'Payment mode', 'test' => 'Test mode', 'live' => 'Live mode',
-    'paid' => 'Test payment confirmed',
+    'paid' => 'Test payment confirmed', 'paid_live' => 'Payment confirmed',
     'back_orders' => 'Back to orders', 'contact_email' => 'Contact email',
     'billing' => 'Billing details', 'delivery_address' => 'Delivery details', 'items' => 'Items', 'sku' => 'SKU', 'product' => 'Product', 'quantity' => 'Quantity',
     'net' => 'Before tax', 'tax' => 'Tax', 'shipping' => 'Shipping before tax', 'payment' => 'Payment', 'not_charged' => 'Not charged',

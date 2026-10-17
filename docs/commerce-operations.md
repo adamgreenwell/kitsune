@@ -287,6 +287,18 @@ release are separate steps. Confirmed orders support [purchased access](purchase
 external refunds without changing the invoice or automatically returning stock. Zero-total completion and
 three-decimal provider currencies remain deferred.
 
+## Reading order history
+
+Checkout history describes the saved Stripe Session. Completion alone does not confirm payment; the payment
+summary and current access check report their own verified state. Test orders retain an explicit no-real-money
+notice. Payment labels follow the order's recorded mode, including purchases from before an Org mode change.
+
+Payment/refund history is retained separately from account data. A paid-order footer does not promise a reader
+download or imply that account erasure is unavailable. The owned buyer's download form and owner financial
+exports keep their existing authorization; account-erased orders remain unavailable through withdrawn reader
+ownership and guest proofs. The owner can inspect the checked retention and access summaries without restoring
+those rights.
+
 ## Shared stock adjustments
 
 Use **Storefront → Stock** to adjust an existing product, including a change between finite and untracked stock.

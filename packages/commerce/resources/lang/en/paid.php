@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 return [
     'paid' => 'Test payment confirmed',
+    'paid_live' => 'Payment confirmed',
+    'live_help' => 'This payment was confirmed in live mode.',
     'test_help' => 'This is a test payment. No real money has moved.',
     'amount' => 'Confirmed amount',
     'verified' => 'Confirmed at (UTC)',
@@ -45,9 +47,9 @@ return [
     'refund_actions' => 'Owner refund recovery',
     'reconcile' => 'Check or submit refund',
     'retry' => 'Authorize another refund attempt',
-    'recovery_help' => 'Use the original Stripe account’s test key and your current password to check this refund. The key is used for this action only.',
+    'recovery_help' => 'Use a key for the payment’s original Stripe account and mode and your current password to check this refund. The key is used for this action only.',
     'retry_help' => 'A new attempt is allowed only after the previous refund is verified failed or cancelled. Earlier attempts remain in history.',
     'unrepresentable_refund' => 'This refund needs operator review because its exact amount cannot be submitted in the payment provider’s currency units. It remains owed.',
-    'retained' => 'Cancellation and erasure are unavailable for this paid test order. Its payment and refund history is retained. You can still download your order data.',
-    'completed_retained' => 'A completed test checkout needs payment reconciliation before cancellation or erasure is available. You can still download your order data.',
+    'retained' => 'Payment and refund history is retained separately from account data. This order cannot be cancelled or erased from this screen.',
+    'completed_retained' => 'Checkout completion alone does not confirm payment. Payment needs checking before this order can be cancelled or erased from this screen.',
 ];
