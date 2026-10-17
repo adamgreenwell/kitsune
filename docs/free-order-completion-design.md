@@ -1,6 +1,6 @@
 # Free order completion (#288)
 
-Implemented on `feat/free-order-completion`, from merged
+Merged through PR #290 at `a73ce4256e9e438b88e60125a8eb0b4cf05cc57a`, following
 PR #289 (`ae444bf8801f364745a6c8181e4e9efba7af3a9f`). ADR-040 records the settled policy.
 
 ## Adam's settled choices
@@ -113,3 +113,11 @@ qualification; all 77 application data tables were empty afterward and owned con
 removed. The expanded native browser regression run again passed all 29 checks without retries, skips
 or flakes and restored all 18 protected runtime paths exactly. Only documentation of these results
 changed after the frozen-source gates. Fresh PR CI and maintainer review/merge remain separate gates.
+
+## Verified merge (2026-10-16 America/New_York)
+
+[Final CI](https://github.com/adamgreenwell/kitsune/actions/runs/38988829642) passed all 14 normal checks at
+`a6d9ad549a9892e43ca056fd438aaf22cc13415a`, with only the expected CLA skip. Both full browser runs passed
+390 tests. The unit-state review thread was resolved and the final merge check found no conflicts.
+PR #290 merged at `a73ce4256e9e438b88e60125a8eb0b4cf05cc57a`; #288 is closed. Real provider qualification
+remains on #287. The next commerce follow-through is #272, with the measured product path tracked in #291.
