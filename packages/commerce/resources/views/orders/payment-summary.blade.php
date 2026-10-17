@@ -3,6 +3,16 @@
  License, v. 2.0. If a copy of the MPL was not distributed with this
  file, You can obtain one at https://mozilla.org/MPL/2.0/.
 --}}
+@if (isset($order['free_completion']))
+    <section class="space-y-3" aria-label="{{ __('commerce::free.completed', [], 'en') }}" data-free-completion-summary>
+        <h2 class="font-semibold">{{ __('commerce::free.completed', [], 'en') }}</h2>
+        <p>{{ __('commerce::free.help', [], 'en') }}</p>
+        <p>{{ __('commerce::free.completed_at', [], 'en') }}: <span dir="ltr">{{ $order['free_completion']['completed_at'] }}</span></p>
+        <ul>@foreach ($order['allocations'] as $allocation)
+            <li><strong dir="ltr">{{ $allocation['sku'] }}</strong> — {{ __('commerce::paid.awarded', [], 'en') }}: {{ $allocation['awarded'] }} — {{ __('commerce::paid.unavailable', [], 'en') }}: {{ $allocation['unavailable'] }}</li>
+        @endforeach</ul>
+    </section>
+@endif
 @if ($order['payment'] !== null)
     <section class="space-y-3" aria-label="{{ __('commerce::paid.paid', [], 'en') }}" data-payment-summary>
         <h2 class="font-semibold">{{ __('commerce::paid.paid', [], 'en') }}</h2>

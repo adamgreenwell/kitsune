@@ -7,7 +7,7 @@
 
 @section('content')
     <h1>{{ $t('title') }}</h1>
-    @if (isset($order))<p>{{ $t('mode_'.$order['mode']) }}</p>@endif
+    @if (isset($order) && $order['quoted_total_minor'] !== '0')<p>{{ $t('mode_'.$order['mode']) }}</p>@endif
     @if ($error !== null)<p role="alert">{{ $t($error) }}</p>@endif
     @if ($notice !== null)<p role="status">{{ $t($notice) }}</p>@endif
     @if (isset($order))
@@ -19,10 +19,10 @@
                 <h2 id="review-heading">{{ $t('total') }}: <span dir="ltr">{{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</span></h2>
                 <ul>@foreach ($order['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $order['currency'] }} {{ $money($line['gross_minor'], $order['currency']) }}</span>@php($offer = \Kitsune\Commerce\Offers\OfferTerms::label($line['offer_terms'] ?? null, ($line['entitlement_name'] ?? null) !== null))@if ($offer !== null)<p>{{ $offer }}</p>@endif</li>@endforeach</ul>
                 @if ($order['shipping'] !== null)<p>{{ $order['shipping']['carrier'] }} {{ $order['shipping']['service'] }} — {{ $order['currency'] }} {{ $money($order['shipping']['gross'], $order['currency']) }}</p>@endif
-                <p>{{ $t('commitment') }}</p>
-                <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/payment/start">@csrf
+                <p>{{ $order['quoted_total_minor'] === '0' ? __('commerce::free.commitment', [], 'en') : $t('commitment') }}</p>
+                <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/payment/{{ $order['quoted_total_minor'] === '0' ? 'complete-free' : 'start' }}">@csrf
                     <input type="hidden" name="review" value="{{ $review['token'] }}">
-                    <button type="submit">{{ $t('continue') }}</button>
+                    <button type="submit">{{ $order['quoted_total_minor'] === '0' ? __('commerce::free.complete', [], 'en') : $t('continue') }}</button>
                 </form>
             </section>
         @elseif ($order['state'] === 'prepared' && ! $pending && ! $completed)

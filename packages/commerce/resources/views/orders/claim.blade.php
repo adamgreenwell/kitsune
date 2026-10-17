@@ -8,7 +8,7 @@
 @section('content')
     <h1>{{ $t('claim_title') }}</h1>
     <p>{{ $t('reference') }}: <span dir="ltr">{{ $reference }}</span></p>
-    <p>{{ $t('claim_terms') }}</p>
+    <p>{{ $freeOrder ? __('commerce::free.claim_terms', [], 'en') : $t('claim_terms') }}</p>
     @if ($readerEmail !== null)
         <p>{{ $t('claim_permanent') }}</p>
         <p>{{ $t('claim_account') }}: <strong dir="auto">{{ $readerEmail }}</strong></p>

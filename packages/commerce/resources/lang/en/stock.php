@@ -32,6 +32,7 @@ return [
     'kind' => 'Change',
     'kind_manual' => 'Manual adjustment',
     'kind_sale' => 'Paid order',
+    'kind_free_order' => 'Free order',
     'kind_initial' => 'Opening balance',
     'before' => 'Before',
     'after' => 'After',

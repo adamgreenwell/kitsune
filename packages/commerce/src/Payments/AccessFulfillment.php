@@ -16,6 +16,9 @@ use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Offers\OfferTerms;
+use Kitsune\Commerce\Orders\CompletionFacts;
+use Kitsune\Commerce\Orders\FreeAccessCorrections;
+use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
@@ -117,7 +120,7 @@ final class AccessFulfillment
         $this->inside($connection, $order);
         app(PrivacyState::class)->assertAccessAllowed($connection, $order);
         $work = $this->parent($connection, $order, true);
-        if ($order->reader_id !== null || $order->state !== 'paid') {
+        if ($order->reader_id !== null || ! CompletionFacts::completed($order)) {
             throw new CheckoutRefused('changed');
         }
         if ($work->state === 'initializing') {
@@ -204,7 +207,7 @@ final class AccessFulfillment
             $this->freeze($connection, $order);
         }
         [$work, $effects] = $this->checked($connection, $order, true);
-        $financial = $order->state === 'paid' ? app(FinancialState::class)->accessPlan($connection, $order, true) : null;
+        $financial = CompletionFacts::completed($order) ? app(FinancialState::class)->accessPlan($connection, $order, true) : null;
         if (in_array($work->state, ['awaiting_payment', 'awaiting_claim', 'processed'], true)
             || $work->category === 'financial_hold') {
             return ['state' => $work->state, 'category' => $work->category, 'processed' => 0];
@@ -488,7 +491,7 @@ final class AccessFulfillment
             throw new CheckoutRefused('changed');
         }
         if ($erased && $work->manifest === null) {
-            if ($order->state === 'paid' || $work->manifest_hash !== null || $effects !== [] || self::counter($work->effect_count) !== 0) {
+            if (CompletionFacts::completed($order) || $work->manifest_hash !== null || $effects !== [] || self::counter($work->effect_count) !== 0) {
                 throw new CheckoutRefused('changed');
             }
 
@@ -497,14 +500,14 @@ final class AccessFulfillment
         if (in_array($work->state, ['awaiting_payment', 'initializing'], true)) {
             if ($work->manifest !== null || $work->manifest_hash !== null || $work->claim_binding !== null || $work->claim_hash !== null || $work->claim_reader_id !== null
                 || $effects !== [] || self::counter($work->effect_count, self::MAX_EFFECTS) !== 0 || $work->category !== null
-                || ($work->state === 'awaiting_payment' && $order->state === 'paid')
-                || ($work->state === 'initializing' && $order->state !== 'paid')) {
+                || ($work->state === 'awaiting_payment' && CompletionFacts::completed($order))
+                || ($work->state === 'initializing' && ! CompletionFacts::completed($order))) {
                 throw new CheckoutRefused('changed');
             }
 
             return [$work, [], null];
         }
-        if ($order->state !== 'paid' || ! is_string($work->manifest_hash) || preg_match('/\A[a-f0-9]{64}\z/D', $work->manifest_hash) !== 1) {
+        if (! CompletionFacts::completed($order) || ! is_string($work->manifest_hash) || preg_match('/\A[a-f0-9]{64}\z/D', $work->manifest_hash) !== 1) {
             throw new CheckoutRefused('changed');
         }
         $manifest = self::decode($work->manifest);
@@ -628,12 +631,13 @@ final class AccessFulfillment
      */
     private function manifest(Connection $connection, #[\SensitiveParameter] object $order, bool $lock): array
     {
-        if ($order->state !== 'paid' || ! in_array($order->mode, ['test', 'live'], true)) {
+        if (! CompletionFacts::completed($order) || ! in_array($order->mode, ['test', 'live'], true)) {
             throw new CheckoutRefused('changed');
         }
         app(PaidOrders::class)->projection($connection, (int) $order->org_id, $order, $lock);
-        $receipt = app(PaidOrders::class)->receipt($connection, $order, $lock) ?? throw new CheckoutRefused;
-        $start = CheckoutAttempts::instant($receipt->verified_at);
+        $receipt = CompletionFacts::receipt($connection, $order, $lock) ?? throw new CheckoutRefused;
+        $completedAt = CompletionFacts::instant($order, $receipt);
+        $start = CheckoutAttempts::instant($completedAt);
         $lines = $connection->table('commerce_order_lines')->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit(21)
             ->when($lock, static fn ($query) => $query->lockForUpdate())->get();
         $allocations = $connection->table(PaidOrders::ALLOCATIONS)->useWritePdo()->where('order_id', $order->id)->orderBy('line_id')->limit(21)
@@ -667,7 +671,7 @@ final class AccessFulfillment
         return ['version' => 1, 'order' => ['id' => (string) $order->id, 'org_id' => (string) $order->org_id,
             'site_id' => (string) $order->site_id, 'reference' => $order->reference, 'reader_id' => $order->reader_id,
             'owner_key' => $order->owner_key, 'snapshot_hash' => $order->snapshot_hash],
-            'confirmed_at' => $receipt->verified_at, 'allocation_state' => $receipt->allocation_state,
+            'confirmed_at' => $completedAt, 'allocation_state' => ($order->state === 'completed_free' ? 'allocated' : $receipt->allocation_state),
             'receipt' => get_object_vars($receipt), 'lines' => $lines->map(static fn (object $line): array => get_object_vars($line))->all(),
             'allocations' => $allocations->values()->map(static fn (object $row): array => get_object_vars($row))->all(),
             'definitions' => array_values($definitions)];
@@ -705,6 +709,7 @@ final class AccessFulfillment
     private function custody(Connection $connection, #[\SensitiveParameter] object $order): string
     {
         $tables = ['commerce_order_lines' => 20, CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS,
+            FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
             PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => 20, PaidOrders::OBLIGATIONS => 1,
             PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS, self::WORK => 1, self::EFFECTS => self::MAX_EFFECTS];
         $rows = [];

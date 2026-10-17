@@ -18,6 +18,8 @@ use Kitsune\Commerce\Models\FinancialRefund;
 use Kitsune\Commerce\Models\FinancialWork;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Orders\CompletionFacts;
+use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Audit\Auditor;
@@ -167,6 +169,12 @@ final class FinancialState
     public function accessPlan(Connection $connection, #[\SensitiveParameter] object $order, bool $lock = false): array
     {
         $frame = $this->checked($connection, $order, $lock);
+        if ($order->state === 'completed_free') {
+            $free = app(FreeAccessCorrections::class)->plan($connection, $order, $lock);
+
+            return ['digest' => CheckoutAttempts::digest(['financial' => $this->digest($frame), 'free' => $free]), 'blocked' => false, 'category' => null,
+                'removed_units' => $free['removed_units'], 'revision' => $free['revision']];
+        }
         $plan = $this->plan($frame);
 
         return ['digest' => $this->digest($frame), ...$plan, 'revision' => self::counter($frame['work']->revision)];
@@ -611,9 +619,9 @@ final class FinancialState
     {
         $lines = $this->rows($connection, 'commerce_order_lines', $order, 20, $lock);
         $allocations = $this->rows($connection, PaidOrders::ALLOCATIONS, $order, 20, $lock);
-        $receipt = app(PaidOrders::class)->receipt($connection, $order, $lock);
+        $receipt = CompletionFacts::receipt($connection, $order, $lock);
         app(PaidOrders::class)->projection($connection, (int) $order->org_id, $order, $lock);
-        $checkout = $receipt === null ? null : $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $receipt->attempt_id)
+        $checkout = $receipt === null || $order->state === 'completed_free' ? null : $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $receipt->attempt_id)
             ->when($lock, fn ($q) => $q->lockForUpdate())->first();
 
         return ['version' => 1, 'order' => get_object_vars($order), 'receipt' => $receipt === null ? null : get_object_vars($receipt),

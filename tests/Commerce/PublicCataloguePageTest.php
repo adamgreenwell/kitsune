@@ -61,7 +61,7 @@ it('presents permanent fixed and unavailable access offers as buyer copy without
     expect($response['status'])->toBe(200)->and($response['body'])->toContain($label)
         ->and($response['body'])->not->toContain('course.surf-101', 'offer_terms', 'not configured');
     publicCataloguePageHeaders($response);
-})->with(['permanent' => ['guest', 'Permanent access'], 'fixed' => ['fixed-offer', '30 days from confirmed payment'],
+})->with(['permanent' => ['guest', 'Permanent access'], 'fixed' => ['fixed-offer', '30 days from order confirmation'],
     'unknown' => ['unknown-offer', 'Access offer unavailable']]);
 
 it('uses the declared canonical host and prefix rather than the admin slug', function (string $scenario, array $statuses): void {

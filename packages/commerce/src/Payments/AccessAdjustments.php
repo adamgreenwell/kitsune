@@ -13,6 +13,7 @@ namespace Kitsune\Commerce\Payments;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Kitsune\Commerce\Models\Order;
+use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Auth\Permissions;
@@ -98,7 +99,7 @@ final class AccessAdjustments
             return ['state' => 'suppressed', 'category' => 'subject_erased', 'processed' => 0];
         }
         app(PrivacyState::class)->assertAccessAllowed($connection, $order);
-        if ($order->state !== 'paid') {
+        if (! CompletionFacts::completed($order)) {
             return ['state' => 'awaiting_payment', 'category' => null, 'processed' => 0];
         }
         $original = app(AccessFulfillment::class)->forAdjustment($connection, $order);
@@ -375,7 +376,7 @@ final class AccessAdjustments
             return;
         }
         [$work, $effects] = $this->checked($connection, $order, true);
-        if ($order->state === 'paid' || $order->confirmed_total_minor !== null || $work->manifest_hash !== null || $effects !== []) {
+        if (CompletionFacts::completed($order) || $order->confirmed_total_minor !== null || $work->manifest_hash !== null || $effects !== []) {
             throw new CheckoutRefused('changed');
         }
         $connection->table(self::WORK)->where('id', $work->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)->delete();

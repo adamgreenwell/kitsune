@@ -6446,6 +6446,55 @@ admin browser run passed 21/21 without retries/skips/flakes; the unchanged publi
 qualification. The initial candidate/CI was superseded; final PR CI and real provider/HTTPS qualification remain
 separate, and no real Org was activated.
 
+### Amendment — Provider-independent free order completion, 2026-10-16 (#288)
+
+The earlier explicit deferral of zero-total completion remains part of the history above. Adam has now
+chosen the following policy for that separate path:
+
+- A durable local free-completion fact replaces payment confirmation. Fixed terms begin at that first
+  committed instant, in whole UTC days; guest claiming and later restoration never restart them.
+- Award the available units. If three were ordered and two remain, award two and record one unavailable.
+  No money was taken, so no refund, provider payment or refund obligation is invented. Stock adjustments
+  remain separate, reasoned operations.
+- Label these records as free purchases. Apply the Org's explicitly chosen, versioned retention policy
+  using free completion as its clock anchor. There is no implicit legal duration. Preparation freezes the
+  policy version, and existing records retain it until explicitly adopted, as with paid purchases.
+- Owners may remove or restore exact awarded units' original access contributions, with a reason,
+  confirmation and audit. Remaining units keep their original terms; other orders and complimentary
+  sources remain independent. Restoring expired original terms does not create fresh time.
+
+The implementation uses a distinct `completed_free` state and an immutable, provider-independent receipt.
+A fresh, expiring, server-generated review must still match the original price, tax, shipping and offer.
+For a zero final total, stock is deliberately excluded from that purchase-consent fingerprint and is
+allocated under the same Org-first lock as every other stock writer. A removed, unpublished or relinked
+listing makes the review stale and requires a new order review; only a stock change can produce a partial
+award through an otherwise unchanged review. Zero-priced goods with positive delivery or tax totals
+continue through positive-total checkout. Free completion requires no Stripe credential or live admission,
+and never interprets Stripe's `no_payment_required` as its own completion authority.
+
+Receipt identity, review commitment, immutable purchase and availability hashes distinguish retries from
+new consent. Repeating the successful owned submission returns its original receipt even after review
+expiry; it cannot allocate twice or restart access. A guest still needs exact browser/email order proof
+plus explicit authenticated claiming. Matching email alone is never authority.
+
+Free access corrections form a bounded, versioned, append-only chain over explicit original unit numbers.
+The local correction, checked audit and corresponding entitlement effects commit atomically. A stale
+revision, changed request identity or incompatible callback rolls back; no external refund or stock change
+participates. Original grants remain independently recoverable through the existing access surfaces.
+
+Free purchases use the existing checked privacy representation, holds and account-last erasure boundary.
+An unclaimed guest can minimize its exact free order using existing order proof; this records negative
+claim evidence without inventing a reader account. The personal-field allowlist, essential delivery holds,
+original contract lifetime and manual quarantine/reapplication restore boundary remain unchanged. Owner
+exports emit a free-completion record and parent its allocations and corrections to that fact. Reader and
+guest exports expose only their checked, still-owned records. Historical paid commitments are preserved.
+
+This is source behavior and policy, not real-provider qualification or activation. #287 retains its separate
+real account/mode/environment and HTTPS/webhook evidence requirement. Local and CI qualification results
+for this slice are recorded in [the free completion guide](free-order-completion-design.md).
+
+---
+
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique · **Amended 2026-10-11 — the reader's download route, as built (Adam, decisions 1–4)**: a private file kept to one site is offered to readers who hold one entitlement there, and downloaded from a page under the site's `/account`; see the end of this entry · **Amends ADR-016 and `field-types.md` §5** (`media_files` gains `reader_entitlement`), **ADR-040** (its gated route names `RequireReader`; the route leaves its owed list), **ADR-037** (two more reader pages, `ReaderArea:download`) and **ADR-042 decisions 3 and 32**

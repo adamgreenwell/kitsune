@@ -95,6 +95,22 @@ They already include checked financial/access/privacy summaries, including disab
 `ReaderAccount` is unchanged. The whole-reader subject-access API still returns an aggregate array; use this
 paged commerce ledger for large operator portability jobs rather than materializing an Org through that API.
 
+## Free purchase records
+
+Free purchases have state `completed_free` and a distinct `free_completion` record, with zero amount and
+`completed_at`. They have no provider payment record. Their allocation records use `free-completion` as
+parent; awarded and unavailable quantities remain separate. A `free_access_correction` record names its
+original line and unit number, correction revision, removal/restoration kind, reason and UTC time. These
+records never imply a refund or restocking. Reader/guest JSON summaries retain their audience and exact
+ownership rules; owner correction reasons appear only in the operator ledger.
+
+Free purchase billing fields use the Org's explicitly frozen retention policy and the free-completion clock.
+No legal duration is supplied. The existing personal-field opt-in, minimization, holds and negative replay
+boundaries apply. The producer yields individual normalized rows while assembling the checked, bounded
+artifact, so a large unit history is not first materialized as an unbounded array. An order whose complete
+history exceeds the 16 MiB artifact bound is refused without a partial download; reducing the number of
+order parents cannot make an individually oversized history fit.
+
 ## CSV and spreadsheets
 
 CSV contains the same normalized entity records, one row per entity, with a fixed header. The envelope columns

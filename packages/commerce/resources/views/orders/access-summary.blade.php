@@ -19,7 +19,7 @@
                 @if ($effect['expires_at'] !== null)<p>{{ __('commerce::access.expires', [], 'en') }}: <span dir="ltr">{{ $effect['expires_at'] }}</span></p>@endif
             </li>
         @endforeach</ul>
-        <p>{{ __('commerce::access.term_help', [], 'en') }}</p>@endif
+        <p>{{ __($order['state'] === 'completed_free' ? 'commerce::free.term_help' : 'commerce::access.term_help', [], 'en') }}</p>@endif
     </section>
 @elseif ($access !== null && ($access['effects'] !== [] || in_array($access['state'], ['initializing', 'held', 'suppressed'], true)))
     <section class="space-y-3" aria-label="{{ __('commerce::access.title', [], 'en') }}">
@@ -39,7 +39,7 @@
                 @endif
             </li>
         @endforeach</ul>
-        @if (collect($access['effects'])->contains(fn (array $effect) => $effect['expires_at'] !== null))<p>{{ __('commerce::access.term_help', [], 'en') }}</p>@endif @endif
+        @if (collect($access['effects'])->contains(fn (array $effect) => $effect['expires_at'] !== null))<p>{{ __($order['state'] === 'completed_free' ? 'commerce::free.term_help' : 'commerce::access.term_help', [], 'en') }}</p>@endif @endif
     </section>
 @endif
 @include('commerce::orders.financial-summary')

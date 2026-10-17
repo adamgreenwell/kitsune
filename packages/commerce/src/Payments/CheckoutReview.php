@@ -98,7 +98,7 @@ final class CheckoutReview
     /** Called only under OrderLocks; never performs provider I/O.
      * @return array{order:Order,record:array<string,mixed>,orderHash:string}
      */
-    public function approve(Request $request, mixed $reference, mixed $token): array
+    public function approve(Request $request, mixed $reference, mixed $token, bool $free = false): array
     {
         try {
             if ((new Order)->getConnection()->transactionLevel() < 1 || ! $request->hasSession()
@@ -111,7 +111,7 @@ final class CheckoutReview
             }
             $org = Org::query()->useWritePdo()->whereKey($this->context->orgId())->lockForUpdate()->first() ?? throw new OrderRefused;
             $site = Site::query()->useWritePdo()->whereKey($this->context->siteId())->where('org_id', $org->getKey())->lockForUpdate()->first() ?? throw new OrderRefused;
-            $review = $this->capture($request, $reference, $org, $site);
+            $review = $this->capture($request, $reference, $org, $site, $free);
             if (! is_string($saved['orderHash'] ?? null) || ! is_string($saved['fingerprint'] ?? null)
                 || ! hash_equals($saved['orderHash'], $review['orderHash']) || ! hash_equals($saved['fingerprint'], $review['snapshot']['hash'])) {
                 throw new OrderRefused('stale');
@@ -152,9 +152,9 @@ final class CheckoutReview
      */
     public static function unmodifiedOrderHash(#[\SensitiveParameter] array $record): string
     {
-        unset($record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
+        unset($record['free_completion'], $record['free_access_corrections'], $record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
             $record['access_fulfillment'], $record['access_claim'], $record['financial_state'], $record['financial_access'], $record['privacy']);
-        if (in_array($record['state'] ?? null, ['paid', 'cancelled'], true)) {
+        if (in_array($record['state'] ?? null, ['paid', 'completed_free', 'cancelled'], true)) {
             $record['state'] = 'prepared';
             $record['confirmed_total_minor'] = null;
             $record['cancelled_at'] = null;
@@ -164,12 +164,16 @@ final class CheckoutReview
     }
 
     /** @return array<string,mixed> */
-    private function capture(Request $request, mixed $reference, Org $org, Site $site): array
+    private function capture(Request $request, mixed $reference, Org $org, Site $site, bool $free = false): array
     {
         $order = $this->access->owned($request, $reference) ?? throw new OrderRefused;
         $raw = $order->getAttributes();
         $record = $this->privacy->record($order->getConnection(), (object) $raw);
         if ($record['state'] !== 'prepared' || ! in_array($record['mode'], ['test', 'live'], true)) {
+            throw new OrderRefused;
+        }
+        $free = $free || $record['quoted_total_minor'] === '0';
+        if ($free && $record['quoted_total_minor'] !== '0') {
             throw new OrderRefused;
         }
         $ids = array_map(static fn (array $line): int => CartWriter::integer($line['listing_ref'], PHP_INT_MAX), $record['lines']);
@@ -182,11 +186,14 @@ final class CheckoutReview
             if ((string) $product['sellableRef'] !== $line['sellable_ref'] || (string) $product['entryRef'] !== $line['entry_ref']) {
                 throw new OrderRefused('stale');
             }
-            if ($product['stock'] !== null) {
+            if (! $free && $product['stock'] !== null) {
                 $stock = MinorUnits::integer($product['stock']);
                 if (strlen($stock) < strlen((string) $quantity) || (strlen($stock) === strlen((string) $quantity) && strcmp($stock, (string) $quantity) < 0)) {
                     throw new OrderRefused('stale');
                 }
+            }
+            if ($free) {
+                unset($product['stock']);
             }
             $items[] = [...$product, 'quantity' => $quantity];
         }

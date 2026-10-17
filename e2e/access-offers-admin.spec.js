@@ -146,10 +146,10 @@ test.describe('shared access offer administration', () => {
             expect(storedTerms()).toEqual({ version: 1, kind: 'fixed', days: 30 });
 
             await buyer.reload();
-            await expect(course).toContainText('30 days from confirmed payment');
+            await expect(course).toContainText('30 days from order confirmation');
             await course.getByRole('button', { name: 'Add to cart', exact: true }).click();
             await expect(buyer).toHaveURL(new RegExp(`/${SITE_A}/cart$`));
-            await expect(buyer.getByText('30 days from confirmed payment', { exact: true })).toBeVisible();
+            await expect(buyer.getByText('30 days from order confirmation', { exact: true })).toBeVisible();
             await buyer.getByRole('link', { name: 'Prepare an order', exact: true }).click();
             await buyer.getByLabel('Email for order access', { exact: true }).fill('access-offer-buyer@kitsune.test');
             const billing = buyer.getByRole('group', { name: 'Billing details', exact: true });
@@ -159,7 +159,7 @@ test.describe('shared access offer administration', () => {
             }
             await buyer.getByRole('button', { name: 'Review tax and delivery', exact: true }).click();
             await expect(buyer.getByRole('heading', { name: 'Review your order', exact: true })).toBeVisible();
-            await expect(buyer.getByText('30 days from confirmed payment', { exact: true })).toBeVisible();
+            await expect(buyer.getByText('30 days from order confirmation', { exact: true })).toBeVisible();
             await buyer.getByRole('button', { name: 'Prepare order', exact: true }).click();
             await expect(buyer).toHaveURL(new RegExp(`/${SITE_A}/cart/orders/[a-f0-9]{32}$`));
 
@@ -167,7 +167,7 @@ test.describe('shared access offer administration', () => {
             await expect(days(page)).toHaveCount(0);
             await save(page);
             await buyer.reload();
-            await expect(buyer.getByText('30 days from confirmed payment', { exact: true })).toBeVisible();
+            await expect(buyer.getByText('30 days from order confirmation', { exact: true })).toBeVisible();
             await expect(buyer.getByText('Permanent access', { exact: true })).toHaveCount(0);
             const catalogue = await guest.newPage();
             await catalogue.goto(`/${SITE_A}/catalogue`);

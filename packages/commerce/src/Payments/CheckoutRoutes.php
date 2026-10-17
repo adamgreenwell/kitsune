@@ -23,7 +23,7 @@ final class CheckoutRoutes
     public static function register(): void
     {
         $leaves = ['show' => ['GET', ''], 'review' => ['POST', '/review'], 'start' => ['POST', '/start'],
-            'refresh' => ['POST', '/refresh'], 'expire' => ['POST', '/expire'],
+            'completeFree' => ['POST', '/complete-free'], 'refresh' => ['POST', '/refresh'], 'expire' => ['POST', '/expire'],
             'returned' => ['GET', '/return'], 'cancelled' => ['GET', '/cancel']];
         foreach (['root' => '', 'site' => '{'.CartRoutes::SITE_PARAMETER.'}/'] as $scope => $prefix) {
             foreach ($leaves as $action => [$method, $suffix]) {
