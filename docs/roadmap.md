@@ -456,7 +456,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       sign-in adoption (merge products, higher duplicate quantity), 30-day item-mutation expiry and saved carts
       retained at sign-out. The host independently places its private cart page; current prices/stock are not
       reserved. Revision checks, bounded cleanup and reader export/erasure custody are included. The cart
-      decisions and implementation defaults are separate in ADR-040. The order slice
+      decisions and implementation defaults are separate in ADR-040. The #272 follow-through proves current
+      cart parents under an older host snapshot; the separately measured product/schema write path is #291.
+      The order slice
       [#194](https://github.com/adamgreenwell/kitsune/issues/194) adds prepared/cancelled snapshots with their own
       currency witness, exact tax, operator country/region rates, org-selected inclusive/exclusive prices,
       configured SKU delivery/packing, domestic Shippo quotes, separate delivery defaulted to billing,
@@ -477,7 +479,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       fields, separate delivery/legal/financial holds, account unlinking and replay suppression. [Commerce exports](commerce-exports.md)
       (#202) are merged through #286: owner admin and cold CLI, JSONL/CSV financial history with explicit policy-limited
       billing opt-in. [Live Stripe admission](live-stripe-admission.md) (#287) adds separate owner/password/account consent and preserves existing financial recovery after revocation. Source qualification and review are tracked in #287; real provider qualification and Org activation remain separate.
-      Zero completion is deferred.
+      [Free order completion](free-order-completion-design.md) (#288) is merged through #290: distinct
+      provider-independent receipts, available-unit allocation, original access terms, explicit guest claims
+      and audited owner unit corrections with separate stock adjustments.
       [Design and delivery slices](https://github.com/adamgreenwell/kitsune/issues/188) are tracked on
       [Kitsune Roadmap](https://github.com/users/adamgreenwell/projects/15); this box stays open.*
 - [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant

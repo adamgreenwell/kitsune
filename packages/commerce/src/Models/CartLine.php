@@ -98,7 +98,11 @@ final class CartLine extends Model implements RequiresModelSave
         $this->refuseInvalidCartScope();
         $this->refuseChangedCartIdentity(['org_id', 'site_id', 'cart_id', 'listing_id']);
         $raw = $this->getAttributes();
-        $cart = Cart::query()->useWritePdo()->whereKey(self::cartKey($raw['cart_id'] ?? null))->lockForUpdate()->first();
+        // Current Org then Site locks above prove coherence. Its ordinary EXISTS can still see a host's older
+        // snapshot, so retain SiteScope and exact parent stamps while bypassing only that redundant subquery.
+        $cart = Cart::query()->withoutGlobalScope('cart_coherence')->useWritePdo()
+            ->where('commerce_carts.org_id', $raw['org_id'])->where('commerce_carts.site_id', $raw['site_id'])
+            ->whereKey(self::cartKey($raw['cart_id'] ?? null))->lockForUpdate()->first();
 
         if ($cart === null) {
             throw new RuntimeException('A cart line requires its exact site\'s cart.');

@@ -6493,6 +6493,25 @@ This is source behavior and policy, not real-provider qualification or activatio
 real account/mode/environment and HTTPS/webhook evidence requirement. Local and CI qualification results
 for this slice are recorded in [the free completion guide](free-order-completion-design.md).
 
+### Amendment — Current cart parent proof under a host snapshot, 2026-10-16 (#272)
+
+The cart refusal tracked by the order amendment above is reproduced independently on MySQL 8.4.7 and
+MariaDB 10.6.28: a rival commits the Site and Storefront after the host pins its outer REPEATABLE READ
+snapshot. A current outer cart lock does not refresh the ordinary coherence `EXISTS` on Sites.
+
+CartLine's checked save now proves the current Org and Site in their existing lock order, retains SiteScope,
+and locks its parent with exact Org/Site stamps while bypassing only the redundant `cart_coherence`
+subquery. Ordinary Cart and CartLine reads keep their consistent scopes. The real rival regression covers
+add, exact replay, quantity/revision changes, stale refusal, removal and both scope boundaries. Separate
+observer regressions remove or change parent proof at the final write and require complete cart, line,
+expiry, version and audit rollback. No pricing, stock, expiry policy or public route changes are introduced.
+
+The product surface remains separately tracked in [#291](https://github.com/adamgreenwell/kitsune/issues/291).
+Both MySQL engines reproduce the ordinary ProductType preflight refusal. In an isolated temporary writer,
+making only that preflight current then fails Entry creation because `type_handle` is null. This is evidence
+that the complete schema/content/revision path needs qualification; a preflight-only patch is not the fix.
+The experiment changed no repository source. The earlier order reasoning remains visible above.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

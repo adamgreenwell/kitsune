@@ -248,6 +248,34 @@ describe('atomic cart refusal', function (): void {
         expect($this->writer->snapshot($this->request))->toBe($before);
     })->with([Cart::class, CartLine::class]);
 
+    it('rolls back a cart mutation when a host observer removes or changes its current parent proof', function (string $fault): void {
+        $this->writer->add($this->request, $this->listing, 2);
+        $before = $this->writer->snapshot($this->request);
+        $cart = Cart::query()->firstOrFail();
+        $stored = DB::table('commerce_carts')->where('id', $cart->getKey())->first();
+        $audit = DB::table('audit_log')->orderBy('id')->get()->all();
+        $otherSite = Site::create(['handle' => 'sibling', 'slug' => 'parent-proof-sibling', 'name' => 'Sibling', 'locale' => 'en']);
+        $otherOrg = Org::create(['slug' => 'parent-proof-other', 'name' => 'Other', 'currency' => 'USD']);
+
+        cartWithObserver(CartLine::class, 'updating', function () use ($fault, $cart, $otherSite, $otherOrg): void {
+            $parent = DB::table('commerce_carts')->where('id', $cart->getKey());
+            match ($fault) {
+                'missing cart' => $parent->delete(),
+                'cart site' => $parent->update(['site_id' => $otherSite->getKey()]),
+                'cart org' => $parent->update(['org_id' => $otherOrg->getKey()]),
+                'site org' => DB::table('sites')->where('id', $this->site->getKey())->update(['org_id' => $otherOrg->getKey()]),
+            };
+        }, function () use ($before): void {
+            expect(fn () => $this->writer->update($this->request, $before['items'][0]['lineId'], 3, $before['version']))
+                ->toThrow(RuntimeException::class);
+        });
+
+        expect($this->writer->snapshot($this->request))->toBe($before)
+            ->and(DB::table('commerce_carts')->where('id', $cart->getKey())->first())->toEqual($stored)
+            ->and(DB::table('sites')->where('id', $this->site->getKey())->value('org_id'))->toBe($this->org->getKey())
+            ->and(DB::table('audit_log')->orderBy('id')->get()->all())->toEqual($audit);
+    })->with(['missing cart', 'cart site', 'cart org', 'site org']);
+
     it('rolls back a line removal veto without refreshing expiry or version', function (): void {
         $this->writer->add($this->request, $this->listing, 2);
         $before = $this->writer->snapshot($this->request);
