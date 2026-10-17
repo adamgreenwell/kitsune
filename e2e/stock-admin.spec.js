@@ -1,6 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 const path = require('node:path');
+const AxeBuilder = require('@axe-core/playwright').default;
 const { callsMethod } = require('./select-control');
 const { SITE_A, SITE_B, RIVAL_SITE, atSite, php, literal, seedProduct, resetStorefrontProducts, storefrontState } = require('./storefront-fixture');
 
@@ -131,4 +132,87 @@ test.describe('shared stock administration', () => {
             await rival.close();
         }
     });
+    test('owners browse removed-product history with exact filters and keyboard accessible mobile controls', async ({ page }) => {
+        const id = seedProduct('E2E-REMOVED-HISTORY');
+        await page.goto(stock(SITE_A, id));
+        await adjust(page, '7', 'Counted <7> retained units');
+        // Checked product removal preserves this immutable stock movement.
+        php(atSite() + `auth()->forgetUser();$writer=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class);foreach(Kitsune\\Commerce\\Models\\Listing::query()->where('sellable_id',${literal(id)})->get() as $listing){$writer->removeListing($listing->id);}$writer->removeSellable(${literal(id)});`);
+        const before = movements(id);
+        for (const url of [`/admin/${SITE_A}`, `/admin/${SITE_A}/roles`]) {
+            expect((await page.goto(url)).status()).toBe(200);
+            await expect(page.locator(`.fi-sidebar a[href$="${stock(SITE_A, 'history')}"]`)).toBeVisible();
+        }
+        expect((await page.goto(stock(SITE_A, 'history'))).status()).toBe(200);
+        await page.getByRole('textbox', { name: 'Exact historical SKU', exact: true }).fill('E2E-REMOVED-HISTORY');
+        await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+        const table = page.locator('[data-retained-stock-history]');
+        await expect(table.getByRole('cell', { name: 'Counted <7> retained units', exact: true })).toBeVisible();
+        await expect(table.getByRole('cell', { name: id, exact: true })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Save adjustment', exact: true })).toHaveCount(0);
+        expect(storefrontState().sellables).toEqual([]);
+        expect(movements(id)).toEqual(before);
+        await page.getByRole('textbox', { name: 'Historical product reference', exact: true }).fill('9223372036854775807');
+        await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+        await expect(table).toContainText('No retained stock movements match');
+        await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+        await expect(page.getByRole('textbox', { name: 'Exact historical SKU', exact: true })).toHaveValue('');
+        expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const sku = page.getByRole('textbox', { name: 'Exact historical SKU', exact: true });
+        await sku.focus();
+        await page.keyboard.type('E2E-REMOVED-HISTORY');
+        await page.keyboard.press('Tab');
+        await expect(page.getByRole('textbox', { name: 'Historical product reference', exact: true })).toBeFocused();
+        expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        expect(movements(id)).toEqual(before);
+    });
+
+    test('retained history refuses editors and never resolves planted foreign product references', async ({ browser, page }) => {
+        const id = seedProduct('E2E-HISTORY-LOCAL');
+        const foreign = seedProduct('E2E-HISTORY-FOREIGN', RIVAL_SITE, 'rival@kitsune.test');
+        php(atSite() + `app(Kitsune\\Commerce\\Inventory\\StockWriter::class)->adjust(${literal(id)},null,'2','Local history only');DB::table('commerce_stock_movements')->where('org_id',$site->org_id)->where('sellable_ref',${literal(id)})->update(['sellable_ref'=>${literal(foreign)}]);`);
+        const editor = await browser.newContext({ storageState: editorState });
+        const rival = await browser.newContext({ storageState: rivalState });
+        try {
+            const editing = await editor.newPage();
+            expect((await editing.goto(`/admin/${SITE_A}`)).status()).toBe(200);
+            await expect(editing.locator(`.fi-sidebar a[href$="${stock(SITE_A, 'history')}"]`)).toHaveCount(0);
+            expect((await editing.goto(stock(SITE_A, 'history'))).status()).toBe(403);
+            const outsider = await rival.newPage();
+            expect((await outsider.goto(stock(RIVAL_SITE, 'history'))).status()).toBe(200);
+            await outsider.getByRole('textbox', { name: 'Historical product reference', exact: true }).fill(foreign);
+            await outsider.getByRole('button', { name: 'Apply filters', exact: true }).click();
+            await expect(outsider.locator('[data-retained-stock-history]')).not.toContainText('Local history only');
+            await page.goto(stock(SITE_A, 'history'));
+            await page.getByRole('textbox', { name: 'Historical product reference', exact: true }).fill(foreign);
+            await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+            await expect(page.locator('[data-retained-stock-history]')).toContainText('E2E-HISTORY-LOCAL');
+            await expect(page.locator('[data-retained-stock-history]')).not.toContainText('E2E-HISTORY-FOREIGN');
+        } finally {
+            await editor.close();
+            await rival.close();
+        }
+    });
+
+    test('pages retained stock history and applies an inclusive UTC day without changing the ledger', async ({ page }) => {
+        const id = seedProduct('E2E-HISTORY-PAGES');
+        php(atSite() + `app(Kitsune\\Commerce\\Inventory\\StockWriter::class)->adjust(${literal(id)},null,'2','Historical page fixture');$row=(array)DB::table('commerce_stock_movements')->where('org_id',$site->org_id)->where('sellable_ref',${literal(id)})->first();unset($row['id']);foreach(range(1,27) as $i){DB::table('commerce_stock_movements')->insert(array_replace($row,['reference'=>bin2hex(random_bytes(16)),'created_at'=>'2026-10-16 23:59:59','reason'=>'Historical day row '.$i]));}`);
+        const before = movements(id);
+        await page.goto(stock(SITE_A, 'history'));
+        await page.getByRole('textbox', { name: 'Exact historical SKU', exact: true }).fill('E2E-HISTORY-PAGES');
+        await page.getByLabel('From date (UTC)', { exact: true }).fill('2026-10-16');
+        await page.getByLabel('Through date (UTC)', { exact: true }).fill('2026-10-16');
+        await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+        const table = page.locator('[data-retained-stock-history]');
+        await expect(table.locator('tbody tr')).toHaveCount(25);
+        await expect(table).not.toContainText('Historical page fixture');
+        await page.getByRole('button', { name: 'Next »', exact: true }).click();
+        await expect(table.locator('tbody tr')).toHaveCount(2);
+        await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+        await expect(table.locator('tbody tr')).toHaveCount(25);
+        expect(movements(id)).toEqual(before);
+    });
+
 });

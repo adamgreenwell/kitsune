@@ -26,6 +26,7 @@ use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Filament\ProductResource;
 use Kitsune\Commerce\Filament\RetentionResource;
 use Kitsune\Commerce\Filament\StockResource;
+use Kitsune\Commerce\Inventory\StockWriter;
 use Kitsune\Commerce\Orders\CommerceReaderData;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Payments\StripeCheckout;
@@ -86,6 +87,12 @@ final class CommerceServiceProvider extends ModuleServiceProvider
             NavigationItem::make('Stock and history')->label(fn (): string => StockResource::getPluralModelLabel())
                 ->group(fn (): string => __('commerce::catalogue.storefront'))->icon('heroicon-o-archive-box')
                 ->url(fn (): string => StockResource::getUrl())->visible(fn (): bool => StockResource::canAccess()),
+        );
+        $this->app->make(AdminSurface::class)->navigationItem(
+            NavigationItem::make('Retained stock history')->label(fn (): string => __('commerce::stock.retained_title'))
+                ->group(fn (): string => __('commerce::catalogue.storefront'))->icon('heroicon-o-clock')
+                ->url(fn (): string => StockResource::getUrl('history'))
+                ->visible(fn (): bool => app(StockWriter::class)->canBrowseHistory()),
         );
         foreach ([CheckoutResource::class => ['Checkout settings', 'heroicon-o-calculator'], OrderResource::class => ['Orders', 'heroicon-o-document-text'],
             RetentionResource::class => ['Data retention', 'heroicon-o-clock']] as $resource => [$label, $icon]) {
