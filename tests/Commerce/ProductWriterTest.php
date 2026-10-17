@@ -19,6 +19,7 @@ use Kitsune\Commerce\Models\Listing;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
@@ -393,4 +394,55 @@ it('discards all revision notes and closes a failed create window without needin
     $register->discard();
     $register->note(789, 1011);
     expect($register->held())->toBe(0)->and($register->take(123))->toBeNull();
+});
+
+it('rejects final callback corruption and restores the entire atomic product write', function (string $operation, string $failure): void {
+    $owner = CredentialFixture::member();
+    $target = Entry::create(['entry_type_id' => EntryType::query()->where('handle', 'product_image')->value('id'), 'site_id' => null, 'title' => 'Image']);
+    $row = $operation === 'update' ? $this->writer->createProduct($this->commerce, 'USD', $this->content) : null;
+    $tables = ['commerce_sellables', 'commerce_listings', 'entries', 'entry_relations', 'entry_revisions', 'audit_log', 'fields', 'field_storage', 'blueprints', 'entry_type_availability', 'modules', 'org_user', 'role_user', 'orgs'];
+    $state = static fn (): array => array_combine($tables, array_map(static fn ($table) => DB::table($table)->orderBy(in_array($table, ['org_user', 'role_user'], true) ? 'user_id' : 'id')->get()->all(), $tables));
+    $before = $state();
+    $mutations = 0;
+    AuditLog::created(function (AuditLog $audit) use ($failure, $owner, &$mutations): void {
+        if (! in_array($audit->action, ['commerce.listing_created', 'commerce.listing_availability_changed'], true)) {
+            return;
+        }
+        $listing = DB::table('commerce_listings')->where('id', $audit->target_id)->first();
+        $mutations++;
+        match ($failure) {
+            'field' => DB::table('fields')->where('entry_type_id', $this->type->getKey())->update(['is_required' => true]),
+            'storage' => DB::table('field_storage')->where('org_id', $this->org->getKey())->where('handle', 'product_description')->update(['handle' => 'tampered']),
+            'receipt' => DB::table('blueprints')->where('handle', 'storefront')->update(['manifest' => null]),
+            'disabled' => DB::table('entry_type_availability')->insert(['entry_type_id' => $this->type->getKey(), 'scope_type' => 'site', 'scope_id' => $this->site->getKey(), 'is_enabled' => false]),
+            'storage unlocked' => DB::table('field_storage')->where('org_id', $this->org->getKey())->update(['is_locked' => false]),
+            'stock' => DB::table('commerce_sellables')->where('id', $listing->sellable_id)->update(['stock' => 999]),
+            'entry' => DB::table('entries')->where('id', $listing->entry_id)->update(['title' => 'Tampered']),
+            'revision' => DB::table('entry_revisions')->where('entry_id', $listing->entry_id)->update(['title' => 'Tampered']),
+            'relations' => DB::table('entry_relations')->where('source_entry_id', $listing->entry_id)->delete(),
+            'audit' => DB::table('audit_log')->where('action', 'commerce.product_content_saved')->delete(),
+            'module' => DB::table('modules')->where('handle', 'kitsune/commerce')->update(['is_enabled' => false]),
+            'membership' => DB::table('org_user')->where('user_id', $owner->getKey())->delete(),
+            'role' => DB::table('role_user')->where('user_id', $owner->getKey())->delete(),
+            'actor' => Auth::guard('web')->forgetUser(),
+            'currency' => DB::table('orgs')->where('id', $this->org->getKey())->update(['currency' => 'EUR']),
+        };
+    });
+    $write = $row === null
+        ? fn () => $this->writer->createProduct($this->commerce, 'USD', [...$this->content, 'status' => 'published'], ['product_images' => [$target->getKey()]], true)
+        : fn () => $this->writer->updateProduct($row->getKey(), [...$this->commerce, 'price_minor' => '2300'], 'USD', [...$this->content, 'title' => 'After', 'status' => 'published'], ['product_images' => [$target->getKey()]], true);
+    expect($write)->toThrow(RuntimeException::class)->and($mutations)->toBe(1)->and($state())->toEqual($before)
+        ->and(EntryWriteReads::active())->toBeFalse()->and(app(RecordedRevisions::class)->held())->toBe(0);
+})->with(['create', 'update'])->with(['field', 'storage', 'receipt', 'disabled', 'stock', 'entry', 'revision', 'relations', 'audit', 'module', 'membership', 'role', 'actor', 'currency', 'storage unlocked']);
+
+it('preserves an already earned storage lock when this product carries no field data', function (): void {
+    $this->writer->createProduct([...$this->commerce, 'sku' => 'HOLDER'], 'USD', $this->content);
+    $before = [productState(), DB::table('field_storage')->orderBy('id')->get()->all()];
+    AuditLog::created(function (AuditLog $audit): void {
+        if ($audit->action === 'commerce.listing_created') {
+            DB::table('field_storage')->where('org_id', $this->org->getKey())->update(['is_locked' => false]);
+        }
+    });
+    expect(fn () => $this->writer->createProduct($this->commerce, 'USD', [...$this->content, 'slug' => 'empty', 'values' => []]))
+        ->toThrow(RuntimeException::class)->and([productState(), DB::table('field_storage')->orderBy('id')->get()->all()])->toEqual($before);
 });

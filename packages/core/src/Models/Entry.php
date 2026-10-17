@@ -18,11 +18,13 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -189,7 +191,7 @@ class Entry extends Model implements RequiresModelSave
                 return;
             }
 
-            $entry->type_handle = EntryType::query()
+            $entry->type_handle = EntryWriteReads::query(EntryType::query())
                 ->whereKey($entry->entry_type_id)
                 ->value('handle') ?? $entry->type_handle;
 
@@ -271,9 +273,9 @@ class Entry extends Model implements RequiresModelSave
      */
     private function lockStorageHoldingData(): void
     {
-        $candidates = FieldStorage::query()
+        $candidates = EntryWriteReads::query(FieldStorage::query())
             ->where('is_locked', false)
-            ->whereHas('fields', fn (Builder $query) => $query->where('entry_type_id', $this->entry_type_id))
+            ->whereHas('fields', fn (Builder $query) => EntryWriteReads::query($query)->where('entry_type_id', $this->entry_type_id))
             ->get();
 
         if ($candidates->isEmpty()) {
@@ -285,9 +287,7 @@ class Entry extends Model implements RequiresModelSave
         $holding = $candidates->filter(function (FieldStorage $storage) use ($values): bool {
             return match ($storage->strategy()) {
                 StorageStrategy::Promoted => $this->hasValueFor((string) $storage->promotedColumn()),
-                StorageStrategy::Relational => $this->related()
-                    ->wherePivot('field_storage_id', $storage->getKey())
-                    ->exists(),
+                StorageStrategy::Relational => EntryWriteReads::exists($this->related()->wherePivot('field_storage_id', $storage->getKey())->getQuery()),
                 StorageStrategy::Inline => $this->hasValueFor(null, $values[$storage->handle] ?? null),
             };
         });
@@ -421,7 +421,7 @@ class Entry extends Model implements RequiresModelSave
 
         $state = [];
 
-        $rows = EntryRelation::query()
+        $rows = EntryWriteReads::query(EntryRelation::query())
             ->where('source_entry_id', $this->getKey())
             ->whereNotNull('field_storage_id')
             ->orderBy('field_storage_id')
@@ -562,7 +562,7 @@ class Entry extends Model implements RequiresModelSave
         $mine = app(RecordedRevisions::class)->take((int) $this->getKey());
 
         if ($mine !== null) {
-            $revision = $this->revisions()->whereKey($mine)->first();
+            $revision = EntryWriteReads::query($this->revisions()->getQuery())->whereKey($mine)->first();
 
             /*
              * ⚠️ Null is possible and is not an error: `pruneRevisions()` runs in the same write and
@@ -580,7 +580,7 @@ class Entry extends Model implements RequiresModelSave
              * which is the same answer as "relations were the only change", because from history's
              * point of view that is exactly what this save now is.
              */
-            $newest = $this->revisions()->max('id');
+            $newest = EntryWriteReads::active() ? EntryWriteReads::query($this->revisions()->getQuery())->orderByDesc('id')->value('id') : $this->revisions()->max('id');
 
             if ($revision instanceof EntryRevision && (int) $newest === (int) $mine) {
                 $current = $this->relationState();
@@ -632,7 +632,7 @@ class Entry extends Model implements RequiresModelSave
      */
     private function syncScalarsFromLockedRow(): void
     {
-        $live = self::query()->withoutGlobalScopes()->whereKey($this->getKey())->first();
+        $live = EntryWriteReads::query(self::query()->withoutGlobalScopes())->whereKey($this->getKey())->first();
 
         // ⚠️ Gone is not an error and not a reason to write A's stale values either: a hard delete
         // in this window means there is no row for a revision to describe, and the comparison in
@@ -1865,7 +1865,7 @@ class Entry extends Model implements RequiresModelSave
      */
     private function pruneRevisions(): void
     {
-        $keep = $this->revisions()
+        $keep = EntryWriteReads::query($this->revisions()->getQuery())
             ->orderByDesc('id')
             ->limit(self::KEEP_REVISIONS)
             ->pluck('id');
@@ -2463,7 +2463,7 @@ class Entry extends Model implements RequiresModelSave
             return;
         }
 
-        $type = EntryType::query()->whereKey($this->entry_type_id)->first();
+        $type = EntryWriteReads::query(EntryType::query())->whereKey($this->entry_type_id)->first();
 
         if ($type === null) {
             return;
@@ -2472,7 +2472,7 @@ class Entry extends Model implements RequiresModelSave
         $provenance = $this->promoted_by ?? [];
         $before = $provenance;
 
-        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+        foreach (EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
 
             if ($storage === null || ! $registry->has((string) $storage->type)) {
@@ -2750,7 +2750,7 @@ class Entry extends Model implements RequiresModelSave
             return [];
         }
 
-        return EntryRelation::query()
+        return EntryWriteReads::query(EntryRelation::query())
             ->where('source_entry_id', $this->getKey())
             ->where('field_storage_id', $storage->getKey())
             ->orderBy('ordering')
@@ -2921,7 +2921,7 @@ class Entry extends Model implements RequiresModelSave
              */
             $type = $typeId === null
                 ? null
-                : EntryType::query()->whereKey($typeId)->first(['handle', 'org_id']);
+                : EntryWriteReads::query(EntryType::query())->whereKey($typeId)->first(['handle', 'org_id']);
 
             $handle = $type?->getAttribute('handle');
 
@@ -3048,7 +3048,7 @@ class Entry extends Model implements RequiresModelSave
             return $values;
         }
 
-        $type = EntryType::query()->whereKey($typeId)->first();
+        $type = EntryWriteReads::query(EntryType::query())->whereKey($typeId)->first();
 
         if ($type === null) {
             // The foreign key's job to report, not this one's.
@@ -3084,7 +3084,7 @@ class Entry extends Model implements RequiresModelSave
             $encoded = true;
         }
 
-        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+        foreach (EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
 
             if ($storage === null || ! $registry->has((string) $storage->type)) {
@@ -3272,7 +3272,7 @@ class Entry extends Model implements RequiresModelSave
          * this write retypes, the loaded value otherwise, which the moved-row guard compares with the stored row —
          * and its handle is asked of the database by id, as the creation guard asks it.
          */
-        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($this->entry_type_id)->value('handle');
+        $handle = (string) EntryWriteReads::query(EntryType::query())->withoutGlobalScopes()->whereKey($this->entry_type_id)->value('handle');
 
         if (! $this->publishingRefused((string) $stored->status, $handle)) {
             return;
@@ -3305,7 +3305,7 @@ class Entry extends Model implements RequiresModelSave
      */
     public function refuseUnpermittedCreationAsPublished(mixed $entryTypeId): void
     {
-        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($entryTypeId)->value('handle');
+        $handle = (string) EntryWriteReads::query(EntryType::query())->withoutGlobalScopes()->whereKey($entryTypeId)->value('handle');
 
         if (! $this->publishingRefused('', $handle)) {
             return;

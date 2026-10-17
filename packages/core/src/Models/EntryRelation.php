@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Relations\GuardedRelationBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -254,7 +255,7 @@ class EntryRelation extends Pivot
         foreach (['source_entry_id', 'target_entry_id'] as $end) {
             $id = $this->getAttribute($end);
 
-            if ($id === null || Entry::query()->whereKey($id)->exists()) {
+            if ($id === null || EntryWriteReads::exists(Entry::query()->whereKey($id))) {
                 continue;
             }
 
@@ -331,7 +332,11 @@ class EntryRelation extends Pivot
         // freeze came back through the door the fix had just closed.
         $sourceOrg = Entry::withoutScopeBecause(
             'resolving the source entry\'s org to validate the pivot, not to expose the row',
-            fn ($query) => $query->whereKey($this->source_entry_id)->value('org_id'),
+            function (Builder $query): mixed {
+                EntryWriteReads::query($query->getQuery());
+
+                return $query->whereKey($this->source_entry_id)->value('org_id');
+            },
         );
 
         if ($sourceOrg !== null && (int) $this->org_id !== (int) $sourceOrg) {
@@ -352,7 +357,7 @@ class EntryRelation extends Pivot
          * is refused rather than guessed at: the foreign key would refuse it anyway, after every check had stood
          * aside.
          */
-        $storage = FieldStorage::query()->whereKey($this->field_storage_id)->first(['id', 'org_id']);
+        $storage = EntryWriteReads::query(FieldStorage::query())->whereKey($this->field_storage_id)->first(['id', 'org_id']);
 
         if ($storage === null) {
             throw new RuntimeException(sprintf(
@@ -419,10 +424,9 @@ class EntryRelation extends Pivot
             ->where('source_entry_id', $this->source_entry_id)
             ->where('field_storage_id', $this->field_storage_id)
             // The row being MOVED does not count against its destination.
-            ->when($this->exists, fn ($query) => $query->whereKeyNot($this->getKey()))
-            ->count();
+            ->when($this->exists, fn ($query) => $query->whereKeyNot($this->getKey()));
 
-        if ($existing >= $storage->cardinality) {
+        if (EntryWriteReads::atLeast($existing, $storage->cardinality)) {
             throw new RuntimeException(sprintf(
                 'Field [%s] holds %d target(s) and already has that many on this entry. '
                 .'Detach one before attaching another — silently exceeding it is how a field '
@@ -520,7 +524,11 @@ class EntryRelation extends Pivot
         // and reading its type here must not depend on the caller's context.
         $handle = Entry::withoutScopeBecause(
             'reading the target type to enforce a constraint, not to expose the row',
-            fn ($query) => $query->whereKey($this->target_entry_id)->value('type_handle'),
+            function (Builder $query): mixed {
+                EntryWriteReads::query($query->getQuery());
+
+                return $query->whereKey($this->target_entry_id)->value('type_handle');
+            },
         );
 
         if ($handle !== null && ! in_array($handle, $targets, true)) {
@@ -539,6 +547,6 @@ class EntryRelation extends Pivot
     {
         return $this->field_storage_id === null
             ? null
-            : FieldStorage::query()->find($this->field_storage_id);
+            : EntryWriteReads::query(FieldStorage::query())->find($this->field_storage_id);
     }
 }

@@ -18,6 +18,7 @@ use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Currency\Currencies;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
@@ -81,7 +82,7 @@ final class CatalogueWriter
 
         return $this->transaction(function () use ($key, $attributes, $currency): Sellable {
             $this->refuseStaleCurrencyQuote($this->lockOrg(), $currency);
-            $row = Sellable::query()->useWritePdo()->whereKey($key)->first()
+            $row = EntryWriteReads::query(Sellable::query()->useWritePdo())->whereKey($key)->first()
                 ?? throw new RuntimeException('The sellable is not available in this org.');
             if (($row->stock === null) !== ($attributes['stock'] === null)
                 || ($row->stock !== null && $row->stock !== $attributes['stock'])) {
@@ -144,9 +145,10 @@ final class CatalogueWriter
 
         return $this->transaction(function () use ($key, $available): Listing {
             $this->lockOrg();
-            $row = Listing::query()->useWritePdo()->whereKey($key)->first()
+            $row = Listing::query()->withoutGlobalScope('catalogue_coherence')->useWritePdo()->where('org_id', $this->context->orgId())->where('site_id', $this->context->siteId())->whereKey($key)->lockForUpdate()->first()
                 ?? throw new RuntimeException('The listing is not available on this site.');
 
+            $row->refuseInvalidCatalogueValues();
             if ($row->is_available !== $available) {
                 $row->is_available = $available;
                 $this->save($row);
@@ -194,7 +196,7 @@ final class CatalogueWriter
             throw new RuntimeException('Only an org owner may write the catalogue.');
         }
 
-        if (! Module::isEnabled('kitsune/commerce')) {
+        if (! EntryWriteReads::exists(Module::query()->where('handle', 'kitsune/commerce')->where('is_enabled', true))) {
             throw new RuntimeException('The commerce module is not enabled.');
         }
     }

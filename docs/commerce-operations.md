@@ -92,6 +92,12 @@ revision and audit records together. A refused save reports failure without a pa
 Selecting an image does not publish its bytes or change its privacy; existing media custody and delivery rules apply.
 Availability alone does not install a host route or provide a checkout.
 
+A host may wrap a product save in its own transaction. The save uses current ownership, schema, field, relation
+and revision witnesses under its Org/Site locks, including an older MySQL/MariaDB snapshot. Ordinary catalogue
+reads keep their consistent-read behavior. A schema, parent or authority change during the save refuses the entire
+operation; repair the configuration or reload before retrying. Product edits preserve current stock, whose
+reasoned adjustments remain separate. See ADR-040 and #291 for the measured regression and qualification.
+
 Shared products can also offer [permanent or whole-day purchased access](purchased-access.md). Choose explicit
 terms when setting an entitlement name. Existing named products with unknown terms cannot be purchased until
 configured; existing orders keep their saved terms and any historical unknown terms stay on hold for review.

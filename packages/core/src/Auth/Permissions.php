@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Once;
 use InvalidArgumentException;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -650,11 +651,7 @@ final class Permissions
             return false;
         }
 
-        return Role::query()
-            ->where('org_id', $orgId)
-            ->whereIn('id', self::roleIdsFor($userId, $class))
-            ->where('is_owner', true)
-            ->exists();
+        return EntryWriteReads::exists(Role::query()->where('org_id', $orgId)->whereIn('id', self::roleIdsFor($userId, $class))->where('is_owner', true));
     }
 
     /**
@@ -706,7 +703,7 @@ final class Permissions
             return false;
         }
 
-        return $model->newQuery()->whereKey($userId)->exists();
+        return EntryWriteReads::exists($model->newQuery()->whereKey($userId));
     }
 
     /**
@@ -738,7 +735,7 @@ final class Permissions
             return [];
         }
 
-        return array_map('intval', DB::table('role_user')->where('user_id', $userId)->pluck('role_id')->all());
+        return array_map('intval', EntryWriteReads::query(DB::table('role_user'))->where('user_id', $userId)->pluck('role_id')->all());
     }
 
     /**

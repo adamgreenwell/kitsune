@@ -13,6 +13,7 @@ namespace Kitsune\Core\Validation;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Database\EntryWriteReads;
 
 /**
  * Existence checked through Eloquent, so global scopes apply.
@@ -46,7 +47,7 @@ final class ScopedExists implements ValidationRule
             ($this->using)($query);
         }
 
-        if (! $query->exists()) {
+        if (! EntryWriteReads::exists($query)) {
             $fail('validation.exists')->translate(['attribute' => $attribute]);
         }
     }

@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisposal;
@@ -184,7 +185,7 @@ class AuditedBuilder extends ScopedBuilder
             return;
         }
 
-        $entry = $this->getModel()->newQueryWithoutScopes()->find($id);
+        $entry = EntryWriteReads::query($this->getModel()->newQueryWithoutScopes())->find($id);
 
         // ⚠️ The reload is a DIFFERENT object from the one that converted the values,
         // and the pre-sanitization originals live on that one. Reloading is right —
@@ -1368,7 +1369,7 @@ class AuditedBuilder extends ScopedBuilder
         $model = $this->getModel();
         $key = $model->getKeyName();
 
-        $rows = $model->newQueryWithoutScopes()->toBase()
+        $rows = EntryWriteReads::query($model->newQueryWithoutScopes()->toBase())
             ->whereIn($model->getQualifiedKeyName(), $keys)
             ->get([$key, ...Entry::VERSIONED_COLUMNS]);
 
@@ -1416,7 +1417,7 @@ class AuditedBuilder extends ScopedBuilder
             return;
         }
 
-        foreach ($this->getModel()->newQueryWithoutScopes()->whereKey($changed)->get() as $entry) {
+        foreach (EntryWriteReads::query($this->getModel()->newQueryWithoutScopes())->whereKey($changed)->get() as $entry) {
             // Same hand-off as the insert path, for the same reason.
             $this->carryRetainedOriginals($entry);
 
