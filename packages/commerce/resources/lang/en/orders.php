@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 return [
+    'completed_free' => 'Completed free of charge',
     'test_mode' => 'Test mode — no payment has been taken.', 'live_mode' => 'Live mode — no payment has been taken.',
     'skip' => 'Skip to order content', 'navigation' => 'Store navigation', 'cart' => 'Cart', 'account' => 'Your account',
     'orders' => 'Your orders', 'empty' => 'No saved orders for this browser or signed-in reader.', 'previous' => 'Previous page', 'next' => 'Next page',

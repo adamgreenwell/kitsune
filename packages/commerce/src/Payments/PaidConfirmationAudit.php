@@ -13,6 +13,9 @@ namespace Kitsune\Commerce\Payments;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Commerce\Models\Order;
+use Kitsune\Commerce\Orders\CompletionFacts;
+use Kitsune\Commerce\Orders\FreeAccessCorrections;
+use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -41,14 +44,19 @@ final class PaidConfirmationAudit
             $actor = $this->actor($connection);
             $model = (new Order)->newFromBuilder(get_object_vars($paidOrder));
             $targetType = $model->getMorphClass();
-            $audit = $this->auditor->recordOrFail(self::ACTION, $model);
+            $action = $paidOrder->state === 'completed_free' ? 'commerce.order_completed_free' : self::ACTION;
+            $audit = $this->auditor->recordOrFail($action, $model);
             $stored = $audit->exists ? $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->first() : null;
             if ($stored === null || (string) $stored->org_id !== (string) $paidOrder->org_id
-                || (string) $stored->site_id !== (string) $paidOrder->site_id || $stored->action !== self::ACTION
+                || (string) $stored->site_id !== (string) $paidOrder->site_id || $stored->action !== $action
                 || $stored->target_type !== $targetType || (string) $stored->target_id !== (string) $paidOrder->id
                 || $stored->actor_type !== $actor['type'] || $stored->actor_id !== $actor['id']
                 || $actor !== $this->actor($connection)
                 || ! hash_equals($graph, $this->graph($connection, $paidOrder)) || ! hash_equals($context, $this->contextProof())) {
+                throw new CheckoutRefused('changed');
+            }
+            $finalAudits = $connection->table('audit_log')->useWritePdo()->where('id', $audit->getKey())->lockForUpdate()->get();
+            if ($finalAudits->count() !== 1 || get_object_vars($finalAudits->sole()) !== get_object_vars($stored)) {
                 throw new CheckoutRefused('changed');
             }
         } catch (Throwable) {
@@ -102,9 +110,15 @@ final class PaidConfirmationAudit
             'orgId' => $this->context->orgId(), 'siteId' => $this->context->siteId()]);
     }
 
+    /** Internal before/after witness for corrections under the same original completion locks. */
+    public function witness(Connection $connection, object $order): string
+    {
+        return $this->graph($connection, $order);
+    }
+
     private function graph(Connection $connection, object $expected): string
     {
-        if ($expected->state !== 'paid' || $this->context->orgId() !== (int) $expected->org_id
+        if (! CompletionFacts::completed($expected) || $this->context->orgId() !== (int) $expected->org_id
             || $this->context->siteId() !== (int) $expected->site_id) {
             throw new CheckoutRefused;
         }
@@ -126,6 +140,7 @@ final class PaidConfirmationAudit
         app(AccessFulfillment::class)->projection($connection, (int) $order->org_id, $order, true);
         $rows = [];
         foreach (['commerce_order_lines' => OrderReaderData::MAX_LINES, CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS,
+            FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
             PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES, PaidOrders::OBLIGATIONS => 1,
             PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS, AccessFulfillment::WORK => 1,
             AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS] as $table => $bound) {
@@ -140,7 +155,7 @@ final class PaidConfirmationAudit
             }
             $rows[$table] = $children->map(static fn (object $row): array => get_object_vars($row))->all();
         }
-        if ($rows['commerce_order_lines'] === [] || $rows[PaidOrders::RECEIPTS] === []) {
+        if ($rows['commerce_order_lines'] === [] || ($order->state === 'completed_free' ? $rows[FreeOrders::TABLE] : $rows[PaidOrders::RECEIPTS]) === []) {
             throw new CheckoutRefused;
         }
         $keys = array_values(array_unique(array_column($rows['commerce_order_lines'], 'sellable_ref')));

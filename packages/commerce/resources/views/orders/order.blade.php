@@ -9,7 +9,7 @@
     <h1>{{ $t('title') }}</h1>
     <dl><dt>{{ $t('reference') }}</dt><dd dir="ltr">{{ $order['reference'] }}</dd><dt>{{ $t('state') }}</dt><dd>{{ $order['state'] === 'paid' ? __('commerce::paid.paid', [], 'en') : $t($order['state']) }}</dd></dl>
     <p>{{ $t($order['mode'].'_mode') }}</p>
-    @if ($order['payment'] === null)<p>{{ $t('unpaid') }}</p>@endif
+    @if ($order['payment'] === null && $order['state'] !== 'completed_free')<p>{{ $t('unpaid') }}</p>@endif
     @include('commerce::orders.payment-summary')
     @include('commerce::orders.access-summary', ['order' => $order])
     @include('commerce::orders.privacy-summary', ['order' => $order])
@@ -31,7 +31,7 @@
     @if ($order['payment'] !== null || $completedCheckout)
         <p>{{ __('commerce::paid.'.($order['payment'] !== null ? 'retained' : 'completed_retained'), [], 'en') }}</p>
     @else
-        <p>{{ $t('erase_help') }}</p><form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/erase">@csrf<button type="submit" class="secondary">{{ $t('erase') }}</button></form>
+        <p>{{ $order['state'] === 'completed_free' ? __('commerce::free.erase_help', [], 'en') : $t('erase_help') }}</p><form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/erase">@csrf<button type="submit" class="secondary">{{ $order['state'] === 'completed_free' ? __('commerce::free.erase', [], 'en') : $t('erase') }}</button></form>
     @endif
     <p><a href="{{ $cartPath }}/orders">{{ $t('orders') }}</a></p>
 @endsection

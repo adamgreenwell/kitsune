@@ -16,6 +16,7 @@ use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Schemas\Schema;
 use Illuminate\Pagination\Paginator;
 use Kitsune\Commerce\Models\Order;
+use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Payments\AccessAdjustments;
@@ -62,13 +63,24 @@ final class OrderList extends Page
     #[Locked]
     public string $refundRequestKey = '';
 
+    /** @var list<mixed> */
+    public array $freeUnits = [];
+
+    public string $freeReason = '';
+
+    public bool $freeConfirmed = false;
+
+    #[Locked]
+    public int $freeRevision = 0;
+
     public function mount(?string $reference = null): void
     {
         self::authorizeResourceAccess();
         $this->reference = $reference === null ? null : OrderAdministration::reference($reference);
         $this->refundRequestKey = bin2hex(random_bytes(16));
         if ($this->reference !== null) {
-            $this->detail();
+            $detail = $this->detail();
+            $this->freeRevision = $detail['free_access_corrections']['revision'] ?? 0;
         }
     }
 
@@ -197,12 +209,50 @@ final class OrderList extends Page
         return OrderResource::getUrl('historical-recovery');
     }
 
+    public function correctFreeAccess(string $action): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        $saved = false;
+        try {
+            if (count($this->freeUnits) > 1980) {
+                throw new OrderRefused;
+            }
+            $selection = [];
+            foreach ($this->freeUnits as $value) {
+                if (! is_string($value) || preg_match('/\A([1-9][0-9]{0,18}):([1-9][0-9]?)\z/D', $value, $parts) !== 1) {
+                    throw new OrderRefused;
+                }
+                $selection[$parts[1]][] = (int) $parts[2];
+            }
+            $reference = OrderAdministration::reference($this->reference);
+            app(FreeAccessCorrections::class)->changeAsOwner($reference, $selection, $action, $this->freeRevision, trim($this->freeReason), $this->refundRequestKey, $this->freeConfirmed);
+            $saved = true;
+            $this->freeUnits = [];
+            $this->freeReason = '';
+            $this->freeConfirmed = false;
+            $this->refundRequestKey = bin2hex(random_bytes(16));
+            $this->freeRevision = $this->detail()['free_access_corrections']['revision'];
+            app(AccessAdjustments::class)->reconcile($reference);
+            app(AccessFulfillment::class)->reconcile($reference);
+            app(AccessAdjustments::class)->reconcile($reference);
+        } catch (Throwable) {
+            $this->addError('order', __($saved ? 'commerce::free.saved_pending' : 'commerce::free.refused'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::free.saved'))->success()->send();
+    }
+
     public function retryAccess(): void
     {
         self::authorizeResourceAccess();
         $this->resetErrorBag('order');
         try {
             app(AccessFulfillment::class)->retryAsOwner(OrderAdministration::reference($this->reference));
+            if ($this->detail()['state'] === 'completed_free') {
+                app(AccessAdjustments::class)->reconcile(OrderAdministration::reference($this->reference));
+            }
         } catch (Throwable) {
             $this->addError('order', __('commerce::access.unavailable'));
 

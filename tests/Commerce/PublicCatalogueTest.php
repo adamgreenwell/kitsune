@@ -113,7 +113,7 @@ it('publishes safe access offer descriptions without names or internal duration 
         ->and(json_encode($page, JSON_THROW_ON_ERROR))->not->toContain('course.private-subject', 'offer_terms', 'version');
 })->with([
     'permanent' => [['version' => 1, 'kind' => 'permanent'], 'Permanent access'],
-    'fixed' => [['version' => 1, 'kind' => 'fixed', 'days' => 30], '30 days from confirmed payment'],
+    'fixed' => [['version' => 1, 'kind' => 'fixed', 'days' => 30], '30 days from order confirmation'],
 ]);
 
 it('keeps a retained unknown mapped offer visible but unavailable for a new purchase', function (): void {

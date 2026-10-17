@@ -9,6 +9,7 @@ declare(strict_types=1);
  */
 
 return [
+    'completed_free' => 'Completed free of charge',
     'title' => 'Checkout settings', 'settings_section' => 'Prices and shipping',
     'settings_help' => 'These choices apply to every site in your organisation. Tax rates are entered and maintained by you.',
     'tax_mode' => 'Product prices', 'shipping_tax_mode' => 'Carrier shipping prices',

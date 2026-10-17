@@ -15,6 +15,7 @@ use Illuminate\Database\Connection;
 use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Inventory\StockWriter;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Privacy\PrivacyState;
 use Kitsune\Core\Tenancy\Context;
 
@@ -229,6 +230,10 @@ final class PaidOrders
         if ((string) $order->org_id !== (string) $org) {
             throw new CheckoutRefused;
         }
+        if ($order->state === 'completed_free') {
+            return app(FreeOrders::class)->projection($connection, $order, $lock);
+        }
+        app(FreeOrders::class)->receipt($connection, $order, $lock);
         $empty = ['payment' => null, 'allocations' => [], 'refund' => null];
         if (! $this->schema($connection)) {
             if ($order->state === 'paid' || $order->confirmed_total_minor !== null) {

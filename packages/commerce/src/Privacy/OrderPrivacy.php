@@ -14,8 +14,13 @@ use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\BillingDetails;
+use Kitsune\Commerce\Orders\CompletionFacts;
+use Kitsune\Commerce\Orders\FreeAccessCorrections;
+use Kitsune\Commerce\Orders\FreeOrders;
+use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Payments\AccessAdjustments;
@@ -41,6 +46,7 @@ final class OrderPrivacy
 {
     private const TABLES = [
         'commerce_order_lines' => 20, 'commerce_order_access_tokens' => 1000, CheckoutAttempts::TABLE => 20,
+        FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
         StripeEventInbox::ROUTING => 20, StripeEventInbox::TABLE => 1000, PaidOrders::RECEIPTS => 1,
         PaidOrders::ALLOCATIONS => 20, PaidOrders::OBLIGATIONS => 1, PaidOrders::ATTEMPTS => 10,
         AccessFulfillment::WORK => 1, AccessFulfillment::EFFECTS => 20, 'commerce_order_claims' => 1,
@@ -76,7 +82,7 @@ final class OrderPrivacy
             }
             $attempts = app(CheckoutAttempts::class)->rows($connection, (int) $order->org_id, $order, true);
             $pending = $attempts->contains(static fn (object $attempt): bool => ! in_array($attempt->state, ['expired', 'rejected'], true));
-            if ($order->state !== 'paid' && $order->confirmed_total_minor === null && ! $pending) {
+            if (! CompletionFacts::completed($order) && $order->confirmed_total_minor === null && ! $pending) {
                 return ['deleted' => false, 'minimized' => false];
             }
             if ($privacy['policy'] === null) {
@@ -87,6 +93,20 @@ final class OrderPrivacy
             $this->erasedSubjects[$key][(int) $order->id] = true;
 
             return ['deleted' => false, 'minimized' => true];
+        });
+    }
+
+    /** Exact unclaimed free-order guest proof; no account or email identity is invented. */
+    public function eraseFreeGuest(Connection $connection, Request $request, object $order): void
+    {
+        $this->safe(function () use ($connection, $request, $order): void {
+            $this->state->inside($connection, $order);
+            if ($order->state !== 'completed_free' || $order->reader_id !== null
+                || app(OrderAccess::class)->guestProof($request, (new Order)->newFromBuilder(get_object_vars($order))) === null
+                || $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->lockForUpdate()->exists()) {
+                throw new RetentionRefused;
+            }
+            $this->minimize($connection, $order, true, null);
         });
     }
 
@@ -168,11 +188,11 @@ final class OrderPrivacy
             if ($before['policy']?->snapshot() === $policy->snapshot()) {
                 return;
             }
-            $receipt = app(PaidOrders::class)->receipt($connection, $order, true);
+            $receipt = CompletionFacts::receipt($connection, $order, true);
             $changes = ['policy_snapshot' => PrivacyState::encode($policy->snapshot()), 'policy_hash' => $policy->configHash];
             if ($receipt !== null) {
-                $changes += ['confirmed_at' => $receipt->verified_at,
-                    'retained_until' => $policy->deadline(CheckoutAttempts::instant($receipt->verified_at))->format('Y-m-d H:i:s')];
+                $changes += ['confirmed_at' => CompletionFacts::instant($order, $receipt),
+                    'retained_until' => $policy->deadline(CheckoutAttempts::instant(CompletionFacts::instant($order, $receipt)))->format('Y-m-d H:i:s')];
             }
             $this->change($connection, $order, 'policy_adopted', function () use ($connection, $order, $before, $changes, $policy): void {
                 $this->state->update($connection, $order, $before['work'], $changes);
@@ -341,7 +361,7 @@ final class OrderPrivacy
     {
         $state = $this->state->checked($connection, $order, true) ?? throw new RetentionRefused;
         $result = ['examined' => 1, 'minimized' => 0, 'purged' => 0, 'held' => 0];
-        if ($state['subject_erased'] && $order->state !== 'paid' && $order->confirmed_total_minor === null
+        if ($state['subject_erased'] && ! CompletionFacts::completed($order) && $order->confirmed_total_minor === null
             && ! array_filter($state['holds'], static fn (object $hold): bool => $hold->released_at === null)
             && $state['delivery']?->state !== 'pending' && $this->terminalUnpaid($connection, $order) && $this->sourceInactive($connection, $order)) {
             if (! $dryRun) {
@@ -391,7 +411,7 @@ final class OrderPrivacy
         }
         $this->assertAudit($connection, $audit, $identity);
         // Restricted foreign keys require this exact descendant-first deletion order.
-        foreach ([StripeEventInbox::TABLE, StripeEventInbox::ROUTING, 'commerce_order_access_tokens', 'commerce_order_claims',
+        foreach ([FreeAccessCorrections::TABLE, FreeAccessCorrections::WORK, FreeOrders::TABLE, StripeEventInbox::TABLE, StripeEventInbox::ROUTING, 'commerce_order_access_tokens', 'commerce_order_claims',
             AccessAdjustments::EFFECTS, AccessAdjustments::WORK, AccessFulfillment::EFFECTS, AccessFulfillment::WORK,
             FinancialState::OBSERVATIONS, FinancialState::REFUNDS, FinancialState::WORK, PaidOrders::ATTEMPTS,
             PaidOrders::OBLIGATIONS, PaidOrders::ALLOCATIONS, PaidOrders::RECEIPTS, CheckoutAttempts::TABLE,
@@ -429,7 +449,7 @@ final class OrderPrivacy
             if ($this->graph($connection, $current) !== $expected || $state['delivery']?->state === 'pending'
                 || array_filter($state['holds'], static fn (object $hold): bool => $hold->released_at === null) !== []
                 || $this->activePromise($connection, $current, $state)
-                || ($current->state === 'paid' ? (! $state['invoice_expired'] || $state['deadline'] === null
+                || (CompletionFacts::completed($current) ? (! $state['invoice_expired'] || $state['deadline'] === null
                     || $state['deadline'] > PrivacyState::now() || ! $this->financialClosed($connection, $current)) : ! $this->terminalUnpaid($connection, $current))) {
                 throw new RetentionRefused;
             }
@@ -453,7 +473,7 @@ final class OrderPrivacy
             throw new RetentionRefused;
         }
         $access = $connection->table(AccessFulfillment::WORK)->useWritePdo()->where('order_id', $order->id)->sole();
-        if ($order->state === 'paid' && $access->state === 'initializing') {
+        if (CompletionFacts::completed($order) && $access->state === 'initializing') {
             $beforeOrg = $this->context->org();
             $beforeSite = $this->context->site();
             try {
@@ -481,17 +501,18 @@ final class OrderPrivacy
                 $this->updateChild($connection, PrivacyState::DELIVERIES, $order, $delivery, ['payload' => PrivacyState::encode($payload),
                     'payload_hash' => CheckoutAttempts::digest($payload), 'updated_at' => PrivacyState::now()]);
             }
-            $billing = $expired || $order->state !== 'paid' ? null : ($state['invoice_expired'] ? null : PrivacyState::selectedBilling(
+            $billing = $expired || ! CompletionFacts::completed($order) ? null : ($state['invoice_expired'] ? null : PrivacyState::selectedBilling(
                 $state['subject_erased'] ? PrivacyState::partialBilling($order->billing, PrivacyState::decode($state['work']->retained_billing_fields)['fields'])
                     : BillingDetails::from(PrivacyState::decode($order->billing)), $state['policy']->billingFields));
             $changes = ['contact_email' => null, 'delivery' => null, 'billing' => $billing === null ? null : PrivacyState::encode($billing)];
             $flags = $expired || ! $subject ? ['invoice_expired_at' => $state['work']->invoice_expired_at ?? PrivacyState::now()] : [];
             if ($subject) {
-                if ($reader === null || $connection->table('entitlements')->useWritePdo()->where('source', 'commerce.order:'.$order->id)->exists()) {
+                if (($reader === null && ($order->state !== 'completed_free' || $order->reader_id !== null
+                    || $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->exists())) || $connection->table('entitlements')->useWritePdo()->where('source', 'commerce.order:'.$order->id)->exists()) {
                     throw new RetentionRefused;
                 }
                 $changes += ['reader_id' => null, 'owner_key' => bin2hex(random_bytes(32)), 'cart_ref' => null, 'cart_version' => null, 'active_cart_key' => null];
-                $flags += ['subject_erased_at' => PrivacyState::now(), 'subject_key' => PrivacyState::guardDigest('subject', $order->org_id."\0".$reader)];
+                $flags += ['subject_erased_at' => PrivacyState::now(), 'subject_key' => $reader === null ? PrivacyState::guardDigest('free_guest', $order->org_id."\0".$order->reference) : PrivacyState::guardDigest('subject', $order->org_id."\0".$reader)];
                 $connection->table('commerce_order_claims')->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete();
                 $work = $connection->table(AccessFulfillment::WORK)->useWritePdo()->where('order_id', $order->id)->sole();
                 $manifest = $work->manifest === null ? null : PrivacyState::decode($work->manifest);
@@ -577,9 +598,15 @@ final class OrderPrivacy
     {
         $frame = app(FinancialState::class)->checked($connection, $order, true);
         $plan = app(FinancialState::class)->accessPlan($connection, $order, true);
+        if ($order->state === 'completed_free') {
+            CompletionFacts::receipt($connection, $order, true) ?? throw new RetentionRefused;
+
+            return $frame['refunds'] === [] && $frame['observations'] === [] && $frame['signals'] === []
+                && $frame['work']->lease_token === null && $frame['work']->last_observed_at === null && ! $plan['blocked'];
+        }
         $heldReturned = $plan['category'] === 'original_financial_hold' && $frame['work']->charge_refunded_minor !== null
             && (string) $frame['work']->charge_refunded_minor === (string) $order->confirmed_total_minor;
-        if ($order->state !== 'paid' || $frame['work']->last_observed_at === null || $frame['work']->lease_token !== null
+        if (! CompletionFacts::completed($order) || $frame['work']->last_observed_at === null || $frame['work']->lease_token !== null
             || ($plan['blocked'] && ! $heldReturned)) {
             return false;
         }

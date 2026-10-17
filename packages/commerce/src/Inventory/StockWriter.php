@@ -184,9 +184,9 @@ final class StockWriter
 
     /** Existing OrderLocks transaction owns the authoritative allocation. Repeating one line is a checked no-op. */
     public function recordSale(Connection $connection, int $org, int $site, object $sellable, int $awarded,
-        string $orderRef, string $lineRef): void
+        string $orderRef, string $lineRef, bool $free = false): void
     {
-        $this->safe(function () use ($connection, $org, $site, $sellable, $awarded, $orderRef, $lineRef): void {
+        $this->safe(function () use ($connection, $org, $site, $sellable, $awarded, $orderRef, $lineRef, $free): void {
             if ($connection !== (new Sellable)->getConnection() || $connection->transactionLevel() < 1
                 || ! $connection->getPdo()->inTransaction() || $this->context->orgId() !== $org || $this->context->siteId() !== $site
                 || $awarded < 1 || $awarded > 99 || preg_match('/\A[a-f0-9]{32}\z/D', $orderRef) !== 1) {
@@ -194,7 +194,7 @@ final class StockWriter
             }
             $key = Sellable::catalogueKey($sellable->id ?? null);
             $line = Sellable::catalogueKey($lineRef);
-            TransactionRecovery::run($connection, function () use ($connection, $org, $site, $sellable, $key, $line, $awarded, $orderRef): void {
+            TransactionRecovery::run($connection, function () use ($connection, $org, $site, $sellable, $key, $line, $awarded, $orderRef, $free): void {
                 $this->runtime($connection);
                 $parent = $connection->table('commerce_orders')->useWritePdo()->where('org_id', $org)->where('site_id', $site)
                     ->where('reference', $orderRef)->lockForUpdate()->first();
@@ -203,12 +203,15 @@ final class StockWriter
                     || (string) $child->order_id !== (string) $parent->id || (string) $child->sellable_ref !== (string) $key || $awarded > (int) $child->quantity) {
                     throw new StockRefused;
                 }
+                if ($free && (MinorUnits::integer($parent->quoted_total_minor) !== '0' || ! in_array($parent->state, ['prepared', 'completed_free'], true))) {
+                    throw new StockRefused;
+                }
                 $previous = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)
                     ->where('order_reference', $orderRef)->where('line_reference', $line)->lockForUpdate()->first();
                 if ($previous !== null) {
                     $this->validateMovement($connection, $previous);
                     if ((string) $previous->sellable_ref !== (string) $key || (string) $previous->site_id !== (string) $site
-                        || (int) $previous->quantity !== $awarded || $previous->kind !== 'sale') {
+                        || (int) $previous->quantity !== $awarded || $previous->kind !== ($free ? 'free_order' : 'sale')) {
                         throw new StockRefused;
                     }
 
@@ -223,7 +226,7 @@ final class StockWriter
                 }
                 $before = self::balance($row->stock);
                 $after = $before === null ? null : self::subtract($before, $awarded);
-                $movement = [...$this->movement($row, 'sale', $after, $awarded, 'Paid order stock allocation.', null),
+                $movement = [...$this->movement($row, $free ? 'free_order' : 'sale', $after, $awarded, $free ? 'Free order stock allocation.' : 'Paid order stock allocation.', null),
                     'order_reference' => $orderRef, 'line_reference' => $line];
                 $frozen = (array) $child;
                 $frozenParent = (array) $parent;
@@ -362,7 +365,7 @@ final class StockWriter
     {
         $site = $connection->table('sites')->useWritePdo()->where('id', $row->site_id)->where('org_id', $row->org_id)->first();
         if ((string) $row->org_id !== (string) $this->context->orgId() || $site === null
-            || preg_match('/\A[a-f0-9]{32}\z/D', $row->reference) !== 1 || ! in_array($row->kind, ['manual', 'sale'], true)) {
+            || preg_match('/\A[a-f0-9]{32}\z/D', $row->reference) !== 1 || ! in_array($row->kind, ['manual', 'sale', 'free_order'], true)) {
             throw new StockRefused;
         }
         Sellable::catalogueKey($row->sellable_ref);

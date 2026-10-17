@@ -173,6 +173,12 @@ final class OrderReaderData implements ModuleReaderData
                 throw new RuntimeException('The order privacy ownership changed.');
             }
             $this->project($connection, $org, $row, lock: true);
+            if ($row->state === 'completed_free' && $row->reader_id === null && app(OrderClaims::class)->forOrder($connection, $row, true) === null) {
+                app(OrderPrivacy::class)->eraseFreeGuest($connection, $request, $row);
+                $connection->afterCommit(static fn () => app(OrderAccess::class)->forget($request, $reference));
+
+                return 0;
+            }
             $this->delete($connection, $org, $row);
             $connection->afterCommit(static fn () => app(OrderAccess::class)->forget($request, $reference));
 
@@ -277,8 +283,8 @@ final class OrderReaderData implements ModuleReaderData
             || ($subjectErased ? ($order->cart_ref !== null || $order->cart_version !== null)
                 : (self::writtenKey($order->cart_ref) === null || (int) $order->cart_ref < 1
                     || self::writtenKey($order->cart_version) === null || (int) $order->cart_version < 0))
-            || ! in_array($order->state, ['prepared', 'cancelled', 'paid'], true)
-            || ($order->state === 'paid'
+            || ! in_array($order->state, ['prepared', 'cancelled', 'paid', 'completed_free'], true)
+            || (CompletionFacts::completed($order)
                 ? ($order->active_cart_key !== null || MinorUnits::integer($order->confirmed_total_minor) !== MinorUnits::integer($order->quoted_total_minor))
                 : $order->confirmed_total_minor !== null)
             || ! in_array($order->mode, ['test', 'live'], true) || ! Currencies::supports($order->currency) || $orgRow === null || $orgRow->currency !== $order->currency || ! in_array($order->tax_mode, ['inclusive', 'exclusive'], true)
@@ -398,6 +404,7 @@ final class OrderReaderData implements ModuleReaderData
             ...app(AccessFulfillment::class)->projection($connection, $org, $order, lock: $lock),
             ...app(FinancialReadModel::class)->projection($connection, $org, $order, lock: $lock),
             ...app(AccessAdjustments::class)->projection($connection, $org, $order, lock: $lock),
+            ...app(FreeAccessCorrections::class)->projection($connection, $order, $lock),
             ...app(PrivacyState::class)->projection($connection, $order, $lock)];
     }
 

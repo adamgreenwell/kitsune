@@ -50,7 +50,7 @@ abstract class CommerceLifecycleTestCase extends Orchestra
     private function freshSchema(): void
     {
         if (Artisan::call('migrate:fresh', ['--path' => [__DIR__.'/../../packages/core/database/migrations',
-            __DIR__.'/../Commerce/migrations'], '--realpath' => true, '--force' => true]) !== 0) {
+            __DIR__.'/../Commerce/migrations', TestCase::READERS_MIGRATION], '--realpath' => true, '--force' => true]) !== 0) {
             throw new \RuntimeException('The disposable commerce lifecycle schema could not be rebuilt.');
         }
     }

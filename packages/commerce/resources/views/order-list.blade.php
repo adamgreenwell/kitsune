@@ -79,6 +79,9 @@
             </dl>
         </x-filament::section>
         @include('commerce::orders.payment-summary')
+        @if ($order['state'] === 'completed_free' && ! ($order['privacy']['subject_erased'] ?? false))
+            @include('commerce::free-access-actions')
+        @endif
         @include('commerce::orders.access-summary', ['operator' => true])
         @include('commerce::orders.privacy-summary', ['order' => $order])
         @if ($order['payment'] !== null)

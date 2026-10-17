@@ -17,13 +17,13 @@ final class ExportFormat
 {
     public const FORMATS = ['jsonl', 'csv'];
 
-    public const TYPES = ['manifest', 'customer', 'order', 'line', 'shipping', 'payment', 'allocation',
+    public const TYPES = ['manifest', 'customer', 'order', 'line', 'shipping', 'payment', 'free_completion', 'free_access_correction', 'allocation',
         'automatic_refund', 'refund_attempt', 'refund', 'refund_selection', 'financial_observation',
         'access_claim', 'access', 'access_effect', 'financial_access', 'financial_access_effect', 'privacy', 'billing', 'complete'];
 
     public const DATA_COLUMNS = ['profile', 'generated_at', 'limit', 'has_more', 'next_cursor', 'count', 'max_id',
         'customer_kind', 'state', 'category', 'origin', 'purpose', 'mode', 'currency', 'tax_mode',
-        'created_at', 'cancelled_at', 'updated_at', 'confirmed_at', 'verified_at', 'received_at', 'processed_at',
+        'completed_at', 'revision', 'unit_number', 'created_at', 'cancelled_at', 'updated_at', 'confirmed_at', 'verified_at', 'received_at', 'processed_at',
         'reviewed_at', 'expires_at', 'observed_at', 'claimed_at', 'minimized_at', 'retained_until', 'raw_expires_at',
         'site_name', 'site_base_url', 'sku', 'title', 'quantity', 'line_reference', 'sellable_reference',
         'listing_reference', 'entry_reference', 'unit_price_minor', 'tax_class', 'tax_rate_parts', 'delivery_kind',

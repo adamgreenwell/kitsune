@@ -20,6 +20,7 @@ use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Http\Middleware\OrderResponse;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderQuotes;
@@ -226,7 +227,7 @@ final class OrderController
         $claim = app(OrderClaims::class)->forOrder($order->getConnection(), (object) $order->getAttributes());
         $isGuest = $order->getAttributes()['reader_id'] === null && $claim === null;
         $site = $this->context->site();
-        $canClaim = $isGuest && $record['state'] === 'paid' && $site !== null
+        $canClaim = $isGuest && in_array($record['state'], ['paid', 'completed_free'], true) && $site !== null
             && app(ReaderAccounts::class)->fault() === null && app(ReaderAccounts::class)->mode($site)->signsIn();
 
         return $this->view('order', ['order' => $record, 'reference' => $reference, 'isGuest' => $isGuest,
@@ -251,7 +252,7 @@ final class OrderController
 
             return new RedirectResponse($this->path().'/orders/'.$reference, 303);
         }
-        abort_if($order->reader_id !== null || $order->state !== 'paid' || app(OrderAccess::class)->guestProof($request, $order) === null, 404);
+        abort_if($order->reader_id !== null || ! CompletionFacts::completed($order) || app(OrderAccess::class)->guestProof($request, $order) === null, 404);
         $claims->remember($request, $reference);
         $reader = null;
         try {
@@ -263,7 +264,7 @@ final class OrderController
             $request->session()->put(RequireReader::INTENDED, $claims->path($reference));
         }
 
-        return $this->view('claim', ['reference' => $reference, 'claimPath' => $claims->path($reference),
+        return $this->view('claim', ['reference' => $reference, 'freeOrder' => $order->state === 'completed_free', 'claimPath' => $claims->path($reference),
             'readerEmail' => $reader?->readerEmail(), 'signInPath' => ReaderLinks::path($site, ReaderLinks::SIGN_IN),
             'registerPath' => $accounts->mode($site)->signsUp() ? ReaderLinks::path($site, ReaderLinks::REGISTER) : null]);
     }

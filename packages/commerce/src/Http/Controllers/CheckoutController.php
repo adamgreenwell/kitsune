@@ -17,6 +17,7 @@ use Illuminate\Http\Response;
 use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Http\Middleware\OrderResponse;
 use Kitsune\Commerce\Money\MinorUnits;
+use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
@@ -72,6 +73,11 @@ final class CheckoutController
         return $this->mutate($request, 'start');
     }
 
+    public function completeFree(Request $request): Response|RedirectResponse
+    {
+        return $this->mutate($request, 'completeFree');
+    }
+
     public function refresh(Request $request): Response|RedirectResponse
     {
         return $this->mutate($request, 'refresh');
@@ -94,6 +100,7 @@ final class CheckoutController
             try {
                 $writer = app(CheckoutWriter::class);
                 $result = match ($action) {
+                    'completeFree' => app(FreeOrders::class)->complete($request, $reference, $input['review'] ?? null),
                     'start' => $writer->start($request, $reference, $input['review'] ?? null),
                     'refresh' => $writer->refresh($request, $reference, $input['attempt'] ?? null),
                     'expire' => $writer->expire($request, $reference, $input['attempt'] ?? null),

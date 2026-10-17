@@ -43,7 +43,7 @@ return [
     'offer_choose' => 'Choose explicit access terms',
     'offer_permanent' => 'Permanent access',
     'offer_fixed_choice' => 'Fixed number of days',
-    'offer_fixed' => ':days days from confirmed payment',
+    'offer_fixed' => ':days days from order confirmation',
     'offer_unknown' => 'Access offer unavailable',
     'offer_help' => 'Confirmed payment starts the access term. Repeat purchases overlap; buying several units does not multiply access time. Clearing the entitlement grants no purchased access.',
     'offer_days' => 'Access days',

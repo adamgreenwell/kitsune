@@ -14,6 +14,8 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\BillingDetails;
+use Kitsune\Commerce\Orders\CompletionFacts;
+use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
@@ -135,24 +137,26 @@ final class PrivacyState
             return;
         }
         $work = $state['work'];
-        $receipt = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->sole();
-        if ($order->state !== 'paid' || ($work->confirmed_at !== null && $work->confirmed_at !== $receipt->verified_at)) {
+        $receipt = CompletionFacts::raw($connection, $order, true) ?? throw new RetentionRefused;
+        $completedAt = CompletionFacts::instant($order, $receipt);
+        if (! CompletionFacts::completed($order) || ($work->confirmed_at !== null && $work->confirmed_at !== $completedAt)) {
             throw new RetentionRefused;
         }
-        $attempt = $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $receipt->attempt_id)->sole();
+        $checkoutHash = $order->state === 'completed_free' ? $receipt->order_hash
+            : $connection->table(CheckoutAttempts::TABLE)->useWritePdo()->where('id', $receipt->attempt_id)->sole()->order_hash;
         $access = $connection->table(AccessFulfillment::WORK)->useWritePdo()->where('order_id', $order->id)->sole();
         $claim = $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->first();
         $commitments = $state['commitments'] ?? ['version' => 1, 'snapshot_hash' => $order->snapshot_hash,
-            'checkout_hash' => $attempt->order_hash, 'financial_hash' => CheckoutAttempts::digest(self::financialBasis($connection, $order)),
+            'checkout_hash' => $checkoutHash, 'financial_hash' => CheckoutAttempts::digest(self::financialBasis($connection, $order)),
             'financial_version' => 1, 'access_manifest_hash' => null, 'claim_hash' => null, 'adjustment_hash' => null];
-        if ($commitments['checkout_hash'] !== $attempt->order_hash) {
+        if ($commitments['checkout_hash'] !== $checkoutHash) {
             throw new RetentionRefused;
         }
         $commitments['access_manifest_hash'] ??= $access->manifest_hash;
         $commitments['claim_hash'] ??= $claim === null ? null : CheckoutAttempts::digest(get_object_vars($claim));
         self::commitments($commitments);
-        $changes = ['confirmed_at' => $receipt->verified_at,
-            'retained_until' => $state['policy']?->deadline(CheckoutAttempts::instant($receipt->verified_at))->format('Y-m-d H:i:s'),
+        $changes = ['confirmed_at' => $completedAt,
+            'retained_until' => $state['policy']?->deadline(CheckoutAttempts::instant($completedAt))->format('Y-m-d H:i:s'),
             'commitments' => self::encode($commitments), 'commitments_hash' => CheckoutAttempts::digest($commitments),
             'safe_financial_hash' => self::safeFinancialDigest($connection, $order)];
         if ($state['subject_erased'] && $access->manifest !== null) {
@@ -193,7 +197,7 @@ final class PrivacyState
                 throw new RetentionRefused;
             }
         }
-        $receipt = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->first();
+        $receipt = CompletionFacts::raw($connection, $order, true);
         $access = $connection->table(AccessFulfillment::WORK)->useWritePdo()->where('order_id', $order->id)->sole();
         $claim = $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->first();
         $commitments = ['version' => 1, 'snapshot_hash' => $order->snapshot_hash, 'checkout_hash' => $checkoutHash,
@@ -438,7 +442,7 @@ final class PrivacyState
             return CheckoutAttempts::digest(array_diff_key($basis, ['checkout' => true]));
         }
         if ($state['commitments']['financial_hash'] === null) {
-            if ($order->state === 'paid' || $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->exists()) {
+            if (CompletionFacts::completed($order) || $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->exists()) {
                 throw new RetentionRefused;
             }
 
@@ -546,7 +550,7 @@ final class PrivacyState
         if ($state === null) {
             return;
         }
-        if ($order->state === 'paid' || $order->confirmed_total_minor !== null || $state['subject_erased'] || $state['invoice_expired']
+        if (CompletionFacts::completed($order) || $order->confirmed_total_minor !== null || $state['subject_erased'] || $state['invoice_expired']
             || $state['work']->confirmed_at !== null || $state['delivery'] !== null || $state['holds'] !== []
             || $connection->table(self::TRANSITIONS)->where('order_id', $order->id)->exists()) {
             throw new RetentionRefused;
@@ -583,7 +587,7 @@ final class PrivacyState
         $access = $connection->table(AccessFulfillment::WORK)->useWritePdo()->where('order_id', $order->id)->sole();
         $policy = RetentionPolicySnapshot::fromSnapshot(self::decode($work->policy_snapshot));
         $retained = $work->retained_billing_fields === null ? $policy->billingFields : self::decode($work->retained_billing_fields)['fields'];
-        $retained = $order->state !== 'paid' || ($flags['invoice_expired_at'] ?? $work->invoice_expired_at) !== null ? [] : array_values(array_intersect($retained, $policy->billingFields));
+        $retained = ! CompletionFacts::completed($order) || ($flags['invoice_expired_at'] ?? $work->invoice_expired_at) !== null ? [] : array_values(array_intersect($retained, $policy->billingFields));
         $this->update($connection, $order, $work, [...$flags, 'retained_billing_fields' => self::encode(['fields' => $retained]), 'commitments' => self::encode($commitments),
             'commitments_hash' => CheckoutAttempts::digest($commitments), 'safe_financial_hash' => $safe,
             'order_representation_hash' => self::orderDigest($order),
@@ -770,7 +774,7 @@ final class PrivacyState
             throw new RetentionRefused;
         }
         $order = $actual;
-        $receipts = $connection->table(PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->limit(2)
+        $receipts = $connection->table($order->state === 'completed_free' ? FreeOrders::TABLE : PaidOrders::RECEIPTS)->useWritePdo()->where('order_id', $order->id)->limit(2)
             ->when($lock, fn ($query) => $query->lockForUpdate())->get();
         if ($receipts->count() > 1) {
             throw new RetentionRefused;

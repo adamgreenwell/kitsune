@@ -70,7 +70,7 @@ final class OrderClaims
             || self::writtenKey($order->id) === null || (int) $order->id < 1
             || self::writtenKey($order->org_id) === null || (int) $order->org_id < 1 || self::writtenKey($order->site_id) === null || (int) $order->site_id < 1
             || self::writtenKey($row->org_id) !== self::writtenKey($order->org_id) || self::writtenKey($row->site_id) !== self::writtenKey($order->site_id)
-            || self::writtenKey($row->order_id) !== self::writtenKey($order->id) || $order->reader_id !== null || $order->state !== 'paid'
+            || self::writtenKey($row->order_id) !== self::writtenKey($order->id) || $order->reader_id !== null || ! CompletionFacts::completed($order)
             || ! is_string($row->reader_id) || ReaderGuard::stored($row->reader_id) !== $row->reader_id
             || ! is_string($row->owner_key) || preg_match('/\A[a-f0-9]{64}\z/D', $row->owner_key) !== 1 || ! is_string($order->owner_key) || ! hash_equals($order->owner_key, $row->owner_key)
             || ! is_string($row->order_reference) || preg_match('/\A[a-f0-9]{32}\z/D', $row->order_reference) !== 1 || $row->order_reference !== $order->reference
@@ -222,7 +222,7 @@ final class OrderClaims
 
                     return (new Order)->newFromBuilder((array) $order, $connection->getName());
                 }
-                if ($order->state !== 'paid' || $order->reader_id !== null || ! $this->schemaAvailable($connection)) {
+                if (! CompletionFacts::completed($order) || $order->reader_id !== null || ! $this->schemaAvailable($connection)) {
                     throw new OrderRefused;
                 }
                 $kind = app(OrderAccess::class)->guestProof($request, $order) ?? throw new OrderRefused;
@@ -329,7 +329,8 @@ final class OrderClaims
             'org' => (array) $connection->table('orgs')->useWritePdo()->where('id', $order->org_id)->lockForUpdate()->first(),
             'site' => (array) $connection->table('sites')->useWritePdo()->where('id', $order->site_id)->where('org_id', $order->org_id)->lockForUpdate()->first()];
         foreach (['commerce_order_lines' => OrderReaderData::MAX_LINES, 'commerce_order_access_tokens' => OrderReaderData::MAX_TOKENS,
-            CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS, PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES,
+            CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS, FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
+            PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES,
             PaidOrders::OBLIGATIONS => 1, PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS,
             AccessFulfillment::WORK => 1, AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS,
             FinancialState::WORK => 1, FinancialState::REFUNDS => FinancialState::MAX_REFUNDS,
