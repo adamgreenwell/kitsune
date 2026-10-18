@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Exports\OrderHistoryExport;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\FinancialState;
@@ -45,7 +46,8 @@ it('exports newly committed historical custody from an older native repeatable-r
     $this->afterRollback(function () use ($rival, $rivalName, $default, &$orgId, &$moduleId): void {
         DB::setDefaultConnection($default);
         if ($orgId !== null) {
-            foreach ([PrivacyState::TABLE, AccessAdjustments::WORK, FinancialState::WORK, AccessFulfillment::WORK,
+            foreach ([HistoricalAccess::TABLE, HistoricalAccess::WORK, PrivacyState::TABLE,
+                AccessAdjustments::WORK, FinancialState::WORK, AccessFulfillment::WORK,
                 'commerce_order_access_tokens', 'commerce_order_lines', 'commerce_orders', 'sites'] as $table) {
                 $rival->table($table)->where('org_id', $orgId)->delete();
             }
