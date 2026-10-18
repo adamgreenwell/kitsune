@@ -22,7 +22,7 @@ function resetFixture() {
         + "$site=Kitsune\\Core\\Models\\Site::query()->firstOrCreate(['slug'=>$slug],['handle'=>$slug,'name'=>$slug,'locale'=>'en','base_url'=>'/'.$slug]);"
         + '$owner->sites()->syncWithoutDetaching([$site->id]);$editor->sites()->syncWithoutDetaching([$site->id]);}'
         + "$ids=DB::table('commerce_orders')->where('org_id',$org->id)->pluck('id')->all();foreach(['commerce_privacy_holds','commerce_privacy_deliveries','commerce_privacy_transitions','commerce_order_privacy'] as $table){DB::table($table)->where('org_id',$org->id)->whereIn('order_id',$ids)->delete();}"
-        + "foreach(['commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_financial_signals','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_retention_policy_activations','commerce_retention_policies','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_listings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
+        + "foreach(['commerce_access_reviews','commerce_access_review_work','commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_financial_signals','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_refund_attempts','commerce_refund_obligations','commerce_order_allocations','commerce_payment_receipts','commerce_stripe_events','commerce_checkout_routing','commerce_checkout_attempts','commerce_order_access_tokens','commerce_order_lines','commerce_orders','commerce_retention_policy_activations','commerce_retention_policies','commerce_sales_policies','commerce_tax_rates','commerce_settings','commerce_listings','commerce_sellables'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}"
         + "foreach(Kitsune\\Core\\Models\\Entry::withoutScopeBecause('Dedicated order browser product cleanup',fn($q)=>$q->withTrashed()->where('org_id',$org->id)->where('type_handle','product')->get()) as $entry){$entry->forceDelete();}"
         + "auth()->setUser($owner);$row=app(Kitsune\\Commerce\\Catalogue\\CatalogueWriter::class)->createSellable('ADMIN-BOARD','2000',null,'USD');echo (string)$row->id;");
 }
@@ -331,6 +331,91 @@ test.describe('Owner checkout and order administration', () => {
         expect(await page.content()).not.toMatch(/sk_test_financialBrowserNeverSent|wrong-financial-owner-password/);
         expect(php(`$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->firstOrFail();echo DB::table('commerce_financial_refunds')->where('order_id',$order->id)->count();`)).toBe('1');
         expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    });
+
+    test('reviews missing historical access through original terms and audited replacements', async ({ page }, testInfo) => {
+        const reader = php("$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('Exact historical review browser Site',fn($q)=>$q->where('slug'," + literal(SITE) + ")->firstOrFail());"
+            + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + "echo App\\Models\\Reader::createReader('review-'.bin2hex(random_bytes(6)).'@example.test',null,now())->id;");
+        const reference = fixtureOrder(SITE, reader);
+        artisan(['kitsune:blueprint', 'apply', 'storefront', '--org=orders-admin-e2e', '--no-interaction']);
+        const line = php("$order=DB::table('commerce_orders')->where('reference'," + literal(reference) + ')->firstOrFail();'
+            + "$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('Exact historical review product Site',fn($q)=>$q->whereKey($order->site_id)->firstOrFail());"
+            + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + "auth()->setUser(App\\Models\\User::withoutScopeBecause('Exact historical review fixture owner',fn($q)=>$q->where('email','alpha@kitsune.test')->firstOrFail()));"
+            + "$product=Kitsune\\Commerce\\Models\\Sellable::query()->firstOrFail();"
+            + "app(Kitsune\\Commerce\\Catalogue\\ProductWriter::class)->updateProduct($product->id,['sku'=>'ADMIN-BOARD','price_minor'=>'2000','stock'=>null],'USD',['title'=>'Current historical product','slug'=>'historical-review-product','status'=>'published','values'=>[]],[],true);"
+            + "$listing=Kitsune\\Commerce\\Models\\Listing::query()->where('sellable_id',$product->id)->firstOrFail();"
+            + "DB::table('commerce_order_lines')->where('order_id',$order->id)->update(['sellable_ref'=>$product->id,'listing_ref'=>$listing->id,'entry_ref'=>$listing->entry_id,'entitlement_name'=>'course.review','offer_terms'=>null]);"
+            + "echo DB::table('commerce_order_lines')->where('order_id',$order->id)->value('id');");
+        confirmTestOrder(reference);
+        const confirmed = php("$order=DB::table('commerce_orders')->where('reference'," + literal(reference) + ")->firstOrFail();echo DB::table('commerce_payment_receipts')->where('order_id',$order->id)->value('verified_at');");
+        const expectedExpiry = new Date(confirmed.replace(' ', 'T') + 'Z');
+        expectedExpiry.setUTCDate(expectedExpiry.getUTCDate() + 30);
+        const expiryText = expectedExpiry.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+        await page.goto(`/admin/${SITE}`);
+        await page.getByRole('link', { name: 'Orders', exact: true }).first().click();
+        await page.goto(`${ORDERS}/${reference}`);
+        const form = page.locator('form[wire\\:submit="reviewHistoricalAccess"]');
+        await expect(form).toBeVisible();
+        await page.waitForFunction(() => Boolean((document.getElementById('historical-access-line') as HTMLSelectElement & { _x_model?: unknown })?._x_model));
+        await form.getByLabel('Original purchase line', { exact: true }).selectOption(line);
+        await expect(form.locator('#historical-access-line option:checked')).toContainText('HISTORICAL-BOARD — course.review');
+        await form.getByLabel('Review decision', { exact: true }).selectOption('award');
+        await expect(form.getByText(expiryText, { exact: true })).toBeVisible();
+        await form.getByLabel('Review reason', { exact: true }).fill('Reviewed original archived purchase');
+        await form.getByLabel('Evidence reference', { exact: true }).fill('archive:browser-review');
+        await submit(page, 'reviewHistoricalAccess', 'Record access review');
+        await expect(page.getByText(/^The review could not be recorded\./)).toBeVisible();
+        await form.getByRole('checkbox').check();
+        await submit(page, 'reviewHistoricalAccess', 'Record access review');
+        await expect(page.getByText('Historical access review recorded', { exact: true }).first()).toBeVisible();
+        await expect(page.getByText('archive:browser-review', { exact: false })).toBeVisible();
+        const state = () => JSON.parse(php("$order=DB::table('commerce_orders')->where('reference'," + literal(reference) + ")->firstOrFail();echo json_encode(['reviews'=>DB::table('commerce_access_reviews')->where('order_id',$order->id)->count(),'grant'=>DB::table('entitlements')->where('source','commerce.order:'.$order->id)->first(['expires_at','revoked_at']),'original'=>DB::table('commerce_order_lines')->where('order_id',$order->id)->value('offer_terms')]);"));
+        expect(state()).toMatchObject({ reviews: 1, grant: { expires_at: expiryText.replace(' UTC', ''), revoked_at: null }, original: null });
+        await form.getByLabel('Review decision', { exact: true }).selectOption('none');
+        await form.getByLabel('Review reason', { exact: true }).fill('Corrected after reviewing invoice evidence');
+        await form.getByLabel('Evidence reference', { exact: true }).fill('archive:browser-correction');
+        await form.getByRole('checkbox').check();
+        await submit(page, 'reviewHistoricalAccess', 'Record access review');
+        expect(state().reviews).toBe(2);
+        expect(state().grant.revoked_at).not.toBeNull();
+        await expect(page.getByText('course.review — Pass remains revoked', { exact: true })).toBeVisible();
+        await testInfo.attach('historical-access-owner-correction', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        php("$order=DB::table('commerce_orders')->where('reference'," + literal(reference) + ")->firstOrFail();"
+            + "$site=Kitsune\\Core\\Models\\Site::withoutScopeBecause('Exact minimized review fixture Site',fn($q)=>$q->whereKey($order->site_id)->firstOrFail());"
+            + 'app(Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);'
+            + "auth()->setUser(App\\Models\\User::withoutScopeBecause('Exact minimized review fixture owner',fn($q)=>$q->where('email','alpha@kitsune.test')->firstOrFail()));"
+            + "$policy=app(Kitsune\\Commerce\\Privacy\\RetentionPolicies::class)->createAsOwner([],'Fixture invoice obligation','Minimize private historical review notes',Kitsune\\Commerce\\Privacy\\RetentionPolicySnapshot::CONFIRMATION_DAYS,1);"
+            + "app(Kitsune\\Commerce\\Privacy\\OrderPrivacy::class)->adoptAsOwner($order->reference,$policy->version,'Explicit fixture adoption',true);"
+            + "Carbon\\CarbonImmutable::setTestNow(Carbon\\CarbonImmutable::now('UTC')->addDays(2));app(Kitsune\\Commerce\\Privacy\\OrderPrivacy::class)->maintainOrder($order->reference);");
+        await page.reload();
+        await expect(page.getByText(/^Invoice personal data has expired\./)).toBeVisible();
+        await page.waitForFunction(() => Boolean((document.getElementById('historical-access-line') as HTMLSelectElement & { _x_model?: unknown })?._x_model));
+        await form.getByLabel('Original purchase line', { exact: true }).selectOption(line);
+        await expect(form.locator('#historical-access-line option:checked')).toContainText('HISTORICAL-BOARD — course.review');
+        await form.getByLabel('Review decision', { exact: true }).selectOption('award');
+        await form.getByLabel('Whole days from original payment confirmation', { exact: true }).fill('60');
+        const extendedExpiry = new Date(expectedExpiry);
+        extendedExpiry.setUTCDate(extendedExpiry.getUTCDate() + 30);
+        const extendedText = extendedExpiry.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+        await expect(form.getByText(extendedText, { exact: true })).toBeVisible();
+        await form.getByLabel('Review reason', { exact: true }).fill('Private notes after invoice expiry');
+        await form.getByLabel('Evidence reference', { exact: true }).fill('archive:post-expiry-browser-private');
+        await form.getByRole('checkbox').check();
+        await submit(page, 'reviewHistoricalAccess', 'Record access review');
+        expect(state().reviews).toBe(3);
+        expect(state().grant.expires_at).toBe(extendedText.replace(' UTC', ''));
+        expect(state().grant.revoked_at).toBeNull();
+        const privateReceipt = JSON.parse(php("$order=DB::table('commerce_orders')->where('reference'," + literal(reference) + ")->firstOrFail();echo json_encode(DB::table('commerce_access_reviews')->where('order_id',$order->id)->orderByDesc('id')->first(['reason','evidence','actor_id','redacted_at']));"));
+        expect(privateReceipt).toMatchObject({ reason: null, evidence: null, actor_id: null });
+        expect(privateReceipt.redacted_at).not.toBeNull();
+        expect(await page.content()).not.toContain('archive:post-expiry-browser-private');
+        await testInfo.attach('historical-access-post-expiry-review', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+
+        expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+        await page.goto(`/admin/${SITE}/roles`);
+        await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
 
     test('adopts an explicit historical policy and handles legal and delivery holds after account erasure', async ({ page }, testInfo) => {

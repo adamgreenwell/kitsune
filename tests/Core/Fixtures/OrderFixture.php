@@ -16,6 +16,7 @@ use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\Store;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Commerce\Carts\CartOwner;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\FinancialState;
@@ -72,6 +73,11 @@ final class OrderFixture
                 'order_id' => $id, 'state' => $data['state'] === 'paid' ? 'pending' : 'awaiting_payment', 'category' => null,
                 'manifest_hash' => null, 'financial_digest' => null, 'beneficiary_hash' => null,
                 'effect_count' => 0, 'replay_count' => 0, 'created_at' => $data['created_at'], 'updated_at' => $data['created_at']]);
+        }
+        if (DB::connection()->getSchemaBuilder()->hasTable(HistoricalAccess::WORK)) {
+            $reviewOrder = (object) [...$data, 'id' => $id];
+            DB::table(HistoricalAccess::WORK)->insert(['org_id' => $data['org_id'], 'site_id' => $data['site_id'],
+                'order_id' => $id, 'revision' => 0, 'head_hash' => HistoricalAccess::genesis($reviewOrder)]);
         }
         if (DB::connection()->getSchemaBuilder()->hasTable(AccessFulfillment::WORK)) {
             // Historical planting mirrors migration213, including foreign-Site attack fixtures without changing Context.

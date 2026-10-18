@@ -83,6 +83,9 @@
             @include('commerce::free-access-actions')
         @endif
         @include('commerce::orders.access-summary', ['operator' => true])
+        @if (($order['historical_access']['candidates'] ?? []) !== [] && ! ($order['privacy']['subject_erased'] ?? false))
+            @include('commerce::historical-access-actions')
+        @endif
         @include('commerce::orders.privacy-summary', ['order' => $order])
         @if ($order['payment'] !== null)
             @include('commerce::orders.financial-actions', ['actions' => $this->financialDetail()])

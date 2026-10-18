@@ -19,6 +19,7 @@ use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\FreeOrders;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
@@ -71,6 +72,7 @@ final class AccessFulfillment
             'order_id' => $order->id, 'state' => 'awaiting_payment', 'category' => null, 'manifest' => null,
             'manifest_hash' => null, 'claim_binding' => null, 'claim_hash' => null, 'claim_reader_id' => null, 'effect_count' => 0,
             'replay_count' => 0, 'created_at' => $order->created_at, 'updated_at' => $order->created_at]);
+        app(HistoricalAccess::class)->prepare($connection, $order);
     }
 
     /** Called inside paid confirmation, before its complete-graph audit. No grants belong in this transaction. */
@@ -212,8 +214,9 @@ final class AccessFulfillment
             || $work->category === 'financial_hold') {
             return ['state' => $work->state, 'category' => $work->category, 'processed' => 0];
         }
-        $contributions = $financial === null || $work->manifest === null ? [] : array_column(
-            AccessContributions::project(self::decode($work->manifest), $financial['removed_units'], $financial['blocked']),
+        $effective = $work->manifest === null ? null : app(HistoricalAccess::class)->effective($connection, $order, self::decode($work->manifest), true);
+        $contributions = $financial === null || $effective === null ? [] : array_column(
+            AccessContributions::project($effective, $financial['removed_units'], $financial['blocked']),
             null, 'entitlement',
         );
         $filedReader = $order->reader_id ?? $this->claim($connection, $order, true)?->reader_id;
@@ -233,6 +236,12 @@ final class AccessFulfillment
                 continue;
             }
             $contribution = $contributions[$effect->entitlement] ?? throw new CheckoutRefused('changed');
+            if (in_array($effect->entitlement, $effective['review_excluded'] ?? [], true)) {
+                $this->effectUpdate($connection, $order, $effect, 'omitted');
+                $processed++;
+
+                continue;
+            }
             if ($contribution['suspended']) {
                 // Keep unperformed work recoverable. A later verified failure may release the original contribution.
                 // Merely revoking an absent source would let a later guest claim or payment replay create it.
@@ -343,6 +352,45 @@ final class AccessFulfillment
         return $row === null ? null : get_object_vars($row);
     }
 
+    /** Only the owner review transaction may queue a previously excluded/expired historical offer. */
+    public function reviewed(Connection $connection, object $order): void
+    {
+        $this->inside($connection, $order);
+        $this->genericAuthority();
+        [$work, $effects, $manifest] = $this->checked($connection, $order, true);
+        if ($manifest === null || $work->state === 'suppressed' || $manifest['allocation_state'] !== 'allocated') {
+            throw new CheckoutRefused;
+        }
+        $effective = app(HistoricalAccess::class)->effective($connection, $order, $manifest, true);
+        $definitions = array_column($effective['definitions'], null, 'entitlement');
+        $originalDefinitions = array_column($manifest['definitions'], null, 'entitlement');
+        $expectedEffects = [];
+        foreach ($effects as $effect) {
+            $expectedEffects[] = get_object_vars($effect);
+            if ($originalDefinitions[$effect->entitlement]['known'] || ! in_array($effect->state, ['held', 'omitted', 'expired'], true) || ! $definitions[$effect->entitlement]['known']) {
+                continue;
+            }
+            $connection->table(self::EFFECTS)->where('id', $effect->id)->where('org_id', $order->org_id)
+                ->where('site_id', $order->site_id)->where('order_id', $order->id)
+                ->update(['state' => 'pending', 'category' => null, 'processed_at' => null]);
+            $expectedEffects[array_key_last($expectedEffects)] = [...get_object_vars($effect), 'state' => 'pending', 'category' => null, 'processed_at' => null];
+        }
+        $effects = $this->effects($connection, $order, true);
+        $pending = array_filter($effects, static fn (object $effect): bool => $effect->state === 'pending') !== [];
+        $held = array_filter($effects, static fn (object $effect): bool => $effect->state === 'held') !== [];
+        $awaiting = ($pending || $held) && $order->reader_id === null && $this->claim($connection, $order, true) === null;
+        $changes = ['state' => $awaiting ? 'awaiting_claim' : ($pending ? 'pending' : ($held ? 'held' : 'processed')),
+            'category' => ! $awaiting && ! $pending && $held ? 'unknown_terms' : null,
+            'updated_at' => CarbonImmutable::now('UTC')->format('Y-m-d H:i:s')];
+        $connection->table(self::WORK)->where('id', $work->id)->where('org_id', $order->org_id)->where('site_id', $order->site_id)
+            ->where('order_id', $order->id)->update($changes);
+        if (get_object_vars($this->parent($connection, $order, true)) !== [...get_object_vars($work), ...$changes]
+            || array_map(get_object_vars(...), $this->effects($connection, $order, true)) !== $expectedEffects) {
+            throw new CheckoutRefused;
+        }
+        $this->checked($connection, $order, true);
+    }
+
     /** Owner retry is a proof-only retry: no new beneficiary, offer, end or source can be supplied.
      * @return array{state:string,category:?string,processed:int}
      */
@@ -368,6 +416,7 @@ final class AccessFulfillment
     {
         $this->inside($connection, $order);
         [$work, $effects, $manifest] = $this->checked($connection, $order, true);
+        $manifest = $manifest === null ? null : app(HistoricalAccess::class)->effective($connection, $order, $manifest, true);
         $reader = $order->reader_id ?? $this->claim($connection, $order, true)?->reader_id;
         if ($reader !== null && (! is_string($reader) || ReaderGuard::stored($reader) !== $reader)) {
             throw new CheckoutRefused('changed');
@@ -423,10 +472,13 @@ final class AccessFulfillment
             }
             [$work, $effects, $manifest] = $this->checked($connection, $order, $lock);
 
+            $effective = $manifest === null ? null : app(HistoricalAccess::class)->effective($connection, $order, $manifest, $lock);
+            $definitions = $effective === null ? [] : array_column($effective['definitions'], null, 'entitlement');
+
             return ['access_fulfillment' => ['state' => $work->state, 'category' => $work->category,
                 'confirmed_at' => $manifest === null ? null : self::iso($manifest['confirmed_at']),
                 'effects' => array_map(static fn (object $effect): array => ['entitlement' => $effect->entitlement,
-                    'expires_at' => $effect->expires_at === null ? null : self::iso($effect->expires_at),
+                    'expires_at' => ($definitions[$effect->entitlement]['expires_at'] ?? null) === null ? null : self::iso($definitions[$effect->entitlement]['expires_at']),
                     'state' => $effect->state, 'category' => $effect->category,
                     'processed_at' => $effect->processed_at === null ? null : self::iso($effect->processed_at)], $effects)]];
         } catch (Throwable) {
@@ -448,6 +500,11 @@ final class AccessFulfillment
         }
         [$work, $effects] = $this->checked($connection, $order, true);
         if ($work->state !== 'awaiting_payment' || $effects !== [] || $work->manifest !== null) {
+            throw new CheckoutRefused;
+        }
+        $review = app(HistoricalAccess::class)->plan($connection, $order, true);
+        if ($review['revision'] !== 0 || $connection->table(HistoricalAccess::WORK)->where('id', $review['work']->id)->where('org_id', $order->org_id)
+            ->where('site_id', $order->site_id)->where('order_id', $order->id)->delete() !== 1) {
             throw new CheckoutRefused;
         }
         if ($connection->table(self::WORK)->where('id', $work->id)->where('org_id', $order->org_id)
@@ -484,6 +541,7 @@ final class AccessFulfillment
     {
         $work = $this->parent($connection, $order, $lock);
         $effects = $this->effects($connection, $order, $lock);
+        $reviews = app(HistoricalAccess::class)->plan($connection, $order, $lock);
         $erased = app(PrivacyState::class)->checked($connection, $order, $lock)['subject_erased'] ?? false;
         if (($work->state === 'suppressed') !== $erased
             || ($erased && ($work->category !== 'subject_erased' || $work->claim_binding !== null
@@ -519,11 +577,20 @@ final class AccessFulfillment
         }
         foreach ($effects as $index => $effect) {
             $definition = $manifest['definitions'][$index];
+            $reviewed = true;
+            $awarded = array_column($manifest['allocations'], 'awarded', 'line_id');
+            foreach ($manifest['lines'] as $line) {
+                if ($line['entitlement_name'] === $definition['entitlement'] && $line['offer_terms'] === null
+                    && (int) ($awarded[$line['id']] ?? 0) > 0 && ! isset($reviews['decisions'][(int) $line['id']])) {
+                    $reviewed = false;
+                }
+            }
             if ((string) $effect->work_id !== (string) $work->id || $effect->entitlement !== $definition['entitlement']
                 || $effect->source !== $definition['source'] || $effect->expires_at !== $definition['expires_at']
-                || ! in_array($effect->state, ['pending', 'held', 'granted', 'unchanged', 'revoked', 'expired'], true)
+                || ! in_array($effect->state, ['pending', 'held', 'granted', 'unchanged', 'revoked', 'expired', 'omitted'], true)
                 || ($effect->state === 'held' ? ($effect->category !== 'unknown_terms' || $definition['known'] !== false) : $effect->category !== null)
-                || ($definition['known'] === false && $effect->state !== 'held')
+                || ($definition['known'] === false && $effect->state !== 'held' && ! $reviewed)
+                || ($effect->state === 'omitted' && ($definition['known'] !== false || ! $reviewed))
                 || (in_array($effect->state, ['pending', 'held'], true) !== ($effect->processed_at === null))) {
                 throw new CheckoutRefused('changed');
             }
@@ -710,6 +777,7 @@ final class AccessFulfillment
     {
         $tables = ['commerce_order_lines' => 20, CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS,
             FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
+            HistoricalAccess::WORK => 1, HistoricalAccess::TABLE => HistoricalAccess::MAX,
             PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => 20, PaidOrders::OBLIGATIONS => 1,
             PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS, self::WORK => 1, self::EFFECTS => self::MAX_EFFECTS];
         $rows = [];

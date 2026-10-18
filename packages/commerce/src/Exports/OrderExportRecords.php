@@ -142,6 +142,13 @@ final class OrderExportRecords
                 }
             }
         }
+        foreach ($record['historical_access']['history'] as $review) {
+            $line = $lineReferences[$review['line_id']] ?? throw new ExportRefused;
+            yield self::row($base, 'historical_access_review', $review['reference'], $line,
+                ['kind' => $review['decision'], 'revision' => $review['revision'], 'line_reference' => $line,
+                    'offer_kind' => $review['terms']['kind'] ?? null, 'offer_duration_days' => $review['terms']['days'] ?? null,
+                    'created_at' => self::instant($review['created_at'])]);
+        }
         foreach ($record['allocations'] as $allocation) {
             $line = self::lineReference($lineReferences, $allocation['line_ref']);
             yield self::row($base, 'allocation', 'allocation:'.$line, isset($record['free_completion']) ? 'free-completion' : 'payment',
