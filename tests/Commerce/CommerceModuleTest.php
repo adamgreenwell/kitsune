@@ -115,7 +115,7 @@ it('hands the tracked commerce migration directory to the kernel migrator', func
 
     expect($path)->not->toBeNull()
         ->and(is_dir($path))->toBeTrue()
-        ->and(glob($path.'/*.php'))->toHaveCount(23);
+        ->and(glob($path.'/*.php'))->toHaveCount(24);
 
     // Real catalogue DDL is fixture-migrated before the wrapper on engine legs; the kernel still owns its path.
     $migrator = Mockery::mock(Migrator::class);

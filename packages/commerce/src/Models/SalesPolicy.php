@@ -18,6 +18,7 @@ use InvalidArgumentException;
 use Kitsune\Commerce\Persistence\CommerceSetupValues;
 use Kitsune\Commerce\Persistence\GuardedCommerceSetupBuilder;
 use Kitsune\Commerce\Persistence\GuardsCommerceSetupWrites;
+use Kitsune\Commerce\Shipping\InternationalShipping;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -41,6 +42,9 @@ use RuntimeException;
  * @property int|null $height_mm
  * @property int|null $tare_grams
  * @property int|null $units_per_parcel
+ * @property string|null $customs_description
+ * @property string|null $customs_origin_country
+ * @property string|null $customs_tariff_number
  * @property int $version
  */
 #[OrgScoped]
@@ -56,13 +60,14 @@ final class SalesPolicy extends Model implements RequiresModelSave
 
     public const PACKING_FIELDS = ['weight_grams', 'length_mm', 'width_mm', 'height_mm', 'tare_grams', 'units_per_parcel'];
 
-    public const FIELDS = ['tax_class', 'delivery_kind', ...self::PACKING_FIELDS];
+    public const FIELDS = ['tax_class', 'delivery_kind', ...self::PACKING_FIELDS, ...InternationalShipping::SKU_FIELDS];
 
     protected $table = 'commerce_sales_policies';
 
     protected $guarded = [];
 
     protected $attributes = [
+        'customs_description' => null, 'customs_origin_country' => null, 'customs_tariff_number' => null,
         'version' => 1, 'weight_grams' => null, 'length_mm' => null, 'width_mm' => null,
         'height_mm' => null, 'tare_grams' => null, 'units_per_parcel' => null,
     ];
@@ -121,7 +126,7 @@ final class SalesPolicy extends Model implements RequiresModelSave
             $result[$field] = CommerceSetupValues::integer($value, $maximum, zero: $field === 'tare_grams');
         }
 
-        return $result;
+        return [...$result, ...InternationalShipping::sku($values, $kind === 'physical')];
     }
 
     public function refuseInvalidSetupValues(): void

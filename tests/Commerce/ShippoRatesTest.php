@@ -63,6 +63,85 @@ final class ShippoRatesTest extends TestCase
         self::assertCount(0, $mock);
     }
 
+    #[DataProvider('modes')]
+    public function test_international_rates_require_checked_customs_and_exact_mode_carrier_accounts(bool $test): void
+    {
+        $fixture = self::shipment($test);
+        $id = str_repeat($test ? 'a' : 'b', 32);
+        $fixture['rates'][0]['carrier_account'] = $id;
+        [$client, $mock] = self::client(self::response($fixture));
+        $to = self::address();
+        $to['address']['country'] = 'CA';
+        $rate = $client->quote(self::secret($test), $test, self::address(), $to, [self::parcel()], 'USD', self::international())[0];
+        self::assertTrue($rate['international']);
+        self::assertArrayNotHasKey('carrier_account', $rate);
+        self::assertArrayNotHasKey('certify_signer', $rate);
+        $payload = json_decode((string) $mock->getLastRequest()->getBody(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame([$id], $payload['carrier_accounts']);
+        self::assertSame(['contents_type' => 'MERCHANDISE', 'non_delivery_option' => 'RETURN', 'incoterm' => 'DDU',
+            'certify' => true, 'certify_signer' => 'Explicit Certifier', 'items' => [
+                ['description' => 'Printed book', 'origin_country' => 'GB', 'tariff_number' => '490199', 'quantity' => 3,
+                    'net_weight' => '750', 'mass_unit' => 'g', 'value_amount' => '10.01', 'value_currency' => 'USD'],
+            ]], $payload['customs_declaration']);
+    }
+
+    #[DataProvider('invalidInternational')]
+    public function test_invalid_customs_inputs_never_make_a_request(array $context): void
+    {
+        [$client, $mock] = self::client(self::response(self::shipment()));
+        $to = self::address();
+        $to['address']['country'] = 'CA';
+        try {
+            $client->quote(self::secret(), true, self::address(), $to, [self::parcel()], 'USD', $context);
+            self::fail('Unsafe customs input admitted.');
+        } catch (ShippingUnavailable $failure) {
+            self::assertNull($failure->getPrevious());
+            self::assertNull($mock->getLastRequest());
+        }
+    }
+
+    public static function invalidInternational(): iterable
+    {
+        yield 'missing profile' => [[]];
+        foreach (['certified' => false, 'certify_signer' => '', 'destinations' => ['GB'],
+            'carrier_accounts' => ['test' => [], 'live' => [str_repeat('b', 32)]]] as $key => $value) {
+            $context = self::international();
+            $context['profile'][$key] = $value;
+            yield $key => [$context];
+        }
+        foreach (['customs_description' => null, 'customs_origin_country' => 'gb', 'customs_tariff_number' => '4901.99',
+            'net_minor' => '0', 'quantity' => 0, 'weight_grams' => 0, 'extra' => 'private'] as $key => $value) {
+            $context = self::international();
+            $context['items'][0][$key] = $value;
+            yield $key => [$context];
+        }
+        $context = self::international();
+        $context['profile']['carrier_accounts']['test'] = ['unchecked-id'];
+        yield 'unchecked account' => [$context];
+        $context = self::international();
+        $context['profile']['extra'] = 'private';
+        yield 'profile extras' => [$context];
+    }
+
+    public function test_an_international_rate_from_an_unselected_account_is_refused(): void
+    {
+        $fixture = self::shipment();
+        $fixture['rates'][0]['carrier_account'] = str_repeat('b', 32);
+        [$client] = self::client(self::response($fixture));
+        $to = self::address();
+        $to['address']['country'] = 'CA';
+        $this->expectException(ShippingUnavailable::class);
+        $client->quote(self::secret(), true, self::address(), $to, [self::parcel()], 'USD', self::international());
+    }
+
+    private static function international(): array
+    {
+        return ['profile' => ['destinations' => ['CA'], 'carrier_accounts' => ['test' => [str_repeat('a', 32)], 'live' => [str_repeat('b', 32)]],
+            'certify_signer' => 'Explicit Certifier', 'certified' => true],
+            'items' => [['customs_description' => 'Printed book', 'customs_origin_country' => 'GB', 'customs_tariff_number' => '490199',
+                'quantity' => 3, 'weight_grams' => 250, 'net_minor' => '1001']]];
+    }
+
     /** @return iterable<string,array{bool}> */
     public static function modes(): iterable
     {
