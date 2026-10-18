@@ -202,6 +202,31 @@ it('keeps evidenced guest access awaiting the immutable whole-order claim', func
         ->and(app(OrderReaderData::class)->record(DB::connection(), $guest)['access_fulfillment']['state'])->toBe('awaiting_claim');
 });
 
+it('reviews an unclaimed guest without reading or locking unrelated reader entitlements', function (): void {
+    Fx::writer()->grant($this->reader->id, 'course.purchased', 'comp.staff:guest-review', null);
+    $guest = FinancialFx::purchase($this->site, null, [['days' => 30, 'quantity' => 1, 'unknown' => true]]);
+    $line = (int) DB::table('commerce_order_lines')->where('order_id', $guest->id)->value('id');
+    $before = DB::table('entitlements')->get()->all();
+    $queries = [];
+    $dispatcher = DB::getEventDispatcher();
+    $copy = clone $dispatcher;
+    DB::setEventDispatcher($copy);
+    $copy->listen(QueryExecuted::class, function ($event) use (&$queries): void {
+        if (str_starts_with(strtolower($event->sql), 'select') && preg_match('/["`]entitlements["`]/', $event->sql) === 1) {
+            $queries[] = $event->sql;
+        }
+    });
+    try {
+        app(HistoricalAccess::class)->decideAsOwner($guest->reference, $line, 'award', ['version' => 1, 'kind' => 'permanent'],
+            0, 'Guest purchase evidence reviewed', 'archive:guest-with-unrelated-readers', bin2hex(random_bytes(16)), true);
+    } finally {
+        DB::setEventDispatcher($dispatcher);
+    }
+    expect($queries)->toBe([])
+        ->and(DB::table('entitlements')->get()->all())->toEqual($before)
+        ->and(app(OrderReaderData::class)->record(DB::connection(), $guest)['access_fulfillment']['state'])->toBe('awaiting_claim');
+});
+
 it('resolves a missing line without removing another line for the same entitlement', function (): void {
     $order = FinancialFx::purchase($this->site, (string) $this->reader->id, [
         ['days' => 30, 'quantity' => 1, 'unknown' => true], ['days' => 60, 'quantity' => 1],

@@ -437,12 +437,14 @@ final class HistoricalAccess
      */
     private function sourceWitness(Connection $connection, object $order, ?string $reader, array $allowedNames): string
     {
-        $query = $connection->table('entitlements')->useWritePdo()->where('org_id', $order->org_id)->where('site_id', $order->site_id);
-        if ($reader !== null) {
-            $query->where('reader_id', $reader);
-            if ($allowedNames !== []) {
-                $query->where(fn ($q) => $q->where('source', '!=', 'commerce.order:'.$order->id)->orWhereNotIn('entitlement', $allowedNames));
-            }
+        // Unclaimed orders have no beneficiary and cannot reconcile an entitlement source. Never scan the Site.
+        if ($reader === null) {
+            return hash('sha256', '');
+        }
+        $query = $connection->table('entitlements')->useWritePdo()->where('org_id', $order->org_id)
+            ->where('site_id', $order->site_id)->where('reader_id', $reader);
+        if ($allowedNames !== []) {
+            $query->where(fn ($q) => $q->where('source', '!=', 'commerce.order:'.$order->id)->orWhereNotIn('entitlement', $allowedNames));
         }
         $hash = hash_init('sha256');
         foreach ($query->orderBy('id')->lockForUpdate()->cursor() as $row) {
