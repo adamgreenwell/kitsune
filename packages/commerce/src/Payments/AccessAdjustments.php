@@ -152,9 +152,12 @@ final class AccessAdjustments
             $target = $targets[$effect->entitlement] ?? throw new CheckoutRefused('changed');
             if (! $target['known']) {
                 $unknown = true;
-                $this->updateEffect($connection, $order, $effect, ['state' => 'held', 'processed_digest' => $financial['digest'], 'processed_at' => self::now()]);
+                if (in_array($initial[$effect->entitlement]->state, ['held', 'pending', 'omitted', 'expired'], true)) {
+                    $this->updateEffect($connection, $order, $effect, ['state' => 'held', 'processed_digest' => $financial['digest'], 'processed_at' => self::now()]);
 
-                continue;
+                    continue;
+                }
+                // A later owner decision may hold a previously awarded source. Suspend only this order's contribution.
             }
             $owned = self::witness($effect->revocation_witness);
             $ownedBefore = $owned !== null && $this->owns($connection, $order, $reader, $effect, $owned);

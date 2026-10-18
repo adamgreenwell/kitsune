@@ -62,6 +62,7 @@ incomplete. Customer/line/refund rows do not increase the order-parent count.
 | `automatic_refund`, `refund_attempt` | Unavailable-item obligation and local retry outcome, without provider/request capabilities. |
 | `refund`, `refund_selection`, `financial_observation` | Local refund intent/outcome, selected original line and quantity with component amounts, and verified refund/dispute observations. |
 | `access_claim`, `access`, `access_effect`, `financial_access`, `financial_access_effect` | Claim time, original fulfillment and current financial access state/expiry. |
+| `historical_access_review` | Original line, review revision/decision, evidenced term and time; private reasons, evidence and actors are excluded. |
 | `privacy`, `billing` | Privacy/hold flags, frozen policy version/deadline; separately opted-in permitted billing field/value records. |
 
 Line references preserve the original line identity, so two lines with the same title remain distinguishable.

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutRefused;
 use Kitsune\Commerce\Payments\FinancialSignals;
@@ -131,6 +132,9 @@ it('does not retire a sibling Site checkout whose order reference equals a purge
     DB::table('commerce_orders')->where('id', $attempt->order_id)->update(['reference' => $this->order->reference]);
     DB::table(PrivacyState::TABLE)->where('order_id', $attempt->order_id)->update(['order_reference' => $this->order->reference]);
     DB::table(FinancialState::WORK)->where('order_id', $attempt->order_id)->update(['order_reference' => $this->order->reference]);
+    $reviewOrder = DB::table('commerce_orders')->where('id', $attempt->order_id)->sole();
+    DB::table(HistoricalAccess::WORK)->where('order_id', $attempt->order_id)
+        ->update(['head_hash' => HistoricalAccess::genesis($reviewOrder)]);
     DB::table(StripeEventInbox::ROUTING)->where('attempt_id', $attempt->id)->update(['order_reference' => $this->order->reference]);
     $attempt = PaidOrderFixture::refresh($attempt);
     $order = DB::table('commerce_orders')->where('id', $attempt->order_id)->sole();

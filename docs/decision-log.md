@@ -6603,6 +6603,39 @@ keep their existing authority. Awarded, awaiting-claim, held, expired, refunded/
 retain their checked states. This is presentation only: no financial, entitlement, claim, privacy or live-admission
 transition changes. Qualification and the pending maintainer merge are tracked on #283 and its linked PR.
 
+
+### Amendment — Evidenced review of missing historical access terms, 2026-10-17 (#281)
+
+**Adam's decisions.** An owner may keep an original named unknown offer held, record that no access was sold,
+or award evidenced permanent/fixed-term access. Each decision requires a reason and evidence reference.
+A correction is another audited decision with new evidence; it never overwrites the earlier review or purchase.
+This is the explicit operator resolution deferred by #200, not a reinterpretation of NULL as permanent access.
+Fixed terms remain whole UTC days from the original durable payment confirmation, including replacements.
+
+**Separate custody.** Reviews refer only to original lines with a named missing offer and positive awarded units.
+They cannot choose a new entitlement or beneficiary, rewrite invoice/offer snapshots, create awarded quantities,
+release financial holds or transfer an immutable whole-order guest claim. A separate bounded append-only chain,
+with an absence-detecting parent, expected revision and request identity, records each owner's decision. Fresh
+owner authority, exact Org/Site/order, original purchase custody and persisted audit identity must survive host
+callbacks. Interrupted/refused transactions leave neither a reviewed award nor an audit claiming success.
+
+**One contribution path.** Original manifests remain immutable; reviewed terms derive separate checked inputs
+for initial fulfillment, subsequent refunds/disputes and retention promises. Multiple surviving lines still
+combine by permanent/latest-end rules without quantity stacking. No-access affects only its reviewed line;
+unresolved lines remain held. A later hold/no-access decision suspends only this order's contribution, and a
+new award may restore only the remaining evidenced term through the existing owned-revocation mechanism.
+Unrelated purchases and complimentary sources remain independent. Recovery cannot recreate an erased completed
+source, override a later manual revocation or attach access through a withdrawn reader/guest proof.
+
+**Privacy and staging.** Buyer projections exclude private reasons, evidence and actor identifiers. Personal
+review notes and actor references are removed on subject erasure or invoice expiry; minimal decision/hash custody
+remains with retained purchase history and is removed by the final checked order purge. Invoice expiry does not
+trap unresolved access: a later review immediately minimizes its new private notes while retaining the checked
+decision and original completion clock. Erased subjects cannot
+receive replacement awards. The workflow uses local transactions only: no provider I/O, Org activation, release
+or deployment authority is implied. Qualification is tracked in #281 and its implementation PR; local tests,
+browser/engine evidence, exact-head CI and maintainer merge remain separate gates.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

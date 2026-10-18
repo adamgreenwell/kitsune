@@ -320,3 +320,24 @@ Product editors keep the existing Stock screen and its current Site listing rest
 page is owner-only. It retains the same operational reasons and staff references already recorded by the ledger,
 without looking up names/emails or adding buyer details. Keep personal information out of adjustment reasons.
 Buyer retention and erasure do not remove the once-only order/line stock provenance.
+
+## Historical access review
+
+Historical named offers with missing duration terms remain held until an owner explicitly reviews the original
+purchase. Changing today's product does not resolve them. On the owner order detail, select the original line,
+record keep-held/no-access/evidenced-award, and supply a reason and evidence reference. Evidence references should
+identify an external archive record, not copy buyer personal data, credentials or document contents into Kitsune.
+An award uses permanent access or 1–36,500 whole UTC days from the original durable payment confirmation. The
+form previews a fixed expiry; an already-ended result does not grant new time.
+
+Each replacement is a new audited review. Reload stale forms; replaying the same request does not append twice.
+The original invoice, terms, recipient, payment, stock and awarded quantities are preserved. Refunds/disputes and
+whole-order guest claims remain authoritative. Reviewing a guest purchase never attaches it by matching email.
+Current access summaries show surviving contributions, separately from historical review decisions.
+
+Private review notes and actor references are removed when the account is erased or invoice retention expires.
+Buyer exports contain only safe decision/term history. Owners may still resolve access after invoice expiry;
+new private notes/actor references are immediately minimized rather than retained beyond that deadline.
+Minimal checked review custody remains until the final
+order purge; it never permits recreating erased access or bypassing a manual revocation. No real Stripe/Shippo
+call is needed for this local review workflow. Implementation and qualification are in progress in #281.

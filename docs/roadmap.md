@@ -472,7 +472,9 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
       (#199) records captured test payments, allocates available units under shared stock locks and creates exact
       unavailable-unit refund obligations with bounded recovery. [Purchased access](purchased-access.md) (#200)
       freezes permanent or whole-day terms, awards positively allocated items through recoverable work and binds
-      guest purchases through explicit signed-in claims. Historical unknown terms remain held. [Refunds and
+      guest purchases through explicit signed-in claims. Historical unknown terms remain held until an owner records an
+      evidenced, audited review (#281); replacements preserve the original purchase and confirmation clock, and
+      refunded/disputed units, withdrawn ownership and independent revocations remain authoritative. [Refunds and
       disputes](refunds-and-disputes.md) (#201) add owner-selected delivered-unit refunds, explicit external-refund
       attribution, current financial observations and recoverable source suspension, revision and restoration.
       Stock returns remain separate reasoned adjustments. Owner-only retained stock history (#279) adds bounded historical SKU/product/date browsing after product removal; editors retain current Site listing restrictions. [Paid order retention and privacy](paid-retention-and-privacy.md)

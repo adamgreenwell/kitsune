@@ -34,7 +34,7 @@
                     <p>{{ __('commerce::access.category_unknown_terms', [], 'en') }}</p>
                 @elseif ($effect['expires_at'] !== null)
                     <p>{{ __('commerce::access.expires', [], 'en') }}: <span dir="ltr">{{ $effect['expires_at'] }}</span></p>
-                @else
+                @elseif ($effect['state'] !== 'omitted')
                     <p>{{ __('commerce::access.permanent', [], 'en') }}</p>
                 @endif
             </li>
@@ -43,3 +43,13 @@
     </section>
 @endif
 @include('commerce::orders.financial-summary')
+
+@if (($order['historical_access']['history'] ?? []) !== [])
+    <section aria-label="{{ __('commerce::historical.history') }}">
+        <h3>{{ __('commerce::historical.history') }}</h3>
+        <p>{{ __('commerce::historical.summary') }}</p>
+        <ul>@foreach (array_slice($order['historical_access']['history'], -20) as $review)
+            <li>{{ __('commerce::historical.'.$review['decision']) }} — <span dir="ltr">{{ $review['created_at'] }}</span></li>
+        @endforeach</ul>
+    </section>
+@endif
