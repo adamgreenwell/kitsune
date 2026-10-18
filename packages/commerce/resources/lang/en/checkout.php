@@ -9,6 +9,17 @@ declare(strict_types=1);
  */
 
 return [
+    'international_title' => 'International shipping',
+    'international_enabled' => 'Enable configured international destinations',
+    'international_help' => 'Only the listed destinations and carrier accounts may quote internationally. Enter one code or account ID per line. Duties are paid by the recipient; undeliverable parcels are returned. Quotes do not buy labels or confirm shipment compliance. Routes needing additional customs or carrier fields are unsupported.',
+    'international_destinations' => 'Allowed destination country codes (uppercase, two letters)',
+    'international_test_accounts' => 'Allowed test carrier account IDs',
+    'international_live_accounts' => 'Allowed live carrier account IDs',
+    'certify_signer' => 'Person responsible for customs information',
+    'certified' => 'The named person confirms these customs inputs are truthful and authorizes their use for quotes.',
+    'customs_help' => 'International shipping requires all three customs fields for each physical SKU. Values use the original net selling amount in your organisation’s currency. Zero-value goods cannot ship internationally.',
+    'customs_description' => 'Customs description', 'customs_origin_country' => 'Manufacturing origin country code', 'customs_tariff_number' => 'Tariff number (6–12 digits)',
+    'international_duties' => 'International delivery: import duties and import charges are payable by the recipient and are not included in this quote. Undeliverable parcels are returned.',
     'completed_free' => 'Completed free of charge',
     'title' => 'Checkout settings', 'settings_section' => 'Prices and shipping',
     'settings_help' => 'These choices apply to every site in your organisation. Tax rates are entered and maintained by you.',
@@ -16,7 +27,7 @@ return [
     'inclusive' => 'Include tax', 'exclusive' => 'Add tax at checkout', 'choose' => 'Choose an option',
     'shipping_tax_class' => 'Shipping tax class', 'tax_class_help' => 'Use a short code such as standard or shipping. Add a matching tax rule for each destination you sell to.',
     'ship_from_name' => 'Dispatch name', 'origin' => 'Dispatch address',
-    'origin_help' => 'Required for physical products. Live Shippo quotes currently support domestic deliveries only; missing rates never become free shipping.',
+    'origin_help' => 'Required for physical products. International deliveries need explicit customs and destination/carrier configuration; missing rates never become free shipping.',
     'line1' => 'Address line 1', 'line2' => 'Address line 2', 'city' => 'City', 'region' => 'State or region', 'postal_code' => 'Postal code', 'country' => 'Country code',
     'save_settings' => 'Save checkout settings', 'settings_saved' => 'Checkout settings saved',
     'rates_section' => 'Tax rules', 'rates_help' => 'Enter the rates that apply to your business. A region-specific rule takes precedence over the country-wide * rule. Add an explicit 0% rule where appropriate; a missing rule prevents checkout.',

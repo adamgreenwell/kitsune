@@ -229,7 +229,7 @@ The calculator splits each SKU by that capacity, never combines different SKUs, 
 Remove a sales policy explicitly before deleting its shared product. Existing orders retain their independent history.
 
 Set the **Shippo API token** on the existing Credentials page for the active test/live mode. The first quote client
-supports domestic shipments in the org currency. It creates shipment/rate requests only; it purchases no labels and
+supports domestic shipments and explicitly configured international shipments in the org currency. It creates shipment/rate requests only; it purchases no labels and
 performs no currency conversion. International customs support is tracked in [#271](https://github.com/adamgreenwell/kitsune/issues/271).
 Tests use provider fixtures. A passing test or a saved key is not live carrier qualification or deployment evidence.
 
@@ -244,6 +244,32 @@ taken, no stock reserved and no entitlement granted. The buyer can cancel, downl
 can inspect, cancel or erase through the guarded admin surface. Repeating the same submission returns its original order,
 and a second prepared order for the same cart revision is refused until the first is cancelled. Cart pruning or later
 catalogue changes do not rewrite the saved snapshot. Unknown access duration remains unknown.
+
+
+### International quote configuration
+
+In **Storefront → Checkout settings**, enable international shipping and enter the destination country codes and
+exact Shippo carrier account IDs, one per line. Test and live accounts are separate; an empty mode list cannot
+quote internationally. Enter the actual person responsible for customs information and explicitly confirm their
+truthful inputs. Configure applicable destination tax rules as well. Existing credentials and live admission
+requirements still apply; enabling this configuration does not activate live payment checkout.
+
+For every physical shared SKU, enter a customs description (up to 50 characters), manufacturing-origin country
+(two uppercase letters), and tariff number (6–12 ASCII digits, without punctuation). These are owner-maintained
+values, never product-copy or dispatch-country guesses. Domestic goods may have partial profiles; international
+goods require all fields. The declared value is the entire line's original net selling amount in the Org currency,
+with no guessed FX or unit rounding. Zero-value goods cannot quote internationally in this slice.
+
+Quotes use recipient-paid duties (DDU) and return on non-delivery. Import duties/charges are outside the quote and
+are shown as such to buyers. Only listed carrier accounts may return rates. Unsupported destinations, missing
+customs/configuration and carrier failures remain unavailable rather than receiving a domestic or free fallback.
+Countries/carriers requiring extra exporter IDs, filings or contact fields are unsupported in this first slice;
+no legal exemption or compliance determination is inferred. A quote does not buy a label or prove a shipment can
+be fulfilled. Label purchase and actual delivered quantities require a future separately checked workflow.
+
+The retained order/export stores only the international/recipient-duty policy marker. Certifier names, carrier
+account lists and raw customs declarations stay out of buyer and financial history. Quote inputs remain in the
+bounded server-side quote session and are revalidated if the owner changes settings or SKU data during I/O.
 
 ## Guest recovery and order privacy
 

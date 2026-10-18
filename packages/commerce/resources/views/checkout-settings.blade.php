@@ -33,6 +33,20 @@
                     <x-filament::input.wrapper><x-filament::input id="checkout-address-{{ $field }}" wire:model="settings.ship_from_address.{{ $field }}" type="text" /></x-filament::input.wrapper></div>
                 @endforeach
             </fieldset>
+            <fieldset class="space-y-3">
+                <legend class="font-medium">{{ __('commerce::checkout.international_title') }}</legend>
+                <p>{{ __('commerce::checkout.international_help') }}</p>
+                <label class="flex items-center gap-2"><input type="checkbox" wire:model.live="international.enabled"> {{ __('commerce::checkout.international_enabled') }}</label>
+                @if ($this->international['enabled'] ?? false)
+                    @foreach (['destinations', 'test_accounts', 'live_accounts'] as $field)
+                        <div><label for="checkout-international-{{ $field }}" class="block font-medium">{{ __('commerce::checkout.international_'.$field) }}</label>
+                            <textarea id="checkout-international-{{ $field }}" wire:model="international.{{ $field }}" rows="3" maxlength="4096" class="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-950 dark:border-gray-700 dark:bg-gray-900 dark:text-white"></textarea></div>
+                    @endforeach
+                    <div><label for="checkout-certifier" class="block font-medium">{{ __('commerce::checkout.certify_signer') }}</label>
+                        <x-filament::input.wrapper><x-filament::input id="checkout-certifier" wire:model="international.certify_signer" type="text" maxlength="200" required /></x-filament::input.wrapper></div>
+                    <label class="flex items-center gap-2"><input type="checkbox" wire:model="international.certified"> {{ __('commerce::checkout.certified') }}</label>
+                @endif
+            </fieldset>
             <div role="alert">@error('settings') <p>{{ $message }}</p> @enderror</div>
             <x-filament::button type="submit" wire:loading.attr="disabled">{{ __('commerce::checkout.save_settings') }}</x-filament::button>
         </form>
@@ -86,6 +100,11 @@
                     @foreach (\Kitsune\Commerce\Models\SalesPolicy::PACKING_FIELDS as $field)
                         <div><label for="checkout-pack-{{ $field }}" class="block font-medium">{{ __('commerce::checkout.'.$field) }}</label>
                             <x-filament::input.wrapper><x-filament::input id="checkout-pack-{{ $field }}" wire:model="policy.{{ $field }}" type="text" inputmode="numeric" pattern="[0-9]+" required /></x-filament::input.wrapper></div>
+                    @endforeach
+                    <p>{{ __('commerce::checkout.customs_help') }}</p>
+                    @foreach (\Kitsune\Commerce\Shipping\InternationalShipping::SKU_FIELDS as $field)
+                        <div><label for="checkout-{{ $field }}" class="block font-medium">{{ __('commerce::checkout.'.$field) }}</label>
+                            <x-filament::input.wrapper><x-filament::input id="checkout-{{ $field }}" wire:model="policy.{{ $field }}" type="text" :maxlength="match($field) {'customs_description' => 50, 'customs_origin_country' => 2, default => 12}" /></x-filament::input.wrapper></div>
                     @endforeach
                 @endif
                 <div role="alert">@error('policy') <p>{{ $message }}</p> @enderror</div>

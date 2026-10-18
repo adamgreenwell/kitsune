@@ -154,3 +154,15 @@ it('serves a private plain outage boundary from cached routes when commerce did 
     expect($response['body'])->toContain('unavailable')->not->toContain('private-provider-absent-bootstrap-fault', 'private-query-secret')
         ->and($result['log'])->not->toContain('private-provider-absent-bootstrap-fault', 'private-query-secret');
 });
+
+it('shows recipient duties at international quote and retained order pages without private customs details', function (): void {
+    $result = orderPageProbe('physical-international', true);
+    expect(array_column($result['responses'], 'status'))->toBe([200, 303, 200, 200, 303, 200]);
+    foreach ([3, 5] as $index) {
+        expect($result['responses'][$index]['body'])->toContain('payable by the recipient', 'not included in this quote')
+            ->not->toContain('Private Certifier', '490199');
+        orderPageHeaders($result['responses'][$index]);
+    }
+    expect(json_decode($result['orders'][0]['shipping'], true, flags: JSON_THROW_ON_ERROR)['international'])->toBeTrue()
+        ->and($result['evidence']['providerRequest']['customs_declaration']['items'][0]['value_amount'])->toBe('40.00');
+});

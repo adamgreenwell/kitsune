@@ -118,7 +118,8 @@ final class OrderExportRecords
         if ($record['shipping'] !== null) {
             $shipping = $record['shipping'];
             yield self::row($base, 'shipping', 'shipping', $actual->reference,
-                self::fields($shipping, ['carrier', 'service', 'currency']) + ['amount_minor' => $shipping['amountMinor'],
+                self::fields($shipping, ['carrier', 'service', 'currency']) + [
+                    ...(($shipping['international'] ?? false) ? ['international' => true, 'duties_payor' => 'recipient', 'non_delivery_option' => 'return'] : []), 'amount_minor' => $shipping['amountMinor'],
                     'tax_class' => $shipping['taxClass'], 'tax_mode' => $shipping['taxMode'], 'tax_rate_parts' => $shipping['taxRateParts'],
                     'net_minor' => $shipping['net'], 'tax_minor' => $shipping['tax'], 'gross_minor' => $shipping['gross']]);
         }

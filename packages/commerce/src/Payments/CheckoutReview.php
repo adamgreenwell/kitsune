@@ -60,7 +60,7 @@ final class CheckoutReview
                     throw new OrderRefused;
                 }
                 $rates = app(ShippoRates::class)->quote(app(CredentialReader::class)->secret(OrderQuotes::SHIPPO_SLOT), StripeMode::isTest($review['record']['mode']),
-                    $review['snapshot']['shipFrom'], $review['details']['delivery'], $review['snapshot']['parcels'], $review['record']['currency']);
+                    $review['snapshot']['shipFrom'], $review['details']['delivery'], $review['snapshot']['parcels'], $review['record']['currency'], $review['snapshot']['international']);
                 foreach ($rates as $rate) {
                     $original = $review['record']['shipping'];
                     if ($rate['carrier'] === $original['carrier'] && $rate['service'] === $original['service']
@@ -217,7 +217,8 @@ final class CheckoutReview
         $shipping = $record['shipping'];
         $shippingTax = ['net' => '0', 'tax' => '0', 'gross' => '0'];
         if ($shipping !== null) {
-            if ($snapshot['parcels'] === [] || $snapshot['shippingTaxClass'] !== $shipping['taxClass']
+            if (($snapshot['international'] !== null) !== ($shipping['international'] ?? false)
+                || $snapshot['parcels'] === [] || $snapshot['shippingTaxClass'] !== $shipping['taxClass']
                 || $snapshot['shippingTaxMode'] !== $shipping['taxMode'] || $snapshot['shippingRate'] !== $shipping['taxRateParts']) {
                 throw new OrderRefused('stale');
             }
