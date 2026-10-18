@@ -204,6 +204,44 @@ jobs:
           DB_PASSWORD: kitsune
         run: vendor/bin/pest --colors=always
 
+  # The ordinary engine services use setting 0. #263's setting-1 custody boundary must execute,
+  # not silently skip. These two small jobs initialize their own disposable folding servers.
+  unicode-custody:
+    name: Unicode table prefixes / ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    needs: scope
+    if: contains(fromJSON(needs.scope.outputs.engine), 'mysql')
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: mysql
+            image: mysql:8.4
+          - engine: mariadb
+            image: mariadb:10.6
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, sqlite3, pdo_mysql, mbstring
+          coverage: none
+      - uses: ramsey/composer-install@4.0.0
+      - name: Prove Unicode ownership on a folding server
+        env:
+          DB_CONNECTION: ${{ matrix.engine }}
+          DB_IMAGE: ${{ matrix.image }}
+        run: bash .github/scripts/unicode-custody.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unicode-custody-${{ matrix.engine }}
+          path: |
+            ${{ runner.temp }}/unicode-${{ matrix.engine }}.xml
+            ${{ runner.temp }}/unicode-${{ matrix.engine }}-identifiers.json
+          if-no-files-found: warn
+
   # The only job with Node anywhere near it. ADR-024 keeps the browser layer
   # narrow on purpose: it exists for the class of defect the PHP suite
   # structurally cannot see - URL generation across page boundaries, and
