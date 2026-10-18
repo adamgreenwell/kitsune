@@ -17,7 +17,7 @@ final class ExportFormat
 {
     public const FORMATS = ['jsonl', 'csv'];
 
-    public const TYPES = ['manifest', 'customer', 'order', 'line', 'shipping', 'payment', 'free_completion', 'free_access_correction', 'allocation',
+    public const TYPES = ['manifest', 'customer', 'order', 'line', 'shipping', 'payment', 'free_completion', 'free_access_correction', 'historical_access_review', 'allocation',
         'automatic_refund', 'refund_attempt', 'refund', 'refund_selection', 'financial_observation',
         'access_claim', 'access', 'access_effect', 'financial_access', 'financial_access_effect', 'privacy', 'billing', 'complete'];
 

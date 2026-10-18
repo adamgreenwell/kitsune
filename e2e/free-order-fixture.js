@@ -42,7 +42,7 @@ function seed() {
 function clear() {
     php(context()
         + "DB::table('entitlements')->where('org_id',$org->id)->delete();"
-        + "foreach(['commerce_free_access_corrections','commerce_free_access_work','commerce_free_completions','commerce_privacy_holds','commerce_privacy_deliveries','commerce_privacy_transitions','commerce_order_privacy','commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_order_access_tokens','commerce_order_allocations','commerce_order_lines','commerce_orders','commerce_carts','commerce_tax_rates','commerce_sales_policies','commerce_settings'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}");
+        + "foreach(['commerce_access_reviews','commerce_access_review_work','commerce_free_access_corrections','commerce_free_access_work','commerce_free_completions','commerce_privacy_holds','commerce_privacy_deliveries','commerce_privacy_transitions','commerce_order_privacy','commerce_access_adjustment_effects','commerce_access_adjustment_work','commerce_financial_observations','commerce_financial_refunds','commerce_financial_work','commerce_access_effects','commerce_access_work','commerce_order_claims','commerce_order_access_tokens','commerce_order_allocations','commerce_order_lines','commerce_orders','commerce_carts','commerce_tax_rates','commerce_sales_policies','commerce_settings'] as $table){DB::table($table)->where('org_id',$org->id)->delete();}");
 }
 
 function stock(quantity) {

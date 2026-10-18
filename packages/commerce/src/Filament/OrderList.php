@@ -16,11 +16,14 @@ use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Schemas\Schema;
 use Illuminate\Pagination\Paginator;
 use Kitsune\Commerce\Models\Order;
+use Kitsune\Commerce\Offers\OfferTerms;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Payments\AccessAdjustments;
 use Kitsune\Commerce\Payments\AccessFulfillment;
+use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutMessages;
 use Kitsune\Commerce\Payments\CheckoutRefused;
 use Kitsune\Commerce\Payments\CheckoutWriter;
@@ -73,14 +76,36 @@ final class OrderList extends Page
     #[Locked]
     public int $freeRevision = 0;
 
+    public string $reviewLine = '';
+
+    public string $reviewDecision = 'hold';
+
+    public string $reviewKind = 'fixed';
+
+    public string $reviewDays = '30';
+
+    public string $reviewReason = '';
+
+    public string $reviewEvidence = '';
+
+    public bool $reviewConfirmed = false;
+
+    #[Locked]
+    public int $reviewRevision = 0;
+
+    #[Locked]
+    public string $reviewRequestKey = '';
+
     public function mount(?string $reference = null): void
     {
         self::authorizeResourceAccess();
         $this->reference = $reference === null ? null : OrderAdministration::reference($reference);
         $this->refundRequestKey = bin2hex(random_bytes(16));
+        $this->reviewRequestKey = bin2hex(random_bytes(16));
         if ($this->reference !== null) {
             $detail = $this->detail();
             $this->freeRevision = $detail['free_access_corrections']['revision'] ?? 0;
+            $this->reviewRevision = $detail['historical_access']['revision'];
         }
     }
 
@@ -242,6 +267,74 @@ final class OrderList extends Page
             return;
         }
         Notification::make()->title(__('commerce::free.saved'))->success()->send();
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function historicalReviews(): array
+    {
+        self::authorizeResourceAccess();
+
+        return app(HistoricalAccess::class)->historyAsOwner(OrderAdministration::reference($this->reference));
+    }
+
+    /** Displayed expiry uses the checked original completion time; it is never a submitted grant field. */
+    public function reviewPreview(): ?string
+    {
+        if ($this->reviewDecision !== 'award') {
+            return null;
+        }
+        try {
+            $terms = $this->reviewTerms();
+            $confirmed = $this->detail()['access_fulfillment']['confirmed_at'] ?? null;
+            if (! is_string($confirmed)) {
+                return null;
+            }
+            $end = OfferTerms::resolve($terms, CheckoutAttempts::instant(str_replace(['T', 'Z'], [' ', ''], $confirmed)));
+
+            return $end?->format('Y-m-d H:i:s').' UTC';
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /** @return array<string,mixed>|null */
+    private function reviewTerms(): ?array
+    {
+        if ($this->reviewDecision !== 'award') {
+            return null;
+        }
+        if ($this->reviewKind === 'permanent') {
+            return ['version' => 1, 'kind' => 'permanent'];
+        }
+        if ($this->reviewKind !== 'fixed' || preg_match('/\A[1-9][0-9]{0,4}\z/D', $this->reviewDays) !== 1) {
+            throw new OrderRefused;
+        }
+
+        return OfferTerms::normalize(['version' => 1, 'kind' => 'fixed', 'days' => (int) $this->reviewDays]);
+    }
+
+    public function reviewHistoricalAccess(): void
+    {
+        self::authorizeResourceAccess();
+        $this->resetErrorBag('order');
+        try {
+            if (preg_match('/\A[1-9][0-9]{0,18}\z/D', $this->reviewLine) !== 1 || (string) (int) $this->reviewLine !== $this->reviewLine) {
+                throw new OrderRefused;
+            }
+            app(HistoricalAccess::class)->decideAsOwner(OrderAdministration::reference($this->reference), (int) $this->reviewLine,
+                $this->reviewDecision, $this->reviewTerms(), $this->reviewRevision, trim($this->reviewReason), trim($this->reviewEvidence),
+                $this->reviewRequestKey, $this->reviewConfirmed);
+            $this->reviewRevision = $this->detail()['historical_access']['revision'];
+            $this->reviewRequestKey = bin2hex(random_bytes(16));
+            $this->reviewReason = '';
+            $this->reviewEvidence = '';
+            $this->reviewConfirmed = false;
+        } catch (Throwable) {
+            $this->addError('order', __('commerce::historical.refused'));
+
+            return;
+        }
+        Notification::make()->title(__('commerce::historical.saved'))->success()->send();
     }
 
     public function retryAccess(): void

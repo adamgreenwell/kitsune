@@ -16,6 +16,7 @@ use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\FreeOrders;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -141,6 +142,7 @@ final class PaidConfirmationAudit
         $rows = [];
         foreach (['commerce_order_lines' => OrderReaderData::MAX_LINES, CheckoutAttempts::TABLE => CheckoutAttempts::MAX_ATTEMPTS,
             FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
+            HistoricalAccess::WORK => 1, HistoricalAccess::TABLE => HistoricalAccess::MAX,
             PaidOrders::RECEIPTS => 1, PaidOrders::ALLOCATIONS => OrderReaderData::MAX_LINES, PaidOrders::OBLIGATIONS => 1,
             PaidOrders::ATTEMPTS => PaidOrders::MAX_REFUND_ATTEMPTS, AccessFulfillment::WORK => 1,
             AccessFulfillment::EFFECTS => AccessFulfillment::MAX_EFFECTS] as $table => $bound) {

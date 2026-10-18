@@ -405,6 +405,7 @@ final class OrderReaderData implements ModuleReaderData
             ...app(FinancialReadModel::class)->projection($connection, $org, $order, lock: $lock),
             ...app(AccessAdjustments::class)->projection($connection, $org, $order, lock: $lock),
             ...app(FreeAccessCorrections::class)->projection($connection, $order, $lock),
+            ...app(HistoricalAccess::class)->projection($connection, $order, $lock),
             ...app(PrivacyState::class)->projection($connection, $order, $lock)];
     }
 

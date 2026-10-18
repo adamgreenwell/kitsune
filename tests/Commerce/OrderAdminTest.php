@@ -15,6 +15,7 @@ use Kitsune\Commerce\Filament\OrderAdministration;
 use Kitsune\Commerce\Filament\OrderList;
 use Kitsune\Commerce\Filament\OrderResource;
 use Kitsune\Commerce\Models\Order;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Payments\AccessAdjustments;
@@ -67,6 +68,9 @@ function orderAdminFixture(int $org, int $site, array $overrides = []): string
         'quoted_item_net_minor' => '2000', 'quoted_shipping_net_minor' => '0', 'quoted_tax_minor' => '200', 'quoted_total_minor' => '2200',
         'confirmed_total_minor' => null, 'created_at' => '2026-10-14 10:00:00', 'cancelled_at' => null,
     ], $overrides));
+    $reviewOrder = DB::table('commerce_orders')->where('id', $id)->sole();
+    DB::table(HistoricalAccess::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
+        'revision' => 0, 'head_hash' => HistoricalAccess::genesis($reviewOrder)]);
     DB::table(PrivacyState::TABLE)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,
         'order_reference' => $reference, 'created_at' => '2026-10-14 10:00:00', 'updated_at' => '2026-10-14 10:00:00']);
     DB::table(AccessFulfillment::WORK)->insert(['org_id' => $org, 'site_id' => $site, 'order_id' => $id,

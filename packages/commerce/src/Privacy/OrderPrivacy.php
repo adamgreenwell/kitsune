@@ -20,6 +20,7 @@ use Kitsune\Commerce\Orders\BillingDetails;
 use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\FreeOrders;
+use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderReaderData;
@@ -47,6 +48,7 @@ final class OrderPrivacy
     private const TABLES = [
         'commerce_order_lines' => 20, 'commerce_order_access_tokens' => 1000, CheckoutAttempts::TABLE => 20,
         FreeOrders::TABLE => 1, FreeAccessCorrections::WORK => 1, FreeAccessCorrections::TABLE => 1000,
+        HistoricalAccess::WORK => 1, HistoricalAccess::TABLE => HistoricalAccess::MAX,
         StripeEventInbox::ROUTING => 20, StripeEventInbox::TABLE => 1000, PaidOrders::RECEIPTS => 1,
         PaidOrders::ALLOCATIONS => 20, PaidOrders::OBLIGATIONS => 1, PaidOrders::ATTEMPTS => 10,
         AccessFulfillment::WORK => 1, AccessFulfillment::EFFECTS => 20, 'commerce_order_claims' => 1,
@@ -411,7 +413,7 @@ final class OrderPrivacy
         }
         $this->assertAudit($connection, $audit, $identity);
         // Restricted foreign keys require this exact descendant-first deletion order.
-        foreach ([FreeAccessCorrections::TABLE, FreeAccessCorrections::WORK, FreeOrders::TABLE, StripeEventInbox::TABLE, StripeEventInbox::ROUTING, 'commerce_order_access_tokens', 'commerce_order_claims',
+        foreach ([HistoricalAccess::TABLE, HistoricalAccess::WORK, FreeAccessCorrections::TABLE, FreeAccessCorrections::WORK, FreeOrders::TABLE, StripeEventInbox::TABLE, StripeEventInbox::ROUTING, 'commerce_order_access_tokens', 'commerce_order_claims',
             AccessAdjustments::EFFECTS, AccessAdjustments::WORK, AccessFulfillment::EFFECTS, AccessFulfillment::WORK,
             FinancialState::OBSERVATIONS, FinancialState::REFUNDS, FinancialState::WORK, PaidOrders::ATTEMPTS,
             PaidOrders::OBLIGATIONS, PaidOrders::ALLOCATIONS, PaidOrders::RECEIPTS, CheckoutAttempts::TABLE,
@@ -536,6 +538,7 @@ final class OrderPrivacy
             }
             $connection->table('commerce_order_access_tokens')->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->delete();
             $connection->table(StripeEventInbox::TABLE)->where('org_id', $order->org_id)->where('site_id', $order->site_id)->where('order_id', $order->id)->update(['raw_payload' => null]);
+            app(HistoricalAccess::class)->redact($connection, $order);
             $this->state->updateRow($connection, 'commerce_orders', $order, $order, $changes);
             $current = $this->fresh($connection, $order);
             $this->state->seal($connection, $current, $commitments, $flags);
@@ -561,7 +564,8 @@ final class OrderPrivacy
             return false;
         }
         $plan = app(FinancialState::class)->accessPlan($connection, $order, true);
-        $contributions = AccessContributions::project($manifest, $plan['removed_units'], $plan['blocked']);
+        $effective = app(HistoricalAccess::class)->effective($connection, $order, $manifest, true);
+        $contributions = AccessContributions::project($effective, $plan['removed_units'], $plan['blocked']);
         foreach ($contributions as $definition) {
             if (($definition['remaining'] && ! $definition['known']) || (! $definition['suspended'] && ($definition['expires_at'] === null || $definition['expires_at'] > PrivacyState::now()))) {
                 return true;

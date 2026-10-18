@@ -30,6 +30,7 @@ return [
     'effect_granted' => 'Pass awarded',
     'effect_unchanged' => 'Existing pass retained',
     'effect_revoked' => 'Pass was revoked and has not been restored',
+    'effect_omitted' => 'No access was sold',
     'effect_expired' => 'Pass expired before access was processed',
     'permanent' => 'Permanent access',
     'expires' => 'Pass ends (UTC)',

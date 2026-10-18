@@ -152,7 +152,7 @@ final class CheckoutReview
      */
     public static function unmodifiedOrderHash(#[\SensitiveParameter] array $record): string
     {
-        unset($record['free_completion'], $record['free_access_corrections'], $record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
+        unset($record['historical_access'], $record['free_completion'], $record['free_access_corrections'], $record['checkout_attempts'], $record['access_links'], $record['stripe_events'], $record['payment'], $record['allocations'], $record['refund'],
             $record['access_fulfillment'], $record['access_claim'], $record['financial_state'], $record['financial_access'], $record['privacy']);
         if (in_array($record['state'] ?? null, ['paid', 'completed_free', 'cancelled'], true)) {
             $record['state'] = 'prepared';
