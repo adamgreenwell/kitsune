@@ -107,6 +107,42 @@ test.describe('Owner checkout and order administration', () => {
         await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
     });
 
+    test('saves explicit international customs and mode-specific carrier choices across sites', async ({ page }) => {
+        await page.goto(SETTINGS);
+        await configure(page);
+        await page.getByLabel('Enable configured international destinations', { exact: true }).check();
+        await page.getByLabel('Allowed destination country codes (uppercase, two letters)', { exact: true }).fill('CA\nGB');
+        await page.getByLabel('Allowed test carrier account IDs', { exact: true }).fill('a'.repeat(32));
+        await page.getByLabel('Person responsible for customs information', { exact: true }).fill('Explicit Browser Certifier');
+        await submit(page, 'saveSettings', 'Save checkout settings');
+        await expect(page.getByRole('alert').filter({ hasText: 'The change could not be saved.' })).toBeVisible();
+        await page.getByRole('checkbox', { name: 'The named person confirms', exact: false }).check();
+        await submit(page, 'saveSettings', 'Save checkout settings');
+        await expect(page.getByText('Checkout settings saved', { exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'Configure delivery', exact: true }).click();
+        await page.locator('#checkout-policy-class').fill('standard');
+        await page.getByLabel('Delivery', { exact: true }).selectOption('physical');
+        for (const [field, value] of Object.entries({ weight_grams: '500', length_mm: '300', width_mm: '200', height_mm: '100', tare_grams: '125', units_per_parcel: '3' })) {
+            await page.locator(`#checkout-pack-${field}`).fill(value);
+        }
+        await page.getByLabel('Customs description', { exact: true }).fill('Printed book');
+        await page.getByLabel('Manufacturing origin country code', { exact: true }).fill('GB');
+        await page.getByLabel('Tariff number (6–12 digits)', { exact: true }).fill('490199');
+        await submit(page, 'savePolicy', 'Save product delivery');
+        await expect(page.getByText('Product delivery saved', { exact: true })).toBeVisible();
+        await page.goto(`/admin/${SIBLING}/storefront/checkout`);
+        await expect(page.getByLabel('Allowed test carrier account IDs', { exact: true })).toHaveValue('a'.repeat(32));
+        await expect(page.getByLabel('Allowed live carrier account IDs', { exact: true })).toHaveValue('');
+        await page.getByRole('button', { name: 'Configure delivery', exact: true }).click();
+        await expect(page.getByLabel('Customs description', { exact: true })).toHaveValue('Printed book');
+        await expect(page.getByLabel('Manufacturing origin country code', { exact: true })).toHaveValue('GB');
+        await expect(page.getByLabel('Tariff number (6–12 digits)', { exact: true })).toHaveValue('490199');
+        await expect(page.getByText('Duties are paid by the recipient;', { exact: false })).toBeVisible();
+        expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+        await page.goto(`/admin/${SIBLING}/roles`);
+        await expect(page.getByRole('link', { name: 'Orders', exact: true }).first()).toBeVisible();
+    });
+
     test('refuses a stale settings tab and retains the current server choices', async ({ page, context }) => {
         await page.goto(SETTINGS);
         await configure(page);

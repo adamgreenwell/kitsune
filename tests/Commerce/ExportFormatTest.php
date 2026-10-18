@@ -157,3 +157,19 @@ it('never serializes a resource or mutates the caller record', function (): void
     (new ExportFormat('csv'))->encode($record);
     expect($record)->toBe($original);
 });
+
+it('exports the minimal international delivery policy in JSONL and CSV without widening private customs fields', function (): void {
+    $record = exportFormatRecord(['international' => true, 'duties_payor' => 'recipient', 'non_delivery_option' => 'return']);
+    $record['type'] = 'shipping';
+    $json = json_decode((new ExportFormat('jsonl'))->encode($record), true, flags: JSON_THROW_ON_ERROR);
+    $csv = exportFormatCsvRow(new ExportFormat('csv'), $record);
+    expect($json['data'])->toBe($record['data'])->and($csv['international'])->toBe('true')
+        ->and($csv['duties_payor'])->toBe('recipient')->and($csv['non_delivery_option'])->toBe('return');
+    foreach (['certify_signer', 'customs_description', 'carrier_accounts', 'tariff_number'] as $field) {
+        $private = $record;
+        $private['data'][$field] = 'private';
+        foreach (ExportFormat::FORMATS as $format) {
+            expect(fn () => (new ExportFormat($format))->encode($private))->toThrow(ExportRefused::class);
+        }
+    }
+});

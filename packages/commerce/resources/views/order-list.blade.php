@@ -71,6 +71,7 @@
             </table></div>
         </x-filament::section>
         <x-filament::section :heading="__('commerce::checkout.total')">
+            @if ($order['shipping']['international'] ?? false)<p>{{ __('commerce::checkout.international_duties') }}</p>@endif
             <dl class="space-y-2">
                 @foreach (['quoted_item_net_minor' => 'net', 'quoted_shipping_net_minor' => 'shipping', 'quoted_tax_minor' => 'tax', 'quoted_total_minor' => 'total'] as $field => $label)
                     <div><dt class="font-medium">{{ __('commerce::checkout.'.$label) }}</dt><dd>{{ $order['currency'] }} {{ \Kitsune\Commerce\Money\MinorUnits::format($order[$field], $order['currency']) }}</dd></div>

@@ -494,6 +494,12 @@ final class OrderReaderData implements ModuleReaderData
         // Only the normalized frozen quote contract, never a carrier/provider response.
         $keys = ['id', 'carrier', 'service', 'amountMinor', 'currency', 'shipmentId', 'test',
             'taxClass', 'taxMode', 'taxRateParts', 'net', 'tax', 'gross'];
+        if (array_key_exists('international', $value)) {
+            if ($value['international'] !== true) {
+                throw new RuntimeException('The retained international shipping policy is incompatible.');
+            }
+            $keys[] = 'international';
+        }
         if (array_diff(array_keys($value), $keys) !== [] || array_diff($keys, array_keys($value)) !== []
             || ! self::text($value['id'], 100) || ! self::text($value['shipmentId'], 100)
             || ! self::text($value['carrier'], 200) || ! self::text($value['service'], 200)
@@ -515,7 +521,8 @@ final class OrderReaderData implements ModuleReaderData
 
         return ['id' => $value['id'], 'carrier' => $value['carrier'], 'service' => $value['service'],
             'amountMinor' => $amount, 'currency' => $currency, 'shipmentId' => $value['shipmentId'], 'test' => $value['test'],
-            'taxClass' => $value['taxClass'], 'taxMode' => $value['taxMode'], 'taxRateParts' => $value['taxRateParts'], ...$tax];
+            'taxClass' => $value['taxClass'], 'taxMode' => $value['taxMode'], 'taxRateParts' => $value['taxRateParts'], ...$tax,
+            ...(isset($value['international']) ? ['international' => true] : [])];
     }
 
     /** @return array<string,mixed> */

@@ -13,6 +13,7 @@
     <p>{{ $t('tax_total') }}: {{ $quote['snapshot']['currency'] }} {{ $money($quote['snapshot']['itemTax'], $quote['snapshot']['currency']) }}</p>
     <form method="post" action="{{ $cartPath }}/orders">@csrf<input type="hidden" name="quote" value="{{ $quote['token'] }}">
         <fieldset><legend>{{ $t('shipping') }}</legend><p>{{ $t('shipping_help') }}</p>
+        @if (($quote['snapshot']['international'] ?? null) !== null)<p>{{ __('commerce::checkout.international_duties', [], 'en') }}</p>@endif
         @foreach ($quote['rates'] as $rate)
             @php($shipping = $quote['snapshot']['parcels'] === [] ? ['gross'=>'0'] : ($quote['snapshot']['shippingTaxMode'] === 'inclusive' ? \Kitsune\Commerce\Taxes\TaxAmounts::inclusive($rate['amountMinor'], $quote['snapshot']['shippingRate']) : \Kitsune\Commerce\Taxes\TaxAmounts::exclusive($rate['amountMinor'], $quote['snapshot']['shippingRate'])))
             <p><label><input type="radio" name="rate" value="{{ $rate['id'] }}" required @checked($loop->first)> {{ $rate['id'] === 'none' ? $t('digital') : $rate['carrier'].' '.$rate['service'] }} — {{ $rate['currency'] }} {{ $money($shipping['gross'], $rate['currency']) }}</label></p>

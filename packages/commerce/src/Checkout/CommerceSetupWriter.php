@@ -16,6 +16,7 @@ use Kitsune\Commerce\Models\CommerceSettings;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Models\TaxRate;
+use Kitsune\Commerce\Orders\OrderJson;
 use Kitsune\Commerce\Persistence\CommerceSetupValues;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
@@ -268,8 +269,14 @@ final class CommerceSetupWriter
         }
 
         $this->record($action, $stored);
+        // Host audit listeners cannot replace the checked owner inputs after the first readback.
+        $final = $row->newQuery()->useWritePdo()->whereKey($row->getKey())->where('org_id', $this->context->orgId())->lockForUpdate()->first();
+        if (! $final instanceof $row || ! $this->matches($final, [...$attributes, 'version' => $version])) {
+            throw new RuntimeException('The audited commerce configuration differs from the reviewed values.');
+        }
+        $final->refuseInvalidSetupValues();
 
-        return $stored;
+        return $final;
     }
 
     /** @param array<string, mixed> $attributes */
@@ -283,10 +290,7 @@ final class CommerceSetupWriter
                     return false;
                 }
 
-                ksort($expected);
-                ksort($stored);
-
-                if ($stored !== $expected) {
+                if (! OrderJson::same(json_encode($stored, JSON_THROW_ON_ERROR), json_encode($expected, JSON_THROW_ON_ERROR))) {
                     return false;
                 }
             } elseif (($stored === null) !== ($expected === null)

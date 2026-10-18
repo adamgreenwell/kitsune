@@ -21,6 +21,7 @@ use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\TaxRate;
 use Kitsune\Commerce\Offers\OfferTerms;
+use Kitsune\Commerce\Shipping\InternationalShipping;
 use Kitsune\Commerce\Shipping\ParcelPacking;
 use Kitsune\Commerce\Shipping\ShippoRates;
 use Kitsune\Commerce\Taxes\TaxAmounts;
@@ -64,7 +65,7 @@ final class OrderQuotes
                     throw new OrderRefused;
                 }
                 $secret = app(CredentialReader::class)->secret(self::SHIPPO_SLOT);
-                $rates = app(ShippoRates::class)->quote($secret, $snapshot['test'], $snapshot['shipFrom'], $details['delivery'], $snapshot['parcels'], $snapshot['currency']);
+                $rates = app(ShippoRates::class)->quote($secret, $snapshot['test'], $snapshot['shipFrom'], $details['delivery'], $snapshot['parcels'], $snapshot['currency'], $snapshot['international']);
             }
             // A rate response cannot approve a cart/configuration that changed while the network request ran.
             $this->locks->run(function (Org $org, Site $site) use ($request, $details, $snapshot): void {
@@ -123,10 +124,10 @@ final class OrderQuotes
                 || ! in_array($settings->shipping_tax_mode, ['inclusive', 'exclusive'], true)) {
                 throw new OrderRefused('setup');
             }
-            CommerceSettings::values(array_intersect_key([...(array) $settings, 'ship_from_address' => $settings->ship_from_address === null ? null : self::json($settings->ship_from_address)], array_flip(CommerceSettings::FIELDS)));
+            CommerceSettings::values(array_intersect_key([...(array) $settings, 'ship_from_address' => $settings->ship_from_address === null ? null : self::json($settings->ship_from_address), 'international_shipping' => $settings->international_shipping === null ? null : self::json($settings->international_shipping)], array_flip(CommerceSettings::FIELDS)));
             self::taxClass($settings->shipping_tax_class);
             CartWriter::integer($settings->version, 4294967295);
-            $lines = $parcels = $policies = $rates = [];
+            $lines = $parcels = $policies = $rates = $customsItems = [];
             $itemNet = $itemTax = $itemGross = '0';
             foreach ($selection['items'] as $item) {
                 if ($item['currency'] !== $org->currency) {
@@ -159,6 +160,8 @@ final class OrderQuotes
                 $itemTax = CartAmounts::add($itemTax, $tax['tax']);
                 $itemGross = CartAmounts::add($itemGross, $tax['gross']);
                 if ($policy->delivery_kind === 'physical') {
+                    $customsItems[] = [...array_intersect_key((array) $policy, array_flip(InternationalShipping::SKU_FIELDS)),
+                        'quantity' => $item['quantity'], 'weight_grams' => $policy->weight_grams, 'net_minor' => $tax['net']];
                     $parcels[] = ['sku' => $item['sku'], 'quantity' => $item['quantity'], 'weight_grams' => $policy->weight_grams,
                         'length_mm' => $policy->length_mm, 'width_mm' => $policy->width_mm, 'height_mm' => $policy->height_mm,
                         'tare_grams' => $policy->tare_grams, 'units_per_parcel' => $policy->units_per_parcel];
@@ -172,9 +175,14 @@ final class OrderQuotes
                 throw new OrderRefused('setup');
             }
             $credential = null;
+            $international = null;
             if ($parcels !== []) {
                 $from = BillingDetails::from(['name' => $settings->ship_from_name, 'address' => self::json($settings->ship_from_address)]);
                 $parcels = ParcelPacking::pack($parcels);
+                if ($from['address']['country'] !== $details['delivery']['address']['country']) {
+                    $international = ['profile' => $settings->international_shipping === null ? null : self::json($settings->international_shipping), 'items' => $customsItems];
+                    InternationalShipping::payload($international, $details['delivery']['address']['country'], $org->currency, $test);
+                }
                 $shippingRate = $this->rate($settings->shipping_tax_class, $details['delivery']['address']);
                 $credentialRow = $connection->table('credentials')->useWritePdo()->where('org_id', $org->getKey())
                     ->where('slot', self::SHIPPO_SLOT)->where('mode', $test ? 'test' : 'live')->lockForUpdate()->first();
@@ -187,7 +195,7 @@ final class OrderQuotes
                 'shippingTaxMode' => $settings->shipping_tax_mode, 'shippingTaxClass' => $settings->shipping_tax_class,
                 'shippingRate' => $shippingRate === null ? null : (int) $shippingRate->rate_parts,
                 'lines' => $lines, 'itemNet' => $itemNet, 'itemTax' => $itemTax, 'itemGross' => $itemGross,
-                'parcels' => $parcels, 'shipFrom' => $from, 'test' => $test,
+                'parcels' => $parcels, 'shipFrom' => $from, 'test' => $test, 'international' => $international,
                 'siteSnapshot' => ['name' => $siteName, 'base_url' => ReaderLinks::origin($site).($site->path_prefix ?? '')]];
             $data['hash'] = hash('sha256', json_encode([$data, $details, (array) $settings, $policies, $rates, $shippingRate, $credential], JSON_THROW_ON_ERROR));
 

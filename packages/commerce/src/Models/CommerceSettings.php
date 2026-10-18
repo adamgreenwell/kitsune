@@ -19,6 +19,7 @@ use Kitsune\Commerce\Orders\PostalAddress;
 use Kitsune\Commerce\Persistence\CommerceSetupValues;
 use Kitsune\Commerce\Persistence\GuardedCommerceSetupBuilder;
 use Kitsune\Commerce\Persistence\GuardsCommerceSetupWrites;
+use Kitsune\Commerce\Shipping\InternationalShipping;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -38,6 +39,7 @@ use RuntimeException;
  * @property string $shipping_tax_class
  * @property string|null $ship_from_name
  * @property array<string, string>|null $ship_from_address
+ * @property array<string,mixed>|null $international_shipping
  * @property int $version
  */
 #[OrgScoped]
@@ -51,11 +53,11 @@ final class CommerceSettings extends Model implements RequiresModelSave
 
     protected $guarded = [];
 
-    protected $attributes = ['version' => 1, 'ship_from_name' => null, 'ship_from_address' => null];
+    protected $attributes = ['international_shipping' => null, 'version' => 1, 'ship_from_name' => null, 'ship_from_address' => null];
 
-    protected $casts = ['ship_from_address' => 'array', 'version' => 'integer'];
+    protected $casts = ['international_shipping' => 'array', 'ship_from_address' => 'array', 'version' => 'integer'];
 
-    public const FIELDS = ['tax_mode', 'shipping_tax_mode', 'shipping_tax_class', 'ship_from_name', 'ship_from_address'];
+    public const FIELDS = ['tax_mode', 'shipping_tax_mode', 'shipping_tax_class', 'ship_from_name', 'ship_from_address', 'international_shipping'];
 
     /** @return array<string, string> */
     public static function columnsRequiringModelSave(): array
@@ -64,7 +66,7 @@ final class CommerceSettings extends Model implements RequiresModelSave
     }
 
     /** @param array<array-key, mixed> $values
-     * @return array{tax_mode:string,shipping_tax_mode:string,shipping_tax_class:string,ship_from_name:?string,ship_from_address:?array<string,string>}
+     * @return array{tax_mode:string,shipping_tax_mode:string,shipping_tax_class:string,ship_from_name:?string,ship_from_address:?array<string,string>,international_shipping:?array{destinations:list<string>,carrier_accounts:array{test:list<string>,live:list<string>},certify_signer:string,certified:true}}
      */
     public static function values(#[\SensitiveParameter] array $values): array
     {
@@ -80,6 +82,7 @@ final class CommerceSettings extends Model implements RequiresModelSave
         $address = $values['ship_from_address'] ?? null;
 
         return [
+            'international_shipping' => InternationalShipping::profile($values['international_shipping'] ?? null),
             'tax_mode' => $mode,
             'shipping_tax_mode' => $shippingMode,
             'shipping_tax_class' => CommerceSetupValues::taxClass($values['shipping_tax_class'] ?? null),
@@ -122,7 +125,23 @@ final class CommerceSettings extends Model implements RequiresModelSave
             }
         }
 
+        $international = $raw['international_shipping'] ?? null;
+        if ($international !== null) {
+            if (! is_string($international) || strlen($international) > 8192) {
+                throw new InvalidArgumentException('International shipping configuration must be bounded JSON.');
+            }
+            try {
+                $international = json_decode($international, true, 8, JSON_THROW_ON_ERROR);
+                if (! is_array($international)) {
+                    throw new InvalidArgumentException('International shipping configuration must be an object.');
+                }
+            } catch (JsonException) {
+                throw new InvalidArgumentException('International shipping configuration must be valid JSON.');
+            }
+        }
+
         self::values([
+            'international_shipping' => $international,
             'tax_mode' => $raw['tax_mode'] ?? null, 'shipping_tax_mode' => $raw['shipping_tax_mode'] ?? null,
             'shipping_tax_class' => $raw['shipping_tax_class'] ?? null,
             'ship_from_name' => $raw['ship_from_name'] ?? null, 'ship_from_address' => $address,

@@ -449,3 +449,80 @@ it('checks each authoritative calculator table before rollback even with an empt
         config(['database.connections.'.$name => null]);
     }
 })->with(['commerce_settings', 'commerce_tax_rates', 'commerce_sales_policies']);
+
+function commerceInternationalProfile(): array
+{
+    return ['destinations' => ['CA', 'GB'], 'carrier_accounts' => ['test' => [str_repeat('a', 32)], 'live' => []],
+        'certify_signer' => 'Explicit Certifier', 'certified' => true];
+}
+
+it('round trips explicit international settings and shared SKU customs without auditing private inputs', function (): void {
+    $values = [...commerceSetupSettings(true), 'international_shipping' => commerceInternationalProfile()];
+    $settings = $this->writer->setSettings($values);
+    $customs = ['customs_description' => 'Printed book', 'customs_origin_country' => 'GB', 'customs_tariff_number' => '490199'];
+    $policy = $this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(true), ...$customs]);
+    expect($settings->fresh()->international_shipping)->toEqual(commerceInternationalProfile())
+        ->and($policy->fresh()->only(array_keys($customs)))->toBe($customs)
+        ->and($this->writer->setSettings($values, 1)->version)->toBe(1)
+        ->and($this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(true), ...$customs], 1)->version)->toBe(1)
+        ->and(json_encode(AuditLog::query()->get()->toArray(), JSON_THROW_ON_ERROR))->not->toContain('Explicit Certifier', 'Printed book');
+    $site = Site::create(['handle' => 'customs-two', 'slug' => 'customs-two', 'name' => 'Two', 'locale' => 'en']);
+    app(Context::class)->setSite($site);
+    expect(CommerceSettings::query()->sole()->international_shipping)->toEqual(commerceInternationalProfile())
+        ->and(SalesPolicy::query()->sole()->customs_origin_country)->toBe('GB');
+    $other = Org::create(['slug' => 'customs-rival', 'name' => 'Rival']);
+    app(Context::class)->setOrg($other);
+    expect(CommerceSettings::query()->count())->toBe(0)->and(SalesPolicy::query()->count())->toBe(0)
+        ->and(fn () => $this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(true), ...$customs], 1))->toThrow(RuntimeException::class);
+});
+
+it('compares nested stored international object keys without weakening list or scalar checks', function (): void {
+    $values = [...commerceSetupSettings(true), 'international_shipping' => commerceInternationalProfile()];
+    $this->writer->setSettings($values);
+    DB::table('commerce_settings')->where('org_id', $this->org->getKey())->update(['international_shipping' => json_encode([
+        'certified' => true, 'carrier_accounts' => ['live' => [], 'test' => [str_repeat('a', 32)]],
+        'destinations' => ['CA', 'GB'], 'certify_signer' => 'Explicit Certifier',
+    ], JSON_THROW_ON_ERROR)]);
+    expect($this->writer->setSettings($values, 1)->version)->toBe(1);
+    $values['international_shipping']['destinations'] = ['GB', 'CA'];
+    expect($this->writer->setSettings($values, 1)->version)->toBe(2);
+});
+
+it('refuses malformed customs fields before coercion and forbids customs metadata on digital goods', function (string $field, mixed $value): void {
+    $this->writer->setSettings(commerceSetupSettings(true));
+    expect(fn () => $this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(true), $field => $value]))->toThrow(InvalidArgumentException::class)
+        ->and(SalesPolicy::query()->count())->toBe(0);
+})->with([
+    ['customs_description', ''], ['customs_description', str_repeat('a', 51)], ['customs_description', "book\nprivate"],
+    ['customs_origin_country', 'gb'], ['customs_origin_country', 12], ['customs_tariff_number', '12345'], ['customs_tariff_number', '4901.99'],
+    ['customs_tariff_number', 490199], ['customs_tariff_number', str_repeat('1', 13)],
+]);
+
+it('keeps incomplete physical customs valid domestically and clears customs only through an explicit checked write', function (): void {
+    $this->writer->setSettings(commerceSetupSettings(true));
+    $policy = $this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(true), 'customs_description' => 'Printed book']);
+    expect($policy->customs_tariff_number)->toBeNull();
+    expect(fn () => $this->writer->setSalesPolicy($this->sellable->getKey(), [...commerceSetupPolicy(), 'customs_description' => 'Printed book'], 1))->toThrow(InvalidArgumentException::class);
+    expect($this->writer->setSalesPolicy($this->sellable->getKey(), commerceSetupPolicy(), 1)->customs_description)->toBeNull();
+});
+
+it('rolls back customs and certification substitutions by a host audit listener', function (string $target): void {
+    $settings = $this->writer->setSettings([...commerceSetupSettings(true), 'international_shipping' => commerceInternationalProfile()]);
+    $before = commerceSetupActions();
+    commerceSetupObserver(AuditLog::class, 'creating', function (AuditLog $audit) use ($target): void {
+        if ($target === 'profile' && $audit->action === 'commerce.settings_saved') {
+            $profile = commerceInternationalProfile();
+            $profile['certify_signer'] = 'Substituted person';
+            DB::table('commerce_settings')->where('org_id', $this->org->id)->update(['international_shipping' => json_encode($profile, JSON_THROW_ON_ERROR)]);
+        } elseif ($target === 'customs' && $audit->action === 'commerce.sales_policy_saved') {
+            DB::table('commerce_sales_policies')->where('org_id', $this->org->id)->update(['customs_tariff_number' => '999999']);
+        }
+    }, function () use ($target, $settings): void {
+        expect(fn () => $target === 'profile'
+            ? $this->writer->setSettings([...commerceSetupSettings(true), 'tax_mode' => 'inclusive', 'international_shipping' => commerceInternationalProfile()], $settings->version)
+            : $this->writer->setSalesPolicy($this->sellable->id, [...commerceSetupPolicy(true), 'customs_description' => 'Book', 'customs_origin_country' => 'GB', 'customs_tariff_number' => '490199']))->toThrow(RuntimeException::class);
+    });
+    expect(commerceSetupActions())->toBe($before)->and(CommerceSettings::query()->sole()->version)->toBe(1)
+        ->and(CommerceSettings::query()->sole()->international_shipping['certify_signer'])->toBe('Explicit Certifier')
+        ->and(SalesPolicy::query()->count())->toBe(0);
+})->with(['profile', 'customs']);

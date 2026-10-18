@@ -100,10 +100,11 @@ if ($step === 'seed') {
     $setup = app(CommerceSetupWriter::class);
     $physical = str_starts_with($scenario, 'physical');
     $setup->setSettings(['tax_mode' => 'exclusive', 'shipping_tax_mode' => $scenario === 'physical-inclusive' ? 'inclusive' : 'exclusive', 'shipping_tax_class' => 'shipping',
+        'international_shipping' => $scenario === 'physical-international' ? ['destinations' => ['CA'], 'carrier_accounts' => ['test' => [str_repeat('a', 32)], 'live' => []], 'certify_signer' => 'Private Certifier', 'certified' => true] : null,
         'ship_from_name' => 'Private Origin', 'ship_from_address' => ['line1' => '10 Private Origin Lane', 'city' => 'Honolulu', 'region' => 'HI', 'postal_code' => '96801', 'country' => 'US']]);
-    $setup->saveTaxRate(null, ['country' => 'US', 'region' => '*', 'tax_class' => 'standard', 'rate_parts' => 200000]);
-    $setup->saveTaxRate(null, ['country' => 'US', 'region' => '*', 'tax_class' => 'shipping', 'rate_parts' => 200000]);
-    $setup->setSalesPolicy($product->getKey(), $physical ? ['tax_class' => 'standard', 'delivery_kind' => 'physical', 'weight_grams' => 500, 'length_mm' => 300, 'width_mm' => 200, 'height_mm' => 100, 'tare_grams' => 50, 'units_per_parcel' => 1] : ['tax_class' => 'standard', 'delivery_kind' => 'digital']);
+    $setup->saveTaxRate(null, ['country' => $scenario === 'physical-international' ? 'CA' : 'US', 'region' => '*', 'tax_class' => 'standard', 'rate_parts' => 200000]);
+    $setup->saveTaxRate(null, ['country' => $scenario === 'physical-international' ? 'CA' : 'US', 'region' => '*', 'tax_class' => 'shipping', 'rate_parts' => 200000]);
+    $setup->setSalesPolicy($product->getKey(), $physical ? ['tax_class' => 'standard', 'delivery_kind' => 'physical', 'weight_grams' => 500, 'length_mm' => 300, 'width_mm' => 200, 'height_mm' => 100, 'tare_grams' => 50, 'units_per_parcel' => 1, ...($scenario === 'physical-international' ? ['customs_description' => 'Printed book', 'customs_origin_country' => 'GB', 'customs_tariff_number' => '490199'] : [])] : ['tax_class' => 'standard', 'delivery_kind' => 'digital']);
     if ($physical) {
         CredentialConsoleAuthority::run(app(Context::class), 'set', OrderQuotes::SHIPPO_SLOT, CredentialMode::Test, null,
             static fn (CredentialConsoleAuthority $authority) => app(CredentialWriter::class)->set(OrderQuotes::SHIPPO_SLOT, CredentialMode::Test, 'shippo_test_private_probe_token', console: $authority));
@@ -204,9 +205,15 @@ if ($scenario === 'provider-absent-outage') {
             }
 
             return new ProviderResponse(201, ['Content-Type' => 'application/json'], json_encode(['object_id' => 'shipment-1', 'status' => 'SUCCESS', 'test' => true,
-                'rates' => [['object_id' => 'rate-1', 'shipment' => 'shipment-1', 'test' => true, 'currency' => 'USD', 'amount' => '6.00', 'provider' => 'USPS', 'servicelevel' => ['name' => 'Priority Mail']]]], JSON_THROW_ON_ERROR));
+                'rates' => [['object_id' => 'rate-1', 'shipment' => 'shipment-1', 'test' => true, 'currency' => 'USD', 'amount' => '6.00', 'carrier_account' => str_repeat('a', 32), 'provider' => 'USPS', 'servicelevel' => ['name' => 'Priority Mail']]]], JSON_THROW_ON_ERROR));
         }]);
         $app->instance(ShippoRates::class, new ShippoRates(new Client(['handler' => HandlerStack::create($handler)])));
+    }
+    if ($scenario === 'physical-international') {
+        $body['different_delivery'] = '1';
+        $body['delivery_name'] = 'Canadian Buyer';
+        $body['delivery_line1'] = '1 Destination';
+        $body['delivery_country'] = 'CA';
     }
     $quoted = $send('POST', '/brand/cart/quote', ['_token' => $token, ...$body]);
     preg_match('/name="quote" value="([a-f0-9]{64})"/', $quoted['body'], $matches);

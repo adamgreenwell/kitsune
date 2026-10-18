@@ -16,6 +16,7 @@
     <ul>@foreach ($order['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $order['currency'] }} {{ $money($line['gross_minor'], $order['currency']) }}</span>@php($offer = \Kitsune\Commerce\Offers\OfferTerms::label($line['offer_terms'] ?? null, ($line['entitlement_name'] ?? null) !== null))@if ($offer !== null)<p>{{ $offer }}</p>@endif</li>@endforeach</ul>
     <p>{{ $t('net') }}: {{ $order['currency'] }} {{ $money($order['quoted_item_net_minor'], $order['currency']) }}</p>
     <p>{{ $t('tax_total') }}: {{ $order['currency'] }} {{ $money($order['quoted_tax_minor'], $order['currency']) }}</p>
+    @if ($order['shipping']['international'] ?? false)<p>{{ __('commerce::checkout.international_duties', [], 'en') }}</p>@endif
     <h2>{{ $t('total') }}: <span dir="ltr">{{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</span></h2>
     @if ($order['state'] === 'prepared')<p><a href="{{ $cartPath }}/orders/{{ $reference }}/payment">{{ __('commerce::payments.title', [], 'en') }}</a></p>@endif
     @if ($order['contact_email'] !== null)<p>{{ $t('email') }}: {{ $order['contact_email'] }}</p>@endif

@@ -18,6 +18,7 @@
             <section class="summary" aria-labelledby="review-heading">
                 <h2 id="review-heading">{{ $t('total') }}: <span dir="ltr">{{ $order['currency'] }} {{ $money($order['quoted_total_minor'], $order['currency']) }}</span></h2>
                 <ul>@foreach ($order['lines'] as $line)<li dir="auto">{{ $line['title'] }} × {{ $line['quantity'] }} — <span dir="ltr">{{ $order['currency'] }} {{ $money($line['gross_minor'], $order['currency']) }}</span>@php($offer = \Kitsune\Commerce\Offers\OfferTerms::label($line['offer_terms'] ?? null, ($line['entitlement_name'] ?? null) !== null))@if ($offer !== null)<p>{{ $offer }}</p>@endif</li>@endforeach</ul>
+                @if ($order['shipping']['international'] ?? false)<p>{{ __('commerce::checkout.international_duties', [], 'en') }}</p>@endif
                 @if ($order['shipping'] !== null)<p>{{ $order['shipping']['carrier'] }} {{ $order['shipping']['service'] }} — {{ $order['currency'] }} {{ $money($order['shipping']['gross'], $order['currency']) }}</p>@endif
                 <p>{{ $order['quoted_total_minor'] === '0' ? __('commerce::free.commitment', [], 'en') : $t('commitment') }}</p>
                 <form method="post" action="{{ $cartPath }}/orders/{{ $reference }}/payment/{{ $order['quoted_total_minor'] === '0' ? 'complete-free' : 'start' }}">@csrf

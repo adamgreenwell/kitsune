@@ -23,9 +23,9 @@ use stdClass;
 use Throwable;
 
 /**
- * Concrete, domestic Shippo rate shopping. It creates a shipment only: never a transaction, label or pickup.
+ * Concrete Shippo rate shopping. It creates a shipment only: never a transaction, label or pickup.
  *
- * Pinned contract, checked 2026-10-14:
+ * Pinned contract, checked 2026-10-18:
  * https://docs.goshippo.com/api-reference/shipments/create-a-new-shipment
  * https://docs.goshippo.com/api-reference/rates/retrieve-a-rate
  * https://docs.goshippo.com/shipments/multi-piece-shipment
@@ -33,14 +33,14 @@ use Throwable;
  * async=false completes rate generation in this one request. Rate.amount covers the WHOLE shipment, including all
  * parcels, in its stated sender currency. amount_local is never an implicit FX conversion into the org's currency.
  * Service availability and multi-piece limits remain carrier-specific; failure never becomes a local fallback.
- * Cross-border requests refuse until the module has a checked customs-declaration contract.
+ * Cross-border requests require explicit checked owner customs inputs and mode-specific carrier accounts.
  *
  * The caller reads the current org-mode Secret immediately before calling and retains the selected quote, freshness
  * and ownership. This client stores no key, address, response body or quote; a quote is never a stock reservation.
  *
  * @internal First-party commerce primitive; no extension stability promise before v1.2.
  *
- * @phpstan-type Rate array{id:string,carrier:string,service:string,amountMinor:string,currency:string,shipmentId:string,test:bool}
+ * @phpstan-type Rate array{id:string,carrier:string,service:string,amountMinor:string,currency:string,shipmentId:string,test:bool,international?:true}
  */
 final class ShippoRates
 {
@@ -61,20 +61,27 @@ final class ShippoRates
      * @param  array<mixed>  $from
      * @param  array<mixed>  $to
      * @param  array<mixed>  $parcels
+     * @param  array<string,mixed>|null  $international
      * @return list<Rate>
      */
-    public function quote(Secret $secret, bool $test, #[\SensitiveParameter] array $from, #[\SensitiveParameter] array $to, array $parcels, string $currency): array
+    public function quote(Secret $secret, bool $test, #[\SensitiveParameter] array $from, #[\SensitiveParameter] array $to, array $parcels, string $currency, #[\SensitiveParameter] ?array $international = null): array
     {
         try {
             $from = BillingDetails::from($from);
             $to = BillingDetails::from($to);
 
-            if (! Currencies::supports($currency) || $from['address']['country'] !== $to['address']['country']) {
+            if (! Currencies::supports($currency)) {
                 throw new ShippingUnavailable;
             }
 
             $payload = ['address_from' => self::address($from), 'address_to' => self::address($to),
                 'parcels' => ParcelPacking::validate($parcels), 'async' => false];
+            $crossBorder = $from['address']['country'] !== $to['address']['country'];
+            if ($crossBorder) {
+                $payload = [...$payload, ...InternationalShipping::payload($international ?? [], $to['address']['country'], $currency, $test)];
+            } elseif ($international !== null) {
+                throw new ShippingUnavailable;
+            }
             $body = Utils::streamFor('');
             $bounded = FnStream::decorate($body, ['write' => static function (#[\SensitiveParameter] string $bytes) use ($body): int {
                 if (strlen($bytes) > self::MAX_RESPONSE_BYTES - ($body->getSize() ?? 0)) {
@@ -102,7 +109,7 @@ final class ShippoRates
                 throw new ShippingUnavailable;
             }
 
-            return self::rates(json_decode($raw, false, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING), $currency, $test);
+            return self::rates(json_decode($raw, false, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING), $currency, $test, $payload['carrier_accounts'] ?? null);
         } catch (Throwable) {
             throw new ShippingUnavailable;
         }
@@ -142,8 +149,9 @@ final class ShippoRates
         }
     }
 
-    /** @return list<Rate> */
-    private static function rates(#[\SensitiveParameter] mixed $shipment, string $currency, bool $test): array
+    /** @param list<string>|null $accounts
+     * @return list<Rate> */
+    private static function rates(#[\SensitiveParameter] mixed $shipment, string $currency, bool $test, ?array $accounts): array
     {
         if (! $shipment instanceof stdClass || ($shipment->status ?? null) !== 'SUCCESS' || ($shipment->test ?? null) !== $test
             || ! is_array($shipment->rates ?? null) || ! array_is_list($shipment->rates)
@@ -161,6 +169,9 @@ final class ShippoRates
                 throw new ShippingUnavailable;
             }
 
+            if ($accounts !== null && ! in_array($rate->carrier_account ?? null, $accounts, true)) {
+                throw new ShippingUnavailable;
+            }
             $id = self::id($rate->object_id ?? null);
 
             if (isset($seen[$id])) {
@@ -170,7 +181,7 @@ final class ShippoRates
             $seen[$id] = true;
             $result[] = ['id' => $id, 'carrier' => self::label($rate->provider ?? null),
                 'service' => self::label($rate->servicelevel->name ?? null), 'amountMinor' => self::amount($rate->amount ?? null, $currency),
-                'currency' => $currency, 'shipmentId' => $shipmentId, 'test' => $test];
+                'currency' => $currency, 'shipmentId' => $shipmentId, 'test' => $test, ...($accounts === null ? [] : ['international' => true])];
         }
 
         return $result;

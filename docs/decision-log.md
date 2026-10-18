@@ -6636,6 +6636,36 @@ receive replacement awards. The workflow uses local transactions only: no provid
 or deployment authority is implied. Qualification is tracked in #281 and its implementation PR; local tests,
 browser/engine evidence, exact-head CI and maintainer merge remain separate gates.
 
+
+### Amendment 2026-10-18 — Cross-border quote inputs (#271, Adam)
+
+The order slice originally refused international shipments because no checked customs contract existed.
+That domestic default remains valid for an unconfigured Org; this amendment adds explicit international admission.
+Owners maintain customs descriptions, manufacturing-origin country codes and six-to-twelve-digit tariff numbers
+per shared SKU. Partial profiles remain usable domestically but cannot request international rates. Catalogue
+copy, buyer profiles and dispatch country are never substituted for customs inputs.
+
+Owners explicitly list destinations and carrier account IDs separately for test/live mode, name the responsible
+customs certifier and confirm truthful inputs. Unconfigured modes/destinations or incomplete goods refuse before
+provider I/O. The pinned Shippo shipment contract embeds a checked MERCHANDISE declaration, DDU recipient duties
+and RETURN on non-delivery. Country spelling and tariff bounds are local input constraints, not a registry,
+classification or legal-compliance determination. Routes needing additional exporter/carrier fields remain
+unsupported; no exemption, tax identity, phone number or export filing is invented.
+
+Each physical line declares its complete original net selling value in the Org currency, including the line's
+exact inclusive-tax rounding where applicable. There is no unit-value rounding or guessed currency conversion.
+Zero-net-value goods refuse international quoting pending a separately decided value policy. Net customs weight
+uses actual units without packaging tare. Existing per-SKU parcel packing and twenty-parcel bounds remain.
+
+Provider I/O stays outside locks. Customs, allowlists, certification, packing, credentials/mode and the complete
+cart/tax/catalogue fingerprint are rechecked before quote retention, order preparation and fresh buyer consent.
+Only rates from explicitly selected mode-specific carrier accounts qualify. Missing, inconsistent or unavailable
+rates never become domestic/zero-rate fallbacks. The original order retains a minimal international marker for
+the recipient-duty warning, not the certifier, carrier credentials or raw customs declaration. Later fulfillment
+must separately check actual shipped quantities and certification: a rate request buys no label and confers no
+shipment, compliance or live-provider qualification. Existing financial, entitlement, privacy and admission
+authority remains unchanged; fixtures and local/CI evidence are separate from real-provider qualification.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

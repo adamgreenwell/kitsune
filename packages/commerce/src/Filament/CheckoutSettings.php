@@ -19,6 +19,7 @@ use Kitsune\Commerce\Models\CommerceSettings;
 use Kitsune\Commerce\Models\SalesPolicy;
 use Kitsune\Commerce\Models\Sellable;
 use Kitsune\Commerce\Models\TaxRate;
+use Kitsune\Commerce\Shipping\InternationalShipping;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Livewire\Attributes\Locked;
 use Livewire\WithPagination;
@@ -35,6 +36,8 @@ final class CheckoutSettings extends Page
     protected string $view = 'commerce::checkout-settings';
 
     public mixed $settings = [];
+
+    public mixed $international = ['enabled' => false, 'destinations' => '', 'test_accounts' => '', 'live_accounts' => '', 'certify_signer' => '', 'certified' => false];
 
     public mixed $taxRate = [];
 
@@ -81,6 +84,15 @@ final class CheckoutSettings extends Page
             }
 
             $values = $this->settings;
+            if (! is_array($this->international) || array_diff(array_keys($this->international), ['enabled', 'destinations', 'test_accounts', 'live_accounts', 'certify_signer', 'certified']) !== []
+                || ! is_bool($this->international['enabled'] ?? null)) {
+                throw new \InvalidArgumentException;
+            }
+            $values['international_shipping'] = $this->international['enabled'] ? [
+                'destinations' => self::lines($this->international['destinations'] ?? null),
+                'carrier_accounts' => ['test' => self::lines($this->international['test_accounts'] ?? null), 'live' => self::lines($this->international['live_accounts'] ?? null)],
+                'certify_signer' => $this->international['certify_signer'] ?? null, 'certified' => $this->international['certified'] ?? null,
+            ] : null;
             $address = $values['ship_from_address'] ?? null;
 
             if (($values['ship_from_name'] ?? null) === '' && is_array($address) && array_filter($address, static fn ($part) => $part !== '') === []) {
@@ -168,7 +180,7 @@ final class CheckoutSettings extends Page
         $this->sku = $row->sku;
         $this->policyVersion = $policy?->version;
         $this->policy = ['tax_class' => $policy->tax_class ?? '', 'delivery_kind' => $policy->delivery_kind ?? ''];
-        foreach (SalesPolicy::PACKING_FIELDS as $field) {
+        foreach ([...SalesPolicy::PACKING_FIELDS, ...InternationalShipping::SKU_FIELDS] as $field) {
             $this->policy[$field] = $policy?->getAttribute($field) === null ? '' : (string) $policy->getAttribute($field);
         }
         $this->resetErrorBag('policy');
@@ -185,7 +197,12 @@ final class CheckoutSettings extends Page
             }
             $values = $this->policy;
             if (($values['delivery_kind'] ?? null) === 'digital') {
-                foreach (SalesPolicy::PACKING_FIELDS as $field) {
+                foreach ([...SalesPolicy::PACKING_FIELDS, ...InternationalShipping::SKU_FIELDS] as $field) {
+                    $values[$field] = null;
+                }
+            }
+            foreach (InternationalShipping::SKU_FIELDS as $field) {
+                if (($values[$field] ?? null) === '') {
                     $values[$field] = null;
                 }
             }
@@ -252,9 +269,23 @@ final class CheckoutSettings extends Page
     {
         $row = CommerceSettings::query()->useWritePdo()->first();
         $this->settingsVersion = $row?->version;
+        $international = $row?->international_shipping;
+        $this->international = ['enabled' => $international !== null, 'destinations' => implode("\n", $international['destinations'] ?? []),
+            'test_accounts' => implode("\n", $international['carrier_accounts']['test'] ?? []), 'live_accounts' => implode("\n", $international['carrier_accounts']['live'] ?? []),
+            'certify_signer' => $international['certify_signer'] ?? '', 'certified' => $international['certified'] ?? false];
         $this->settings = ['tax_mode' => $row->tax_mode ?? '', 'shipping_tax_mode' => $row->shipping_tax_mode ?? '',
             'shipping_tax_class' => $row->shipping_tax_class ?? '', 'ship_from_name' => $row->ship_from_name ?? '',
             'ship_from_address' => $row->ship_from_address ?? array_fill_keys(['line1', 'line2', 'city', 'region', 'postal_code', 'country'], '')];
+    }
+
+    /** @return list<string> */
+    private static function lines(mixed $value): array
+    {
+        if (! is_string($value) || strlen($value) > 4096) {
+            throw new \InvalidArgumentException;
+        }
+
+        return $value === '' ? [] : explode("\n", str_replace("\r\n", "\n", trim($value)));
     }
 
     private function saved(string $key): void

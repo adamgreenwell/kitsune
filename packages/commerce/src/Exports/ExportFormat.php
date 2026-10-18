@@ -28,7 +28,7 @@ final class ExportFormat
         'site_name', 'site_base_url', 'sku', 'title', 'quantity', 'line_reference', 'sellable_reference',
         'listing_reference', 'entry_reference', 'unit_price_minor', 'tax_class', 'tax_rate_parts', 'delivery_kind',
         'net_minor', 'tax_minor', 'gross_minor', 'quoted_item_net_minor', 'quoted_shipping_net_minor',
-        'quoted_tax_minor', 'quoted_total_minor', 'confirmed_total_minor', 'carrier', 'service', 'amount_minor',
+        'quoted_tax_minor', 'quoted_total_minor', 'confirmed_total_minor', 'carrier', 'service', 'amount_minor', 'international', 'duties_payor', 'non_delivery_option',
         'owed_minor', 'item_net_minor', 'item_tax_minor', 'shipping_net_minor', 'shipping_tax_minor', 'awarded',
         'unavailable', 'allocation_state', 'reason', 'attempt_reference', 'kind', 'offer_kind', 'offer_duration_days',
         'entitlement', 'subject_erased', 'invoice_expired', 'policy_version', 'delivery_pending', 'legal_hold',
