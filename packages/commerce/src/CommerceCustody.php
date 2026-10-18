@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Commerce;
 
 use Illuminate\Database\Connection;
+use Illuminate\Database\QueryException;
 use RuntimeException;
 
 /**
@@ -37,6 +38,7 @@ final class CommerceCustody
         $ownedPrefix = $connectionPrefix.'commerce_';
         $driver = $connection->getDriverName();
         $foldsTableNames = $driver === 'sqlite';
+        $physicalOwnership = false;
 
         if (in_array($driver, ['mysql', 'mariadb'], true)) {
             // A case-sensitive server may host two installations whose prefixes differ only in case.
@@ -49,14 +51,17 @@ final class CommerceCustody
 
             $foldsTableNames = (string) $setting !== '0';
 
-            // Identifier folding is not Unicode lowercasing: measured on MariaDB, İ becomes i but ẞ
-            // stays ẞ. PHP and SQL LOWER each disagree with it. Refuse ambiguity before teardown rather
-            // than silently skip a retained table. ASCII prefixes have identical byte-length folding.
+            // Setting 1's stored spelling can be proved by the resolved SHOW CREATE TABLE DDL.
+            // Setting 2 preserves spelling on case-insensitive filesystems and is not yet measured.
             if ($foldsTableNames && preg_match('/[^\x00-\x7F]/', $connectionPrefix) === 1) {
-                throw new RuntimeException(
-                    'Commerce cannot safely inspect a non-ASCII table prefix on a server that folds table names. '
-                    .'Teardown refused; its data and receipt are retained.',
-                );
+                if ((string) $setting !== '1') {
+                    throw new RuntimeException(
+                        'Commerce cannot safely inspect a non-ASCII table prefix under these table-name semantics. '
+                        .'Teardown refused; its data and receipt are retained.',
+                    );
+                }
+
+                $physicalOwnership = true;
             }
         }
 
@@ -75,6 +80,16 @@ final class CommerceCustody
         $tables = $schema->getTables($schemas);
 
         foreach ($tables as $table) {
+            if ($physicalOwnership) {
+                if (self::ownsPhysicalTable($connection, $table['schema'], $table['name'], $connectionPrefix)
+                    && $connection->query()->fromRaw(self::physicalName($table['schema'], $table['name']))
+                        ->useWritePdo()->exists()) {
+                    self::refuseRows();
+                }
+
+                continue;
+            }
+
             // SQLite folds ASCII names; MySQL/MariaDB fold them only under the server setting above.
             $nameToCompare = $foldsTableNames ? strtolower($table['name']) : $table['name'];
             $prefixToCompare = $foldsTableNames ? strtolower($ownedPrefix) : $ownedPrefix;
@@ -88,11 +103,69 @@ final class CommerceCustody
             $qualified = $table['schema'] === null ? $name : $table['schema'].'.'.$name;
 
             if ($connection->table($qualified)->useWritePdo()->exists()) {
-                throw new RuntimeException(
-                    'kitsune/commerce still holds data. Export and resolve its retained records before uninstalling; '
-                    .'disabling commerce keeps its schema and data.',
-                );
+                self::refuseRows();
             }
         }
+    }
+
+    /**
+     * Ask the WRITE server to resolve every possible commerce namespace boundary. Prefix folding can
+     * change byte length, and the configured prefix itself may contain commerce_, so slicing by prefix
+     * length or taking just the first/last occurrence is unsafe. No guessed Unicode conversion is used.
+     */
+    private static function ownsPhysicalTable(Connection $connection, string $schema, string $name, string $prefix): bool
+    {
+        preg_match_all('/commerce_/i', $name, $boundaries, PREG_OFFSET_CAPTURE);
+
+        foreach ($boundaries[0] as [, $offset]) {
+            $requested = $prefix.substr($name, $offset);
+
+            // An earlier namespace occurrence can produce an impossible identifier. Both engines
+            // limit table identifiers to 64 characters; this is a length check, never a case fold.
+            if (mb_strlen($requested, 'UTF-8') > 64) {
+                continue;
+            }
+
+            try {
+                $rows = $connection->selectFromWriteConnection('show create table '.self::physicalName($schema, $requested));
+            } catch (QueryException $exception) {
+                // Only a missing candidate means that this namespace boundary is not owned. Missing
+                // schema, denied metadata, transport errors and every other uncertainty still refuse.
+                if (($exception->errorInfo[1] ?? null) === 1146) {
+                    continue;
+                }
+
+                throw $exception;
+            }
+
+            $ddl = $rows[0]->{'Create Table'} ?? null;
+
+            // The Table result field and PDO metadata echo the requested spelling on both engines.
+            // Only this quoted DDL identifier names the physical object. Refuse unknown output shapes,
+            // including sql_quote_show_create=0, rather than treating them as an empty installation.
+            if (! is_string($ddl) || preg_match('/\ACREATE TABLE `((?:[^`]|``)+)` \(/', $ddl, $match) !== 1) {
+                throw new RuntimeException('Commerce physical table ownership could not be determined. Teardown refused.');
+            }
+
+            if (str_replace('``', '`', $match[1]) === $name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Already physical, never pass through the builder's configured table prefix a second time. */
+    private static function physicalName(string $schema, string $name): string
+    {
+        return '`'.str_replace('`', '``', $schema).'`.`'.str_replace('`', '``', $name).'`';
+    }
+
+    private static function refuseRows(): never
+    {
+        throw new RuntimeException(
+            'kitsune/commerce still holds data. Export and resolve its retained records before uninstalling; '
+            .'disabling commerce keeps its schema and data.',
+        );
     }
 }

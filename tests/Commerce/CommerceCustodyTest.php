@@ -9,7 +9,9 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Connection;
+use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Database\Schema\MySqlBuilder;
 use Illuminate\Database\SQLiteConnection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -166,4 +168,14 @@ it('reads the write connection rather than an empty replica', function (): void 
     expect($primary->table('commerce_future')->exists())->toBeFalse();
     expect(fn () => CommerceCustody::refuseKeptRows($primary))
         ->toThrow(RuntimeException::class, 'still holds data');
+});
+
+it('retains refusal for unmeasured non-ASCII setting two before discovery or DDL', function (): void {
+    $connection = Mockery::mock(MySqlConnection::class);
+    $connection->shouldReceive('getSchemaBuilder')->once()->andReturn(Mockery::mock(MySqlBuilder::class));
+    $connection->shouldReceive('getTablePrefix')->once()->andReturn('İ_');
+    $connection->shouldReceive('getDriverName')->once()->andReturn('mysql');
+    $connection->shouldReceive('selectFromWriteConnection')->once()->with('select @@lower_case_table_names as folding')
+        ->andReturn([(object) ['folding' => '2']]);
+    expect(fn () => CommerceCustody::refuseKeptRows($connection))->toThrow(RuntimeException::class, 'cannot safely inspect a non-ASCII table prefix');
 });

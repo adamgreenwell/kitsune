@@ -70,7 +70,7 @@ it('uses actual MySQL or MariaDB table-name folding for another cased prefix', f
     expect($this->mysqlCustody->table($this->mysqlCustodyTable)->count())->toBe(1);
 });
 
-it('refuses unsupported non-ASCII folding and preserves exact-case server behavior', function (bool $kept): void {
+it('proves non-ASCII setting one ownership and preserves exact-case server behavior', function (bool $kept): void {
     $connection = $this->mysqlCustody;
     $connection->setTablePrefix('');
     $table = 'ä_'.$this->mysqlCustodyTable;
@@ -86,8 +86,15 @@ it('refuses unsupported non-ASCII folding and preserves exact-case server behavi
         $setting = (string) $connection->selectFromWriteConnection('select @@lower_case_table_names as folding')[0]->folding;
         $connection->setTablePrefix('Ä_'.$this->mysqlCustodyPrefix);
 
-        if ($setting !== '0') {
+        if ($setting === '1') {
             expect($connection->table('commerce_kept')->useWritePdo()->exists())->toBe($kept);
+            if ($kept) {
+                expect(fn () => CommerceCustody::refuseKeptRows($connection))
+                    ->toThrow(RuntimeException::class, 'still holds data');
+            } else {
+                CommerceCustody::refuseKeptRows($connection);
+            }
+        } elseif ($setting === '2') {
             expect(fn () => CommerceCustody::refuseKeptRows($connection))
                 ->toThrow(RuntimeException::class, 'cannot safely inspect a non-ASCII table prefix');
         } else {
