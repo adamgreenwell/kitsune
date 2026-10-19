@@ -183,7 +183,9 @@ it('is what the workflow actually runs, and every matrix consumes it', function 
         ->and($workflow)->toContain('php: ${{ fromJSON(needs.scope.outputs.php) }}')
         ->and($workflow)->toContain('engine: ${{ fromJSON(needs.scope.outputs.engine) }}')
         ->and(substr_count($workflow, "if: needs.scope.outputs.docs_only != 'true'"))->toBe(2)
-        ->and(substr_count($workflow, 'needs: scope'))->toBe(3);
+        ->and(substr_count($workflow, 'needs: scope'))->toBe(4)
+        ->and($workflow)->toContain("if: contains(fromJSON(needs.scope.outputs.engine), 'mysql')")
+        ->and($workflow)->toContain('bash .github/scripts/unicode-custody.sh');
 
     // The engine lane that a prose change still runs has to be one the narrow matrix names.
     expect($workflow)->toContain('engine: ${{ fromJSON(needs.scope.outputs.engine) }}');

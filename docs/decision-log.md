@@ -5284,6 +5284,41 @@ disabling does not unload an already-running process, and an existence check is 
 The hook runs before receipt deletion or migration rollback. The kernel's partial-DDL recovery limitation is
 recorded in ADR-038 rather than described as a universal reinstall guarantee.
 
+**Amended 2026-10-18 — physical non-ASCII custody (#263).** The blanket folding-prefix refusal above is
+retained as the foundation's historical decision and narrowed for `lower_case_table_names=1`: custody now asks
+the write server to resolve candidates through `SHOW CREATE TABLE`, takes the actual quoted identifier from
+its DDL, and requires byte-for-byte equality with the current-schema catalogue entry before reading that
+physical table without another configured prefix. The result's `Table` field and PDO metadata merely echo the
+requested spelling; neither is used as a physical witness. No PHP/SQL Unicode normalization or collation
+comparison decides ownership. Every ASCII `commerce_` boundary in a listed name is tried because prefixes and
+future table suffixes can themselves contain it. Candidates longer than the 64-character identifier limit
+cannot name an owned table. Only a missing-candidate error (1146) is ignored; denied/unknown metadata and row
+reads still refuse. Unknown DDL, unquoted output and temporary shadows refuse before receipt deletion or DDL.
+
+The new path was measured on MySQL 8.0.46 / 8.4.7 and MariaDB 10.6.28 / 11.4.2, each with setting 1,
+PDO MySQL and utf8mb4. All nine requested-name/catalogue/DDL/row-resolution witnesses passed on each engine:
+`İ → i`, `ΟΣ → οσ`, `K → k`, `Ä → ä`, `ẞ → ẞ`, plus backticks, composed/decomposed accents and a prefix
+containing `commerce_`. Dotted I and Kelvin sign change byte length. These are observed names, never an
+algorithm substituted for the engine. The reproducible opt-in probe and precise boundary live in
+[tools/commerce-custody](../tools/commerce-custody/README.md). No probe touches an installed deployment.
+
+Setting 0, ASCII prefixes, SQLite and PostgreSQL retain the existing paths and scope. Setting 2 remains refused
+for non-ASCII prefixes pending qualification on a genuinely case-insensitive filesystem. The setting-1 path
+requires recognized, quoted physical DDL (`sql_quote_show_create=1` and a compatible SQL mode); unfamiliar
+semantics still refuse. A supported engine version alone is not permission to bypass a failed witness.
+The native Unicode tests cover foreign-org/trashed/future retained rows, empty admission, similar-prefix
+isolation including an empty local counterpart, repeated namespace boundaries, quote escaping, write routing,
+failed metadata/row reads and temporary shadows. The real lifecycle refusal preserves its prefixed module
+receipt and records no delete/drop/alter/truncate statement. Two focused CI jobs initialize setting-1 MySQL and
+MariaDB servers explicitly and assert the setting before running the Unicode cases, so the normal setting-0
+engine matrix cannot silently skip the new boundary. The bare-clone jobs remain service-free. Existing exact-case, ASCII, effective-schema and
+lifecycle tests remain required alongside these cases.
+
+The operator recovery rule is unchanged: disable, quiesce writers, verify a backup and establish recovery
+before separately authorized teardown. Do not change the configured prefix, folding setting or database to
+silence refusal. The hook still cannot fence an in-flight writer or repair partial DDL. This amendment adds no
+runtime service dependency, public API, financial authority or permission to uninstall an existing deployment.
+
 **Optional installation, without raising the floor.** Root development dependencies include the module.
 `composer skeleton:commerce` temporarily adds it to the development skeleton, invokes the existing setup and
 restores the original manifest after success or failure; an earlier `.orig` backup is refused. Like the existing
