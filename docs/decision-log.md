@@ -2894,6 +2894,52 @@ behind the shell's own check, the internal check-mode guard, a PHP really missin
 the clone checked out `DEPLOY_SHA`.
 ---
 
+### Amendment — an isolated Coolify development profile, 2026-10-19
+
+Adam chose a separate Coolify **Kitsune / development** environment at
+`development.kitsunecms.org` for Stripe sandbox qualification. The native stage
+and Forge reasoning above remains in force; this profile is not evidence that
+stage rehearsed alpha, a new default installer, or permission for live payments.
+
+`deploy/coolify/` separates its infrastructure revision from the explicitly pinned
+application commit. Its image fetches that exact public Git commit, mirrors its
+first-party packages, runs the existing package-custody checker and audits resolved
+runtime dependencies without booting the app or supplying secrets during build.
+Coolify provisions and preserves the application key and dedicated database
+password before startup. Runtime uses process environment rather than creating a
+dotenv file, and checks what Laravel loads through the existing environment and
+serving gates. It builds the named caches, migrates, and runs credential, pattern
+and schema checks. It never seeds an administrator, generates an application key,
+installs/enables a module receipt or admits live checkout as a deployment side effect.
+Coolify uses raw Compose with this profile as its project directory: managed
+Compose would inject all of its environment variables into every service. Runtime
+credentials remain unavailable during build, and the build context has an explicit
+file allowlist. Empty build-time interpolation is not admission to serve: startup
+and the database/connector still refuse absent credentials.
+
+The transport follows ADR-034's existing boundary through a **dedicated network
+namespace**: nginx listens on loopback over real TLS, and only this app's connector
+shares that namespace. Neither the app nor database publishes a host port or gets
+a Traefik route. The connector validates the origin hostname against the dedicated
+private CA; only its public CA file is shared with the connector. There is no
+forwarded scheme/Host trust, blanket Docker/Cloudflare address trust or disabled
+certificate verification. The private origin certificate has an explicit 90-day
+renewal requirement; restarts preserve it and partial/expired custody refuses.
+The host remains operator-controlled, as ADR-034's cost states; this does not claim
+to isolate a container from a hostile host administrator.
+
+This is a single-replica development deployment. Automatic deployment/scaling and
+the native runbook's host-wide pass claim are excluded. Its explicit disposable
+Docker qualification measures the actual TLS/FastCGI/kernel path, hostile headers,
+private ports, package custody, startup refusal and persisted storage. It is not
+part of the default service-free suite. The actual AMD64 Coolify runtime, public
+Access path, DNS and provider delivery require their own readbacks. Initial rollout
+can be stopped without deleting its data; later database rollback is a separate
+reviewed operation, never an automatic migration reversal. The README records
+provisioning, exact-source evidence, expiry and rollback boundaries.
+
+---
+
 ## ADR-036 — Chat support runs as its own service, and Kitsune talks to it over the network
 
 **Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it**

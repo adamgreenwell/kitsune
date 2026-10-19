@@ -1,0 +1,83 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+services:
+  # Coolify builds without runtime secrets. Empty interpolation is safe during
+  # build only: startup and the database/connector refuse missing credentials.
+  origin-certificates:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        KITSUNE_SOURCE_SHA: a8602823cd0e1272f9f74766e3985b50617a51e3
+    entrypoint: /usr/local/bin/kitsune-tls-init
+    restart: 'no'
+    volumes:
+      - origin-private:/private
+      - origin-public:/public
+  database:
+    image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kitsune
+      POSTGRES_USER: kitsune
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_DATABASE:-}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U kitsune -d kitsune']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        KITSUNE_SOURCE_SHA: a8602823cd0e1272f9f74766e3985b50617a51e3
+    restart: unless-stopped
+    depends_on:
+      origin-certificates:
+        condition: service_completed_successfully
+      database:
+        condition: service_healthy
+    environment:
+      APP_NAME: Kitsune development
+      APP_ENV: production
+      APP_DEBUG: 'false'
+      APP_URL: https://development.kitsunecms.org
+      APP_KEY: base64:${SERVICE_REALBASE64_KITSUNE:-}
+      DB_CONNECTION: pgsql
+      DB_HOST: database
+      DB_PORT: '5432'
+      DB_DATABASE: kitsune
+      DB_USERNAME: kitsune
+      DB_PASSWORD: ${SERVICE_PASSWORD_64_DATABASE:-}
+      SESSION_DRIVER: file
+      SESSION_SECURE_COOKIE: 'true'
+      CACHE_STORE: file
+      QUEUE_CONNECTION: sync
+      LOG_LEVEL: warning
+      MAIL_MAILER: log
+      VIEW_COMPILED_PATH: /srv/kitsune/skeleton/bootstrap/cache/views
+    volumes:
+      - storage:/data/storage
+      - origin-private:/run/kitsune-tls:ro
+  connector:
+    image: cloudflare/cloudflared@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5
+    restart: unless-stopped
+    # Loopback, rather than Docker bridge trust, is the ADR-034 boundary.
+    network_mode: service:app
+    depends_on:
+      app:
+        condition: service_healthy
+    command: [tunnel, --no-autoupdate, --metrics, '127.0.0.1:2000', run]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    volumes:
+      - origin-public:/etc/kitsune-origin:ro
+volumes:
+  database:
+  storage:
+  origin-private:
+  origin-public:
