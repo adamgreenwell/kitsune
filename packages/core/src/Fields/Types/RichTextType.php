@@ -229,9 +229,16 @@ final class RichTextType extends BaseFieldType
         // TEXT in an implied `<p>`, which would silently reshape content that
         // arrived as a bare string. The meta tells the parse the bytes are
         // UTF-8 and is skipped on the way out.
+        //
+        // A complete document is deliberate: libxml 2.14 discards loose text
+        // after a closed root with NOIMPLIED. Walking the whole tree cannot
+        // recover bytes the parser never put there. An explicit body retains
+        // those escapees; clean() unwraps the document scaffolding as well.
+        // NOIMPLIED stays off: even pasted closing body/html tags must leave
+        // their following text in the tree, not discard it at a closed root.
         $document->loadHTML(
-            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div>'.$html.'</div>',
-            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD,
+            '<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div>'.$html.'</div></body></html>',
+            LIBXML_HTML_NODEFDTD,
         );
 
         libxml_clear_errors();

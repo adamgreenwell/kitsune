@@ -1653,6 +1653,27 @@ So the ADR is **not** amended to constrain what a `Control::RichText` type may e
 
 ---
 
+### Amendment, 2026-10-19 — retain escaped rich-text content across parser versions
+
+PR #299's CI exposed a parser-dependent hole in the existing preservation rule. With the
+fragment-shaped `<meta><div>…</div>` input and `LIBXML_HTML_NOIMPLIED`, libxml 2.9 and
+2.13 preserve `hello</div>world`, while a measured PHP 8.5.11 build against libxml 2.14.6
+discards `world` before either the sanitizer or direction pass can walk it. Both existing
+regressions fail on that build. Walking the whole document was necessary but insufficient.
+
+Both private parsing paths now supply an explicit HTML/head/body document around the same
+wrapper and UTF-8 declaration, with `NOIMPLIED` removed so even closing body/html tags
+cannot discard following text. The direction pass collects any additional HTML roots
+(nested on older parsers) back into the body before processing their runs. The sanitizer
+still walks and rebuilds the complete tree
+with its unchanged element, attribute and URL allowlists. The direction pass wraps loose
+runs outside the synthetic div before restoring them to it, preserving the paragraph
+boundary rather than joining separate runs. Bare strings and valid existing markup keep
+their established shapes; malformed closing tags cannot silently discard later content.
+The earlier fragment-parser reasoning remains recorded above and in the source comments.
+
+---
+
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
 **Status:** Decided · 2026-09-10 · **Amended 2026-09-22 by ADR-039** — the idempotency condition is met by an
