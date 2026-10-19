@@ -74,9 +74,29 @@ certificate volumes to hide a failed check. There is no production readiness cla
    install/enable module receipts, admit live checkout, or contact Stripe/Shippo.
 7. First-owner provisioning is a separate native operator step with hidden
    password entry. Install/enable commerce through its ordinary lifecycle and
-   configure the Storefront, Site origin and test credentials explicitly. Mail is
-   deliberately `log`: email sign-up/recovery is unavailable until a suitable mail
-   transport is configured. Do not claim guest-email journeys passed in this state.
+   configure the Storefront, Site origin and test credentials explicitly. Mail
+   defaults to `log`: email sign-up/recovery and order preparation are unavailable
+   until a suitable sending transport is configured. Do not claim guest-email
+   journeys passed in this state.
+
+### Optional Resend SMTP
+
+The operator can supply these **runtime-only** Coolify variables. They are mapped
+only into the app service; never add them as Docker build arguments or share them
+with the connector or database:
+
+- `KITSUNE_MAIL_MAILER=smtp`
+- `KITSUNE_MAIL_SCHEME=smtps`, `KITSUNE_MAIL_HOST=smtp.resend.com`,
+  `KITSUNE_MAIL_PORT=465`, `KITSUNE_MAIL_USERNAME=resend` (the profile defaults)
+- `KITSUNE_MAIL_FROM_ADDRESS`: an explicitly chosen address on a Resend-verified domain
+- `KITSUNE_MAIL_PASSWORD`: the Resend sending API key, entered privately into Coolify
+
+The display name is `Kitsune Development`. Implicit TLS retains ordinary certificate
+verification; no local trust or verification bypass is added. Saving a variable
+does not change a running container: deploy the reviewed profile revision and
+verify actual delivery to an approved test recipient. Do not send to real buyers
+or use production order data. This SMTP setup does not change Stripe credential
+mode or grant live admission. See [Resend SMTP](https://resend.com/docs/send-with-smtp).
 
 ## Checks and rollback
 

@@ -49,7 +49,10 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
     env_file.write_text(
         "SERVICE_PASSWORD_64_DATABASE=" + secrets.token_hex(32) + "\n"
         "SERVICE_REALBASE64_KITSUNE=" + base64.b64encode(secrets.token_bytes(32)).decode() + "\n"
-        "CLOUDFLARE_TUNNEL_TOKEN=fixture-never-start-the-connector\n")
+        "CLOUDFLARE_TUNNEL_TOKEN=fixture-never-start-the-connector\n"
+        "KITSUNE_MAIL_MAILER=smtp\n"
+        "KITSUNE_MAIL_PASSWORD=fixture-no-provider-key-" + secrets.token_hex(16) + "\n"
+        "KITSUNE_MAIL_FROM_ADDRESS=profile-test@kitsunecms.org\n")
     os.chmod(env_file, 0o600)
     override = private / "override.json"
     override.write_text(json.dumps({"services": {
@@ -106,14 +109,39 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
         build_env = private / "build.env"
         build_env.write_text("")
         clean_environment = {key: value for key, value in os.environ.items() if key not in {
-            "SERVICE_PASSWORD_64_DATABASE", "SERVICE_REALBASE64_KITSUNE", "CLOUDFLARE_TUNNEL_TOKEN"}}
+            "SERVICE_PASSWORD_64_DATABASE", "SERVICE_REALBASE64_KITSUNE", "CLOUDFLARE_TUNNEL_TOKEN",
+            "KITSUNE_MAIL_MAILER", "KITSUNE_MAIL_SCHEME", "KITSUNE_MAIL_HOST", "KITSUNE_MAIL_PORT",
+            "KITSUNE_MAIL_USERNAME", "KITSUNE_MAIL_PASSWORD", "KITSUNE_MAIL_FROM_ADDRESS"}}
         build_parse = command(["docker", "compose", "--project-name", project,
                                "--env-file", str(build_env), "--file", str(profile / "compose.yaml"),
                                "config", "--quiet"], env=clean_environment, required=False)
         check("build can parse Compose without runtime secrets", build_parse.returncode == 0)
+        defaults = json.loads(command(["docker", "compose", "--project-name", project,
+                                      "--env-file", str(build_env), "--file", str(profile / "compose.yaml"),
+                                      "config", "--format", "json"], env=clean_environment).stdout)
+        check("sending mail stays opt-in by default", defaults["services"]["app"]["environment"]["MAIL_MAILER"] == "log")
         dc("config", "--quiet")
+        rendered = json.loads(dc("config", "--format", "json").stdout)
+        smtp_password = rendered["services"]["app"]["environment"]["MAIL_PASSWORD"]
+        check("SMTP credential reaches only the app service", all(
+            not any(key.startswith("MAIL_") or key.startswith("KITSUNE_MAIL_") for key in service.get("environment", {}))
+            for name, service in rendered["services"].items() if name != "app"))
+        check("SMTP credential is absent from every build argument", all(
+            smtp_password not in json.dumps(service.get("build", {}))
+            for service in rendered["services"].values()))
         dc("up", "--detach", "--no-build", "app")
         state = healthy()
+        mail_probe = app("php", "-r", "require 'skeleton/vendor/autoload.php'; $a=require 'skeleton/bootstrap/app.php'; "
+                         "$a->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap(); "
+                         "echo json_encode([config('mail.default') === 'smtp', "
+                         "config('mail.mailers.smtp.scheme') === 'smtps' && config('mail.mailers.smtp.port') == 465, "
+                         "config('mail.mailers.smtp.host') === 'smtp.resend.com' && config('mail.mailers.smtp.username') === 'resend', "
+                         "hash_equals(getenv('MAIL_PASSWORD'), config('mail.mailers.smtp.password')), "
+                         "config('mail.from.address') === 'profile-test@kitsunecms.org']);").stdout
+        check("cached SMTP configuration preserves TLS and private credential", json.loads(mail_probe) == [True] * 5)
+        image_environment = command(["docker", "image", "inspect", args.image,
+                                     "--format", "{{json .Config.Env}}"]).stdout
+        check("runtime SMTP credential is absent from image environment", smtp_password.encode() not in image_environment)
         check("no published application ports", not state["HostConfig"].get("PortBindings"))
         check("real trusted origin TLS serves the app", request()[1] == "200")
         check("untrusted origin certificate is refused", request(trusted=False)[0] == 60)

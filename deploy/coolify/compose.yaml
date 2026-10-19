@@ -58,7 +58,15 @@ services:
       CACHE_STORE: file
       QUEUE_CONNECTION: sync
       LOG_LEVEL: warning
-      MAIL_MAILER: log
+      # Optional sending transport; these values belong only to the app at runtime.
+      MAIL_MAILER: ${KITSUNE_MAIL_MAILER:-log}
+      MAIL_SCHEME: ${KITSUNE_MAIL_SCHEME:-smtps}
+      MAIL_HOST: ${KITSUNE_MAIL_HOST:-smtp.resend.com}
+      MAIL_PORT: ${KITSUNE_MAIL_PORT:-465}
+      MAIL_USERNAME: ${KITSUNE_MAIL_USERNAME:-resend}
+      MAIL_PASSWORD: ${KITSUNE_MAIL_PASSWORD:-}
+      MAIL_FROM_ADDRESS: ${KITSUNE_MAIL_FROM_ADDRESS:-}
+      MAIL_FROM_NAME: Kitsune Development
       VIEW_COMPILED_PATH: /srv/kitsune/skeleton/bootstrap/cache/views
     volumes:
       - storage:/data/storage
