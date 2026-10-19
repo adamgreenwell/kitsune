@@ -4,9 +4,22 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 set -eu
 umask 077
-if test -e /private/server.key || test -e /private/server.crt || test -e /public/ca.crt; then
-    test -s /private/server.key && test -s /private/server.crt && test -s /private/ca.crt && test -s /public/ca.crt
+existing=false
+for file in /private/ca.key /private/ca.crt /private/server.key /private/server.crt \
+    /private/server.csr /private/ca.srl /private/extensions /public/ca.crt; do
+    if test -e "$file" || test -L "$file"; then existing=true; fi
+done
+if "$existing"; then
+    test -s /private/ca.key && test -s /private/ca.crt && test -s /private/server.key \
+        && test -s /private/server.crt && test -s /public/ca.crt
     cmp /private/ca.crt /public/ca.crt
+    checked_keys=$(mktemp -d)
+    trap 'rm -rf "$checked_keys"' 0
+    for name in ca server; do
+        openssl pkey -in "/private/$name.key" -pubout -out "$checked_keys/key.pub" >/dev/null 2>&1
+        openssl x509 -in "/private/$name.crt" -pubkey -noout -out "$checked_keys/certificate.pub"
+        cmp "$checked_keys/key.pub" "$checked_keys/certificate.pub"
+    done
     openssl verify -CAfile /public/ca.crt -verify_hostname development.kitsunecms.org /private/server.crt
     exit 0
 fi

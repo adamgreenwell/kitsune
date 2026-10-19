@@ -98,6 +98,11 @@ verify actual delivery to an approved test recipient. Do not send to real buyers
 or use production order data. This SMTP setup does not change Stripe credential
 mode or grant live admission. See [Resend SMTP](https://resend.com/docs/send-with-smtp).
 
+Existing certificate custody must include the CA private key as well as its
+certificate and the server key/certificate. The initializer verifies both key
+pairs before reuse. A missing/mismatched key or a lone CA artifact refuses without
+regenerating or overwriting the remaining custody; restore its complete backup.
+
 ## Checks and rollback
 
 Before publication, qualify an isolated local stack: real trusted TLS, rejection of

@@ -131,6 +131,43 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
             for service in rendered["services"].values()))
         dc("up", "--detach", "--no-build", "app")
         state = healthy()
+        initializer = app("cat", "/usr/local/bin/kitsune-tls-init").stdout
+        check("image carries the exact certificate initializer", initializer == (profile / "tls-init.sh").read_bytes())
+
+        def certificate_command(script):
+            return dc("run", "--rm", "--no-deps", "--entrypoint", "/bin/sh",
+                      "origin-certificates", "-c", script)
+
+        def certificate_witness():
+            return certificate_command("find /private /public -type f -exec sha256sum {} \\; | sort").stdout
+
+        complete_custody = certificate_witness()
+        dc("run", "--rm", "--no-deps", "origin-certificates")
+        check("complete certificate custody is reused unchanged", certificate_witness() == complete_custody)
+        for name, key, mutation in [
+            ("missing CA private key", "ca", "mv /private/ca.key /private/ca.key.proof"),
+            ("mismatched CA private key", "ca", "mv /private/ca.key /private/ca.key.proof; "
+             "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /private/ca.key >/dev/null 2>&1"),
+            ("mismatched server private key", "server", "mv /private/server.key /private/server.key.proof; "
+             "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /private/server.key >/dev/null 2>&1"),
+        ]:
+            certificate_command(mutation)
+            damaged_custody = certificate_witness()
+            refused = dc("run", "--rm", "--no-deps", "origin-certificates", required=False)
+            check(name + " refuses without rewriting custody", refused.returncode != 0
+                  and certificate_witness() == damaged_custody)
+            certificate_command("mv /private/" + key + ".key.proof /private/" + key + ".key")
+        for retained in ["ca.key", "ca.crt"]:
+            certificate_command("mkdir /private/.proof; for file in /private/*; do "
+                                "if test \"$file\" != /private/" + retained + "; then mv \"$file\" /private/.proof/; fi; "
+                                "done; mv /public/ca.crt /public/ca.crt.proof")
+            damaged_custody = certificate_witness()
+            refused = dc("run", "--rm", "--no-deps", "origin-certificates", required=False)
+            check("custody containing only " + retained + " refuses without regeneration", refused.returncode != 0
+                  and certificate_witness() == damaged_custody)
+            certificate_command("mv /private/.proof/* /private/; rmdir /private/.proof; "
+                                "mv /public/ca.crt.proof /public/ca.crt")
+        check("certificate regression fixtures restore exact custody", certificate_witness() == complete_custody)
         mail_probe = app("php", "-r", "require 'skeleton/vendor/autoload.php'; $a=require 'skeleton/bootstrap/app.php'; "
                          "$a->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap(); "
                          "echo json_encode([config('mail.default') === 'smtp', "
