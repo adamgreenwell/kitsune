@@ -17,6 +17,7 @@ use Kitsune\Commerce\Inventory\StockWriter;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Tenancy\Context;
 
 /** Atomic test-payment receipt, one availability decision and its exact refund obligation. @internal */
@@ -410,10 +411,11 @@ final class PaidOrders
             self::ATTEMPTS => [...$parents, 'obligation_id', 'reference', 'idempotency_key', 'request_payload', 'request_hash', 'state',
                 'refund_id', 'category', 'replay_count', 'first_submitted_at', 'lease_token', 'lease_until', 'created_at', 'updated_at'],
         ];
-        $present = array_filter(array_keys($tables), $connection->getSchemaBuilder()->hasTable(...));
+        $metadata = RequiredColumns::inspect($connection, $tables);
+        $present = array_filter($metadata, static fn (array $table): bool => $table['table']);
         if (count($present) === count($tables)) {
-            foreach ($tables as $table => $columns) {
-                if (! $connection->getSchemaBuilder()->hasColumns($table, $columns)) {
+            foreach ($metadata as $table) {
+                if (! $table['columns']) {
                     throw new CheckoutRefused;
                 }
             }

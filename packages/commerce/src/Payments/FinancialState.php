@@ -22,6 +22,7 @@ use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -600,13 +601,14 @@ final class FinancialState
         $tables = [self::WORK => ['order_reference', 'revision', 'basis_hash', 'lease_token', 'lease_until', 'replay_count', 'last_observed_at', 'charge_refunded_minor', 'charge_disputed'],
             self::REFUNDS => ['work_id', 'payment_id', 'reference', 'request_key', 'origin', 'purpose', 'reason', 'selection', 'selection_hash', 'basis_hash', 'authorization', 'authorization_hash', 'amount_minor', 'request_payload', 'request_digest', 'idempotency_key', 'credential_witness', 'first_submitted_at', 'refund_id', 'state', 'category', 'replay_count'],
             self::OBSERVATIONS => ['work_id', 'account_id', 'mode', 'kind', 'object_id', 'amount_minor', 'currency', 'state', 'origin', 'local_reference', 'request_digest', 'verified_at']];
-        $schema = $connection->getSchemaBuilder();
-        $present = array_filter(array_keys($tables), $schema->hasTable(...));
+        $tables = array_map(static fn (array $columns): array => ['id', 'org_id', 'site_id', 'order_id', ...$columns], $tables);
+        $metadata = RequiredColumns::inspect($connection, $tables);
+        $present = array_filter($metadata, static fn (array $table): bool => $table['table']);
         if ($present === [] && ! $connection->table('migrations')->useWritePdo()->where('migration', '0001_01_01_000214_create_commerce_financial_state')->exists()) {
             return false;
         }
-        foreach ($tables as $table => $columns) {
-            if (! $schema->hasTable($table) || ! $schema->hasColumns($table, ['id', 'org_id', 'site_id', 'order_id', ...$columns])) {
+        foreach ($metadata as $table) {
+            if (! $table['table'] || ! $table['columns']) {
                 throw new CheckoutRefused('changed');
             }
         }

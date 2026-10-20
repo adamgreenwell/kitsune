@@ -28,6 +28,7 @@ use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Payments\StripeEventInbox;
 use Kitsune\Commerce\Privacy\OrderPrivacy;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Commerce\Taxes\TaxAmounts;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -256,7 +257,7 @@ final class OrderReaderData implements ModuleReaderData
             return false;
         }
         foreach ($tables as $table => $columns) {
-            if (! $schema->hasTable($table) || ! $schema->hasColumns($table, $columns)) {
+            if (! $schema->hasTable($table) || ! RequiredColumns::present($connection, $table, $columns)) {
                 throw new RuntimeException('The order privacy schema is incomplete.');
             }
         }

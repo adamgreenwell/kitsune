@@ -16,6 +16,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Commerce\Models\RetentionPolicy;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Database\TransactionRecovery;
@@ -176,7 +177,7 @@ final class RetentionPolicies
             }
             foreach ([self::TABLE => ['id', 'org_id', 'version', 'schema_version', 'billing_fields', 'legal_basis', 'reason', 'clock', 'duration', 'timezone', 'config_hash', 'created_at'],
                 self::ACTIVATIONS => ['id', 'org_id', 'policy_id', 'policy_version', 'config_hash', 'activated_at']] as $table => $columns) {
-                if (! $schema->hasTable($table) || ! $schema->hasColumns($table, $columns)) {
+                if (! $schema->hasTable($table) || ! RequiredColumns::present($connection, $table, $columns)) {
                     throw new RetentionRefused;
                 }
             }

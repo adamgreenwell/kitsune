@@ -17,6 +17,7 @@ use Illuminate\Support\Collection;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleDiscovery;
@@ -478,7 +479,7 @@ final class StripeEventInbox
             return false;
         }
         foreach ($tables as $table => $columns) {
-            if (! $schema->hasTable($table) || ! $schema->hasColumns($table, $columns)) {
+            if (! $schema->hasTable($table) || ! RequiredColumns::present($connection, $table, $columns)) {
                 throw new CheckoutRefused;
             }
         }

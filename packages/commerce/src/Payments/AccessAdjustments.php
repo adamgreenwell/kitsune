@@ -16,6 +16,7 @@ use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\CompletionFacts;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
@@ -397,7 +398,7 @@ final class AccessAdjustments
             return false;
         }
         foreach ($columns as $table => $required) {
-            if (! $schema->hasTable($table) || ! $schema->hasColumns($table, $required)) {
+            if (! $schema->hasTable($table) || ! RequiredColumns::present($connection, $table, $required)) {
                 throw new CheckoutRefused('setup');
             }
         }

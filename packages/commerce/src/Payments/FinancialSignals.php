@@ -13,6 +13,7 @@ namespace Kitsune\Commerce\Payments;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Tenancy\Context;
 
 /** Durable signature-verified hints, including the interval before a payment receipt exists. @internal */
@@ -86,7 +87,7 @@ final class FinancialSignals
     public static function rows(Connection $connection, int $org, string $chargeId, bool $lock = false, string $mode = 'test'): array
     {
         if (! in_array($mode, ['test', 'live'], true) || app(Context::class)->orgId() !== $org || preg_match('/\Ach_[A-Za-z0-9_]{1,95}\z/D', $chargeId) !== 1
-            || ! $connection->getSchemaBuilder()->hasColumns(self::TABLE, self::COLUMNS)) {
+            || ! RequiredColumns::present($connection, self::TABLE, self::COLUMNS)) {
             throw new CheckoutRefused('setup');
         }
         $query = $connection->table(self::TABLE)->useWritePdo()->where('org_id', $org)->where('mode', $mode)

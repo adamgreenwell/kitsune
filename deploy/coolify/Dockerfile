@@ -11,9 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
-# The deployed application is the qualified main commit, independently of the
+# The deployed application is the qualified application commit, independently of the
 # branch carrying this infrastructure profile. No host credentials enter a build.
-ARG KITSUNE_SOURCE_SHA=a8602823cd0e1272f9f74766e3985b50617a51e3
+ARG KITSUNE_SOURCE_SHA=24342c8121797220658dc77edbc8f79975fc534e
 ENV GIT_TERMINAL_PROMPT=0 COMPOSER_ALLOW_SUPERUSER=1
 WORKDIR /srv/kitsune
 RUN test "${#KITSUNE_SOURCE_SHA}" = 40 \

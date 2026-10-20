@@ -22,6 +22,7 @@ use Kitsune\Commerce\Payments\AccessFulfillment;
 use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\CheckoutReview;
 use Kitsune\Commerce\Payments\PaidOrders;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
@@ -60,12 +61,13 @@ final class PrivacyState
             self::DELIVERIES => ['id', 'org_id', 'site_id', 'order_id', 'work_id', 'state', 'payload', 'payload_hash', 'reason', 'review_at', 'completed_at', 'created_at', 'updated_at'],
             self::HOLDS => ['id', 'org_id', 'site_id', 'order_id', 'work_id', 'reference', 'reason', 'review_at', 'released_at', 'release_reason', 'created_at'],
             self::TOMBSTONES => ['id', 'org_id', 'mode', 'kind', 'digest', 'account_digest', 'custody_digest', 'subject_erased_at', 'invoice_expired_at', 'purged_at', 'commitments', 'created_at', 'updated_at']];
-        $present = array_filter(array_keys($tables), $connection->getSchemaBuilder()->hasTable(...));
+        $metadata = RequiredColumns::inspect($connection, $tables);
+        $present = array_filter($metadata, static fn (array $table): bool => $table['table']);
         if ($present === [] && ! $connection->table('migrations')->useWritePdo()->where('migration', self::MIGRATION)->exists()) {
             return false;
         }
-        foreach ($tables as $table => $columns) {
-            if (! $connection->getSchemaBuilder()->hasColumns($table, $columns)) {
+        foreach ($metadata as $table) {
+            if (! $table['columns']) {
                 throw new RetentionRefused;
             }
         }

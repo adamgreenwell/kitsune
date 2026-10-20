@@ -6796,6 +6796,34 @@ order reference, and its copy describes unavailable status rather than asserting
 encourages a replacement checkout. Deterministic races, native engine qualification and browser observations
 are recorded on #300 and its implementation PR; this correction grants no live admission or release authority.
 
+
+### Amendment — Fresh PostgreSQL commerce metadata without full column descriptions, 2026-10-20 (#303)
+
+The checked historical projections above still validate their complete purchase, payment, claim, privacy and
+access graphs on every call. The private development installation exposed a separate cost in those checks:
+four nginx requests reached its 45-second FastCGI deadline. On the deployed PostgreSQL application, one order
+projection took 2.39 seconds and 547 queries; a checked ten-order export took 39.68 seconds and 10,784 queries.
+Repeated framework column-presence checks fetched unused PostgreSQL type, default, collation and comment
+metadata. This measurement identifies substantial work near the deadline; it does not retroactively establish
+the blocked-session history or an exception stack for each failed request.
+
+Commerce now asks PostgreSQL for column names only. The paid, privacy and financial schema checks each inspect
+their related table set in one fresh catalog read. Table existence remains distinct from column presence, so a
+view is not silently admitted as a table. The framework's prefix, explicit schema/current-schema resolution,
+case-insensitive required names and primary-connection reads remain. Other engines retain framework schema
+queries. No positive or negative metadata result survives the call; DDL, connection configuration changes and
+host callbacks cannot reuse a previously checked result. Full row checks, fresh post-callback validation,
+transaction fences, immutable clocks, financial/access authority and privacy refusal remain unchanged.
+
+A bounded read-only diagnostic CLI evaluated the candidate against the installed ten-order graph without
+writing deployed files or changing provider/database state: 6,260 queries and 17.10 seconds, with 105 records.
+An unchanged baseline repeat took 42.24 seconds; both complete exports had the same digest after excluding
+only the artifact generation timestamp. This is candidate measurement, not an installed HTTP fix or a guarantee for every export size/concurrency.
+The FastCGI deadline is not raised and no cache, worker, service or resource-floor dependency is added.
+Regression qualification, exact-head CI/review, development deployment and actual HTTP observations remain
+separate gates tracked on #303 and #287; this amendment grants no live commerce admission.
+
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

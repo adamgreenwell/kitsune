@@ -23,6 +23,7 @@ use Kitsune\Commerce\Orders\HistoricalAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementRefusal;
@@ -524,7 +525,7 @@ final class AccessFulfillment
 
             return false;
         }
-        if (! $schema->hasColumns(self::WORK, self::WORK_COLUMNS) || ! $schema->hasColumns(self::EFFECTS, self::EFFECT_COLUMNS)) {
+        if (! RequiredColumns::present($connection, self::WORK, self::WORK_COLUMNS) || ! RequiredColumns::present($connection, self::EFFECTS, self::EFFECT_COLUMNS)) {
             throw new CheckoutRefused('setup');
         }
 
