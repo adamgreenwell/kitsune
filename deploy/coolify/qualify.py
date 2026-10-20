@@ -188,7 +188,7 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
         check("FPM user cannot read origin private keys", app("su", "-s", "/bin/sh", "www-data", "-c",
               "test ! -r /run/kitsune-tls/server.key", required=False).returncode == 0)
         check("application source is pinned", app("git", "rev-parse", "HEAD").stdout.strip()
-              == b"24342c8121797220658dc77edbc8f79975fc534e")
+              == b"dec5b98e9b605685b39965283da960089bd38c90")
         check("first-party packages match pinned source", app("php", "deploy/release-check.php", "packages", "1").returncode == 0)
 
         index = "/srv/kitsune/skeleton/public/index.php"
