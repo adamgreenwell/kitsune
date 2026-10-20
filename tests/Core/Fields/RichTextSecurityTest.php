@@ -235,8 +235,9 @@ describe('a pattern that can desynchronise from the parser is a denylist', funct
      * introduced by a sanitiser is worse than the hole it replaced.
      *
      * These assert CONTENT PRESERVED rather than byte-exact output: input that
-     * closes the wrapper leaves its tail as loose text, which libxml wraps in
-     * a `<p>`. Nothing is lost, and only already-malformed markup shifts shape.
+     * closes the wrapper leaves its tail outside it. Older libxml versions
+     * may wrap that tail in a `<p>`; a complete document keeps it on newer
+     * parsers too. Nothing is lost, and only malformed markup shifts shape.
      */
     it('keeps content that follows a stray closing tag', function (string $html, array $keep): void {
         $stored = sanitised($html);
@@ -246,6 +247,8 @@ describe('a pattern that can desynchronise from the parser is a denylist', funct
         }
     })->with([
         ['hello</div>world', ['hello', 'world']],
+        ['hello</div>world <strong>tail</strong>', ['hello', 'world', '<strong>tail</strong>']],
+        ['hello</div></body></html>world', ['hello', 'world']],
         ['<p>one</p></div><p>two</p>', ['one', 'two']],
         ['<p>a</p></div></div><p>b</p>', ['a', 'b']],
         ['text</div><img src=x alt="ok">', ['text', 'alt="ok"']],

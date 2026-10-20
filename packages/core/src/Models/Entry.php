@@ -910,9 +910,10 @@ class Entry extends Model implements RequiresModelSave
 
         // The same wrapper-and-meta parsing aid `sanitize()` documents at length: the meta declares
         // UTF-8, and the wrapper stops libxml wrapping loose top-level text in an implied `<p>`.
+        // The explicit body prevents libxml 2.14 dropping loose text after a closed root.
         $document->loadHTML(
-            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div>'.$html.'</div>',
-            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD,
+            '<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div>'.$html.'</div></body></html>',
+            LIBXML_HTML_NODEFDTD,
         );
 
         libxml_clear_errors();
@@ -1058,9 +1059,9 @@ class Entry extends Model implements RequiresModelSave
 
         /*
          * ⚠️ THE WRAPPER'S CHILDREN, NOT THE DOCUMENT'S, and the first version of this returned an
-         * empty string by getting that wrong. Under `LIBXML_HTML_NOIMPLIED` the charset `<meta>`
+         * empty string by getting that wrong. With the former fragment parse the charset `<meta>`
          * becomes the document ELEMENT and the wrapper `<div>` is not among `$document->childNodes`
-         * at all — measured: `childNodes` holds one node, the meta, while
+         * at all — measured on libxml 2.9: `childNodes` holds one node, the meta, while
          * `getElementsByTagName('p')` finds both paragraphs.
          *
          * `sanitize()` never notices because `clean()` UNWRAPS the div — `div` is not an allowed tag
@@ -1098,13 +1099,34 @@ class Entry extends Model implements RequiresModelSave
          * making each pass defend itself.
          *
          * ⚠️ THE WRAPPER'S PARENT, NOT THE DOCUMENT'S CHILDREN, and my first version used the latter and
-         * changed nothing. Under `LIBXML_HTML_NOIMPLIED` the charset `<meta>` becomes the document
-         * ELEMENT, so the wrapper and everything that escaped it are both children of the meta — which
-         * this file's serialisation docblock already says, one method along.
+         * changed nothing: the old fragment parse put both under its meta root. The complete document
+         * now puts both under body, because libxml 2.14 drops loose text after a closed fragment root.
+         * Wrap outside runs before moving them, so the wrapper boundary still separates `hello` from
+         * `world`, as the older parser's implied paragraph did. Otherwise the repair joins the words.
          */
         $outside = $wrapper->parentNode;
 
         if ($outside !== null) {
+            // With NOIMPLIED off, libxml 2.14 retains text after a pasted closing
+            // html tag in another html node (nested on older parsers). Restore that content
+            // too, flattening only its document scaffolding, before collecting runs.
+            foreach (iterator_to_array($document->getElementsByTagName('html')) as $root) {
+                if ($root === $document->documentElement) {
+                    continue;
+                }
+                $pending = iterator_to_array($root->childNodes);
+                while ($pending !== []) {
+                    $node = array_shift($pending);
+                    if ($node instanceof DOMElement && in_array(strtolower($node->nodeName), ['html', 'head', 'body'], true)) {
+                        array_unshift($pending, ...iterator_to_array($node->childNodes));
+                    } else {
+                        $outside->appendChild($node);
+                    }
+                }
+                $root->parentNode?->removeChild($root);
+            }
+            self::wrapLooseRuns($document, $outside);
+
             foreach (iterator_to_array($outside->childNodes) as $node) {
                 if ($node !== $wrapper) {
                     $wrapper->appendChild($node);

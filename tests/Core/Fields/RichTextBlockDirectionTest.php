@@ -729,16 +729,18 @@ it('gives per-block direction to any type whose control is rich text', function 
      * of the only caller the pass used to have. This type returns its input unchanged, which is exactly
      * what a module may do.
      */
-    $escaped = Entry::create([
-        'entry_type_id' => $this->type->id,
-        'title' => 'Escaped',
-        'values' => ['module_body' => 'hello</div>world'],
-    ]);
+    foreach (['hello</div>world', 'hello</div></body></html>world'] as $html) {
+        $escaped = Entry::create([
+            'entry_type_id' => $this->type->id,
+            'title' => 'Escaped',
+            'values' => ['module_body' => $html],
+        ]);
 
-    $out = json_decode((string) DB::table('entries')->where('id', $escaped->getKey())->value('values'), true);
+        $out = json_decode((string) DB::table('entries')->where('id', $escaped->getKey())->value('values'), true);
 
-    expect($out['module_body'])
-        ->toBe('<p dir="auto">hello</p><p dir="auto">world</p>', 'a stray close tag lost content');
+        expect($out['module_body'])
+            ->toBe('<p dir="auto">hello</p><p dir="auto">world</p>', 'a stray close tag lost content');
+    }
 
     /*
      * ⚠️ AND A BLOCK THIS VOCABULARY DOES NOT KNOW IS NEITHER WRAPPED NOR LEFT UNDIRECTED, which review
