@@ -11487,3 +11487,18 @@ When it lands:
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency
 
 **Unverifiable, do not cite:** the free/paid split of Filament's plugin directory. Filters exist; counts are not published.
+
+
+### Amendment — Separate closed checkout state from live admission, 2026-10-20 (#305)
+
+During the private sandbox qualification, submitting a stale checkout refresh form after verified payment
+showed the live-admission refusal even though the purchase remained in test mode. The existing writer
+guard grouped a non-prepared order and an invalid payment mode into the same refusal. It now reports
+a separate closed-order category and directs the buyer to the checked payment and access status below.
+The former live-admission wording remains for its original mode/admission checks.
+
+This is a refusal-copy correction: refresh, start and expiry still refuse non-prepared purchases before
+provider I/O. Ownership, Org/Site custody, checked historical presentation, the original attempt and all
+financial/allocation/access holds remain unchanged. Guest and native reader HTTP fixtures cover both
+allocated and disputed held payments, with unchanged retained rows and zero provider calls; browser
+checks submit stale guest and reader forms after confirmation. No live admission or deployment is implied.

@@ -57,3 +57,22 @@ it('claims an exact guest order after native sign-in with immutable invoice and 
     }
     expect($result['log'])->not->toContain('private-claim-query', 'private-claim-body', 'Private Invoice Lane');
 })->with(['plain' => ['claim', false], 'cached' => ['claim', true], 'nested cached' => ['nested-flow', true]]);
+
+it('describes closed paid test checkout accurately for the guest and claimed reader without changing its financial or access decision', function (string $scenario, bool $cached): void {
+    $result = orderClaimPageProbe($scenario, $cached);
+    expect($result['cached'])->toBe($cached)->and($result['providerCalls'])->toBe(0)
+        ->and($result['payments'])->toBe(1)->and($result['attempts'])->toBe(1)
+        ->and($result['allocations'])->toBe($scenario === 'paid-refresh-held' ? 0 : 1)
+        ->and($result['grants'])->toBe($scenario === 'paid-refresh-held' ? 0 : 1)
+        ->and($result['level'])->toBe(0)->and($result['pdo'])->toBeFalse();
+    foreach ($result['checks'] as $response) {
+        expect($response['status'])->toBe(422)
+            ->and($response['body'])->toContain('Checkout can no longer be changed for this order. Check its payment and access status below.', 'Test payment confirmed', 'Checkout completed')
+            ->and($response['body'])->not->toContain('New live checkouts are not currently admitted');
+        if ($scenario === 'paid-refresh-held') {
+            expect($response['body'])->toContain('The payment is disputed. Product allocation needs review.');
+        }
+        orderClaimPageHeaders($response);
+    }
+    expect($result['foreign']['status'])->toBe(404)->and($result['foreign']['body'])->not->toContain('Test payment confirmed');
+})->with(['plain' => ['paid-refresh', false], 'cached' => ['paid-refresh', true], 'held' => ['paid-refresh-held', true]]);

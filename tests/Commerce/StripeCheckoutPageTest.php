@@ -103,7 +103,7 @@ it('scrubs alternate native URLs and every request bag while preserving a mounte
 it('maps only bounded workflow reasons into buyer and operator copy', function (string $reason, string $key): void {
     expect(CheckoutMessages::key($reason))->toBe($key);
 })->with([
-    ['zero', 'zero'], ['live', 'live'], ['currency', 'currency'], ['changed', 'changed'], ['stale', 'changed'],
+    ['zero', 'zero'], ['live', 'live'], ['order_state', 'order_state'], ['currency', 'currency'], ['changed', 'changed'], ['stale', 'changed'],
     ['expired', 'review_expired'], ['busy', 'busy'], ['operator', 'operator'], ['setup', 'setup'], ['limit', 'limit'],
     ['private-provider-body-and-key', 'unavailable'],
 ]);

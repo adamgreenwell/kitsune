@@ -202,6 +202,9 @@ for (const owner of ['guest', 'reader']) {
         const attempt = plantOpenTestCheckout(reference);
         expect((await page.goto(`${path}/payment/return`)).status()).toBe(200);
         await expect(page.getByText('Checkout is open', { exact: true })).toBeVisible();
+        const stale = await page.context().newPage();
+        await stale.goto(`${path}/payment/return`);
+        await expect(stale.getByRole('button', { name: 'Check and resume checkout', exact: true })).toBeVisible();
         php(atSite + `DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->where('order_id',DB::table('commerce_orders')->where('reference',${literal(reference)})->value('id'))`
             + "->update(['state'=>'completed','active_order_id'=>null,'checkout_url'=>null]);");
         expect((await page.reload()).status()).toBe(200);
@@ -212,6 +215,15 @@ for (const owner of ['guest', 'reader']) {
         await testInfo.attach(`${owner}-awaiting-verification`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
         const proof = confirmTestOrder(reference, 'owed', false, attempt);
         expect(proof.attempt).toBe(attempt);
+        const refreshResponse = stale.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/payment/refresh'));
+        await stale.getByRole('button', { name: 'Check and resume checkout', exact: true }).click();
+        expect((await refreshResponse).status()).toBe(422);
+        await expect(stale.getByRole('alert')).toHaveText('Checkout can no longer be changed for this order. Check its payment and access status below.');
+        await expect(stale.getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
+        await expect(stale.getByText('New live checkouts are not currently admitted.', { exact: false })).toHaveCount(0);
+        await axe(stale);
+        await testInfo.attach(`${owner}-closed-checkout-refresh`, { body: await stale.screenshot({ fullPage: true }), contentType: 'image/png' });
+        await stale.close();
         expect((await page.reload()).status()).toBe(200);
         await expect(page.getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
         await expect(page.getByText('This is a test payment. No real money has moved.', { exact: true })).toBeVisible();

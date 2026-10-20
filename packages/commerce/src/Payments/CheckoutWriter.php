@@ -325,8 +325,11 @@ final class CheckoutWriter
         } else {
             $order = app(OrderAccess::class)->owned($request, $reference) ?? throw new CheckoutRefused;
         }
-        if ($order->getAttributes()['state'] !== 'prepared' || ! in_array($order->getAttributes()['mode'], ['test', 'live'], true)) {
+        if (! in_array($order->getAttributes()['mode'], ['test', 'live'], true)) {
             throw new CheckoutRefused('live');
+        }
+        if ($order->getAttributes()['state'] !== 'prepared') {
+            throw new CheckoutRefused('order_state');
         }
 
         return $order;
