@@ -204,7 +204,7 @@ test.describe('Owner checkout and order administration', () => {
         const expire = page.getByRole('checkbox', { name: 'Expire the open Session after checking it', exact: true });
         await expire.check();
         await submit(page, 'recoverAttempt', 'Check Session');
-        await expect(page.getByRole('alert').filter({ hasText: 'Checkout could not be completed.' })).toBeVisible();
+        await expect(page.getByRole('alert').filter({ hasText: 'Checkout status is unavailable.' })).toBeVisible();
         await expect(input).toHaveValue('');
         await expect(expire).not.toBeChecked();
         expect(await page.content()).not.toContain('not-a-session');

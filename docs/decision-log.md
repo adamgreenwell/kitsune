@@ -6768,6 +6768,28 @@ must separately check actual shipped quantities and certification: a rate reques
 shipment, compliance or live-provider qualification. Existing financial, entitlement, privacy and admission
 authority remains unchanged; fixtures and local/CI evidence are separate from real-provider qualification.
 
+### Amendment — Coherent checkout presentation during confirmation, 2026-10-19 (#300)
+
+A public return can arrive while checked payment confirmation commits. A deterministic two-process probe
+paused the first prepared order read, committed payment/allocation from an independent connection, then
+resumed projection: the old parent and new child graph correctly refused with503. Both anonymous browser
+proof and a genuinely signed-in reader reproduced this. This establishes a failure mechanism; the original
+hosted transient has no captured stack and is not retrospectively attributed to a particular exception.
+
+Checkout, return and Back-from-Stripe presentation now read ownership and the complete checked record
+inside the existing Org/Site/module order fence. On SQLite that fence includes the existing no-op Org write;
+on MySQL/MariaDB/PostgreSQL it uses the existing locking reads. The bounded local read can briefly serialize
+with an Org's commerce writes; no new service, worker or isolation-level switch is required. Rendering occurs
+after release. A read that precedes confirmation can truthfully show awaiting confirmation, and a fresh read
+after the commit shows the verified payment. GET still performs no provider I/O, financial mutation, stock
+allocation, access fulfillment or claim. Returning from Stripe remains no authority for any of those.
+
+Committed graph corruption still refuses; exact Org/Site and canonical reader/browser ownership checks remain
+unchanged. The unavailable view offers the current Site's general order list rather than an unchecked private
+order reference, and its copy describes unavailable status rather than asserting payment failed. It never
+encourages a replacement checkout. Deterministic races, native engine qualification and browser observations
+are recorded on #300 and its implementation PR; this correction grants no live admission or release authority.
+
 ---
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet

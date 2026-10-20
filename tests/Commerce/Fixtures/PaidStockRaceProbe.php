@@ -8,14 +8,25 @@
 
 declare(strict_types=1);
 
+use App\Models\Reader;
+use App\Providers\AppServiceProvider;
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
+use Carbon\CarbonImmutable;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Kitsune\Commerce\Blueprints\StorefrontBlueprint;
+use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Catalogue\ProductWriter;
+use Kitsune\Commerce\Http\Controllers\CheckoutController;
 use Kitsune\Commerce\Inventory\StockRefused;
 use Kitsune\Commerce\Inventory\StockWriter;
 use Kitsune\Commerce\Orders\OrderLocks;
@@ -29,6 +40,7 @@ use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\KitsuneServiceProvider;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Readers\ReaderSessions;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\OrderFixture;
@@ -90,6 +102,9 @@ if ($driver === 'pgsql') {
 $application = new PaidStockRaceApplication($directory.'/app-'.$role);
 $application->database = [...$database, 'prefix' => $prefix, 'prefix_indexes' => true];
 $app = $application->configure(['extra' => ['providers' => [BladeIconsServiceProvider::class, BladeHeroiconsServiceProvider::class, KitsuneServiceProvider::class], 'dont-discover' => ['*']]])->createApplication();
+if (str_starts_with($scenario, 'checkout-')) {
+    config(AppServiceProvider::readerConfig());
+}
 $connection = DB::connection();
 if ($connection->transactionLevel() !== 0 || $connection->getPdo()->inTransaction()) {
     throw new RuntimeException('The paid stock race must begin outside a transaction.');
@@ -119,7 +134,8 @@ if ($mode === 'init') {
     if ($driver === 'pgsql') {
         $connection->statement('CREATE SCHEMA "'.$isolation.'"');
     }
-    $code = Artisan::call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations'], '--realpath' => true, '--force' => true]);
+    $code = Artisan::call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations',
+        ...(str_starts_with($scenario, 'checkout-') ? [$root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'] : [])], '--realpath' => true, '--force' => true]);
     if ($code !== 0) {
         throw new RuntimeException('Disposable paid stock schema migration failed.');
     }
@@ -139,6 +155,8 @@ if ($mode === 'init') {
             'title' => $sku, 'slug' => strtolower($sku), 'status' => 'published', 'values' => [],
         ], [], true);
     }
+    $reader = str_contains($scenario, '-reader-')
+        ? Reader::createReader('read-race@example.test', Hash::make('disposable local fixture'), CarbonImmutable::now('UTC')) : null;
     $attemptIds = [];
     $sessions = [];
     foreach ($sites as $label => $site) {
@@ -156,7 +174,8 @@ if ($mode === 'init') {
             $lines[] = ['sellable_ref' => $product->getKey(), 'listing_ref' => $listing->id, 'entry_ref' => $listing->entry_id,
                 'sku' => $sku, 'entitlement_name' => null];
         }
-        $order = OrderFixture::plant($site, overrides: ['quoted_item_net_minor' => '4000', 'quoted_tax_minor' => '200', 'quoted_total_minor' => '4200'], lineOverrides: $lines[0]);
+        $order = OrderFixture::plant($site, reader: $reader === null ? null : (string) $reader->getKey(),
+            ownerKey: str_starts_with($scenario, 'checkout-guest-') ? CartOwner::anonymousKey(str_repeat(strtolower($label), 64)) : null, overrides: ['quoted_item_net_minor' => '4000', 'quoted_tax_minor' => '200', 'quoted_total_minor' => '4200'], lineOverrides: $lines[0]);
         $firstLine = (array) $connection->table('commerce_order_lines')->where('order_id', $order->id)->first();
         unset($firstLine['id']);
         $connection->table('commerce_order_lines')->insert([...$firstLine, ...$lines[1]]);
@@ -184,7 +203,7 @@ if ($mode === 'init') {
     Auth::guard('web')->logout();
     paidStockRaceOutput($directory.'/initialized.json', ['driver' => $connection->getDriverName(), 'org' => $org->id, 'owner' => $owner->getKey(),
         'sites' => array_map(static fn (Site $site): int => $site->id, $sites), 'attempts' => $attemptIds, 'sessions' => $sessions,
-        'finite' => $products['FINITE']->getKey(), 'untracked' => $products['UNTRACKED']->getKey(),
+        'reader' => $reader?->getKey(), 'finite' => $products['FINITE']->getKey(), 'untracked' => $products['UNTRACKED']->getKey(),
         'level' => $connection->transactionLevel(), 'pdoTransaction' => $connection->getPdo()->inTransaction()]);
     exit;
 }
@@ -192,6 +211,89 @@ if ($mode === 'init') {
 $initialized = json_decode((string) file_get_contents($directory.'/initialized.json'), true, flags: JSON_THROW_ON_ERROR);
 app(Context::class)->setOrg(Org::findOrFail($initialized['org']));
 app(Context::class)->setSite(Site::findOrFail($initialized['sites'][$role === 'B' ? 'B' : 'A']));
+// Independent reader and payment processes share only this disposable database and barrier directory.
+if (str_starts_with($mode, 'checkout-')) {
+    if ($mode === 'checkout-writer') {
+        $attempted = false;
+        $connection->beforeExecuting(static function (string $query, array $bindings, $db) use ($directory, &$attempted): void {
+            if (! $attempted && $db->transactionLevel() > 0 && str_contains($query, 'orgs')
+                && ($db->getDriverName() === 'sqlite' ? str_starts_with(strtolower($query), 'update') : str_contains(strtolower($query), 'for update'))) {
+                $attempted = true;
+                paidStockRaceOutput($directory.'/checkout-writer-attempted.json', ['level' => $db->transactionLevel()]);
+            }
+        });
+        app(OrderLocks::class)->run(function () use ($connection, $initialized): void {
+            $attempt = $connection->table('commerce_checkout_attempts')->where('id', $initialized['attempts']['A'])->lockForUpdate()->sole();
+            $order = $connection->table('commerce_orders')->where('id', $attempt->order_id)->lockForUpdate()->sole();
+            app(PaidOrders::class)->confirm($connection, $order, $attempt, $initialized['sessions']['A']);
+        });
+        paidStockRaceOutput($directory.'/checkout-writer-result.json', ['level' => $connection->transactionLevel(), 'pdo' => $connection->getPdo()->inTransaction()]);
+        exit;
+    }
+    $attempt = $connection->table('commerce_checkout_attempts')->where('id', $initialized['attempts']['A'])->sole();
+    $reference = $connection->table('commerce_orders')->where('id', $attempt->order_id)->value('reference');
+    $request = OrderFixture::request(app('session.store'));
+    if ($initialized['reader'] !== null) {
+        Auth::guard('readers')->login(Reader::query()->findOrFail($initialized['reader']));
+    } else {
+        $request->session()->put(ReaderSessions::EPHEMERAL.'.cart_seed', str_repeat('c', 64));
+        $request->session()->put(CartOwner::sessionKey($initialized['org'], $initialized['sites']['A']), str_repeat('a', 64));
+    }
+    if ($mode === 'checkout-missing-reader') {
+        $connection->table('readers')->where('id', $initialized['reader'])->delete();
+    } elseif ($mode === 'checkout-withdrawn-guest') {
+        $request->session()->forget(ReaderSessions::EPHEMERAL);
+    } elseif ($mode === 'checkout-corrupt') {
+        $connection->table(PaidOrders::RECEIPTS)->where('order_id', $attempt->order_id)->update(['amount_minor' => '4199']);
+    }
+    $route = new Route('GET', '/cart/orders/{reference}/payment/return', []);
+    $route->bind(Request::create('/cart/orders/'.$reference.'/payment/return'));
+    $request->setRouteResolver(static fn () => $route);
+    $calls = 0;
+    $app->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' => HandlerStack::create(new MockHandler([
+        static function () use (&$calls): never {
+            $calls++;
+            throw new RuntimeException('A checkout GET must not call a provider.');
+        },
+    ]))])));
+    $witness = static function () use ($connection): string {
+        $rows = [];
+        foreach (['commerce_orders', 'commerce_checkout_attempts', PaidOrders::RECEIPTS, PaidOrders::ALLOCATIONS,
+            PaidOrders::OBLIGATIONS, 'commerce_stock_movements', 'commerce_sellables', 'entitlements', 'commerce_order_claims'] as $table) {
+            $rows[$table] = $connection->table($table)->orderBy('id')->get()->all();
+        }
+
+        return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
+    };
+    $before = $witness();
+    $paused = false;
+    $connection->listen(static function (QueryExecuted $query) use ($directory, $mode, &$paused): void {
+        if ($mode === 'checkout-read' && ! $paused && str_starts_with(strtolower($query->sql), 'select * from') && str_contains($query->sql, 'commerce_orders')) {
+            $paused = true;
+            paidStockRaceOutput($directory.'/checkout-read-paused.json', ['level' => $query->connection->transactionLevel()]);
+            paidStockRaceWait($directory.'/checkout-release-read');
+        }
+    });
+    $action = substr($scenario, strrpos($scenario, '-') + 1);
+    $response = app(CheckoutController::class)->$action($request);
+    $after = $witness();
+    paidStockRaceOutput($directory.'/'.$mode.'-result.json', ['status' => $response->getStatusCode(),
+        'confirmed' => str_contains($response->getContent(), 'Test payment confirmed'),
+        'pending' => str_contains($response->getContent(), 'Awaiting verified payment confirmation'),
+        'orderLink' => str_contains($response->getContent(), '/cart/orders/'.$reference.'"'),
+        'safeFallback' => str_contains($response->getContent(), 'href="/cart/orders"'),
+        'privateBuyerVisible' => str_contains($response->getContent(), 'Historical Buyer'),
+        'readOnly' => $before === $after, 'calls' => $calls,
+        'payments' => $connection->table(PaidOrders::RECEIPTS)->count(),
+        'allocations' => $connection->table(PaidOrders::ALLOCATIONS)->count(),
+        'stock' => (string) $connection->table('commerce_sellables')->where('id', $initialized['finite'])->value('stock'),
+        'level' => $connection->transactionLevel(), 'pdo' => $connection->getPdo()->inTransaction()]);
+    if ($mode === 'checkout-corrupt') {
+        $connection->table(PaidOrders::RECEIPTS)->where('order_id', $attempt->order_id)->update(['amount_minor' => '4200']);
+    }
+    exit;
+}
+
 if ($mode === 'read') {
     paidStockRaceOutput($directory.'/readback.json', ['driver' => $connection->getDriverName(),
         'stock' => (string) $connection->table('commerce_sellables')->where('id', $initialized['finite'])->value('stock'),

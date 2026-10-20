@@ -111,3 +111,74 @@ it('serialises sibling-site paid allocations and stale manual changes at native 
         }
     }
 })->with(['orders', 'manual']);
+
+it('reads coherent checkout custody during independent payment confirmation without admitting corrupt or withdrawn ownership', function (string $scenario): void {
+    $root = dirname(__DIR__, 2);
+    $directory = sys_get_temp_dir().'/kitsune-checkout-read-'.bin2hex(random_bytes(8));
+    File::ensureDirectoryExists($directory);
+    touch($directory.'/race.sqlite');
+    foreach (['controller', 'A', 'read', 'cleanup'] as $role) {
+        paidStockCopyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
+    }
+    $processes = [];
+    $child = static function (string $mode, string $role) use ($root, $directory, $scenario, &$processes): Process {
+        $process = new Process([PHP_BINARY, __DIR__.'/Fixtures/PaidStockRaceProbe.php', $root, $directory, $mode, $role, $scenario], $root);
+        $process->setTimeout(35);
+        $processes[] = $process;
+
+        return $process;
+    };
+    try {
+        $child('init', 'controller')->mustRun();
+        $reader = $child('checkout-read', 'read');
+        $reader->start();
+        $paused = paidStockBarrier($directory.'/checkout-read-paused.json', [$reader]);
+        $writer = $child('checkout-writer', 'A');
+        $writer->start();
+        paidStockBarrier($directory.'/checkout-writer-attempted.json', [$reader, $writer]);
+        if ($paused['level'] === 0) {
+            // Old code deterministically consumes a stale prepared parent after the writer commits.
+            $writer->wait();
+        } else {
+            usleep(100000);
+        }
+        $blocked = $writer->isRunning();
+        touch($directory.'/checkout-release-read');
+        $reader->wait();
+        $writer->wait();
+        expect($reader->isSuccessful())->toBeTrue($reader->getOutput().$reader->getErrorOutput())
+            ->and($writer->isSuccessful())->toBeTrue($writer->getOutput().$writer->getErrorOutput());
+        $first = paidStockBarrier($directory.'/checkout-read-result.json');
+        expect($first['status'])->toBe(200)->and($first['confirmed'])->toBeFalse()->and($first['pending'])->toBeTrue()
+            ->and($first['orderLink'])->toBeTrue()->and($first['calls'])->toBe(0)
+            ->and($first['level'])->toBe(0)->and($first['pdo'])->toBeFalse()->and($blocked)->toBeTrue();
+        expect(paidStockBarrier($directory.'/checkout-writer-result.json'))->toBe(['level' => 0, 'pdo' => false]);
+        $child('checkout-stable', 'read')->mustRun();
+        $stable = paidStockBarrier($directory.'/checkout-stable-result.json');
+        expect($stable['status'])->toBe(200)->and($stable['confirmed'])->toBeTrue()->and($stable['pending'])->toBeFalse()
+            ->and($stable['readOnly'])->toBeTrue()->and($stable['calls'])->toBe(0)->and($stable['payments'])->toBe(1)
+            ->and($stable['allocations'])->toBe(2)->and($stable['stock'])->toBe('0')->and($stable['level'])->toBe(0)->and($stable['pdo'])->toBeFalse();
+        $child('checkout-corrupt', 'read')->mustRun();
+        $corrupt = paidStockBarrier($directory.'/checkout-corrupt-result.json');
+        expect($corrupt['status'])->toBe(503)->and($corrupt['confirmed'])->toBeFalse()->and($corrupt['privateBuyerVisible'])->toBeFalse()
+            ->and($corrupt['safeFallback'])->toBeTrue()->and($corrupt['orderLink'])->toBeFalse()
+            ->and($corrupt['readOnly'])->toBeTrue()->and($corrupt['calls'])->toBe(0)->and($corrupt['level'])->toBe(0)->and($corrupt['pdo'])->toBeFalse();
+        $withdrawnMode = str_contains($scenario, '-reader-') ? 'checkout-missing-reader' : 'checkout-withdrawn-guest';
+        $child($withdrawnMode, 'read')->mustRun();
+        $withdrawn = paidStockBarrier($directory.'/'.$withdrawnMode.'-result.json');
+        expect($withdrawn['status'])->toBe(404)->and($withdrawn['confirmed'])->toBeFalse()->and($withdrawn['privateBuyerVisible'])->toBeFalse()
+            ->and($withdrawn['readOnly'])->toBeTrue()->and($withdrawn['calls'])->toBe(0)->and($withdrawn['level'])->toBe(0)->and($withdrawn['pdo'])->toBeFalse();
+    } finally {
+        touch($directory.'/checkout-release-read');
+        foreach ($processes as $process) {
+            if ($process->isRunning()) {
+                $process->stop(0.2);
+            }
+        }
+        try {
+            $child('cleanup', 'cleanup')->mustRun();
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+})->with(['checkout-guest-returned', 'checkout-reader-returned', 'checkout-guest-show', 'checkout-reader-cancelled']);

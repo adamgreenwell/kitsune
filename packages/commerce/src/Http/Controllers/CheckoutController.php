@@ -19,6 +19,7 @@ use Kitsune\Commerce\Http\Middleware\OrderResponse;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderAccess;
+use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Payments\CheckoutMessages;
@@ -127,8 +128,13 @@ final class CheckoutController
     private function page(Request $request, ?string $error = null, ?string $notice = null, int $status = 200): Response
     {
         $reference = $this->reference($request);
-        $order = app(OrderAccess::class)->owned($request, $reference) ?? abort(404);
-        $record = app(OrderReaderData::class)->record($order->getConnection(), (object) $order->getAttributes());
+        // The raw parent and checked child graph must precede or follow one financial/privacy commit together.
+        // Render after releasing the shared fence; a return GET never reconciles or grants anything.
+        $record = app(OrderLocks::class)->run(function () use ($request, $reference): array {
+            $order = app(OrderAccess::class)->owned($request, $reference) ?? abort(404);
+
+            return app(OrderReaderData::class)->record($order->getConnection(), (object) $order->getAttributes());
+        });
 
         return $this->view(['order' => $record, 'reference' => $reference, 'error' => $error, 'notice' => $notice], $status);
     }
