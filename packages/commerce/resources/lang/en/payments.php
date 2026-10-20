@@ -34,6 +34,7 @@ return [
     'unavailable' => 'Checkout status is unavailable. Reload this page or ask the store to check the existing attempt. Do not create a replacement while the outcome is unknown.',
     'zero' => 'No-cost checkout is not available yet. This order has not been fulfilled or charged.',
     'live' => 'New live checkouts are not currently admitted. Please contact the store; existing purchases can still be checked.',
+    'order_state' => 'Checkout can no longer be changed for this order. Check its payment and access status below.',
     'currency' => 'This currency or amount is not supported by the current Stripe checkout. The reviewed total has not changed.',
     'changed' => 'The order, prices, delivery or payment configuration changed. Review again before starting another checkout. An existing unresolved attempt still needs checking.',
     'review_expired' => 'This checkout review expired. Review the current order again before continuing.',

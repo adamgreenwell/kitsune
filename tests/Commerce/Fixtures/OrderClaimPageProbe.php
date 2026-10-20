@@ -9,6 +9,9 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Application;
@@ -192,13 +195,62 @@ $session = ['id' => $attempt['session_id'], 'test' => true, 'currency' => 'USD',
     'clientReference' => $order->reference, 'attemptReference' => $reference, 'orderReference' => $order->reference,
     'expiresAt' => $expires->timestamp, 'paymentStatus' => 'paid', 'status' => 'complete', 'url' => null, 'paymentIntent' => 'pi_'.$reference,
     'payment' => ['test' => true, 'intentId' => 'pi_'.$reference, 'chargeId' => 'ch_'.$reference, 'amount' => (string) $amount, 'received' => (string) $amount,
-        'captured' => (string) $amount, 'currency' => 'USD', 'refunded' => '0', 'disputed' => false]];
+        'captured' => (string) $amount, 'currency' => 'USD', 'refunded' => '0', 'disputed' => $scenario === 'paid-refresh-held']];
 app(OrderLocks::class)->run(fn () => app(PaidOrders::class)->confirm(DB::connection(), $order, (object) $attempt, $session));
 $original = DB::table('commerce_orders')->sole();
 $originalLines = DB::table('commerce_order_lines')->get()->all();
 $evidence['grantsBeforeClaim'] = DB::table('entitlements')->count();
 $claimPath = ($site->path_prefix ?? '').'/account/order-claims/'.$order->reference;
 $signIn = ($site->path_prefix ?? '').'/account/sign-in';
+
+if (str_starts_with($scenario, 'paid-refresh')) {
+    $providerCalls = 0;
+    $app->instance(StripeCheckout::class, new StripeCheckout(new Client([
+        'handler' => HandlerStack::create(new MockHandler([
+            static function () use (&$providerCalls): never {
+                $providerCalls++;
+                throw new RuntimeException('A closed purchase must not call Stripe.');
+            },
+        ])),
+    ])));
+    $snapshot = static function (): string {
+        $data = [];
+        foreach (DB::getSchemaBuilder()->getTableListing() as $table) {
+            if (str_starts_with($table, 'commerce_') || in_array($table, ['entitlements', 'audit_log'], true)) {
+                $data[$table] = DB::table($table)->orderBy('id')->get()->all();
+            }
+        }
+
+        return hash('sha256', json_encode($data, JSON_THROW_ON_ERROR));
+    };
+    $checks = [];
+    $check = static function () use (&$checks, $send, $snapshot, $orderPath, $reference, &$token): void {
+        $before = $snapshot();
+        foreach (['refresh', 'start', 'expire'] as $action) {
+            $checks[] = $send('POST', $orderPath.'/payment/'.$action, ['_token' => $token, 'attempt' => $reference]);
+        }
+        if ($snapshot() !== $before) {
+            throw new RuntimeException('Closed checkout changed retained purchase data.');
+        }
+    };
+    $check(); // Native encrypted guest cookie from preparing this order.
+    $send('GET', $claimPath);
+    $send('GET', $signIn);
+    $send('POST', $signIn, ['_token' => $token, 'email' => 'claim-reader@example.test', 'password' => ReaderFixture::PASSWORD]);
+    $send('GET', $claimPath);
+    $send('POST', $claimPath, ['_token' => $token]);
+    if (DB::table('commerce_order_claims')->count() !== 1) {
+        throw new RuntimeException('The canonical reader did not claim this order.');
+    }
+    $check(); // The same order, now owned by a genuinely signed-in canonical reader.
+    $foreign = $send('POST', '/sibling/cart/orders/'.$order->reference.'/payment/refresh', ['_token' => $token, 'attempt' => $reference]);
+    echo json_encode(['checks' => $checks, 'providerCalls' => $providerCalls, 'foreign' => $foreign,
+        'payments' => DB::table('commerce_payment_receipts')->count(), 'attempts' => DB::table('commerce_checkout_attempts')->count(),
+        'allocations' => DB::table('commerce_order_allocations')->count(), 'grants' => DB::table('entitlements')->count(),
+        'cached' => $app->routesAreCached(), 'level' => DB::connection()->transactionLevel(), 'pdo' => DB::connection()->getPdo()->inTransaction()], JSON_THROW_ON_ERROR);
+    exit;
+}
+
 $send('GET', $orderPath);
 $send('GET', $claimPath.'?unknown=private-claim-query');
 $send('HEAD', $claimPath);

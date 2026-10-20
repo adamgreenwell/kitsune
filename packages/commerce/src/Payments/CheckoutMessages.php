@@ -16,7 +16,7 @@ final class CheckoutMessages
     public static function key(string $reason): string
     {
         return match ($reason) {
-            'zero', 'live', 'currency', 'changed', 'busy', 'operator', 'setup', 'limit', 'pending' => $reason,
+            'zero', 'live', 'order_state', 'currency', 'changed', 'busy', 'operator', 'setup', 'limit', 'pending' => $reason,
             'stale' => 'changed', 'expired' => 'review_expired',
             default => 'unavailable',
         };
