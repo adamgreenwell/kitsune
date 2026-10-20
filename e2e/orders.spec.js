@@ -187,6 +187,57 @@ test('reviews test checkout by keyboard and permits its native POST redirect und
     expect(cartStorage().stock).toBe('12');
 });
 
+for (const owner of ['guest', 'reader']) {
+    test(`keeps one ${owner} checkout recoverable from pending confirmation through a stable verified return`, async ({ page }, testInfo) => {
+        if (owner === 'reader') await signIn(page);
+        for (const suffix of ['', '/return', '/cancel']) {
+            const unknown = `${cart}/orders/${'f'.repeat(32)}/payment${suffix}`;
+            expect((await page.request.get(unknown)).status()).toBe(404);
+            expect((await page.request.head(unknown)).status()).toBe(404);
+        }
+        await add(page);
+        await review(page, `read-coherence-${owner}-${testInfo.retry}-${Date.now()}@kitsune.test`);
+        const path = await prepare(page);
+        const reference = path.split('/').pop();
+        const attempt = plantOpenTestCheckout(reference);
+        expect((await page.goto(`${path}/payment/return`)).status()).toBe(200);
+        await expect(page.getByText('Checkout is open', { exact: true })).toBeVisible();
+        php(atSite + `DB::table('commerce_checkout_attempts')->where('reference',${literal(attempt)})->where('order_id',DB::table('commerce_orders')->where('reference',${literal(reference)})->value('id'))`
+            + "->update(['state'=>'completed','active_order_id'=>null,'checkout_url'=>null]);");
+        expect((await page.reload()).status()).toBe(200);
+        await expect(page.getByText('Awaiting verified payment confirmation. The store can reconcile this checkout; do not start another payment.', { exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Back to order', exact: true })).toHaveAttribute('href', path);
+        await expect(page.getByRole('button', { name: 'Review checkout', exact: true })).toHaveCount(0);
+        await axe(page);
+        await testInfo.attach(`${owner}-awaiting-verification`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        const proof = confirmTestOrder(reference, 'owed', false, attempt);
+        expect(proof.attempt).toBe(attempt);
+        expect((await page.reload()).status()).toBe(200);
+        await expect(page.getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
+        await expect(page.getByText('This is a test payment. No real money has moved.', { exact: true })).toBeVisible();
+        await expect(page.getByText('Awaiting verified payment confirmation.', { exact: false })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Review checkout', exact: true })).toHaveCount(0);
+        await axe(page);
+        const counts = () => JSON.parse(php(atSite + `$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->sole();`
+            + "echo json_encode(['attempts'=>DB::table('commerce_checkout_attempts')->where('order_id',$order->id)->count(),'payments'=>DB::table('commerce_payment_receipts')->where('order_id',$order->id)->count(),'allocations'=>DB::table('commerce_order_allocations')->where('order_id',$order->id)->count()]);"));
+        expect(counts()).toEqual({ attempts: 1, payments: 1, allocations: 1 });
+        expect((await page.reload()).status()).toBe(200);
+        expect(counts()).toEqual({ attempts: 1, payments: 1, allocations: 1 });
+        await testInfo.attach(`${owner}-stable-verification`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+        // A persistently invalid checked graph must remain unavailable, with only general navigation.
+        php(atSite + `DB::table('commerce_payment_receipts')->where('order_id',DB::table('commerce_orders')->where('reference',${literal(reference)})->value('id'))->update(['amount_minor'=>'2399']);`);
+        expect((await page.reload()).status()).toBe(503);
+        await expect(page.getByRole('alert')).toHaveText('Checkout status is unavailable. Reload this page or ask the store to check the existing attempt. Do not create a replacement while the outcome is unknown.');
+        await expect(page.getByRole('link', { name: 'Your orders', exact: true })).toHaveAttribute('href', `${cart}/orders`);
+        await expect(page.getByRole('link', { name: 'Back to order', exact: true })).toHaveCount(0);
+        expect(await page.content()).not.toMatch(/Private Browser Buyer|42 Private Browser Lane|private-checkout-capability/);
+        await axe(page);
+        php(atSite + `DB::table('commerce_payment_receipts')->where('order_id',DB::table('commerce_orders')->where('reference',${literal(reference)})->value('id'))->update(['amount_minor'=>'2400']);`);
+        await page.getByRole('link', { name: 'Your orders', exact: true }).click();
+        await expect(page.getByRole('link', { name: reference, exact: true })).toBeVisible();
+    });
+}
+
 test('shows unresolved test custody without exposing its Session URL and preserves exact guest export and erasure fences', async ({ page }, testInfo) => {
     await add(page);
     await review(page, `checkout-custody-${testInfo.retry}-${Date.now()}@kitsune.test`);
@@ -511,12 +562,25 @@ test('claims from one-use guest mail after registering a different-email account
         await expect(recovered.getByText('Tax: USD 4.00', { exact: true })).toBeVisible();
         await recovered.goto(`/${SITE_A}/catalogue`);
         await expect(recovered.getByRole('article').filter({ has: recovered.getByRole('heading', { name: COURSE_A, exact: true }) }).getByText('You have access', { exact: true })).toBeVisible();
+        expect((await page.goto(`${path}/payment/return`)).status()).toBe(404);
         expect((await page.goto(path)).status()).toBe(404);
         const replay = await replayContext.newPage();
         await replay.goto(link);
         await replay.getByRole('button', { name: 'Continue to my order', exact: true }).click();
         await expect(replay.getByText('This access link is expired, already used or unavailable. You can request a fresh link below.', { exact: true })).toBeVisible();
         expect((await replay.goto(path)).status()).toBe(404);
+        expect((await recovered.goto(`${path}/payment/return`)).status()).toBe(200);
+        await expect(recovered.getByRole('heading', { name: 'Test payment confirmed', exact: true })).toBeVisible();
+        // An explicit fixture policy permits real account minimization; it is not activated for new orders.
+        php(atSite + "auth()->setUser(App\\Models\\User::withoutScopeBecause('Exact browser retention fixture owner',fn($q)=>$q->where('email','alpha@kitsune.test')->firstOrFail()));"
+            + '$policy=app(Kitsune\\Commerce\\Privacy\\RetentionPolicies::class)->createAsOwner([],"Synthetic browser retention test","Qualify erased checkout proof","confirmation_days",30);'
+            + `app(Kitsune\\Commerce\\Privacy\\OrderPrivacy::class)->adoptAsOwner(${literal(reference)},$policy->version,"Qualify erased checkout proof",true);`
+            + `auth()->forgetUser();$reader=App\\Models\\Reader::findByEmail(${literal(accountEmail)});app(Kitsune\\Core\\Readers\\ReaderErasure::class)->erase($reader->id);`);
+        expect((await recovered.goto(`${path}/payment/return`)).status()).toBe(404);
+        expect((await page.goto(`${path}/payment/return`)).status()).toBe(404);
+        const retained = JSON.parse(php(atSite + `$order=DB::table('commerce_orders')->where('reference',${literal(reference)})->sole();`
+            + "$privacy=app(Kitsune\\Commerce\\Privacy\\PrivacyState::class)->checked(DB::connection(),$order);echo json_encode(['erased'=>$privacy['subject_erased'],'payments'=>DB::table('commerce_payment_receipts')->where('order_id',$order->id)->count()]);"));
+        expect(retained).toEqual({ erased: true, payments: 1 });
     } finally {
         await recoveredContext.close();
         await replayContext.close();

@@ -14,6 +14,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Grammars\SQLiteGrammar;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
 use Illuminate\Support\Defer\DeferredCallbackCollection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -22,6 +23,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Kitsune\Commerce\Carts\CartOwner;
+use Kitsune\Commerce\Http\Controllers\CheckoutController;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderLocks;
 use Kitsune\Commerce\Orders\OrderReaderData;
@@ -365,3 +367,50 @@ it('cannot turn committed scheduling into a failing response when transport conf
     Log::shouldHaveReceived('warning')->once()->with('An order access email could not be scheduled; no address, order, link or error is logged.');
     Notification::assertNothingSent();
 });
+
+it('rejects absent and foreign checkout references without an Org fence', function (string $action, string $method, string $scope): void {
+    $reference = $scope === 'unknown' ? str_repeat('f', 32)
+        : Orders::plant($this->world['sites'][$scope === 'sibling' ? 'golfdom-fr' : 'rival'])->reference;
+    $request = Orders::request();
+    $request->setMethod($method);
+    $path = '/cart/orders/'.$reference.'/payment';
+    $route = new Route($method, '/cart/orders/{reference}/payment', []);
+    $route->bind(Request::create($path, $method));
+    $request->setRouteResolver(static fn () => $route);
+    $fences = [];
+    DB::listen(static function (QueryExecuted $query) use (&$fences): void {
+        $sql = strtolower($query->sql);
+        if (str_contains($sql, 'for update') || str_starts_with($sql, 'update')) {
+            $fences[] = $query->sql;
+        }
+    });
+    $response = app(CheckoutController::class)->$action($request);
+    expect($response->getStatusCode())->toBe(404)->and($fences)->toBe([]);
+})->with(['show', 'returned', 'cancelled'])->with(['GET', 'HEAD'])->with(['unknown', 'sibling', 'foreign']);
+
+it('rechecks ownership after a non-authorizing checkout existence probe', function (bool $readerOwned): void {
+    $request = Orders::request(app('session.store'));
+    $reader = $readerOwned ? ReaderFixture::reader($this->org, 'probe-reader@example.test') : null;
+    app(Context::class)->setOrg($this->org)->setSite($this->site);
+    if ($reader !== null) {
+        Auth::guard(ReaderFixture::GUARD)->login($reader);
+    }
+    $owner = CartOwner::current($request, true);
+    $order = Orders::plant($this->site, $reader === null ? null : (string) $reader->getKey(), ownerKey: $owner->key);
+    $route = new Route('GET', '/cart/orders/{reference}/payment/return', []);
+    $route->bind(Request::create('/cart/orders/'.$order->reference.'/payment/return'));
+    $request->setRouteResolver(static fn () => $route);
+    $changed = false;
+    DB::listen(static function (QueryExecuted $query) use ($request, $reader, &$changed): void {
+        if (! $changed && str_starts_with(strtolower($query->sql), 'select exists') && str_contains($query->sql, 'commerce_orders')) {
+            $changed = true;
+            if ($reader === null) {
+                $request->session()->forget(ReaderSessions::EPHEMERAL);
+            } else {
+                DB::table('readers')->where('id', $reader->getKey())->delete();
+            }
+        }
+    });
+    $response = app(CheckoutController::class)->returned($request);
+    expect($changed)->toBeTrue()->and($response->getStatusCode())->toBe(404);
+})->with([false, true]);

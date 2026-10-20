@@ -52,5 +52,7 @@
             </section>
         @endif
         <p class="back"><a href="{{ $cartPath }}/orders/{{ $reference }}">{{ $t('order') }}</a></p>
+    @else
+        <p class="back"><a href="{{ $cartPath }}/orders">{{ $t('orders') }}</a></p>
     @endif
 @endsection
