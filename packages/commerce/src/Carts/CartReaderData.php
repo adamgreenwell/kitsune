@@ -13,6 +13,7 @@ namespace Kitsune\Commerce\Carts;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Readers\Contracts\ModuleReaderData;
 use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use RuntimeException;
@@ -122,8 +123,8 @@ final class CartReaderData implements ModuleReaderData
         }
 
         if (! $carts || ! $lines
-            || ! $schema->hasColumns('commerce_carts', ['id', 'org_id', 'site_id', 'reader_id', 'owner_key', 'version', 'expires_at', 'created_at', 'updated_at'])
-            || ! $schema->hasColumns('commerce_cart_lines', ['id', 'org_id', 'site_id', 'cart_id', 'listing_id', 'quantity', 'created_at', 'updated_at'])) {
+            || ! RequiredColumns::present($connection, 'commerce_carts', ['id', 'org_id', 'site_id', 'reader_id', 'owner_key', 'version', 'expires_at', 'created_at', 'updated_at'])
+            || ! RequiredColumns::present($connection, 'commerce_cart_lines', ['id', 'org_id', 'site_id', 'cart_id', 'listing_id', 'quantity', 'created_at', 'updated_at'])) {
             throw new RuntimeException('The cart privacy schema is incomplete.');
         }
 

@@ -15,6 +15,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Orders\OrderLocks;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Credentials\CredentialAuthentication;
@@ -176,7 +177,7 @@ final class LiveStripeAdmission
     {
         $connection = $this->connection();
         $org = $this->context->orgId() ?? throw new CheckoutRefused;
-        if ($connection->transactionLevel() < 1 || ! $connection->getSchemaBuilder()->hasColumns(self::TABLE, self::COLUMNS)
+        if ($connection->transactionLevel() < 1 || ! RequiredColumns::present($connection, self::TABLE, self::COLUMNS)
             || ! $connection->table('modules')->useWritePdo()->where('handle', 'kitsune/commerce')->where('is_enabled', true)
                 ->where('version', ModuleDiscovery::version('kitsune/commerce'))->lockForUpdate()->exists()) {
             throw new CheckoutRefused('setup');

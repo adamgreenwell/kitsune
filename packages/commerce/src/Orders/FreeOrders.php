@@ -23,6 +23,7 @@ use Kitsune\Commerce\Payments\CheckoutReview;
 use Kitsune\Commerce\Payments\PaidConfirmationAudit;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Tenancy\Context;
 use Throwable;
@@ -139,7 +140,7 @@ final class FreeOrders
 
             return false;
         }
-        if (! $connection->getSchemaBuilder()->hasColumns(self::TABLE, ['id', 'org_id', 'site_id', 'order_id', 'reference', 'request_hash', 'order_hash', 'purchase_hash', 'allocation_hash', 'completed_at'])) {
+        if (! RequiredColumns::present($connection, self::TABLE, ['id', 'org_id', 'site_id', 'order_id', 'reference', 'request_hash', 'order_hash', 'purchase_hash', 'allocation_hash', 'completed_at'])) {
             throw new OrderRefused('setup');
         }
 

@@ -23,6 +23,7 @@ use Kitsune\Commerce\Payments\CheckoutAttempts;
 use Kitsune\Commerce\Payments\FinancialState;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -135,7 +136,7 @@ final class OrderClaims
 
             return false;
         }
-        if (! $schema->hasColumns(self::TABLE, self::COLUMNS)) {
+        if (! RequiredColumns::present($connection, self::TABLE, self::COLUMNS)) {
             throw new RuntimeException('The retained order claim schema is incomplete.');
         }
 

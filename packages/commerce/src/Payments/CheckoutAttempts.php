@@ -17,6 +17,7 @@ use Kitsune\Commerce\Carts\CartAmounts;
 use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Privacy\PrivacyState;
+use Kitsune\Commerce\Schema\RequiredColumns;
 use stdClass;
 use Throwable;
 
@@ -90,7 +91,7 @@ final class CheckoutAttempts
 
                 return collect();
             }
-            if (! $schema->hasColumns(self::TABLE, self::COLUMNS)) {
+            if (! RequiredColumns::present($connection, self::TABLE, self::COLUMNS)) {
                 throw new CheckoutRefused;
             }
             $query = $connection->table(self::TABLE)->useWritePdo()->where('order_id', $order->id)->orderBy('id')->limit(self::MAX_ATTEMPTS + 1);
