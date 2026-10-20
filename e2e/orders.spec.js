@@ -190,6 +190,11 @@ test('reviews test checkout by keyboard and permits its native POST redirect und
 for (const owner of ['guest', 'reader']) {
     test(`keeps one ${owner} checkout recoverable from pending confirmation through a stable verified return`, async ({ page }, testInfo) => {
         if (owner === 'reader') await signIn(page);
+        for (const suffix of ['', '/return', '/cancel']) {
+            const unknown = `${cart}/orders/${'f'.repeat(32)}/payment${suffix}`;
+            expect((await page.request.get(unknown)).status()).toBe(404);
+            expect((await page.request.head(unknown)).status()).toBe(404);
+        }
         await add(page);
         await review(page, `read-coherence-${owner}-${testInfo.retry}-${Date.now()}@kitsune.test`);
         const path = await prepare(page);

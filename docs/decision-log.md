@@ -6780,7 +6780,13 @@ Checkout, return and Back-from-Stripe presentation now read ownership and the co
 inside the existing Org/Site/module order fence. On SQLite that fence includes the existing no-op Org write;
 on MySQL/MariaDB/PostgreSQL it uses the existing locking reads. The bounded local read can briefly serialize
 with an Org's commerce writes; no new service, worker or isolation-level switch is required. Rendering occurs
-after release. A read that precedes confirmation can truthfully show awaiting confirmation, and a fresh read
+after release. A non-authorizing, primary existence probe through the exact-scoped Order model first rejects
+unknown or foreign references without taking this exclusive fence. Ownership and the complete checked record
+are still read again inside the fence; the probe never supplies a parent row or grants access. Eighteen GET/HEAD
+cases across checkout/return/Back actions reproduced Org writes/locks for fabricated and foreign references on
+the first candidate, and now reject those references without those locks. Withdrawing guest proof or deleting
+the canonical reader after that probe still rejects the read. A read that precedes confirmation can truthfully
+show awaiting confirmation, and a fresh read
 after the commit shows the verified payment. GET still performs no provider I/O, financial mutation, stock
 allocation, access fulfillment or claim. Returning from Stripe remains no authority for any of those.
 

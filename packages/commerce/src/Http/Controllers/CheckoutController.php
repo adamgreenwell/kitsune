@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Kitsune\Commerce\Carts\CartRoutes;
 use Kitsune\Commerce\Http\Middleware\OrderResponse;
+use Kitsune\Commerce\Models\Order;
 use Kitsune\Commerce\Money\MinorUnits;
 use Kitsune\Commerce\Orders\FreeOrders;
 use Kitsune\Commerce\Orders\OrderAccess;
@@ -128,6 +129,10 @@ final class CheckoutController
     private function page(Request $request, ?string $error = null, ?string $notice = null, int $status = 200): Response
     {
         $reference = $this->reference($request);
+        // Reject unknown/foreign references before an exclusive Org fence. This probe grants no read authority.
+        if (! Order::query()->useWritePdo()->where('reference', $reference)->exists()) {
+            abort(404);
+        }
         // The raw parent and checked child graph must precede or follow one financial/privacy commit together.
         // Render after releasing the shared fence; a return GET never reconciles or grants anything.
         $record = app(OrderLocks::class)->run(function () use ($request, $reference): array {
