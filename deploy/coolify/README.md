@@ -2,13 +2,14 @@
 
 This is the dedicated `development.kitsunecms.org` sandbox profile, not a change
 to the default installation or the Forge deployment. The Dockerfile installs the
-explicitly qualified application commit `dec5b98e9b605685b39965283da960089bd38c90`
+explicitly qualified application commit `e09f1506724727b0e324f6e6d8c66d460ab7dab5`
 from the public repository, mirrors that checkout's first-party packages, verifies
 their bytes with `deploy/release-check.php`, and audits runtime dependencies.
 The infrastructure branch and application commit are recorded independently.
 
-The 2026-10-20 application pin includes the paid-checkout wording correction (#305),
-the commerce metadata repair (#303) and the merged #299/#302 fixes. Local image qualification, exact-head CI/review and
+The 2026-10-21 application pin includes the bounded financial status-read correction
+(#307), the paid-checkout wording correction (#305), the commerce metadata repair
+(#303) and the merged #299/#302 fixes. Local image qualification, exact-head CI/review and
 installed-source/HTTP verification remain separate gates. The rollout stays in
 Stripe test mode with the existing private transport and persistent volumes.
 
