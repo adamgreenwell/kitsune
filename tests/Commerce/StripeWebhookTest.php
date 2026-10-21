@@ -44,6 +44,7 @@ final class StripeWebhookTest extends TestCase
     public function test_the_absolute_timestamp_window_has_no_zero_tolerance_bypass(int $offset, bool $accepted): void
     {
         $raw = json_encode(self::event(), JSON_THROW_ON_ERROR);
+        self::assertSame($accepted, StripeWebhook::signatureIsPlausible(self::header($raw, self::NOW + $offset), self::NOW));
         if (! $accepted) {
             $this->expectException(CheckoutRefused::class);
         }
@@ -60,6 +61,7 @@ final class StripeWebhookTest extends TestCase
     #[DataProvider('invalidHeaders')]
     public function test_malformed_ambiguous_missing_and_unbounded_signatures_are_refused(string $header): void
     {
+        self::assertFalse(StripeWebhook::signatureIsPlausible($header, self::NOW));
         $this->expectException(CheckoutRefused::class);
         self::verify(json_encode(self::event(), JSON_THROW_ON_ERROR), $header);
     }
@@ -73,6 +75,14 @@ final class StripeWebhookTest extends TestCase
         yield ['t=1800000000,v1=secret'];
         yield [str_repeat('x', 4097)];
         yield ['t=1800000000,'.str_repeat('v0=ignored,', 32)];
+    }
+
+    public function test_a_plausible_envelope_does_not_authenticate_a_forgery(): void
+    {
+        $header = 't='.self::NOW.',v1='.str_repeat('0', 64);
+        self::assertTrue(StripeWebhook::signatureIsPlausible($header, self::NOW));
+        $this->expectException(CheckoutRefused::class);
+        self::verify(json_encode(self::event(), JSON_THROW_ON_ERROR), $header);
     }
 
     #[DataProvider('invalidEvents')]

@@ -26,6 +26,18 @@ final class StripeWebhook
 
     public const TOLERANCE = 300;
 
+    /** A query-free rejection only; no header, including a well-formed forgery, is authenticated by this check. */
+    public static function signatureIsPlausible(#[\SensitiveParameter] string $header, int $now): bool
+    {
+        try {
+            self::signatureParts($header, $now);
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
     /** @param list<Secret> $secrets
      * @return array<string,mixed>
      */
@@ -37,29 +49,7 @@ final class StripeWebhook
                 || count($secrets) < 1 || count($secrets) > 2) {
                 throw new CheckoutRefused;
             }
-            $parts = explode(',', $header);
-            if (count($parts) > 32) {
-                throw new CheckoutRefused;
-            }
-            $timestamp = null;
-            $signatures = [];
-            foreach ($parts as $part) {
-                [$scheme, $value] = array_pad(explode('=', trim($part), 2), 2, null);
-                if ($scheme === 't') {
-                    if ($timestamp !== null || ! is_string($value) || preg_match('/\A[1-9][0-9]{0,11}\z/D', $value) !== 1) {
-                        throw new CheckoutRefused;
-                    }
-                    $timestamp = $value;
-                } elseif ($scheme === 'v1') {
-                    if (! is_string($value) || preg_match('/\A[a-f0-9]{64}\z/D', $value) !== 1) {
-                        throw new CheckoutRefused;
-                    }
-                    $signatures[] = $value;
-                }
-            }
-            if ($timestamp === null || abs($now - (int) $timestamp) > self::TOLERANCE || $signatures === []) {
-                throw new CheckoutRefused;
-            }
+            [$timestamp, $signatures] = self::signatureParts($header, $now);
             $matched = false;
             foreach ($secrets as $secret) {
                 $value = $secret->reveal();
@@ -128,6 +118,39 @@ final class StripeWebhook
             // Neither signatures, payloads nor provider text may survive in an exception chain.
             throw new CheckoutRefused;
         }
+    }
+
+    /** @return array{string,list<string>} */
+    private static function signatureParts(#[\SensitiveParameter] string $header, int $now): array
+    {
+        if ($header === '' || strlen($header) > self::MAX_HEADER) {
+            throw new CheckoutRefused;
+        }
+        $parts = explode(',', $header);
+        if (count($parts) > 32) {
+            throw new CheckoutRefused;
+        }
+        $timestamp = null;
+        $signatures = [];
+        foreach ($parts as $part) {
+            [$scheme, $value] = array_pad(explode('=', trim($part), 2), 2, null);
+            if ($scheme === 't') {
+                if ($timestamp !== null || ! is_string($value) || preg_match('/\A[1-9][0-9]{0,11}\z/D', $value) !== 1) {
+                    throw new CheckoutRefused;
+                }
+                $timestamp = $value;
+            } elseif ($scheme === 'v1') {
+                if (! is_string($value) || preg_match('/\A[a-f0-9]{64}\z/D', $value) !== 1) {
+                    throw new CheckoutRefused;
+                }
+                $signatures[] = $value;
+            }
+        }
+        if ($timestamp === null || abs($now - (int) $timestamp) > self::TOLERANCE || $signatures === []) {
+            throw new CheckoutRefused;
+        }
+
+        return [$timestamp, $signatures];
     }
 
     private static function identifier(mixed $value, string $prefix): bool

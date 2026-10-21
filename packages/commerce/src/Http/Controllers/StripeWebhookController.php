@@ -44,7 +44,10 @@ final class StripeWebhookController
         self::clear($request);
         // A host middleware may already have set context; this receiver derives it solely from its own URL.
         app(Context::class)->forget();
-        if (! $bounded || ! is_string($header) || $hasQuery) {
+        // An impossible envelope has no reason to wait behind checkout/credential custody. This is only a
+        // query-free refusal: plausible signatures still require the locked current mode, secrets and HMAC below.
+        if (! $bounded || ! is_string($header) || $hasQuery || $raw === ''
+            || ! StripeWebhook::signatureIsPlausible($header, CarbonImmutable::now('UTC')->timestamp)) {
             return self::response(400);
         }
         try {
