@@ -6050,6 +6050,22 @@ timestamps are fresh; persisted replay uses the stored verification
 receipt, not the original signature's present age. Event identity is unique within org/account/mode; a conflicting
 payload digest never replaces a receipt. Different events for one Session still share the attempt's fenced effects.
 
+⚠️ **Amended 2026-10-21 — impossible signature envelopes do not enter checkout custody (#287).** The original
+receiver put all signature work after URL-derived Org/Site resolution and the current-mode/credential locks, keeping
+authentication and credential rotation coherent. That locked authentication remains required. However, an unsigned
+public probe still executed fourteen database queries on SQLite, including its writer claim, before refusing; on a
+fresh PostgreSQL instance, an independent shared Org hold made the same probe reach `FOR UPDATE` and wait for the
+configured lock timeout. This is a reproduced blocking mechanism, not proof of the retrospective one-off public
+stall: that request reached the origin, but its privacy-preserving logs have no phase trace identifying the wait.
+The controller now clears raw input and stale context, then refuses empty bodies and missing, malformed, ambiguous
+or out-of-window signature envelopes before any Site, credential or order-lock query. One canonical parser supplies
+both this query-free preflight and the verifier. Preflight is rejection only: a well-formed forgery still requires
+the original locked current-mode/secret reads, exact-byte constant-time HMAC and event checks; timestamp validity is
+checked again after acquiring custody. Explicit previous-secret overlap and valid signed test/live recovery retain
+their prior authority. No database timeout, provider allowance, worker, ingress exposure or resource floor changes.
+The ingress regression requires zero controller queries for impossible envelopes. A native rival-lock control proves
+plausible signatures still enter the lock; the bare-clone suite verifies the query-free refusal without a service.
+
 **Persist, acknowledge, reconcile.** Commit the verified receipt before returning 200. Under PHP-FPM, finish the
 response before bounded inline processing; demonstrate this sequence with an actual HTTP timing probe. Other SAPIs
 leave visible pending receipts for bounded console replay rather than claiming an unmeasured flush. No queue or

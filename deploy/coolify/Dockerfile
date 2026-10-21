@@ -13,7 +13,7 @@ COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
 # The deployed application is the qualified application commit, independently of the
 # branch carrying this infrastructure profile. No host credentials enter a build.
-ARG KITSUNE_SOURCE_SHA=69d9872ade2d7c9c221f72a64c52ee4cfab6b207
+ARG KITSUNE_SOURCE_SHA=8c4bf66b22dcc6a9152af1b53a936c9eae2d742f
 ENV GIT_TERMINAL_PROMPT=0 COMPOSER_ALLOW_SUPERUSER=1
 WORKDIR /srv/kitsune
 RUN test "${#KITSUNE_SOURCE_SHA}" = 40 \

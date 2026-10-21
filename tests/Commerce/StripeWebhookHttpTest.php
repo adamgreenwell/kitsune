@@ -97,6 +97,34 @@ it('accepts explicit previous signing-secret overlap', function (): void {
     expect($response->getStatusCode())->toBe(200)->and(DB::table('commerce_stripe_events')->count())->toBe(1);
 });
 
+it('refuses impossible signature envelopes before Site, credential or order-lock queries', function (string $header, string $raw): void {
+    $base = SymfonyRequest::create('https://inbox.example.test/cart/stripe/webhook', 'POST', [], [], [],
+        ['CONTENT_TYPE' => 'application/json', 'HTTP_STRIPE_SIGNATURE' => $header], $raw);
+    $request = BoundedWebhookRequest::fromBase($base, '/cart/stripe/webhook', 'Stripe-Signature');
+    expect($request)->toBeInstanceOf(Request::class);
+    app(Context::class)->setSite($this->purchaseSite);
+    $queries = [];
+    DB::listen(static function ($query) use (&$queries): void {
+        $queries[] = $query->sql;
+    });
+
+    $response = app(StripeWebhookController::class)($request);
+
+    expect($response->getStatusCode())->toBe(400)->and($queries)->toBe([])
+        ->and($response->headers->get('Cache-Control'))->toContain('no-store')
+        ->and($response->headers->has('Set-Cookie'))->toBeFalse()
+        ->and($request->getContent())->toBe('')->and($request->headers->has('Stripe-Signature'))->toBeFalse()
+        ->and(app(Context::class)->hasOrg())->toBeFalse();
+})->with([
+    'missing signature' => ['', '{}'],
+    'unparseable signature' => ['private-invalid-header', '{}'],
+    'missing v1' => ['t=1792065600,v0=ignored', '{}'],
+    'ambiguous timestamp' => ['t=1792065600,t=1792065600,v1='.str_repeat('0', 64), '{}'],
+    'expired timestamp' => ['t=1792065299,v1='.str_repeat('0', 64), '{}'],
+    'future timestamp' => ['t=1792065901,v1='.str_repeat('0', 64), '{}'],
+    'empty body' => ['t=1792065600,v1='.str_repeat('0', 64), ''],
+]);
+
 it('derives no org from stale host context when the webhook hostname has no matching Site', function (): void {
     app(Context::class)->setSite($this->ingress);
     [$response] = webhookHttp($this->event, $this->key, 'https://unclaimed.example.test/cart/stripe/webhook', forgetContext: false);
