@@ -46,6 +46,24 @@ final class StripeReadBudgetTest extends TestCase
         self::assertSame(10, $mock->getLastOptions()['timeout']);
     }
 
+    public function test_a_sub_millisecond_allowance_never_reaches_the_transport(): void
+    {
+        $now = 0.0;
+        $budget = new StripeReadBudget(static function () use (&$now): float {
+            return $now;
+        });
+        $mock = new MockHandler([new Response(200, ['Content-Type' => 'application/json'], '{"object":"account","id":"acct_Budget"}')]);
+        $reader = (new StripeCheckout(new Client(['handler' => HandlerStack::create($mock)])))->withReadBudget($budget);
+        $now = 19.9995;
+        try {
+            $reader->account(new Secret('sk_test_'.str_repeat('a', 32)));
+            self::fail('A sub-millisecond allowance reached the transport.');
+        } catch (StripeUnavailable) {
+            self::assertNull($mock->getLastRequest());
+            self::assertCount(1, $mock);
+        }
+    }
+
     public function test_a_late_response_is_refused_even_when_a_handler_ignores_its_timeout(): void
     {
         $now = 0.0;

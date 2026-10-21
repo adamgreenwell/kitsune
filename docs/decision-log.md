@@ -6855,6 +6855,13 @@ not a hard wall-time guarantee during a blocked database operation. No timer sig
 new service, raised server timeout or resource-floor dependency is introduced. Exact-head qualification,
 review and a future separately authorized deployment remain distinct from this correction.
 
+Review of #307 also identified the transport timer's resolution: older supported Guzzle/cURL versions
+truncate positive sub-millisecond allowances to zero, which disables cURL's transfer timeout. The budget
+therefore refuses any remaining allowance below one millisecond before transport, rather than relying on
+newer Guzzle's own refusal or rounding up beyond the allowance. A regression proves that the transport
+receives no request in that window; the original implementation failed it. The twenty-second allowance
+and every original financial/credential/privacy guard remain unchanged.
+
 
 ---
 

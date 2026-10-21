@@ -17,6 +17,9 @@ final class StripeReadBudget
 {
     private const SECONDS = 20.0;
 
+    // Older supported Guzzle/cURL stacks truncate fractional milliseconds to zero (an unbounded transfer).
+    private const MIN_TRANSPORT_SECONDS = 0.001;
+
     /** @var Closure():float */
     private readonly Closure $clock;
 
@@ -32,7 +35,7 @@ final class StripeReadBudget
     public function remaining(): float
     {
         $remaining = self::SECONDS - (($this->clock)() - $this->started);
-        if (! is_finite($remaining) || $remaining <= 0 || $remaining > self::SECONDS) {
+        if (! is_finite($remaining) || $remaining < self::MIN_TRANSPORT_SECONDS || $remaining > self::SECONDS) {
             throw new StripeUnavailable;
         }
 
