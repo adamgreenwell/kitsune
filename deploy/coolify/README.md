@@ -2,12 +2,14 @@
 
 This is the dedicated `development.kitsunecms.org` sandbox profile, not a change
 to the default installation or the Forge deployment. The Dockerfile installs the
-explicitly qualified application commit `69d9872ade2d7c9c221f72a64c52ee4cfab6b207`
+explicitly qualified application commit `8c4bf66b22dcc6a9152af1b53a936c9eae2d742f`
 from the public repository, mirrors that checkout's first-party packages, verifies
 their bytes with `deploy/release-check.php`, and audits runtime dependencies.
 The infrastructure branch and application commit are recorded independently.
 
-The 2026-10-21 application pin includes the bounded financial status-read correction
+The 2026-10-21 application pin adds query-free refusal of impossible webhook signature
+envelopes before checkout custody (#308), while retaining locked authentication of
+plausible signatures. It also includes the bounded financial status-read correction
 (#307), the paid-checkout wording correction (#305), the commerce metadata repair
 (#303) and the merged #299/#302 fixes. Local image qualification, exact-head CI/review and
 installed-source/HTTP verification remain separate gates. The rollout stays in
