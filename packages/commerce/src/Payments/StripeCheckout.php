@@ -61,7 +61,13 @@ final class StripeCheckout
         'amount_too_small', 'amount_too_large',
     ];
 
-    public function __construct(private readonly ?ClientInterface $http = null) {}
+    public function __construct(private readonly ?ClientInterface $http = null, private readonly ?StripeReadBudget $readBudget = null) {}
+
+    /** A request-local reader: sharing the transport does not retain a deadline on this reusable adapter. */
+    public function withReadBudget(StripeReadBudget $budget): self
+    {
+        return new self($this->http, $budget);
+    }
 
     public function account(Secret $secret, string $mode = 'test'): string
     {
@@ -471,6 +477,10 @@ final class StripeCheckout
         self::outsideTransactions();
 
         try {
+            if ($this->readBudget !== null && $method !== 'GET') {
+                throw new StripeUnavailable;
+            }
+            $timeout = $this->readBudget === null ? 10 : min(10, $this->readBudget->remaining());
             $sink = Utils::streamFor('');
             $bounded = FnStream::decorate($sink, ['write' => static function (#[\SensitiveParameter] string $bytes) use ($sink): int {
                 if (strlen($bytes) > self::MAX_RESPONSE_BYTES - ($sink->getSize() ?? 0)) {
@@ -490,7 +500,7 @@ final class StripeCheckout
                 $headers['Content-Type'] = 'application/x-www-form-urlencoded';
             }
 
-            $options = ['headers' => $headers, 'timeout' => 10, 'connect_timeout' => 3, 'read_timeout' => 10,
+            $options = ['headers' => $headers, 'timeout' => $timeout, 'connect_timeout' => min(3, $timeout), 'read_timeout' => $timeout,
                 'allow_redirects' => false, 'http_errors' => false, 'decode_content' => false, 'verify' => true,
                 'cookies' => false, 'debug' => false, 'sink' => $bounded,
                 'on_headers' => static function (#[\SensitiveParameter] ResponseInterface $response): void {
@@ -502,6 +512,7 @@ final class StripeCheckout
             }
 
             $response = ($this->http ?? new Client)->request($method, self::ENDPOINT.$path, $options);
+            $this->readBudget?->remaining();
             self::headers($response);
             $sink->rewind();
             $raw = $sink->getContents();
@@ -523,6 +534,8 @@ final class StripeCheckout
 
                 throw new StripeUnavailable($rejected ? 'rejected' : 'unknown');
             }
+
+            $this->readBudget?->remaining();
 
             return $data;
         } catch (StripeUnavailable $refused) {

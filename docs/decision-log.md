@@ -6823,6 +6823,38 @@ The FastCGI deadline is not raised and no cache, worker, service or resource-flo
 Regression qualification, exact-head CI/review, development deployment and actual HTTP observations remain
 separate gates tracked on #303 and #287; this amendment grants no live commerce admission.
 
+### Amendment — One allowance for a financial status read, 2026-10-20 (#287)
+
+An individual Stripe request's ten-second timeout did not bound a financial status refresh. Account identity,
+two Charge reads, and up to two pages each of refunds and disputes could consume seven such allowances in
+sequence. A local HTTP simulation through the real Guzzle transport completed all seven valid reads in
+68.10 seconds with 9.7 seconds of injected latency per request, exceeding the development profile's unchanged
+45-second FastCGI limit. This reproduces an overrun mechanism, not the uncaptured cause of the earlier
+70-second native diagnostic interruption. Two later original-payment Test reads completed in 9.615 and
+8.885 seconds without changing payment/allocation/claim/token/pass hashes; the second spent about 2.25 seconds
+in its five provider transfers. Repeated checked database work remains a separate measured cost.
+
+A financial status refresh now receives one twenty-second monotonic allowance, started before its admission
+reads and shared through every provider request and custody checkpoint. Each request keeps its existing
+ten-second maximum and three-second connection maximum, reduced to the remaining allowance. An exhausted
+allowance cannot begin another request or commit a late financial observation; even a handler that ignores
+its transport timeout has its late result refused. The adapter used for this allowance accepts GET only and
+is local to the operation: its reusable parent and a later retry never inherit an expired deadline. Twenty
+seconds leaves room beneath the existing web deadline for checked cleanup and rendering; a slow but healthy
+provider can therefore produce an unavailable result requiring another explicit check. No incomplete graph
+is treated as financial truth. Original custody, exact money, account/mode/credential checks, transaction
+fences and post-audit revalidation remain intact.
+
+The existing checked failure path releases only the still-owned lease, without a financial observation,
+replacement payment or new refund. Refund submissions retain their existing durable identity and ambiguous
+outcome recovery; their money-writing workflow is not put on this read-only allowance. The local slow HTTP
+simulation now refuses safely in 20.02 seconds with no observation and no remaining lease. Deterministic
+tests also prove retry with a fresh allowance and rollback when the final host audit callback exhausts it;
+both failed against the old reconciler. Database calls and cleanup are not forcibly interrupted, so this is
+not a hard wall-time guarantee during a blocked database operation. No timer signal, metadata cache, worker,
+new service, raised server timeout or resource-floor dependency is introduced. Exact-head qualification,
+review and a future separately authorized deployment remain distinct from this correction.
+
 
 ---
 
