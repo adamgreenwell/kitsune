@@ -9,7 +9,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        KITSUNE_SOURCE_SHA: e09f1506724727b0e324f6e6d8c66d460ab7dab5
+        KITSUNE_SOURCE_SHA: 69d9872ade2d7c9c221f72a64c52ee4cfab6b207
     entrypoint: /usr/local/bin/kitsune-tls-init
     restart: 'no'
     volumes:
@@ -34,7 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        KITSUNE_SOURCE_SHA: e09f1506724727b0e324f6e6d8c66d460ab7dab5
+        KITSUNE_SOURCE_SHA: 69d9872ade2d7c9c221f72a64c52ee4cfab6b207
     restart: unless-stopped
     depends_on:
       origin-certificates:

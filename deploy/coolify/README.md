@@ -2,7 +2,7 @@
 
 This is the dedicated `development.kitsunecms.org` sandbox profile, not a change
 to the default installation or the Forge deployment. The Dockerfile installs the
-explicitly qualified application commit `e09f1506724727b0e324f6e6d8c66d460ab7dab5`
+explicitly qualified application commit `69d9872ade2d7c9c221f72a64c52ee4cfab6b207`
 from the public repository, mirrors that checkout's first-party packages, verifies
 their bytes with `deploy/release-check.php`, and audits runtime dependencies.
 The infrastructure branch and application commit are recorded independently.
