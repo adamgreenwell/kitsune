@@ -60,7 +60,7 @@ afterEach(function (): void {
     app()->forgetInstance(SchemaManager::class);
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-dam-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-dam-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
@@ -89,7 +89,7 @@ function damHolder(Org $org, string $roleHandle): TestUser
 function damStore(string $bytes, string $name, ?Site $site = null, bool $siteOnly = false): Entry
 {
     $site ??= test()->site;
-    $source = tempnam(sys_get_temp_dir(), 'kitsune-dam-');
+    $source = tempnam(sys_get_temp_dir(), 'kitsune-dam-'.getmypid().'-');
     file_put_contents($source, $bytes);
     app(Context::class)->setSite($site);
     $entry = MediaLibrary::store($source, $name, damAsset($site->org), siteOnly: $siteOnly);
@@ -332,7 +332,7 @@ it('keeps one organisation\'s library from another, and a site\'s own file from 
         ->and(Permissions::mayUpload($theirs, 'asset'))->toBeFalse();
 
     /* Their type, named from here: the store refuses it rather than file into another org. */
-    $source = tempnam(sys_get_temp_dir(), 'kitsune-dam-');
+    $source = tempnam(sys_get_temp_dir(), 'kitsune-dam-'.getmypid().'-');
     file_put_contents($source, damPng());
     app(Context::class)->setSite($this->site);
 

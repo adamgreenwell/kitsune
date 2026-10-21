@@ -57,7 +57,7 @@ afterEach(function (): void {
     app()->forgetInstance(SchemaManager::class);
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-blueprint-media-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-blueprint-media-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
@@ -82,7 +82,7 @@ function blueprintMediaRow(string $handle = 'library'): EntryType
 /** Store bytes as an upload would, in a site of the org. */
 function blueprintMediaStore(EntryType $type, string $bytes, string $name): void
 {
-    $source = tempnam(sys_get_temp_dir(), 'kitsune-blueprint-media-');
+    $source = tempnam(sys_get_temp_dir(), 'kitsune-blueprint-media-'.getmypid().'-');
     file_put_contents($source, $bytes);
     $org = app(Context::class)->org();
     app(Context::class)->setSite(Site::query()->where('org_id', $org->getKey())->first() ?? Site::create(['org_id' => $org->getKey(), 'handle' => 'main', 'slug' => "{$org->slug}-main", 'name' => 'Main', 'locale' => 'en']));

@@ -50,7 +50,7 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-accepts-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-accepts-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
@@ -58,7 +58,7 @@ afterEach(function (): void {
 /** Store bytes under a name, as an upload would. */
 function storedAs(string $bytes, string $name, EntryType $type): void
 {
-    $source = tempnam(sys_get_temp_dir(), 'kitsune-accepts-');
+    $source = tempnam(sys_get_temp_dir(), 'kitsune-accepts-'.getmypid().'-');
     file_put_contents($source, $bytes);
 
     MediaLibrary::store($source, $name, $type);

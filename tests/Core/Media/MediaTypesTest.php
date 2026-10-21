@@ -57,14 +57,14 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-types-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-types-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function aPngForTypes(): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-types-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-types-'.getmypid().'-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));
