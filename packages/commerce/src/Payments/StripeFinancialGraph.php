@@ -27,6 +27,11 @@ final class StripeFinancialGraph
 {
     public function __construct(private readonly StripeCheckout $stripe) {}
 
+    public function withReadBudget(StripeReadBudget $budget): self
+    {
+        return new self($this->stripe->withReadBudget($budget));
+    }
+
     /** The caller verifies account identity and fences local custody before/after each network operation.
      * The finite search must finish; absent objects in a truncated list never authorize access or another POST.
      *

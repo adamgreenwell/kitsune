@@ -70,6 +70,11 @@ final class FinancialReconciler
         $witness = null;
         $owner = $key !== null;
         try {
+            // Status reads share a monotonic deadline, including local fences and every provider page.
+            // Refund submission retains its existing durable identity and unknown-outcome recovery path.
+            $budget = $refundReference === null ? app(StripeReadBudget::class) : null;
+            $stripe = $budget === null ? $this->stripe : $this->stripe->withReadBudget($budget);
+            $graphs = $budget === null ? $this->graphs : $this->graphs->withReadBudget($budget);
             $this->outside();
             self::reference($reference);
             if ($refundReference !== null) {
@@ -115,12 +120,13 @@ final class FinancialReconciler
 
                 return [$proof, $witness, $key ?? $this->credentials->secret(StripeCheckout::SLOT)];
             });
-            $checkpoint = function () use (&$captured, $owner, $password, $proof, $witness): void {
+            $checkpoint = function () use (&$captured, $owner, $password, $proof, $witness, $budget): void {
                 $this->locks->run(fn () => $this->checked($captured, $owner, $password, $proof, $witness));
+                $budget?->remaining();
             };
             $receipt = (object) $captured['basis']['receipt'];
             $checkpoint();
-            if ($this->stripe->account($secret, $receipt->mode) !== $receipt->account_id) {
+            if ($stripe->account($secret, $receipt->mode) !== $receipt->account_id) {
                 throw new CheckoutRefused('changed');
             }
             $checkpoint();
@@ -142,18 +148,21 @@ final class FinancialReconciler
                     }
                 }
             }
-            $graph = $this->graphs->retrieve($secret, $receipt, $checkpoint);
+            $graph = $graphs->retrieve($secret, $receipt, $checkpoint);
             if ($hint !== null && ! in_array($hint, array_column($graph['refunds'], 'id'), true)) {
                 // A known signed identity is never converted back to an absent/unknown operation that can POST.
                 throw new CheckoutRefused('operator');
             }
             if ($refundReference === null) {
-                return $this->locks->run(function () use ($captured, $graph, $owner, $password, $proof, $witness): array {
+                return $this->locks->run(function () use ($captured, $graph, $owner, $password, $proof, $witness, $budget): array {
                     $this->checked($captured, $owner, $password, $proof, $witness);
+                    $budget->remaining();
                     $this->ledger->finishGraph((new Order)->getConnection(), $captured['order'], $captured, $graph);
                     $this->admission($owner, $password, $proof, $witness);
+                    $result = $this->result($captured['order']);
+                    $budget->remaining();
 
-                    return $this->result($captured['order']);
+                    return $result;
                 });
             }
             $captured = $this->locks->run(function () use ($captured, $graph, $owner, $password, $proof, $witness): array {
