@@ -12,15 +12,13 @@ namespace Kitsune\Core\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Tenancy\Context;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Stream a private media file to a staff user who may view its entry — ADR-041.
@@ -61,7 +59,7 @@ final class MediaDownloadController
      * Adding `string $tenant` in front would also work and would break again the moment the route gains a
      * segment. Asking the route for the name is the version that cannot drift.
      */
-    public function __invoke(Request $request): StreamedResponse
+    public function __invoke(Request $request): Response
     {
         /* Constrained to digits by the route, so this is a numeric string or the router never matched. */
         $media = (string) $request->route('media');
@@ -119,39 +117,18 @@ final class MediaDownloadController
             abort(404);
         }
 
-        $disk = Storage::disk((string) $file->disk);
-
         /*
-         * ⚠️ A ROW WITHOUT ITS BYTES IS A 404 AND A LOG LINE, NEVER A 500. `MediaLibrary` writes bytes before rows
-         * and `MediaDisposal` removes rows before bytes, so a row pointing at nothing is not a state either order
-         * leaves. ADR-042 decision 5 names the one it can: a delete that was refused and whose compensation then
-         * failed leaves the row naming the public disk and the only copy on the private one. `kitsune:media-prune`
-         * lists that copy as an extra copy it keeps and `kitsune:media-reconcile --force` puts it back — or, for a JPEG no
-         * copy of which matches its checksum, keeps it off the web and says what publishes it (decision 37) — so the log
-         * sends the operator there before concluding the file was removed outside Kitsune. (A restore whose publication did not finish is not this: its row names the private disk,
-         * where its bytes are, and it is served.)
+         * Open after the staff gates and before success headers. The reader route's shared stream keeps the
+         * response bounded under PHP-FPM, closes HEAD immediately and offers the checked international filename
+         * with its ASCII fallback. It reads this row's disk/path, including custody's private fallback and legacy
+         * disks, and retains the missing-bytes warning before refusing a failed open (ADR-041, #249).
          */
-        if (! $disk->exists((string) $file->path)) {
-            Log::warning(sprintf(
-                'Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this '
-                .'entry was refused and its compensation failed, the only copy is on the private disk, where '
-                .'kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, '
-                .'or says what will '
-                .'(ADR-042 decision 5). Otherwise the file was removed outside Kitsune.',
-                (string) $file->disk,
-                (string) $file->path,
-                (string) $entry->getKey(),
-                (string) $entry->getKey(),
-            ));
+        $handle = MediaStream::open($entry, $file);
 
+        if ($handle === null) {
             abort(404);
         }
 
-        return $disk->response(
-            (string) $file->path,
-            MediaDelivery::filenameFor($entry, $file),
-            MediaDelivery::headersFor($file),
-            MediaDelivery::dispositionFor($file),
-        );
+        return MediaStream::respond($request, $entry, $file, $handle);
     }
 }
