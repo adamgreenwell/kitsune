@@ -185,6 +185,36 @@ The driver fails closed on an unknown engine, because falling back to a probably
 
 **What it does not claim.** The lock is not taken with a row lock. A writer that stores a field's first value and then arms the lock takes no lock on the storage row, so a shape change saved between the two still lands on a field about to hold data. Closing that needs the data writers to lock the storage row before they write, which is a change to them rather than to this guard. And below Eloquent — `toBase()`, `DB::table()` — nothing here stands, as ADR-020 already says of the audit.
 
+### Amendment — first data and storage shape share a transaction, 2026-10-22
+
+**Decision, issue #130.** The preceding limitation remains as the reason for this change. Scalar and relation
+writers must hold the configured storage rows before conversion or field validation and until both the data and
+`is_locked` commit. Arming from a `saved` event after that transaction is insufficient, and quiet saves must use
+the same builder boundary. Existing entry rows are locked first; field and storage sets are locked in key order.
+The product writer takes its existing entry before its schema witness to avoid introducing the reverse order,
+and locks field and storage sets by key before restoring their display order in memory. Ordinary early relation
+model guards remain unlocked; the builder repeats them currently after the source entry lock. An enclosing
+`EntryWriteReads` frame retains its explicitly selected current storage witnesses: reverting those reads to an
+InnoDB consistent-read snapshot can miss a storage row the product writer already holds, or use its old rules.
+These selected witnesses still validate the same connection, transaction and Org/Site frame, and do not change
+ordinary presentation reads. A queued relation write is refused if the winning empty-storage edit changed its
+strategy to scalar.
+
+A storage model save takes that same storage row before running its shape guard. Its pending changes are judged
+against the current locked row, rather than an original that predates another save. Safe presentation changes and
+acceptance widening remain allowed. Empty values remain `null`, `''` and `[]`; zero and false are data. Only
+configured fields actually holding data are armed, and existing bulk-write refusals remain in force.
+
+These are locks on the write's own connection. They supply neither scope nor authorization, and do not require
+an Org/Site frame for legitimate internal/global writes. A database lock timeout, deadlock or failed transaction
+refuses the operation; transaction recovery preserves the existing failure contract rather than retrying arbitrary
+observer or filesystem effects. SQLite serializes writers and does not acquire a row lock from `FOR UPDATE`.
+The change adds no service or worker to the resource floor. Raw SQL remains outside the Eloquent guarantee.
+
+Independent-connection engine tests and the ordinary conversion, relation, revision and scope controls qualify
+this amendment; their measured results belong beside the implementation handoff. This is not a retained-data
+upgrade policy or a claim to reconstruct historical field definitions (#217).
+
 ---
 
 ## ADR-007 — Migration: a source-agnostic adapter framework

@@ -12,9 +12,9 @@ namespace Kitsune\Core\Relations;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
+use Kitsune\Core\Schema\FieldStorageWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use RuntimeException;
@@ -135,9 +135,13 @@ class GuardedRelationBuilder extends Builder
                     // cardinality-one (source, field) both counted zero, then
                     // serialised on the lock, and both wrote. A count taken before
                     // a lock is a count of the past.
-                    $this->getModel()->guardCardinality();
+                    $row = $this->getModel();
+                    FieldStorageWrites::lockRelation($this->relationConnection(), $row->field_storage_id === null ? null : (int) $row->field_storage_id);
+                    $row->guardCurrentStorageForWrite();
+                    $result = parent::update($values);
+                    $row->armLockNow();
 
-                    return parent::update($values);
+                    return $result;
                 }
 
                 $this->refuseGuardedColumns($values);
@@ -281,13 +285,8 @@ class GuardedRelationBuilder extends Builder
         // field. `GuardedBelongsToMany` locks the source for `attach()`, and
         // adding this builder path re-opened the same race beside it — a fix
         // that created the hole it was modelled on.
-        return $this->versioned(fn (): array => [$row->source_entry_id], fn () => DB::transaction(function () use ($row, $values, $sequence) {
-            Entry::withoutScopeBecause(
-                'locking the source entry so the cardinality count cannot interleave',
-                fn ($query) => $query->whereKey($row->source_entry_id)->lockForUpdate()->get(),
-            );
-
-            $row->guardCreate();
+        return $this->versioned(fn (): array => [$row->source_entry_id], function () use ($row, $values, $sequence) {
+            $row->guardCreate(true);
 
             $id = parent::insertGetId($values, $sequence);
 
@@ -296,7 +295,7 @@ class GuardedRelationBuilder extends Builder
             $row->forceFill([$row->getKeyName() => $id])->armLockNow();
 
             return $id;
-        }));
+        });
     }
 
     /**
