@@ -258,7 +258,9 @@ jobs:
     # ⚠️ NOT for a prose-only change: the browser lane boots the skeleton and clicks it, and no file
     # under docs/ is reachable from a rendered page. It still runs on main, where it is the merge check.
     if: needs.scope.outputs.docs_only != 'true'
-    timeout-minutes: 20
+    # The complete serial suite has 404 cases: measured at 18.5 minutes plus two minutes of setup.
+    # Leave room for setup and report upload without changing its single SQLite worker.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
