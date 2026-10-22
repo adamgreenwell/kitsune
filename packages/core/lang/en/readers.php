@@ -105,6 +105,15 @@ return [
     ],
     // A file offered to readers (ADR-041). Nothing here invites anyone to pay: a refusal is one notice for every cause,
     // and an outage is an error, never an offer.
+    'downloads' => [
+        'title' => 'Your downloads',
+        'intro' => 'Files currently offered to your account on this site. Open a file’s page to check it is still available.',
+        'empty' => 'There are no downloads offered to your account here right now.',
+        'pages' => 'Download pages',
+        'previous' => 'Previous downloads',
+        'next' => 'More downloads',
+        'unavailable' => 'Downloads can’t be checked right now. Please try again in a few minutes.',
+    ],
     'download' => [
         'title' => 'Download',
         // The page's heading for a file whose title is empty, or only space: never a heading with nothing in it.

@@ -10,11 +10,9 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Entitlements;
 
-use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use InvalidArgumentException;
 use Kitsune\Core\Auth\ReaderGuard;
-use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Tenancy\Context;
 
 /**
@@ -58,31 +56,9 @@ final class EntitlementCheck
             return false;
         }
 
-        $siteId = $this->context->siteId();
-        $orgId = $this->context->orgId();
-
-        if ($siteId === null || $orgId === null) {
-            return false;
-        }
-
         try {
-            // ⚠️ INSIDE THE `try`: on a route with no auth middleware this is the request's first query on the host's
-            // reader table, and a database error there carries the session's reader id.
-            $reader = $this->readers->current();
-
-            if ($reader === null) {
-                return false;
-            }
-
-            return Entitlement::query()
-                // The equality the planner leads with: `SiteScope`'s OR alone plans as a scan of every site's prefix.
-                ->where('entitlements.site_id', $siteId)
-                // A row filed under another org never answers: `SiteScope`'s site branch compares no org.
-                ->where('entitlements.org_id', $orgId)
-                ->where('entitlements.reader_id', $reader)
-                ->where('entitlements.entitlement', $entitlement)
-                ->liveAt(CarbonImmutable::now('UTC')->startOfSecond())
-                ->exists();
+            // Includes the guard's first reader-table load in the same sanitized exception mapping.
+            return (new EntitlementRead($this->context, $this->readers))->current($entitlement)?->exists() ?? false;
         } catch (QueryException $e) {
             throw EntitlementUnavailable::because($entitlement, (string) ($e->errorInfo[0] ?? $e->getCode()));
         }
@@ -122,27 +98,14 @@ final class EntitlementCheck
             return [];
         }
 
-        $siteId = $this->context->siteId();
-        $orgId = $this->context->orgId();
-
-        if ($siteId === null || $orgId === null) {
-            return $answers;
-        }
-
         try {
-            // As for holds(), a failed session load carries the reader's identifier and stays inside this mapping.
-            $reader = $this->readers->current();
+            $read = (new EntitlementRead($this->context, $this->readers))->current(array_keys($answers));
 
-            if ($reader === null) {
+            if ($read === null) {
                 return $answers;
             }
 
-            $held = Entitlement::query()
-                ->where('entitlements.site_id', $siteId)
-                ->where('entitlements.org_id', $orgId)
-                ->where('entitlements.reader_id', $reader)
-                ->whereIn('entitlements.entitlement', array_keys($answers))
-                ->liveAt(CarbonImmutable::now('UTC')->startOfSecond())
+            $held = $read
                 // Never hydrate sources, reader identifiers or one row per source: at most 100 names leave SQL.
                 ->distinct()
                 ->pluck('entitlements.entitlement');

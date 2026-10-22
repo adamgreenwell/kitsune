@@ -10,7 +10,9 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -97,9 +99,9 @@ class EntryTypeAvailability extends Model
         $rows = static::query()
             ->whereIn('entry_type_id', $typeIds)
             ->where(function ($query) use ($siteId, $siteGroupId, $orgId): void {
-                $query->where(fn ($q) => $q->where('scope_type', 'site')->where('scope_id', $siteId))
-                    ->orWhere(fn ($q) => $q->where('scope_type', 'site_group')->where('scope_id', $siteGroupId))
-                    ->orWhere(fn ($q) => $q->where('scope_type', 'org')->where('scope_id', $orgId));
+                foreach (self::levels($siteId, $siteGroupId, $orgId) as [$type, $id]) {
+                    $query->orWhere(fn ($q) => $q->where('scope_type', $type)->where('scope_id', $id));
+                }
             })
             ->get()
             ->groupBy('entry_type_id');
@@ -112,11 +114,8 @@ class EntryTypeAvailability extends Model
 
             $resolved[$id] = true; // absent at every level = enabled (ADR-022)
 
-            foreach ([
-                'site:'.$siteId,
-                'site_group:'.$siteGroupId,
-                'org:'.$orgId,
-            ] as $key) {
+            foreach (self::levels($siteId, $siteGroupId, $orgId) as [$type, $scopeId]) {
+                $key = $type.':'.$scopeId;
                 if ($forType->has($key)) {
                     $resolved[$id] = $forType->get($key)->is_enabled;
                     break;
@@ -125,5 +124,55 @@ class EntryTypeAvailability extends Model
         }
 
         return $resolved;
+    }
+
+    /**
+     * Apply the SAME sparse precedence before an entries page's offset. A false decision excludes an entry only when
+     * no more-specific decision exists. All subqueries are in the one candidate read; no per-type PHP query.
+     * Fixed internal tables/columns only, so the query builder owns quoting and configured table prefixes.
+     *
+     * @template TModel of Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     *
+     * @internal The private-offer list, not a new availability extension API.
+     */
+    public static function constrainEnabledEntries(Builder $query, Site $site): Builder
+    {
+        $levels = self::levels($site->getKey(), $site->site_group_id, $site->org_id);
+
+        foreach ($levels as $position => [$type, $id]) {
+            $higher = array_slice($levels, 0, $position);
+            $query->whereNotExists(function (QueryBuilder $decision) use ($type, $id, $higher): void {
+                $decision->select('disabled_type.entry_type_id')
+                    ->from(self::TABLE.' as disabled_type')
+                    ->whereColumn('disabled_type.entry_type_id', 'entries.entry_type_id')
+                    ->where('disabled_type.scope_type', $type)
+                    ->where('disabled_type.scope_id', $id)
+                    ->where('disabled_type.is_enabled', false);
+
+                if ($higher !== []) {
+                    $decision->whereNotExists(function (QueryBuilder $override) use ($higher): void {
+                        $override->select('higher_type.entry_type_id')->from(self::TABLE.' as higher_type')
+                            ->whereColumn('higher_type.entry_type_id', 'entries.entry_type_id')
+                            ->where(function (QueryBuilder $scopes) use ($higher): void {
+                                foreach ($higher as [$type, $id]) {
+                                    $scopes->orWhere(fn (QueryBuilder $scope) => $scope
+                                        ->where('higher_type.scope_type', $type)->where('higher_type.scope_id', $id));
+                                }
+                            });
+                    });
+                }
+            });
+        }
+
+        return $query;
+    }
+
+    /** @return list<array{0: string, 1: int|string|null}> ordered most-specific first, shared by both reads */
+    private static function levels(int|string|null $siteId, int|string|null $siteGroupId, int|string|null $orgId): array
+    {
+        return [['site', $siteId], ['site_group', $siteGroupId], ['org', $orgId]];
     }
 }

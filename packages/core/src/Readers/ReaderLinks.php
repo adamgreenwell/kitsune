@@ -100,6 +100,12 @@ final class ReaderLinks
         return self::path($site, self::DOWNLOADS.'/'.$entryId);
     }
 
+    /** The current reader's offered files; path pagination survives the existing sign-in return fence. */
+    public static function downloads(Site $site, int $page = 1): string
+    {
+        return self::path($site, self::DOWNLOADS.($page > 1 ? '/page/'.$page : ''));
+    }
+
     /** That file's bytes, which the page's one button links to. */
     public static function downloadFile(Site $site, int $entryId): string
     {

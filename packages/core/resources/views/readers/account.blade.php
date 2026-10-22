@@ -3,7 +3,7 @@
     License, v. 2.0. If a copy of the MPL was not distributed with this
     file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-    The signed-in reader's page — `AccountController`. Who is signed in, as escaped text, and a way out; nothing else.
+    The signed-in reader's page — `AccountController`. Who is signed in, as escaped text, a link to current offers, and a way out.
 --}}
 @extends('kitsune::readers.layout')
 
@@ -15,6 +15,8 @@
     @endif
 
     <p>{{ $t('home.signed_in_as', ['email' => $email]) }}</p>
+
+    <p><a href="{{ $downloads }}">{{ $t('downloads.title') }}</a></p>
 
     <form method="post" action="{{ $signOut }}">
         @csrf

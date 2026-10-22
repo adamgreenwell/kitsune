@@ -7291,6 +7291,40 @@ holds the name; only the dialog and the audit row stand in the way. A reader-tab
 when a site with offered files has its reader accounts switched off; offering a selection; a size check against
 `size_bytes` before streaming; a canonical lower-case prefix.
 
+**Amendment — Your downloads (#250, 2026-10-21).** The individual landing/file door above remains the authority
+for bytes. The account now links to `{prefix}/account/downloads`, a list of current private offers whose live
+entitlement names the signed-in reader holds on this Site. This resolves the list/batch-check item in the earlier
+*Owed* list. It changes no offering or sharing rule and does not extend `ReaderAccount`.
+
+Pages contain at most 24 offers plus one eligible lookahead, without totals. Eligibility is applied before offset:
+exact current Org/Site, untrashed entries, private offered files, valid media types owned by this Org or global,
+live current-reader grants and the existing Site → SiteGroup → Org → absent-enabled type precedence. Unheld,
+foreign and disabled offers do not shift visible pages or advertise a further page. `EntitlementRead` shares the
+kernel's current identity/scope/time construction with `holds()`/`holdsMany()`; the availability filter shares its
+ordered levels with `enabledMapFor()`. MySQL/MariaDB additionally compare the fixed gate/grant columns as binary,
+through grammar-quoted identifiers, so their looser collation does not admit uppercase, accented or padded aliases.
+The normal equality remains for indexed narrowing. A final batch checks at most 25 distinct valid names, including
+the lookahead, followed by one availability read. Reader/Org/Site consistency is fenced before and after those
+checks; a changed context cannot supply a same-named grant for captured offers. Every clicked landing/file link
+still performs its existing fresh checks. On SQLite the offer service measured three SQL reads for both one and
+24 rows. The actual GET page, including authentication, middleware and rendering, measured eight reads for both
+page sizes: one candidate read, one final entitlement batch and one availability read, plus the fixed reader-page
+work. Those are separate measurements; the whole endpoint is not a three-read operation.
+
+The list performs no filesystem probe and returns only existing landing links: an authorized offer can remain
+listed when its bytes are missing, and the landing then refuses uniformly. Empty/expired/revoked accounts receive
+no file metadata or pagination. A malformed gate without a matching live grant does not enter pagination; matching
+malformed persisted authority, failed reads or inconsistent context produce the generic unavailable page without
+partial titles, names or pagination. Corrupt data is never converted into a partial success. Page paths are
+canonical positive integers through 10,000; page one redirects to the list root, and an empty later page is 404.
+Path pagination preserves prefix-aware sign-in return handling without adding query-parameter authority.
+
+The plain reader layout provides native links, a labelled pagination landmark, isolated filenames and fallback
+copy with the correct language/direction. No client JavaScript, worker, external service or new default-install
+resource is required. New list/query/controller/view internals and `ReaderLinks::downloads()` are deliberate;
+`ReaderAccount`'s interface and the single-file refusal/custody contract remain unchanged. Unknown storage integrity
+still belongs to #253, and this list makes no download-availability promise.
+
 **The surface, all `@internal`:** `Media\MediaStream`; `Http\Middleware\IsolateDownload`;
 `Http\Controllers\Readers\DownloadController` and the view `kitsune::readers.download`; `Filament\MediaReaderActions`;
 `Tenancy\Contracts\RefusesInsertedRows`; `MediaFile::readerEntitlement()` and `::refuseInsertedRow()`;

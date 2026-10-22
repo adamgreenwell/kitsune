@@ -13,6 +13,7 @@ namespace Kitsune\Core\Readers;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Controllers\Readers\AccountController;
 use Kitsune\Core\Http\Controllers\Readers\DownloadController;
+use Kitsune\Core\Http\Controllers\Readers\DownloadsController;
 use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
 use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
 use Kitsune\Core\Http\Controllers\Readers\SignInController;
@@ -100,6 +101,8 @@ final class ReaderRoutes
                     ->middleware([...$area, RequireGuest::class]),
                 Route::post($at.ReaderLinks::SEGMENT.ReaderLinks::SIGN_OUT, SignOutController::class)
                     ->middleware($area),
+                Route::get($account.ReaderLinks::DOWNLOADS, DownloadsController::class)->middleware($download),
+                Route::get($account.ReaderLinks::DOWNLOADS.'/page/{'.DownloadsController::PARAMETER.'}', DownloadsController::class)->middleware($download),
                 Route::get($offered, [DownloadController::class, 'show'])
                     ->middleware($download),
                 Route::get($offered.ReaderLinks::FILE, [DownloadController::class, 'file'])
