@@ -207,6 +207,20 @@ version"*.
 
 ### Running the tests
 
+After `composer install`, with PHP 8.4 or newer and Composer on `PATH`, run the full local gate:
+
+```bash
+bin/ci-local.sh
+```
+
+It runs `composer ci` (root Pint, configured PHPStan and the complete SQLite suite), then the separate
+skeleton Pint check. It needs no Docker, Node or external services. Test PHP processes receive a private
+512 MiB memory setting, Composer's five-minute process timeout is disabled, and a short temporary directory
+is removed when the command exits. The host's INI files and existing temporary directory are untouched.
+These settings belong to the development suite; Kitsune's application resource floor is unchanged.
+
+Individual checks remain available:
+
 ```bash
 vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
 vendor/bin/pint --test                 # formatting: the monorepo
