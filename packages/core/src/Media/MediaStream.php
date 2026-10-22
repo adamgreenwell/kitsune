@@ -19,9 +19,11 @@ use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Site;
 use League\Flysystem\FilesystemException;
+use stdClass;
 use Symfony\Component\HttpFoundation\HeaderUtils;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 /**
  * The steps a private file's delivery takes once a route has decided who is asking — ADR-041, the reader's download
@@ -47,8 +49,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * and `echo` at a time, `flush()` after each, and `connection_aborted()` checked so a reader who closed the tab stops the
  * read. The handle is closed in `finally`, whatever happens.
  *
- * ⚠️ TWO LOG LINES, PINNED BY TEXT IN `ReaderSurfaceTest`, AND NEITHER NAMES A READER: the bytes missing (the disk, the
- * path and the entry — what an operator needs to find them), and a database refusal (its SQLSTATE alone). A database
+ * ⚠️ THREE LOG LINES, PINNED BY TEXT IN `ReaderSurfaceTest`, AND NONE NAMES A READER: bytes missing or a length that
+ * cannot be verified (the disk, path and entry — what an operator needs), and a database refusal (its SQLSTATE alone). A database
  * exception's message interpolates its bindings, and on this route those can carry the reader's key; nothing here is
  * passed to `report()`.
  *
@@ -151,7 +153,63 @@ final class MediaStream
     }
 
     /**
-     * The file's bytes, opened before any answer is built — or null, and one log line, when they are not there.
+     * Bind an already-authorized file to its opened bytes while custody still owns the row — ADR-041, #253.
+     *
+     * The entry and file are locked in custody's existing order. No authority is granted here: a moved/retyped entry,
+     * changed offer or changed byte coordinates need the route's checks again, so this attempt refuses. The handle
+     * survives a later pathname replacement; keeping a database transaction open while its body is sent buys nothing.
+     *
+     * @return resource|null
+     */
+    public static function openCurrent(Entry $entry, MediaFile $file)
+    {
+        $handle = null;
+
+        try {
+            return MediaCustody::locked($entry->getConnection(), (int) $entry->getKey(), static function (?stdClass $locked, ?stdClass $current) use ($entry, $file, &$handle) {
+                if ($locked === null || $locked->deleted_at !== null || $current === null) {
+                    return null;
+                }
+
+                // Its row is already locked. Read current values, including inside a host's older repeatable-read view.
+                $stored = $entry->newQuery()->useWritePdo()->whereKey($entry->getKey())->lockForUpdate()->first(['org_id', 'site_id', 'entry_type_id']);
+
+                if ($stored === null) {
+                    return null;
+                }
+
+                foreach (['org_id', 'site_id', 'entry_type_id'] as $column) {
+                    if (! self::sameStoredValue($stored->getRawOriginal($column), $entry->getRawOriginal($column))) {
+                        return null;
+                    }
+                }
+
+                foreach (['id', 'entry_id', 'disk', 'path', 'mime', 'size_bytes', 'checksum', 'visibility', 'reader_entitlement'] as $column) {
+                    if (! self::sameStoredValue($current->{$column}, $file->getRawOriginal($column))) {
+                        return null;
+                    }
+                }
+
+                return $handle = self::open($entry, $file);
+            });
+        } catch (Throwable $failure) {
+            // A commit can fail after the callback opened it. Nothing owns a body yet, so nothing else will close it.
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+
+            throw $failure;
+        }
+    }
+
+    /** Driver number representations may differ; NULL must never become the empty string. */
+    private static function sameStoredValue(mixed $current, mixed $loaded): bool
+    {
+        return $current === null || $loaded === null ? $current === $loaded : (string) $current === (string) $loaded;
+    }
+
+    /**
+     * The file's checked bytes, opened before any answer is built — or null when absent or not the recorded length.
      *
      * ⚠️ A DISK THAT THROWS IS A DISK WITHOUT THE BYTES. Laravel answers null for a missing file only on a disk configured
      * not to throw; one with `throw` raises Flysystem's own exception, which would otherwise be a 500 and a report.
@@ -167,7 +225,29 @@ final class MediaStream
         }
 
         if (is_resource($handle)) {
-            return $handle;
+            try {
+                $stat = @fstat($handle);
+                $mode = stream_get_meta_data($handle)['mode'];
+                $size = $file->size_bytes;
+                $recorded = $file->getAttributes()['size_bytes'] ?? null;
+                $readable = str_starts_with($mode, 'r') || str_contains($mode, '+');
+
+                // A wrapper can report logical offset zero while its underlying stream has already been read.
+                // Reset the actual object; do not trust that offset or reopen/stat its pathname instead.
+                if ($readable && @rewind($handle) && @ftell($handle) === 0 && $size >= 0
+                    && (is_int($recorded) || is_string($recorded)) && (string) $recorded === (string) $size
+                    && $stat !== false
+                    && ($stat['mode'] & 0170000) === 0100000 && $stat['size'] === $size) {
+                    return $handle;
+                }
+            } catch (Throwable) {
+                // A custom adapter's stat failure has the same refusal as an unsupported stat or a failed open.
+            }
+
+            fclose($handle);
+            self::unmatchedSize($entry, $file);
+
+            return null;
         }
 
         self::missing($entry, $file);
@@ -270,5 +350,11 @@ final class MediaStream
     private static function missing(Entry $entry, MediaFile $file): void
     {
         Log::warning(sprintf('Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this entry was refused and its compensation failed, the only copy is on the private disk, where kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, or says what will (ADR-042 decision 5). Otherwise the file was removed outside Kitsune.', (string) $file->disk, (string) $file->path, (string) $entry->getKey(), (string) $entry->getKey()));
+    }
+
+    /** The operator can identify the bytes; the reader and the entitlement are never named. */
+    private static function unmatchedSize(Entry $entry, MediaFile $file): void
+    {
+        Log::warning(sprintf('Kitsune could not verify an opened media file against its recorded size: [%s:%s] for entry %s. No success response was sent. Inspect the stored bytes and the media_files row before retrying.', (string) $file->disk, (string) $file->path, (string) $entry->getKey()));
     }
 }

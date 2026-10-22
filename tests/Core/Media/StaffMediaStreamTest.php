@@ -8,12 +8,16 @@
 
 declare(strict_types=1);
 
+use GuzzleHttp\Psr7\FnStream;
+use GuzzleHttp\Psr7\StreamWrapper;
+use GuzzleHttp\Psr7\Utils;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
@@ -123,6 +127,17 @@ it('refuses a failed open before success even while the file exists', function (
     Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'kitsune:media-reconcile --entry='.$entry->getKey()));
 })->with(['false', 'throw']);
 
+it('refuses bytes whose opened size disagrees with the row before GET or HEAD succeeds', function (string $method, string $bytes): void {
+    $entry = staffStreamFile($this->type, 'pdf');
+    $file = $entry->mediaFile;
+    Storage::disk(MediaDisks::PRIVATE)->put($file->path, $bytes);
+
+    $response = $this->actingAs($this->user)->call($method, '/staff-stream/main/'.$entry->getKey())->assertNotFound();
+
+    expect($response->headers->has('Content-Disposition'))->toBeFalse()
+        ->and(is_resource($this->disk->opened))->toBeFalse();
+})->with(['GET', 'HEAD'])->with(['shorter' => 'p', 'longer' => 'pdf changed']);
+
 it('checks staff permission before opening any stored bytes', function (): void {
     $entry = staffStreamFile($this->type);
     $this->role->revoke('entry.document.view');
@@ -168,14 +183,148 @@ it('refuses a different Org shared file even when the attacker holds the matchin
     expect($this->disk->opens)->toBe(0);
 });
 
-it('caps staff bytes at the recorded size and closes the opened stream', function (): void {
+it('refuses a forged recorded length rather than sending an apparently complete prefix', function (): void {
     $entry = staffStreamFile($this->type, '1234567890');
     DB::table('media_files')->where('entry_id', $entry->getKey())->update(['size_bytes' => 4]);
+    $response = $this->actingAs($this->user)->get('/staff-stream/main/'.$entry->getKey())->assertNotFound();
+
+    expect($response->headers->has('Content-Disposition'))->toBeFalse()
+        ->and(is_resource($this->disk->opened))->toBeFalse();
+});
+
+it('refuses an unsupported opened stream before GET or HEAD sends success', function (string $method, string $fault): void {
+    $entry = staffStreamFile($this->type);
+    $this->disk->factory = static function () use ($fault) {
+        $stream = Utils::streamFor('pdf');
+
+        if ($fault === 'unknown size') {
+            $stream = FnStream::decorate($stream, ['getSize' => static fn () => null]);
+        } elseif ($fault === 'stat throws') {
+            $stream = FnStream::decorate($stream, ['getSize' => static fn () => throw new RuntimeException('private adapter diagnostic')]);
+        } elseif ($fault === 'not readable') {
+            $stream = FnStream::decorate($stream, ['isReadable' => static fn () => false]);
+        } else {
+            $stream = FnStream::decorate($stream, ['isSeekable' => static fn () => false, 'seek' => static fn () => throw new RuntimeException('unseekable')]);
+        }
+
+        return StreamWrapper::getResource($stream);
+    };
+
+    $response = $this->actingAs($this->user)->call($method, '/staff-stream/main/'.$entry->getKey())->assertNotFound();
+
+    expect($response->headers->has('Content-Disposition'))->toBeFalse()
+        ->and($response->getContent())->not->toContain('private adapter diagnostic')
+        ->and(is_resource($this->disk->opened))->toBeFalse();
+})->with(['GET', 'HEAD'])->with(['unknown size', 'stat throws', 'not readable', 'unseekable']);
+
+it('resets the actual PSR-7 object even when its wrapper initially reports logical offset zero', function (): void {
+    $entry = staffStreamFile($this->type);
+    $this->disk->factory = static function () {
+        $stream = Utils::streamFor('pdf');
+        $stream->read(1);
+        $handle = StreamWrapper::getResource($stream);
+        expect(ftell($handle))->toBe(0);
+
+        return $handle;
+    };
+
     $response = $this->actingAs($this->user)->get('/staff-stream/main/'.$entry->getKey())->assertOk();
 
-    expect($response->streamedContent())->toBe('1234')
-        ->and($response->headers->get('Content-Length'))->toBe('4')
+    expect($response->streamedContent())->toBe('pdf')
         ->and(is_resource($this->disk->opened))->toBeFalse();
+});
+
+it('accepts and closes a stat-capable zero-byte file for GET and HEAD', function (string $method): void {
+    $entry = staffStreamFile($this->type, '');
+    $response = $this->actingAs($this->user)->call($method, '/staff-stream/main/'.$entry->getKey())->assertOk();
+
+    expect($response->headers->get('Content-Length'))->toBe('0')
+        ->and($method === 'GET' ? $response->streamedContent() : $response->getContent())->toBe('')
+        ->and(is_resource($this->disk->opened))->toBeFalse();
+})->with(['GET', 'HEAD']);
+
+it('refuses changed custody or offer metadata before opening a stale file snapshot', function (array $change): void {
+    $entry = staffStreamFile($this->type);
+    $file = $entry->mediaFile;
+    DB::table('media_files')->where('entry_id', $entry->getKey())->update($change);
+
+    expect(MediaStream::openCurrent($entry, $file))->toBeNull()
+        ->and($this->disk->opens)->toBe(0);
+})->with([
+    'disk' => [['disk' => 'public']],
+    'path' => [['path' => 'media/replacement.pdf']],
+    'size' => [['size_bytes' => 4]],
+    'content type' => [['mime' => 'text/html']],
+    'checksum' => [['checksum' => hash('sha256', 'new')]],
+    'visibility' => [['visibility' => 'public']],
+    'offer' => [['reader_entitlement' => 'course.changed']],
+]);
+
+it('refuses a file moved or retyped after its entry was authorized', function (string $change): void {
+    $entry = staffStreamFile($this->type);
+    $file = $entry->mediaFile;
+    $other = $change === 'site_id'
+        ? Site::create(['name' => 'Other', 'handle' => 'other', 'slug' => 'other', 'locale' => 'en'])
+        : EntryType::create(['org_id' => $this->org->getKey(), 'handle' => 'other', 'name' => 'Other', 'plural_name' => 'Others', 'is_media' => true]);
+    DB::table('entries')->where('id', $entry->getKey())->update([$change => $other->getKey()]);
+
+    expect(MediaStream::openCurrent($entry, $file))->toBeNull()
+        ->and($this->disk->opens)->toBe(0);
+})->with(['site_id', 'entry_type_id']);
+
+it('accepts a stat-capable PSR-7 stream without reading or buffering its bytes ahead', function (): void {
+    $bytes = str_repeat('p', 262_145);
+    $entry = staffStreamFile($this->type, $bytes);
+    $reads = 0;
+    $this->disk->factory = static function () use ($bytes, &$reads) {
+        $stream = Utils::streamFor($bytes);
+
+        return StreamWrapper::getResource(FnStream::decorate($stream, ['read' => static function (int $count) use ($stream, &$reads): string {
+            $reads++;
+
+            return $stream->read($count);
+        }]));
+    };
+
+    $response = $this->actingAs($this->user)->get('/staff-stream/main/'.$entry->getKey())->assertOk();
+
+    expect($reads)->toBe(0)
+        ->and($response->streamedContent())->toBe($bytes)
+        ->and($reads)->toBeGreaterThan(0)
+        ->and(is_resource($this->disk->opened))->toBeFalse();
+});
+
+it('opens under the custody fence but releases its own fence before the body is sent', function (): void {
+    $entry = staffStreamFile($this->type);
+    $level = DB::connection()->transactionLevel();
+    $this->disk->afterOpen = static function () use ($level): void {
+        expect(DB::connection()->transactionLevel())->toBe($level + 1);
+    };
+
+    $response = $this->actingAs($this->user)->get('/staff-stream/main/'.$entry->getKey())->assertOk();
+
+    expect(DB::connection()->transactionLevel())->toBe($level)
+        ->and($response->streamedContent())->toBe('pdf');
+});
+
+it('keeps the checked open object when a pathname is replaced before its stat', function (): void {
+    $entry = staffStreamFile($this->type);
+    $moved = null;
+    $this->disk->afterOpen = function ($handle, string $path) use (&$moved): void {
+        $location = Storage::disk(MediaDisks::PRIVATE)->path($path);
+        $moved = $location.'.checked';
+        rename($location, $moved);
+        file_put_contents($location, 'a different replacement');
+    };
+
+    try {
+        $response = $this->actingAs($this->user)->get('/staff-stream/main/'.$entry->getKey())->assertOk();
+        expect($response->streamedContent())->toBe('pdf');
+    } finally {
+        if ($moved !== null) {
+            unlink($moved);
+        }
+    }
 });
 
 it('refuses malformed or foreign key spellings before an entry lookup', function (string $suffix): void {

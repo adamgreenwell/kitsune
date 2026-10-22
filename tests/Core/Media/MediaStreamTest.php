@@ -306,6 +306,29 @@ it('writes a database refusal as its SQLSTATE and nothing else', function (strin
     'nothing' => ['', 'unknown'],
 ]);
 
+it('refuses a malformed recorded size instead of casting it into an apparently matching length', function (mixed $recorded): void {
+    Storage::fake(MediaDisks::PRIVATE);
+    [$entry, $file] = streamOf(0);
+    Storage::disk(MediaDisks::PRIVATE)->put($file->path, '');
+    $file->setRawAttributes([...$file->getAttributes(), 'size_bytes' => $recorded]);
+
+    $logged = streamLogged(function () use ($entry, $file): void {
+        expect(MediaStream::open($entry, $file))->toBeNull();
+    });
+
+    expect($logged)->toHaveCount(1)
+        ->and($logged[0][1])->toContain('could not verify an opened media file against its recorded size');
+})->with([
+    'missing' => [null],
+    'word' => ['garbage'],
+    'float' => [0.0],
+    'boolean' => [false],
+    'padded' => ['00'],
+    'negative' => [-1],
+    'exponent' => ['0e0'],
+    'too large' => ['9223372036854775808'],
+]);
+
 // ---- What is read, whatever was found -------------------------------------------------------------------------------
 
 it('asks whether the type is served here in one read, whether or not anything was found', function (): void {

@@ -21,9 +21,11 @@ use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
@@ -294,6 +296,34 @@ describe('against a rival holding the row', function (): void {
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$this->ids['entry']}"))->atLeast()->once();
     })->with(['publication', 'drain']);
 
+    it('opens no download while a rival holds either custody row', function (string $table, string $key): void {
+        // Hydrate the rival's committed snapshot without taking its lock through the test's outer transaction.
+        $entry = (new Entry)->newFromBuilder((array) $this->rival->table('entries')->where('id', $this->ids['entry'])->first());
+        $file = (new MediaFile)->newFromBuilder((array) $this->rival->table('media_files')->where('entry_id', $this->ids['entry'])->first());
+        $site = (new Site)->newFromBuilder((array) $this->rival->table('sites')->where('id', $this->ids['site'])->first());
+        app(Context::class)->setSite($site);
+        $this->rival->beginTransaction();
+        $this->rival->table($table)->where($key, $this->ids['entry'])->lockForUpdate()->first();
+        RefusingDisk::forgetLog();
+
+        try {
+            expect(fn () => MediaStream::openCurrent($entry, $file))->toThrow(PDOException::class);
+            expect(RefusingDisk::$log)->toBe([]);
+        } finally {
+            $this->rival->rollBack();
+        }
+
+        // A released rival permits the very same snapshot, and the checked handle remains this fixture's bytes.
+        $handle = MediaStream::openCurrent($entry, $file);
+        expect(is_resource($handle))->toBeTrue();
+
+        try {
+            expect(stream_get_contents($handle))->toBe(LOCK_PNG);
+        } finally {
+            fclose($handle);
+        }
+    })->with(['entry' => ['entries', 'id'], 'file' => ['media_files', 'entry_id']]);
+
     /*
      * T54. A lock wait inside a nested trash, and a host that catches it and commits. On MySQL and MariaDB the timeout
      * ends only the statement and Laravel does not roll back the savepoint — so without custody's own `ROLLBACK TO`, the
@@ -379,12 +409,94 @@ describe('against a rival holding the row', function (): void {
     });
 });
 
+describe('under an enclosing repeatable read', function (): void {
+    beforeEach(function (): void {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite serialises writers at the database level, so there is no older row snapshot.');
+        }
+
+        config(['database.connections.custody-rival' => config('database.connections.'.DB::getDefaultConnection())]);
+        $this->rival = DB::connection('custody-rival');
+        $this->ids = lockFixtures($this->rival, false);
+        app(Context::class)->setOrg((new Org)->newFromBuilder((array) $this->rival->table('orgs')->where('id', $this->ids['org'])->first()));
+        Storage::disk(MediaDisks::PRIVATE)->put('media/'.$this->ids['org'].'/2026/09/rival.png', LOCK_PNG);
+        $this->afterRollback(function (): void {
+            $sweep = DB::connection('custody-rival');
+            $sweep->table('media_files')->where('entry_id', $this->ids['entry'])->delete();
+            $sweep->table('entries')->where('id', $this->ids['entry'])->delete();
+            $sweep->table('entry_types')->where('id', $this->ids['type'])->delete();
+            $sweep->table('sites')->where('id', $this->ids['site'])->delete();
+            $sweep->table('orgs')->where('id', $this->ids['org'])->delete();
+            DB::purge('custody-rival');
+        });
+    });
+
+    it('refuses a changed entry even when the caller already holds an older repeatable-read snapshot', function (string $column): void {
+        $entry = (new Entry)->newFromBuilder((array) $this->rival->table('entries')->where('id', $this->ids['entry'])->first());
+        $file = (new MediaFile)->newFromBuilder((array) $this->rival->table('media_files')->where('entry_id', $this->ids['entry'])->first());
+        $site = (new Site)->newFromBuilder((array) $this->rival->table('sites')->where('id', $this->ids['site'])->first());
+        app(Context::class)->setSite($site);
+
+        $replacement = match ($column) {
+            'org_id' => $this->rival->table('orgs')->insertGetId(['slug' => 'scope-'.bin2hex(random_bytes(4)), 'name' => 'Other']),
+            'entry_type_id' => $this->rival->table('entry_types')->insertGetId(['org_id' => null, 'handle' => 'other', 'name' => 'Other', 'plural_name' => 'Others', 'is_media' => true]),
+            default => $this->ids['site'],
+        };
+
+        // The ordinary fixture cleanup deletes the entry first, after every enclosing transaction has released it.
+        if ($column !== 'site_id') {
+            $this->afterRollback(static function () use ($column, $replacement): void {
+                DB::connection('custody-rival')->table($column === 'org_id' ? 'orgs' : 'entry_types')->where('id', $replacement)->delete();
+                DB::purge('custody-rival');
+            });
+        }
+
+        config(['database.connections.custody-snapshot' => config('database.connections.'.DB::getDefaultConnection())]);
+        $snapshot = DB::connection('custody-snapshot');
+        $entry->setConnection('custody-snapshot');
+        $snapshot->statement($snapshot->getDriverName() === 'pgsql'
+            ? 'SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ'
+            : 'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $snapshot->beginTransaction();
+
+        try {
+            // This non-locking read deliberately pins the old view before the rival commits its move.
+            expect($snapshot->table('entries')->where('id', $this->ids['entry'])->first()->{$column})
+                ->toBe($entry->getRawOriginal($column));
+            $this->rival->table('entries')->where('id', $this->ids['entry'])->update([$column => $replacement]);
+            RefusingDisk::forgetLog();
+            $handle = null;
+
+            try {
+                $handle = MediaStream::openCurrent($entry, $file);
+            } catch (PDOException $refused) {
+                // PostgreSQL refuses the earlier current-row lock when the old snapshot saw a changed row.
+                expect($snapshot->getDriverName())->toBe('pgsql')
+                    ->and($refused)->toBeInstanceOf(DeadlockException::class)
+                    ->and($refused->getMessage())->toContain('SQLSTATE[40001]');
+            }
+
+            $opened = is_resource($handle);
+
+            if ($opened) {
+                fclose($handle);
+            }
+
+            expect($opened)->toBeFalse()->and(RefusingDisk::$log)->toBe([]);
+        } finally {
+            $snapshot->rollBack();
+            DB::purge('custody-snapshot');
+        }
+    })->with(['org_id', 'site_id', 'entry_type_id']);
+
+});
+
 /**
  * An org, a site, a media type, an entry and its file row, committed through the rival.
  *
  * @return array{org: int, site: int, type: int, entry: int}
  */
-function lockFixtures(Connection $rival): array
+function lockFixtures(Connection $rival, bool $lockOrg = true): array
 {
     $slug = 'lock-'.bin2hex(random_bytes(3));
     $now = now();
@@ -398,7 +510,9 @@ function lockFixtures(Connection $rival): array
         'size_bytes' => strlen(LOCK_PNG), 'checksum' => hash('sha256', LOCK_PNG), 'visibility' => 'public', 'created_at' => $now,
     ]);
 
-    app(Context::class)->setOrg(Org::query()->lockForUpdate()->findOrFail($org));
+    if ($lockOrg) {
+        app(Context::class)->setOrg(Org::query()->lockForUpdate()->findOrFail($org));
+    }
 
     return ['org' => $org, 'site' => $site, 'type' => $type, 'entry' => $entry];
 }
