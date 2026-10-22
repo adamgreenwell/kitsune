@@ -1997,7 +1997,7 @@ It is mature, audited, and adopting it would save real work — including a reso
 
 - **AGENTS.md invariant 2: every model declares its scope.** A vendor model cannot carry `#[OrgScoped]` and cannot `use EnforcesScope`. The package's `teams` feature models **one** scoping axis; Kitsune has two that scope data and one that does not (ADR-021). An authorization table with no declared scope is precisely the shape invariant 2 exists to refuse, and it would be the first one in the schema.
 - **Permissions here are derived from schema rather than enumerated by an operator.** Entry types are created at runtime through the admin, so the permission set changes when content modelling changes. A design whose mental model is a fixed list maintained in a seeder is fighting the flagship feature.
-- **Standing Principle #1.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
+- **Standing Principles #1 and #2.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
 - **ADR-025** already sets the bar: a runtime dependency of core gets argued for rather than assumed.
 
 ### Why a table rather than a JSON column on the role
@@ -2062,17 +2062,33 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 `architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.
 
-⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
+⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #2 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
 
 ⚠️ **Amended 2026-10-06 (ADR-040's admin):** owner-only in v1.0 now also covers setting, replacing and removing an
 org's credentials and switching it between test and live mode. Still no subject: `credential.manage` would be refused
-by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
-#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
+by `Permissions::allows()` even for an owner. **Historical citation notice (superseded 2026-10-22):** ~~The v1.2 clause this paragraph and the next cite as "Standing Principle
+#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.~~
 
 ⚠️ **Amended 2026-10-07 (ADR-040's entitlements page):** owner-only in v1.0 also covers listing who holds what on a
 site, giving a comp, revoking one source and reading a row's history. Still no subject: `entitlement.manage` would be
 refused by the vocabulary even for an owner, and delegating a comp — the one act that gives back access a refund took —
 waits for v1.2's subjects.
+
+### Citation amendment — 2026-10-22 (issue #258)
+
+**The v1.2 gate belongs to [Standing Principle #2](#standing-principles).** This ADR previously cited
+"Standing Principle #1" beside the package rejection, owner-only schema/role administration, and the decision
+to keep role navigation in core. The reasoning stays visible above: a package can create an ecosystem obligation,
+a new permission subject broadens the surface, and a host navigation seam would open an extension point.
+Principle #1 is still the reason to avoid an ecosystem-breaking rewrite; Principle #2 sets the freeze at v1.2
+and the deprecation rule within a major. The package rejection now cites both, because it uses both reasons.
+ADR-025's combined reference to Principles #1 and #2 already does the same job and remains unchanged.
+
+The September record counted eleven misrouted references. At this amendment's source snapshot there are **fourteen
+active citations** to correct: three in this ADR, four PHP docblocks, two browser-test comments, two roadmap
+paragraphs, and one each in the README, CONTRIBUTING and architecture. Historical notices that identified the
+misroute are retained as historical notices; they do not prescribe the gate. The citations change, while the
+owner-only boundaries, named first-party exceptions, v1.2 date and public surface stay as decided.
 
 ### A policy is not a query scope
 
@@ -2234,7 +2250,7 @@ the correction and gains a second half — **name the id, withhold the person, a
 
 ⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
 
-The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
+The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #2 keeps shut until v1.2.
 
 **An org may not lose its last held owner role.** Refused by `Role` itself rather than by the form, because an org that loses its last owner cannot get one back: schema editing and role administration are both owner-only, so the only person who could restore the flag is the one who just removed it. The guard asks whether this change takes the **last held** one rather than whether the result has any — a fresh install mid-seed has an owner role nobody holds yet, and the second question would refuse to let a seeder correct one.
 
@@ -11689,9 +11705,11 @@ When it lands:
 - **ADR-001 and the README call the runtime schema engine "the flagship first-party module", and it is not one** — it
   lives inside `kitsune/core`, booted unconditionally. ADR-038 did not resolve this. Either it is extracted once the
   kernel can carry it, or ADR-001 is amended to say it stayed in core and why
-- **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
+- ~~**Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
-  wrong everywhere it appears, and repointing it is an amendment rather than a sweep
+  wrong everywhere it appears, and repointing it is an amendment rather than a sweep~~
+  **Resolved by ADR-033's [citation amendment](#citation-amendment--2026-10-22-issue-258), 2026-10-22:** fourteen
+  active citations were present at the correction; the earlier count and rationale remain visible here.
 - **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one

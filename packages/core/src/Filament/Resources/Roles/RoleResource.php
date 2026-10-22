@@ -49,7 +49,7 @@ use Kitsune\Core\Validation\Rule;
  *
  * ⚠️ OWNER-ONLY, AND THE LIMITATION IS THE SAME ONE THE SCHEMA BUILDER HAS. `architecture.md` publishes a
  * vocabulary of five actions on ENTRIES and nothing else, so there is no `role.manage` to ask for, and
- * inventing a subject widens the extension surface Standing Principle #1 keeps shut until v1.2. An org
+ * inventing a subject widens the extension surface Standing Principle #2 keeps shut until v1.2. An org
  * cannot delegate role administration without making somebody an owner.
  */
 class RoleResource extends Resource
@@ -157,7 +157,7 @@ class RoleResource extends Resource
              * The alternative cost more than it bought: a resource in the skeleton would need a navigation
              * entry, navigation is supplied explicitly by `KitsunePanel` (ADR-012), and letting the host add
              * one means opening an extension point in core before the extension API exists — exactly what
-             * Standing Principle #1 keeps shut until v1.2.
+             * Standing Principle #2 keeps shut until v1.2.
              *
              * ⚠️ IT WRITES THROUGH `Role::assignTo()` / `removeFrom()`, which is the audited path. A page
              * that touched the pivot directly would record nothing, and ADR-033 names assignment as the
