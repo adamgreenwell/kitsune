@@ -7410,6 +7410,14 @@ HEAD substitutes for the handle's own size. A nonseekable stream, or a disk unab
 adapter is not qualified merely because a synthetic stream supports it. HEAD performs the same check, then closes
 immediately. The database fence is released before the existing 256 KiB body loop; it does not last for a download.
 
+**Amended 2026-10-22 — a wrapper's mode is not its underlying capability (review of #253).** The mode check above
+remains necessary for native resources. For a Guzzle-wrapped PSR-7 stream it is not sufficient: an adapter can open
+the wrapper as `r+` around an object whose `isReadable()` is false. The preflight also checks the PSR-7 object held
+by that opened resource's context and refuses an absent or unreadable object. This asks its capability without
+reading or buffering a byte. Both GET and HEAD regression cases reproduced an erroneous 200 before this check;
+the ordinary `StreamWrapper::getResource()` already chooses `w` for an unreadable, writable object, so the regression
+opens the wrapper explicitly with the misleading mode instead of claiming that helper does so.
+
 A replacement before open is checked as the opened object. Replacing a pathname after open cannot substitute its new
 bytes for the checked handle. This is a length check, not a content checksum or a snapshot of mutable external
 storage: same-length corruption, in-place mutation after the check and later I/O failure remain residuals. The output

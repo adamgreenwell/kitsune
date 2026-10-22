@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use GuzzleHttp\Psr7\StreamWrapper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -19,6 +20,7 @@ use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Site;
 use League\Flysystem\FilesystemException;
+use Psr\Http\Message\StreamInterface;
 use stdClass;
 use Symfony\Component\HttpFoundation\HeaderUtils;
 use Symfony\Component\HttpFoundation\Response;
@@ -227,10 +229,19 @@ final class MediaStream
         if (is_resource($handle)) {
             try {
                 $stat = @fstat($handle);
-                $mode = stream_get_meta_data($handle)['mode'];
+                $metadata = stream_get_meta_data($handle);
+                $mode = $metadata['mode'];
                 $size = $file->size_bytes;
                 $recorded = $file->getAttributes()['size_bytes'] ?? null;
                 $readable = str_starts_with($mode, 'r') || str_contains($mode, '+');
+
+                // An adapter can open a PSR-7 wrapper as r+ even when its stream cannot read.
+                // Check the object held by this resource without probing or buffering its bytes.
+                $wrapper = $metadata['wrapper_data'] ?? null;
+                if ($wrapper instanceof StreamWrapper) {
+                    $wrapped = stream_context_get_options($wrapper->context)['guzzle']['stream'] ?? null;
+                    $readable = $readable && $wrapped instanceof StreamInterface && $wrapped->isReadable();
+                }
 
                 // A wrapper can report logical offset zero while its underlying stream has already been read.
                 // Reset the actual object; do not trust that offset or reopen/stat its pathname instead.

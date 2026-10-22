@@ -203,6 +203,16 @@ it('refuses an unsupported opened stream before GET or HEAD sends success', func
             $stream = FnStream::decorate($stream, ['getSize' => static fn () => throw new RuntimeException('private adapter diagnostic')]);
         } elseif ($fault === 'not readable') {
             $stream = FnStream::decorate($stream, ['isReadable' => static fn () => false]);
+        } elseif ($fault === 'misleading wrapper mode') {
+            $stream = FnStream::decorate($stream, [
+                'isReadable' => static fn () => false,
+                'read' => static fn () => throw new RuntimeException('unreadable private stream'),
+            ]);
+            StreamWrapper::register();
+            $handle = fopen('guzzle://stream', 'r+', false, StreamWrapper::createStreamContext($stream));
+            expect(stream_get_meta_data($handle)['mode'])->toBe('r+');
+
+            return $handle;
         } else {
             $stream = FnStream::decorate($stream, ['isSeekable' => static fn () => false, 'seek' => static fn () => throw new RuntimeException('unseekable')]);
         }
@@ -215,7 +225,7 @@ it('refuses an unsupported opened stream before GET or HEAD sends success', func
     expect($response->headers->has('Content-Disposition'))->toBeFalse()
         ->and($response->getContent())->not->toContain('private adapter diagnostic')
         ->and(is_resource($this->disk->opened))->toBeFalse();
-})->with(['GET', 'HEAD'])->with(['unknown size', 'stat throws', 'not readable', 'unseekable']);
+})->with(['GET', 'HEAD'])->with(['unknown size', 'stat throws', 'not readable', 'misleading wrapper mode', 'unseekable']);
 
 it('resets the actual PSR-7 object even when its wrapper initially reports logical offset zero', function (): void {
     $entry = staffStreamFile($this->type);
