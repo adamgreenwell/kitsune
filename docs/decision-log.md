@@ -7299,6 +7299,30 @@ its `download` parameter; `ReaderLinks::download()`, `::downloadFile()` and `::a
 `media_files.reader_entitlement`; and the words `kitsune::readers.download.*` and `kitsune::media.readers.*`. CONTRIBUTING
 gains no exception: `ReaderAccount` did not grow.
 
+**Amendment — staff downloads share the bounded stream (#249, 2026-10-21).** The earlier staff implementation and
+its measured `fpassthru()` failure remain recorded above. This resolves the staff-stream/`filename*` item in that
+round's *Owed* list: after the existing authenticated panel, canonical key, scoped entry read, current type
+availability and staff view Gate, `MediaDownloadController` now opens the stored disk/path through
+`MediaStream::open()` and returns `MediaStream::respond()`. A missing or refused open is a 404 with the existing
+operator warning before success headers; HEAD closes the opened handle immediately and has no body. Staff
+permissions, Org-shared versus Site-only visibility, custody's stored disk/path and the reader's independent
+entitlement question are unchanged. Both routes use the checked international filename and its safe ASCII fallback.
+
+**Measured on the real authenticated staff route under PHP-FPM, PHP 8.5.10.** Disposable local-disk fixtures of
+1 KiB and 64 MiB arrived with exact byte counts and SHA-256 hashes. With 4 KiB output buffering and a 256 MiB PHP
+limit, the old route's worker peaks were 42,467,328 and 109,576,192 bytes: exactly 64 MiB growth. With the shared
+stream both peaks were 42,467,328 bytes, unchanged at a 64 MiB PHP limit and with output buffering disabled. Each
+request used a fresh worker. A private overlay of the old controller at the 64 MiB limit emitted 200 and promised
+67,108,864 bytes, then failed allocation and delivered 2,493 error-body bytes; that is an incomplete response,
+not a clean 500. The bounded route completed the same transfer at that limit. This measures the local adapter and
+these runtime configurations; it does not certify that every remote adapter opens a stream without buffering.
+
+Dedicated staff tests pin bounded writes, HEAD closure, checked filenames, failed opens and authorization before
+storage I/O. Removed scope, view Gate, availability, key, original-controller, chunk and recorded-size guards each
+fail the focused tests in isolated mutations. Browser checks use the actual panel route and dashboard outside
+`/c/{type}`. The recorded size still caps output; detecting a shorter or longer opened file remains #253. This
+amendment adds no range support, reader access, storage backend or default-install service requirement.
+
 ---
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
