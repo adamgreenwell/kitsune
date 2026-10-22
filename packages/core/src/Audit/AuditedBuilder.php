@@ -23,6 +23,8 @@ use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaWithdrawal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
+use Kitsune\Core\Schema\FieldStorageWrites;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
@@ -130,17 +132,16 @@ class AuditedBuilder extends ScopedBuilder
 
         $model = $this->getModel();
 
-        // ⚠️ Conversion happens HERE, not in a `saving` listener, because this is the
-        // path a quiet save cannot skip. See `Entry::convertFieldValuesForWrite()`.
-        $values = $model->convertFieldValuesForWrite($values);
+        return TransactionRecovery::run($this->auditedConnection(), function () use ($values, $sequence, $model) {
+            $fields = FieldStorageWrites::lockTypes($this->auditedConnection(), isset($values['entry_type_id']) ? [$values['entry_type_id']] : []);
+            $values = $model->convertFieldValuesForWrite($values, $fields[(int) ($values['entry_type_id'] ?? 0)] ?? new Collection);
+            $this->guardScopeKeys($values);
+            $this->refuseNoncanonicalStatus($values);
+            $this->refuseUnpermittedCreationAsPublished($values);
+            $this->refuseSlugOnSharedInsert($values);
 
-        $this->guardScopeKeys($values);
-        $this->refuseNoncanonicalStatus($values);
-        $this->refuseUnpermittedCreationAsPublished($values);
-        $this->refuseSlugOnSharedInsert($values);
-
-        return DB::transaction(function () use ($values, $sequence, $model) {
             $id = parent::insertGetId($values, $sequence);
+            FieldStorageWrites::armEntries($this->auditedConnection(), [$id], $fields);
 
             $target = $model->newInstance([], true);
             $target->forceFill([$model->getKeyName() => $id]);
@@ -353,9 +354,6 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseMisnamedEntryColumns($values);
         $this->refuseNoncanonicalEntryType($values);
 
-        // Same conversion as the insert path, at the same place: the write.
-        $values = $this->getModel()->convertFieldValuesForWrite($values);
-
         $this->guardScopeKeys($values);
         $this->refuseNoncanonicalStatus($values);
         $this->refuseDeletedAtQualifier($values);
@@ -385,8 +383,10 @@ class AuditedBuilder extends ScopedBuilder
         $custody = $this->writesDeletedAt($values) ? new MediaWithdrawal($this->auditedConnection()) : null;
 
         try {
-            return $this->auditing($this->actionFor($values), function (array $keys) use ($values, $custody) {
+            return $this->auditing($this->actionFor($values), function (array $keys, array $fields) use ($values, $custody) {
                 $this->refuseIfTheRowMoved('update');
+                $type = (int) ($values['entry_type_id'] ?? $this->getModel()->entry_type_id);
+                $values = $this->getModel()->convertFieldValuesForWrite($values, $fields[$type] ?? new Collection);
                 $this->refuseRetypeAcrossMediaBoundary($values);
                 $this->refuseSlugOnSharedRows($values);
                 $this->refuseUnpermittedPublication($values);
@@ -1208,7 +1208,7 @@ class AuditedBuilder extends ScopedBuilder
      * registered for a write that never landed; `TransactionRecovery` says what it repairs. The write is handed the keys
      * it is constrained to, so what runs inside it acts on exactly the rows audited.
      *
-     * @param  callable(list<int|string>): mixed  $write
+     * @param  callable(list<int|string>, array<int, \Illuminate\Database\Eloquent\Collection<int, Field>>): mixed  $write
      * @param  array<string, mixed>  $written
      */
     private function auditing(string $action, callable $write, array $written = []): mixed
@@ -1216,7 +1216,7 @@ class AuditedBuilder extends ScopedBuilder
         $model = $this->getModel();
         $connection = $this->auditedConnection();
 
-        return TransactionRecovery::run($connection, function () use ($action, $write, $model, $written): mixed {
+        return TransactionRecovery::run($connection, function (Connection $connection) use ($action, $write, $model, $written): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
             // joined to `entry_relations`, where several rows point at one
             // entry — yields that entry's key once per matching row. The
@@ -1245,12 +1245,23 @@ class AuditedBuilder extends ScopedBuilder
             $base->offset = null;
             $base->limit = null;
 
+            $fields = [];
+            if (Entry::writesFieldData(array_map(fn (string $column): string => $this->bareColumn($column), array_keys($written)))) {
+                $types = $model->newQueryWithoutScopes()->useWritePdo()->whereKey($keys)
+                    ->lockForUpdate()->pluck('entry_type_id')->all();
+                if (isset($written['entry_type_id'])) {
+                    $types[] = $written['entry_type_id'];
+                }
+                $fields = FieldStorageWrites::lockTypes($connection, $types);
+            }
+
             // Raw pre-write state, for the revision comparison below. Read
             // inside the same transaction and after the same lock, so it
             // describes exactly the rows the write is about to change.
             $before = $this->versionedStateOf($keys, $written);
 
-            $result = $write($keys);
+            $result = $write($keys, $fields);
+            FieldStorageWrites::armEntries($connection, $keys, $fields);
 
             $this->recordRevisions($before);
 
