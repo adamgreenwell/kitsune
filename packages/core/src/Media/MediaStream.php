@@ -25,10 +25,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * The steps a private file's delivery takes once a route has decided who is asking — ADR-041, the reader's download
- * route (decisions 1–4, Adam, 2026-10-11). The staff route calls `key()` alone for now; moving it onto the rest, with
- * `filename*`, is a named follow-up.
+ * route (decisions 1–4, Adam, 2026-10-11) and the staff route (#249). Each route owns its authority checks; both share
+ * the bounded stream, checked international filename and canonical key.
  *
- * ⚠️ EVERY REFUSAL DOES THE SAME WORK, AND THAT IS WHY THE LOOKUP IS THREE READS AND NOT ONE. A reader who is refused is
+ * ⚠️ EVERY READER REFUSAL DOES THE SAME WORK, AND THAT IS WHY THE LOOKUP IS THREE READS AND NOT ONE. A reader who is refused is
  * not told why: an id that names nothing, a file offered to nobody, one offered for a name they do not hold, one of a type
  * this site has switched off, another site's, another org's. So the route reads the same three things in the same order
  * whatever the id names — `gatedOnSite()`, `typeEnabled()` and one `holds()` — and when nothing was found it still asks
@@ -37,7 +37,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * for every refusal on SQLite; the decoy removed, 7 for an unknown id). It looks like dead work; it is the rule.
  *
  * ⚠️ NO BYTE IS READ UNTIL THE ANSWER IS YES. `open()` and `present()` touch the disk; a route calls them only after the
- * reader holds the file's name here, so a file whose bytes are missing answers a non-holder exactly as an unknown id does.
+ * reader holds the file's name here, or the staff view Gate has allowed it. A reader's missing file answers a non-holder
+ * exactly as an unknown id does.
  *
  * ⚠️ OPENED BEFORE ANY ANSWER EXISTS, THEN SENT IN 256 KiB CHUNKS. `FilesystemAdapter::response()` opens the stream inside
  * its callback, after the 200 and its headers have gone, so a file that vanished in between is a truncated 200 and an

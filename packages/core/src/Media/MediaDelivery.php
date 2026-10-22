@@ -37,8 +37,8 @@ use Kitsune\Core\Models\Site;
  * reader can never be, so the staff path never pretends to be the reader path. ADR-040's entitlements made the reader's question expressible
  * (`EntitlementCheck::holds()`), and the reader path is a SECOND route with its own context source and that
  * question: `{prefix}/account/downloads/{id}` (ADR-041 decisions 1–4, Adam, 2026-10-11 — `Readers\DownloadController`
- * and `MediaStream`). This one did not change to make room for it, beyond its key check moving to `MediaStream::key()`;
- * the reader's route alone offers a UTF-8 filename (`readerFilenameFor()`) and streams in chunks.
+ * and `MediaStream`). The staff route kept its staff authority checks; #249 moves its bytes onto the same bounded
+ * stream and checked UTF-8 filename (`readerFilenameFor()`) with the ASCII fallback.
  *
  * ⚠️ AND IT IS REGISTERED THROUGH `KitsunePanel`, NOT THROUGH A ROUTE FILE. `skeleton/routes/web.php` records
  * the rule — core registers no routes, because a host application's URL space is its own. The panel is the
@@ -292,7 +292,8 @@ final class MediaDelivery
     }
 
     /**
-     * The name a READER's download is offered under — ADR-041's reader route alone (decisions 1–4, Adam, 2026-10-11): the
+     * The name a private download is offered under — ADR-041's reader route (decisions 1–4, Adam, 2026-10-11), shared by
+     * the staff route since #249: the
      * title as typed, in any script, sent as `filename*` with `filenameFor()`'s slug as the ASCII fallback. A Hebrew or a
      * Japanese title slugs away to `2026.pdf` or `file.pdf` (measured), a poor thing to hand somebody who paid for it.
      *
