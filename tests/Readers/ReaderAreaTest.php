@@ -14,7 +14,9 @@ use Illuminate\Routing\CompiledRouteCollection;
 use Illuminate\Routing\Route as RoutingRoute;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Kitsune\Core\Http\Middleware\IsolateDownload;
 use Kitsune\Core\Http\Middleware\ReaderArea;
+use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Models\Site;
@@ -99,14 +101,28 @@ it('marks every reader route a fallback, registered ahead of the skeleton\'s cat
     // account leaf for fallback precedence so an optional route cannot swallow a panel or host route either.
     $readers = array_filter($accounts, static fn (RoutingRoute $route): bool => str_starts_with($route->getActionName(), 'Kitsune\\Core\\Http\\Controllers\\Readers\\'));
 
-    expect($readers)->toHaveCount(28)
+    expect($readers)->toHaveCount(32)
         ->and(array_filter($accounts, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
         ->and(end($uris))->toBe('GET|HEAD {fallbackPlaceholder}')
         ->and($uris)->toContain('GET|HEAD account', 'GET|HEAD account/sign-in', 'POST account/sign-in', 'POST account/sign-out')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out')
         ->and($uris)->toContain('GET|HEAD account/register', 'POST account/register', 'GET|HEAD account/register/complete', 'POST account/register/complete')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account/recover', 'POST {readerSite}/account/recover', 'GET|HEAD {readerSite}/account/reset', 'POST {readerSite}/account/reset')
-        ->and($uris)->toContain('GET|HEAD account/downloads/{id}', 'GET|HEAD account/downloads/{id}/file', 'GET|HEAD {readerSite}/account/downloads/{id}', 'GET|HEAD {readerSite}/account/downloads/{id}/file');
+        ->and($uris)->toContain('GET|HEAD account/downloads/{id}', 'GET|HEAD account/downloads/{id}/file', 'GET|HEAD {readerSite}/account/downloads/{id}', 'GET|HEAD {readerSite}/account/downloads/{id}/file')
+        ->and($uris)->toContain('GET|HEAD account/downloads', 'GET|HEAD account/downloads/page/{page}', 'GET|HEAD {readerSite}/account/downloads', 'GET|HEAD {readerSite}/account/downloads/page/{page}');
+
+    foreach ([
+        '/account/downloads' => 'account/downloads',
+        '/account/downloads/page/2' => 'account/downloads/page/{page}',
+        '/golfdom/account/downloads' => '{readerSite}/account/downloads',
+        '/golfdom/account/downloads/page/2' => '{readerSite}/account/downloads/page/{page}',
+    ] as $path => $uri) {
+        $route = areaRouteFor('GET', $path);
+        expect($route->uri())->toBe($uri)
+            ->and($route->isFallback)->toBeTrue()
+            ->and($route->gatherMiddleware())->toContain(ResolveSiteFromRequest::class, SetSiteLocale::class, ReaderArea::class.':download', IsolateDownload::class, RequireReader::class)
+            ->not->toContain(ReaderArea::class);
+    }
 });
 
 /*

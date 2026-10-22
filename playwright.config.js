@@ -126,6 +126,12 @@ module.exports = defineConfig({
          * here, since Filament allows five admin sign-ins a minute and the setups spend them.
          */
         {
+            name: 'reader-download-list',
+            testMatch: /reader-download-list\.spec\.js/,
+            // Each reader signs in through the real form; this project owns its disposable fixtures.
+            use: { ...devices['Desktop Chrome'] },
+        },
+        {
             name: 'reader-downloads',
             testMatch: /reader-downloads\.spec\.js/,
             dependencies: ['setup', 'setup-rtl'],

@@ -35,6 +35,7 @@ final class AccountController
         $status = $request->session()->get(SignInController::STATUS);
 
         return ReaderPage::render($site, 'account', 'home.title', [
+            'downloads' => ReaderLinks::downloads($site),
             'email' => $reader->readerEmail(),
             'signOut' => ReaderLinks::path($site, ReaderLinks::SIGN_OUT),
             'status' => in_array($status, self::SHOWN, true) ? $status : null,
