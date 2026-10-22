@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Projection;
@@ -173,7 +174,22 @@ class FieldStorage extends Model implements RefusesCascadingDeletes
     {
         $this->shapeGuarded = false;
 
-        return parent::save($options);
+        return TransactionRecovery::run($this->getConnection(), function () use ($options): bool {
+            if ($this->exists) {
+                $pending = $this->getDirty();
+                $current = $this->newQueryWithoutScopes()->useWritePdo()
+                    ->whereKey($this->getRawOriginal($this->getKeyName()))->lockForUpdate()->first();
+                if ($current !== null) {
+                    // Preserve only this save's pending changes, judged against the locked current definition.
+                    // Recasting encoded JSON through fill() would encode it a second time.
+                    $attributes = $current->getAttributes();
+                    $this->setRawAttributes($attributes, true);
+                    $this->setRawAttributes(array_replace($attributes, $pending));
+                }
+            }
+
+            return parent::save($options);
+        });
     }
 
     /**
@@ -278,14 +294,12 @@ class FieldStorage extends Model implements RefusesCascadingDeletes
     /**
      * Whether the row this instance was loaded from is locked now, read below every builder.
      *
-     * ⚠️ NOT A LOCKING READ, and this does not claim to close the race. A writer that stores a field's first value
-     * and then arms its lock takes no lock on the storage row, so a save between the two can still change the
-     * shape under data that is about to exist. That needs the data writers to lock the row first, which is theirs
-     * to do; this closes the single-threaded case, where the instance was merely stale.
+     * A current read, under the same storage lock the data writer holds (ADR-006, issue #130).
      */
     private function lockedInTheDatabase(): bool
     {
         return (bool) $this->newQueryWithoutScopes()->toBase()
+            ->useWritePdo()->lockForUpdate()
             ->where($this->getKeyName(), $this->getKeyForSaveQuery())
             ->value('is_locked');
     }

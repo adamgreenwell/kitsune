@@ -12,7 +12,7 @@ namespace Kitsune\Core\Relations;
 
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\Pivot;
-use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Entry;
 
 /**
@@ -312,7 +312,7 @@ class GuardedBelongsToMany extends BelongsToMany
     {
         $keys = $this->sourceKeys($id, $attributes);
 
-        return DB::transaction(function () use ($keys, $write): mixed {
+        return TransactionRecovery::run($this->relationConnection(), function () use ($keys, $write): mixed {
             if ($keys !== []) {
                 // withoutGlobalScopes: this is a lock, not a read of anything
                 // that reaches the caller. A source in another scope must
