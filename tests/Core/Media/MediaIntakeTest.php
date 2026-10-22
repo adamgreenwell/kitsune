@@ -23,7 +23,7 @@ use Kitsune\Core\Media\SanitisesSvg;
 /** A real file on disk, because every check reads bytes rather than trusting a name. */
 function fileHolding(string $bytes, string $suffix = ''): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-intake-').$suffix;
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-intake-'.getmypid().'-').$suffix;
     file_put_contents($path, $bytes);
 
     return $path;
@@ -38,7 +38,7 @@ function pngBytes(): string
 }
 
 afterEach(function (): void {
-    foreach (glob(sys_get_temp_dir().'/kitsune-intake-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-intake-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });

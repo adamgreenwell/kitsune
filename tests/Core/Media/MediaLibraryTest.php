@@ -52,14 +52,14 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-lib-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-lib-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function aPng(): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));
@@ -231,7 +231,7 @@ it('removes the bytes it wrote when the rows cannot be committed', function (): 
 
 /** The refusals run before any byte is written, so a refused upload cannot leave a file at all. */
 it('writes nothing at all when the file is refused', function (): void {
-    $script = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $script = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     file_put_contents($script, "<?php echo 'pwned';");
 
     expect(fn () => MediaLibrary::store($script, 'innocent.png', $this->imageType))
@@ -261,7 +261,7 @@ function withSvgSanitiser(): void
 
 function hostileSvg(): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
 
     file_put_contents($path, '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)">'
         .'<script>alert(2)</script>'
@@ -372,7 +372,7 @@ it('leaves no sanitised temporary behind, on success or on failure', function ()
 it('writes nothing when the sanitiser refuses the file', function (): void {
     withSvgSanitiser();
 
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     file_put_contents($path, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
 
     expect(fn () => MediaLibrary::store($path, 'empty.svg', $this->imageType))
@@ -395,7 +395,7 @@ it('writes nothing when the sanitiser refuses the file', function (): void {
 it('refuses an svg over the guarded ceiling, well below the general one', function (): void {
     withSvgSanitiser();
 
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     $padding = str_repeat(' ', MediaIntake::GUARDED_MAX_BYTES + 1);
     file_put_contents($path, '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/>'.$padding.'</svg>');
 
@@ -430,7 +430,7 @@ it('leaves no temporary behind when the re-check refuses the grown file', functi
 
     $before = count(glob(sys_get_temp_dir().'/kitsune-svg-*') ?: []);
 
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     $body = str_repeat('<circle r="1"/>', 100_000);
     file_put_contents($path, '<svg xmlns="http://www.w3.org/2000/svg">'.$body.'</svg>');
 
@@ -455,7 +455,7 @@ it('leaves no temporary behind when the re-check refuses the grown file', functi
 
 function aLocatedJpeg(string $bytes): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-lib-'.getmypid().'-');
     file_put_contents($path, $bytes);
 
     return $path;

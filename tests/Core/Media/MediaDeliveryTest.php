@@ -85,14 +85,14 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-del-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-del-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function aDeliverableImage(EntryType $type, string $visibility = 'private', string $name = 'photo.png', bool $siteOnly = false): Entry
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-del-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-del-'.getmypid().'-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));

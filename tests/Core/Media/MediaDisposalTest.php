@@ -50,14 +50,14 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach (glob(sys_get_temp_dir().'/kitsune-disp-*') ?: [] as $leftover) {
+    foreach (glob(sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-*') ?: [] as $leftover) {
         @unlink($leftover);
     }
 });
 
 function aStoredImage(EntryType $type, string $name = 'photo.png'): Entry
 {
-    $path = tempnam(sys_get_temp_dir(), 'kitsune-disp-');
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-disp-'.getmypid().'-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));
@@ -143,7 +143,7 @@ it('force-deletes an ordinary entry with no media without complaint', function (
  * commits, because withdrawal cannot tell where the file is (ADR-042 decision 5).
  */
 it('completes the force-delete even when the bytes cannot be removed', function (): void {
-    $root = sys_get_temp_dir().'/kitsune-disp-refusing-'.bin2hex(random_bytes(4));
+    $root = sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-refusing-'.bin2hex(random_bytes(4));
     mkdir($root);
     $private = RefusingDisk::install(MediaDisks::PRIVATE, $root);
 
@@ -170,7 +170,7 @@ it('completes the force-delete even when the bytes cannot be removed', function 
  * custody removes no copy through such a disk (review of slice 5c).
  */
 it('asks a served read-through disk only whether it holds the file', function (bool $holds): void {
-    $roots = [sys_get_temp_dir().'/kitsune-disp-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-rtf-'.bin2hex(random_bytes(4))];
+    $roots = [sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-rtf-'.bin2hex(random_bytes(4))];
 
     foreach ($roots as $root) {
         mkdir($root, 0777, true);
@@ -242,7 +242,7 @@ it('erases an entry whose row names a read-through cycle without building it, an
  * hand through the half that holds it, as prune then does (review of slice 5c).
  */
 it('says an erased row\'s copy on a read-through disk is removed by hand, not by prune', function (): void {
-    $roots = [sys_get_temp_dir().'/kitsune-disp-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-rtf-'.bin2hex(random_bytes(4))];
+    $roots = [sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-'.getmypid().'-rtf-'.bin2hex(random_bytes(4))];
 
     foreach ($roots as $root) {
         mkdir($root, 0777, true);
