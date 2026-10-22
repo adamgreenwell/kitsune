@@ -192,9 +192,13 @@ writers must hold the configured storage rows before conversion or field validat
 `is_locked` commit. Arming from a `saved` event after that transaction is insufficient, and quiet saves must use
 the same builder boundary. Existing entry rows are locked first; field and storage sets are locked in key order.
 The product writer takes its existing entry before its schema witness to avoid introducing the reverse order,
-and locks field and storage sets by key before restoring their display order in memory. Early relation model
-guards remain unlocked; the builder repeats them currently after the source entry lock. A queued relation write
-is refused if the winning empty-storage edit changed its strategy to scalar.
+and locks field and storage sets by key before restoring their display order in memory. Ordinary early relation
+model guards remain unlocked; the builder repeats them currently after the source entry lock. An enclosing
+`EntryWriteReads` frame retains its explicitly selected current storage witnesses: reverting those reads to an
+InnoDB consistent-read snapshot can miss a storage row the product writer already holds, or use its old rules.
+These selected witnesses still validate the same connection, transaction and Org/Site frame, and do not change
+ordinary presentation reads. A queued relation write is refused if the winning empty-storage edit changed its
+strategy to scalar.
 
 A storage model save takes that same storage row before running its shape guard. Its pending changes are judged
 against the current locked row, rather than an original that predates another save. Safe presentation changes and

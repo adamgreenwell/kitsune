@@ -201,7 +201,8 @@ class EntryRelation extends Pivot
      * reason. `AuditLog` and `Entry` each got one; `FieldStorage` and this
      * both went without.
      */
-    // Early model-event checks remain unlocked. The builder repeats them after entry then storage locks.
+    // Ordinary early checks remain unlocked; an explicit current-write frame retains its selected witnesses.
+    // The builder repeats every check after entry then storage locks.
     public function guardCreate(bool $locked = false): void
     {
         $this->refuseKeysThatAreNotWholeIds();
@@ -360,7 +361,7 @@ class EntryRelation extends Pivot
          * is refused rather than guessed at: the foreign key would refuse it anyway, after every check had stood
          * aside.
          */
-        $storage = (new FieldStorage)->setConnection($this->getConnectionName())->newQuery()
+        $storage = EntryWriteReads::query((new FieldStorage)->setConnection($this->getConnectionName())->newQuery())
             ->useWritePdo()->whereKey($this->field_storage_id)
             ->when($locked, fn ($query) => $query->lockForUpdate())->first(['id', 'org_id']);
 
@@ -552,7 +553,7 @@ class EntryRelation extends Pivot
     {
         return $this->field_storage_id === null
             ? null
-            : (new FieldStorage)->setConnection($this->getConnectionName())->newQuery()
+            : EntryWriteReads::query((new FieldStorage)->setConnection($this->getConnectionName())->newQuery())
                 ->useWritePdo()->when($locked, fn ($query) => $query->lockForUpdate())->find($this->field_storage_id);
     }
 
