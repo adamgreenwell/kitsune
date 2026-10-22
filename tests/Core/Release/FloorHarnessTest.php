@@ -59,7 +59,10 @@ function floorStubs(
     string $marketingReport = 'Applied marketing-site 1.1.0 into X. 0 indexed.',
     string $marketingStatus = 'applied',
     bool $marketingOwner = true,
+    string $imageExtensions = '{"ext-intl":"8.4.25","ext-zip":"1.22.8"}',
+    int $imageExtensionsExit = 0,
 ): void {
+    $imageExtensionsArgument = escapeshellarg($imageExtensions);
     $platformFailsFlag = $platformFails ? 1 : 0;
     $blogOwnerFlag = $blogOwner ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
@@ -79,6 +82,7 @@ function floorStubs(
     # The image's PHP version, read before Composer resolves; and Composer's own platform check, run in the image.
     case "\$*" in
       *"PHP_VERSION;"*) echo '8.4.25' ; exit 0 ;;
+      *get_loaded_extensions*) printf '%s\\n' $imageExtensionsArgument ; exit $imageExtensionsExit ;;
       *platform_check.php*)
         if [[ "$platformFailsFlag" == 1 ]]; then
           echo 'Composer detected issues in your platform: Your Composer dependencies require the following PHP extensions to be installed: intl, zip.'
@@ -170,6 +174,7 @@ function floorStubs(
       prev=\$arg
     done
     if [[ "\$1" == install ]]; then
+      cp "\$app/composer.json" "$dir/install-composer.json"
       # As a path repository over `../packages/*` installs: one copy per package there — or only the one named.
       echo "packages: \$(cd "\$app/../packages" && ls | tr '\\n' ' ')" >> "$dir/argv.log"
       for pkg in "\$app"/../packages/*/; do
@@ -451,6 +456,51 @@ it('refuses an image that cannot run what was installed, naming what it lacks', 
     expect($run->isSuccessful())->toBeFalse('an image missing required extensions was measured')
         ->and($run->getErrorOutput())->toContain('cannot run the installed application')
         ->and($run->getErrorOutput())->toContain('intl, zip');
+});
+
+it('hands the image extension platform to the installer without ignoring runtime requirements', function (): void {
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $installed = json_decode((string) File::get($this->dir.'/install-composer.json'), true);
+    $argv = (string) File::get($this->dir.'/argv.log');
+
+    // These are the selected image's versions, even when Composer's host cannot load either extension.
+    // An extension the host alone loads must not become an image-derived override.
+    expect($installed['config']['platform'] ?? null)->toBe(['ext-intl' => '8.4.25', 'ext-zip' => '1.22.8'])
+        ->and($argv)->toContain('get_loaded_extensions')
+        ->toContain('platform-check true')
+        ->not->toContain('--ignore-platform-req');
+});
+
+it('refuses unusable image extension information before installing or measuring', function (string $json, int $exit): void {
+    floorStubs($this->dir, imageExtensions: $json, imageExtensionsExit: $exit);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('extension platform')
+        ->and((string) File::get($this->dir.'/argv.log'))->not->toContain('composer install')
+        ->not->toContain('kitsune:benchmark-floor');
+})->with([
+    'probe failed' => ['{}', 7],
+    'not JSON' => ['not-json', 0],
+    'not an object' => ['[]', 0],
+    'a PHP override among the extensions' => ['{"php":"8.4.25"}', 0],
+    'an extension disabled instead of declared present' => ['{"ext-intl":false}', 0],
+    'an empty version' => ['{"ext-intl":""}', 0],
+]);
+
+it('keeps an image extension whose version is unknown declared present at version zero', function (): void {
+    floorStubs($this->dir, imageExtensions: '{"ext-intl":"8.4.25","ext-mysqlnd":"0","ext-zip":"1.22.8"}');
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $installed = json_decode((string) File::get($this->dir.'/install-composer.json'), true);
+
+    expect($installed['config']['platform']['ext-mysqlnd'] ?? null)->toBe('0');
 });
 
 it('installs every package the skeleton requires through one path repository', function (): void {
