@@ -166,15 +166,16 @@ it('never ends a staff session, asks the default guard or logs anything but the 
     }
 
     // ⚠️ ONE LOG LINE IN `ReaderMail`, and it names only the mailer: a mail that cannot be sent after the response. And
-    // TWO IN `MediaStream` (ADR-041): a file's bytes missing, naming the file; a database refusal, naming its SQLSTATE.
+    // THREE IN `MediaStream` (ADR-041): bytes missing or unverified size, naming the file; a database SQLSTATE.
     // None names a reader — and no controller logs at all.
     expect($found)->toBe([])
-        ->and(array_filter($logs))->toBe(['MediaStream.php' => 2, 'ReaderMail.php' => 1])
+        ->and(array_filter($logs))->toBe(['MediaStream.php' => 3, 'ReaderMail.php' => 1])
         ->and(surfaceCode(dirname(__DIR__, 2).'/packages/core/src/Readers/ReaderMail.php'))
         ->toContain("Log::warning(sprintf('A reader email could not be made or sent through the mailer [%s]; the address, the link and the error are not logged.', \$mailer));")
         ->and(surfaceCode(dirname(__DIR__, 2).'/packages/core/src/Media/MediaStream.php'))
         ->toContain("Log::warning(sprintf('A reader\\'s download could not be answered: the database refused (SQLSTATE %s). The reader, the file and the entitlement are not logged.', \$state));")
-        ->toContain("Log::warning(sprintf('Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this entry was refused and its compensation failed, the only copy is on the private disk, where kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, or says what will (ADR-042 decision 5). Otherwise the file was removed outside Kitsune.', (string) \$file->disk, (string) \$file->path, (string) \$entry->getKey(), (string) \$entry->getKey()));");
+        ->toContain("Log::warning(sprintf('Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this entry was refused and its compensation failed, the only copy is on the private disk, where kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back, or says what will (ADR-042 decision 5). Otherwise the file was removed outside Kitsune.', (string) \$file->disk, (string) \$file->path, (string) \$entry->getKey(), (string) \$entry->getKey()));")
+        ->toContain("Log::warning(sprintf('Kitsune could not verify an opened media file against its recorded size: [%s:%s] for entry %s. No success response was sent. Inspect the stored bytes and the media_files row before retrying.', (string) \$file->disk, (string) \$file->path, (string) \$entry->getKey()));");
 });
 
 /*

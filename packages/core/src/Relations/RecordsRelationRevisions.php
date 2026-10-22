@@ -10,10 +10,12 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Relations;
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RevisionWrites;
+use LogicException;
 
 /**
  * Filing a version for a write that changes an entry's relations.
@@ -97,14 +99,16 @@ trait RecordsRelationRevisions
             return $write();
         }
 
-        return DB::transaction(function () use ($sources, $write): mixed {
+        $connection = $this->relationConnection();
+
+        return TransactionRecovery::run($connection, function () use ($sources, $write, $connection): mixed {
             $sources = $sources();
 
             if ($sources !== []) {
                 // withoutGlobalScopes: this is a lock, not a read that reaches a
                 // caller. A source in another scope must still serialise, and a
                 // scoped query that matched nothing would take no lock at all.
-                Entry::query()->withoutGlobalScopes()
+                (new Entry)->setConnection($connection->getName())->newQueryWithoutScopes()
                     ->whereKey($sources)
                     ->lockForUpdate()
                     ->get();
@@ -121,7 +125,7 @@ trait RecordsRelationRevisions
             $before = [];
 
             if ($recording) {
-                $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
+                $entries = (new Entry)->setConnection($connection->getName())->newQueryWithoutScopes()->whereKey($sources)->get();
                 $before = $entries->mapWithKeys(
                     fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
                 )->all();
@@ -137,6 +141,16 @@ trait RecordsRelationRevisions
 
             return $result;
         });
+    }
+
+    private function relationConnection(): Connection
+    {
+        $connection = $this->getQuery()->getConnection();
+        if (! $connection instanceof Connection) {
+            throw new LogicException('Relation writes require a database connection.');
+        }
+
+        return $connection;
     }
 
     /**

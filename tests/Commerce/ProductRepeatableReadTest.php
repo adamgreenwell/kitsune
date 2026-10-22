@@ -139,6 +139,8 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
     $site = (new Site)->newFromBuilder((array) $siteRow);
     $site->setRelation('org', $org);
     app(Context::class)->setSite($site);
+    // The pinned snapshot cannot see the rival's storage; the write's selected current witnesses must find it.
+    expect(FieldStorage::query()->whereKey($imageStorageId)->first())->toBeNull();
 
     try {
         Auth::guard('web')->setUser($owner);
@@ -182,6 +184,8 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
             ->and(json_decode($connection->table('entry_revisions')->where('entry_id', $entry->id)->orderByDesc('id')->lockForUpdate()->value('relation_state'), true))->toBe([(string) $imageStorageId => [(int) $imageB]])
             ->and((bool) $connection->table('field_storage')->where('id', $imageStorageId)->lockForUpdate()->value('is_locked'))->toBeTrue()
             ->and(Field::query()->count())->toBe(0)
+            // InnoDB exposes our own arming update; untouched Field/Entry/Site rows still use the old snapshot.
+            ->and(FieldStorage::query()->whereKey($imageStorageId)->first()?->is_locked)->toBeTrue()
             ->and(Entry::query()->whereKey($imageB)->first())->toBeNull()
             ->and($connection->table('sites')->where('id', $siteId)->count())->toBe(0);
         $initial = $connection->table('entry_revisions')->where('entry_id', $entry->id)->orderBy('id')->lockForUpdate()->first();

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tests\Fixtures;
 
+use Closure;
 use Illuminate\Filesystem\LocalFilesystemAdapter;
 use League\Flysystem\UnableToReadFile;
 
@@ -23,6 +24,12 @@ final class StaffMediaStreamDisk extends LocalFilesystemAdapter
     /** @var resource|null */
     public $opened = null;
 
+    /** A test's real stream resource, including a PSR-7 wrapper with unavailable metadata. */
+    public ?Closure $factory = null;
+
+    /** Runs after opening, before the controller can inspect or answer with the handle. */
+    public ?Closure $afterOpen = null;
+
     public function readStream($path)
     {
         $this->opens++;
@@ -35,6 +42,12 @@ final class StaffMediaStreamDisk extends LocalFilesystemAdapter
             return false;
         }
 
-        return $this->opened = parent::readStream($path);
+        $this->opened = $this->factory === null ? parent::readStream($path) : ($this->factory)($path);
+
+        if ($this->afterOpen !== null) {
+            ($this->afterOpen)($this->opened, $path);
+        }
+
+        return $this->opened;
     }
 }

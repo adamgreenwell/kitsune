@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Database\EntryWriteReads;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedRelationBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -200,13 +201,16 @@ class EntryRelation extends Pivot
      * reason. `AuditLog` and `Entry` each got one; `FieldStorage` and this
      * both went without.
      */
-    public function guardCreate(): void
+    // Ordinary early checks remain unlocked; an explicit current-write frame retains its selected witnesses.
+    // The builder repeats every check after entry then storage locks.
+    public function guardCreate(bool $locked = false): void
     {
         $this->refuseKeysThatAreNotWholeIds();
-        $this->guardStorageOwnership();
+        $this->guardStorageOwnership($locked);
         $this->guardEndpointsVisible();
-        $this->guardCardinality();
-        $this->guardTargetType();
+        $this->guardStorageStrategy($locked);
+        $this->guardCardinality($locked);
+        $this->guardTargetType($locked);
     }
 
     /**
@@ -315,7 +319,7 @@ class EntryRelation extends Pivot
      * is not a field of that particular type — defensible, but a behavioural
      * change with no security gain, so it is stated rather than smuggled in.
      */
-    private function guardStorageOwnership(): void
+    private function guardStorageOwnership(bool $locked = false): void
     {
         if ($this->field_storage_id === null) {
             return;
@@ -357,7 +361,9 @@ class EntryRelation extends Pivot
          * is refused rather than guessed at: the foreign key would refuse it anyway, after every check had stood
          * aside.
          */
-        $storage = EntryWriteReads::query(FieldStorage::query())->whereKey($this->field_storage_id)->first(['id', 'org_id']);
+        $storage = EntryWriteReads::query((new FieldStorage)->setConnection($this->getConnectionName())->newQuery())
+            ->useWritePdo()->whereKey($this->field_storage_id)
+            ->when($locked, fn ($query) => $query->lockForUpdate())->first(['id', 'org_id']);
 
         if ($storage === null) {
             throw new RuntimeException(sprintf(
@@ -393,7 +399,7 @@ class EntryRelation extends Pivot
             return;
         }
 
-        FieldStorage::query()
+        (new FieldStorage)->setConnection($this->getConnectionName())->newQuery()
             ->whereKey($this->field_storage_id)
             ->where('is_locked', false)
             ->update(['is_locked' => true]);
@@ -411,9 +417,9 @@ class EntryRelation extends Pivot
      * `GuardedRelationBuilder` calls it again inside the locked transaction. The
      * early call stays: it is what refuses an ordinary move without opening one.
      */
-    public function guardCardinality(): void
+    public function guardCardinality(bool $locked = false): void
     {
-        $storage = $this->storage();
+        $storage = $this->storage($locked);
 
         if ($storage === null || $storage->cardinality < 1) {
             // -1 is the explicit unlimited.
@@ -505,9 +511,9 @@ class EntryRelation extends Pivot
         return null;
     }
 
-    private function guardTargetType(): void
+    private function guardTargetType(bool $locked = false): void
     {
-        $storage = $this->storage();
+        $storage = $this->storage($locked);
 
         if ($storage === null) {
             return;
@@ -543,10 +549,33 @@ class EntryRelation extends Pivot
         }
     }
 
-    private function storage(): ?FieldStorage
+    private function storage(bool $locked = false): ?FieldStorage
     {
         return $this->field_storage_id === null
             ? null
-            : EntryWriteReads::query(FieldStorage::query())->find($this->field_storage_id);
+            : EntryWriteReads::query((new FieldStorage)->setConnection($this->getConnectionName())->newQuery())
+                ->useWritePdo()->when($locked, fn ($query) => $query->lockForUpdate())->find($this->field_storage_id);
+    }
+
+    /** A writer queued against an empty definition must honor a winning change of storage strategy. */
+    private function guardStorageStrategy(bool $locked): void
+    {
+        $storage = $this->storage($locked);
+        if ($storage !== null && $storage->strategy() !== StorageStrategy::Relational) {
+            throw new RuntimeException('Only relational field storage can hold a relation.');
+        }
+    }
+
+    /** Recheck the definition after the builder has acquired its storage lock. @internal */
+    public function guardCurrentStorageForWrite(): void
+    {
+        if ($this->isDirty('field_storage_id')) {
+            $this->guardStorageOwnership(true);
+        }
+        $this->guardStorageStrategy(true);
+        $this->guardCardinality(true);
+        if ($this->isDirty(['field_storage_id', 'target_entry_id'])) {
+            $this->guardTargetType(true);
+        }
     }
 }

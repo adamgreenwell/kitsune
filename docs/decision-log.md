@@ -185,6 +185,36 @@ The driver fails closed on an unknown engine, because falling back to a probably
 
 **What it does not claim.** The lock is not taken with a row lock. A writer that stores a field's first value and then arms the lock takes no lock on the storage row, so a shape change saved between the two still lands on a field about to hold data. Closing that needs the data writers to lock the storage row before they write, which is a change to them rather than to this guard. And below Eloquent — `toBase()`, `DB::table()` — nothing here stands, as ADR-020 already says of the audit.
 
+### Amendment — first data and storage shape share a transaction, 2026-10-22
+
+**Decision, issue #130.** The preceding limitation remains as the reason for this change. Scalar and relation
+writers must hold the configured storage rows before conversion or field validation and until both the data and
+`is_locked` commit. Arming from a `saved` event after that transaction is insufficient, and quiet saves must use
+the same builder boundary. Existing entry rows are locked first; field and storage sets are locked in key order.
+The product writer takes its existing entry before its schema witness to avoid introducing the reverse order,
+and locks field and storage sets by key before restoring their display order in memory. Ordinary early relation
+model guards remain unlocked; the builder repeats them currently after the source entry lock. An enclosing
+`EntryWriteReads` frame retains its explicitly selected current storage witnesses: reverting those reads to an
+InnoDB consistent-read snapshot can miss a storage row the product writer already holds, or use its old rules.
+These selected witnesses still validate the same connection, transaction and Org/Site frame, and do not change
+ordinary presentation reads. A queued relation write is refused if the winning empty-storage edit changed its
+strategy to scalar.
+
+A storage model save takes that same storage row before running its shape guard. Its pending changes are judged
+against the current locked row, rather than an original that predates another save. Safe presentation changes and
+acceptance widening remain allowed. Empty values remain `null`, `''` and `[]`; zero and false are data. Only
+configured fields actually holding data are armed, and existing bulk-write refusals remain in force.
+
+These are locks on the write's own connection. They supply neither scope nor authorization, and do not require
+an Org/Site frame for legitimate internal/global writes. A database lock timeout, deadlock or failed transaction
+refuses the operation; transaction recovery preserves the existing failure contract rather than retrying arbitrary
+observer or filesystem effects. SQLite serializes writers and does not acquire a row lock from `FOR UPDATE`.
+The change adds no service or worker to the resource floor. Raw SQL remains outside the Eloquent guarantee.
+
+Independent-connection engine tests and the ordinary conversion, relation, revision and scope controls qualify
+this amendment; their measured results belong beside the implementation handoff. This is not a retained-data
+upgrade policy or a claim to reconstruct historical field definitions (#217).
+
 ---
 
 ## ADR-007 — Migration: a source-agnostic adapter framework
@@ -7409,6 +7439,51 @@ storage I/O. Removed scope, view Gate, availability, key, original-controller, c
 fail the focused tests in isolated mutations. Browser checks use the actual panel route and dashboard outside
 `/c/{type}`. The recorded size still caps output; detecting a shorter or longer opened file remains #253. This
 amendment adds no range support, reader access, storage backend or default-install service requirement.
+
+---
+
+### Amendment — the opened file's size, #253, 2026-10-22
+
+The earlier stream's output cap remains a last bound, not a preflight integrity check. Both staff and reader byte
+routes now require the size of the opened handle to agree with `size_bytes` before constructing a successful response.
+The check runs under `MediaCustody::locked()`, entry first and file second, on the entry's own connection; SQLite takes
+custody's existing write fence. A file whose custody coordinates, visibility, offer or recorded bytes changed since
+the route's authority check is refused rather than silently opened using a new snapshot. The already-authorized entry
+must still have its loaded Org, Site and type. Existing staff and reader authority stays at its original route boundary.
+That scoped reread uses the writer and a current locking read of the already-held entry. An enclosing host transaction
+may already hold an older repeatable-read snapshot: on MySQL a plain reread admitted the old Org, Site and type after
+a rival committed each change. The locking reread refuses those moves; PostgreSQL can refuse earlier with a
+serialization error when custody first locks the changed row. Neither refusal opens a disk stream.
+
+The opened stream must report a regular-file integer size through `fstat()`, successfully rewind its actual object to
+offset zero, and have a readable mode; the stored size must be canonical and nonnegative. A failed open, stat or reset,
+unknown size, unreadable handle or size disagreement closes the handle and receives the
+route's ordinary missing-file refusal before success headers or body. No pathname `size()` or separate object-store
+HEAD substitutes for the handle's own size. A nonseekable stream, or a disk unable to establish this capability, is refused; a real remote
+adapter is not qualified merely because a synthetic stream supports it. HEAD performs the same check, then closes
+immediately. The database fence is released before the existing 256 KiB body loop; it does not last for a download.
+
+**Amended 2026-10-22 — a wrapper's mode is not its underlying capability (review of #253).** The mode check above
+remains necessary for native resources. For a Guzzle-wrapped PSR-7 stream it is not sufficient: an adapter can open
+the wrapper as `r+` around an object whose `isReadable()` is false. The preflight also checks the PSR-7 object held
+by that opened resource's context and refuses an absent or unreadable object. This asks its capability without
+reading or buffering a byte. Both GET and HEAD regression cases reproduced an erroneous 200 before this check;
+the ordinary `StreamWrapper::getResource()` already chooses `w` for an unreadable, writable object, so the regression
+opens the wrapper explicitly with the misleading mode instead of claiming that helper does so.
+
+A replacement before open is checked as the opened object. Replacing a pathname after open cannot substitute its new
+bytes for the checked handle. This is a length check, not a content checksum or a snapshot of mutable external
+storage: same-length corruption, in-place mutation after the check and later I/O failure remain residuals. The output
+cap and closing `finally` remain for those later failures. This does not check files served directly by a web server.
+
+**Measured.** The authenticated panel route on PHP-FPM 8.5.10 with the real local Flysystem adapter returned exact
+1 KiB and 64 MiB bodies and SHA-256 hashes. Fresh workers peaked at 42,467,328 bytes for both sizes: no growth, with
+4 KiB output buffering at both 256 MiB and 64 MiB limits, and with buffering disabled at 64 MiB. Shorter, longer,
+unreadable and differently sized replacement files returned 404 before file-response headers for GET and HEAD.
+The existing #249 measurements above remain visible. Synthetic Guzzle PSR-7 wrapper tests additionally establish
+stat/reset capability, unknown-size and nonseekable refusal, and correcting an already-consumed underlying object;
+they are not qualification of a deployed remote adapter. Successful reader file GETs remain bounded by fifteen SQL
+statements in the engine regression suite; the existing unauthorized eight-read comparisons remain unchanged.
 
 ---
 

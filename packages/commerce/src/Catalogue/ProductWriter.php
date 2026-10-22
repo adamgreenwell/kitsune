@@ -117,10 +117,11 @@ final class ProductWriter
                 ?? throw new RuntimeException('The product is not available in this org.');
             $commerce['stock'] = $current->stock;
         }
-        $schema = $this->schemaWitness($type);
-        $actor = $this->actorWitness();
         $listing = $id === null ? null : $this->listing($id, $type);
         $entry = $listing?->entry()->useWritePdo()->lockForUpdate()->first() ?? new Entry;
+        // Existing entries precede their field/storage locks, as on the scalar and relation write paths.
+        $schema = $this->schemaWitness($type);
+        $actor = $this->actorWitness();
 
         if (! $entry->exists) {
             $entry->forceFill(['entry_type_id' => $type->getKey()]);
@@ -390,7 +391,7 @@ final class ProductWriter
     /** @return list<Field> */
     private function fields(EntryType $type): array
     {
-        $fields = $type->fields()->lockForUpdate()->with(['fieldStorage' => static fn ($query) => $query->lockForUpdate()])->orderBy('ordering')->get()->all();
+        $fields = $type->fields()->lockForUpdate()->with(['fieldStorage' => static fn ($query) => $query->orderBy('id')->lockForUpdate()])->orderBy('id')->get()->sortBy('ordering')->values()->all();
 
         foreach ($fields as $field) {
             if (! $field->fieldStorage instanceof FieldStorage) {

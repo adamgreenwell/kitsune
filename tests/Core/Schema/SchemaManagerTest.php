@@ -38,6 +38,15 @@ use Kitsune\Core\Tenancy\Context;
  */
 
 beforeEach(function (): void {
+    // DDL ends MySQL/MariaDB's real transaction. End the test wrapper before fixtures are written,
+    // rather than letting the next guarded data/shape write mistake a stale Laravel level for a lock.
+    // The explicit teardown below owns these committed fixtures. PostgreSQL/SQLite retain their wrapper.
+    if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+        DB::rollBack();
+        expect(DB::connection()->transactionLevel())->toBe(0)
+            ->and(DB::connection()->getPdo()->inTransaction())->toBeFalse();
+    }
+
     $this->manager = new SchemaManager(new FieldTypeRegistry);
 
     $this->orgA = Org::create(['name' => 'A', 'slug' => 'schema-a']);

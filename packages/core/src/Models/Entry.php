@@ -223,7 +223,7 @@ class Entry extends Model implements RequiresModelSave
         // that refuses a decimal-to-integer change or a narrowed text field
         // was reachable only by a caller who had remembered to set the flag
         // by hand. A lock nobody arms is a comment.
-        static::saved(fn (self $entry) => $entry->lockStorageHoldingData());
+        // Arming now belongs to the builder's write transaction (ADR-006, issue #130), including quiet saves.
 
         // A revision per saved version, recorded AFTER the write.
         //
@@ -252,16 +252,15 @@ class Entry extends Model implements RequiresModelSave
         // snapshot. A version has to be recorded under the lock that made the
         // write atomic.
         //
-        // Every update — instance, quiet, or bulk — is therefore recorded inside
-        // the builder's transaction. `created` stays here because an insert has
-        // no prior state to race with, and the builder covers the quiet case.
+        // Every update — instance, quiet, or bulk — and the initial revision are recorded
+        // inside the builder's transaction. Storage arming lives there too, before commit.
     }
 
     /**
      * Lock every storage row this entry now holds data for.
      *
-     * Cheap once it has done its work: the query returns nothing as soon as a
-     * type's fields are locked, which is the steady state. Written in bulk so
+     * Definitions have already been locked and read by the writer. Once they
+     * are armed, this returns without another data read. Written in bulk so
      * it does not re-enter FieldStorage's own guards, which have nothing to
      * check here — `is_locked` is not a shape attribute.
      *
@@ -271,12 +270,11 @@ class Entry extends Model implements RequiresModelSave
      * unlocked forever while holding content — the same emptiness the lock
      * had before anything set it, narrowed rather than fixed.
      */
-    private function lockStorageHoldingData(): void
+    /** @param Collection<int, Field> $fields @internal */
+    public function armFieldStorageForWrite(Collection $fields): void
     {
-        $candidates = EntryWriteReads::query(FieldStorage::query())
-            ->where('is_locked', false)
-            ->whereHas('fields', fn (Builder $query) => EntryWriteReads::query($query)->where('entry_type_id', $this->entry_type_id))
-            ->get();
+        $candidates = $fields->map(fn (Field $field) => $field->fieldStorage)
+            ->filter(fn (?FieldStorage $storage): bool => $storage !== null && ! $storage->is_locked)->unique('id');
 
         if ($candidates->isEmpty()) {
             return;
@@ -299,7 +297,8 @@ class Entry extends Model implements RequiresModelSave
         // In bulk, so this does not re-enter FieldStorage's own guards —
         // which have nothing to check here, `is_locked` not being a shape
         // attribute.
-        FieldStorage::query()->whereKey($holding->modelKeys())->update(['is_locked' => true]);
+        (new FieldStorage)->setConnection($this->getConnectionName())->newQuery()
+            ->whereKey($holding->pluck('id')->all())->update(['is_locked' => true]);
     }
 
     /** An empty string or an empty array is not data any more than null is. */
@@ -2357,6 +2356,12 @@ class Entry extends Model implements RequiresModelSave
         return $columns;
     }
 
+    /** @param list<string> $columns @internal */
+    public static function writesFieldData(array $columns): bool
+    {
+        return array_intersect($columns, ['values', 'entry_type_id', ...self::promotableColumns(app(FieldTypeRegistry::class))]) !== [];
+    }
+
     /** Whether this write touches any column a field type could have promoted into. */
     private function touchesPromotedColumn(FieldTypeRegistry $registry): bool
     {
@@ -2889,9 +2894,10 @@ class Entry extends Model implements RequiresModelSave
      * every write for nothing.
      *
      * @param  array<string, mixed>  $values  Raw column values, as the builder has them.
+     * @param  Collection<int, Field>|null  $lockedFields  Current definitions held by the builder's write transaction.
      * @return array<string, mixed>
      */
-    public function convertFieldValuesForWrite(array $values): array
+    public function convertFieldValuesForWrite(array $values, ?Collection $lockedFields = null): array
     {
         $this->retainedOriginals = [];
 
@@ -3106,7 +3112,7 @@ class Entry extends Model implements RequiresModelSave
             $encoded = true;
         }
 
-        foreach (EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
+        foreach ($lockedFields ?? EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
 
             if ($storage === null || ! $registry->has((string) $storage->type)) {

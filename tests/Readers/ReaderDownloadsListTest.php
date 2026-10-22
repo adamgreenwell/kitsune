@@ -14,6 +14,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Lottery;
 use Illuminate\Support\Once;
 use Kitsune\Core\Entitlements\EntitlementRead;
 use Kitsune\Core\Media\MediaDisks;
@@ -72,7 +73,14 @@ it('shows only current authorized offers and never probes disk or links directly
     listOffer('Unrelated malformed title', 'COURSE.held');
     Storage::shouldReceive('disk')->never();
 
-    $body = listBody();
+    // The list must not probe storage. The separate post-response intake sweep has its own forced-win/loss tests.
+    Lottery::alwaysLose();
+
+    try {
+        $body = listBody();
+    } finally {
+        Lottery::determineResultNormally();
+    }
     expect($body)->toContain('My &lt;private&gt; report', '/golfdom/account/downloads/'.$id, '<bdi>')
         ->not->toContain('Unheld confidential', 'Public title', 'Shared title', 'Other Site title', 'Other Org title',
             'Trashed title', 'Unrelated malformed', 'course.held', 'never-read', '/file', 'application/pdf');
