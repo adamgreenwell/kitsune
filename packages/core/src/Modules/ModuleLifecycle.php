@@ -238,7 +238,9 @@ final class ModuleLifecycle
         $manifest = self::manifest($handle);
         $version = self::version($handle);
 
-        if ($receipt->version === $version) {
+        $sameVersion = $receipt->version === $version;
+
+        if ($sameVersion && ! self::isDevelopmentVersion($version)) {
             self::invalidateRouteCache($app);
 
             return "{$handle} is already at {$version}.";
@@ -248,6 +250,22 @@ final class ModuleLifecycle
         self::verify($manifest, $handle);
 
         self::migrate($app, self::provider($app, $manifest));
+
+        if ($sameVersion) {
+            /*
+             * A development branch can gain migrations without gaining a version. Its ledger is the schema
+             * witness; saving an identical receipt adds no schema evidence and is deliberately avoided.
+             */
+            self::withinTransaction($receipt->getConnection(), function () use ($app, $handle, $version): void {
+                if (self::lockedReceipt($handle)->version !== $version) {
+                    throw new RuntimeException("{$handle}'s receipt changed during its development upgrade. Inspect the installation and retry.");
+                }
+
+                self::invalidateRouteCache($app);
+            });
+
+            return "{$handle} is already at {$version}. Pending development migrations were checked; its enabled switch is unchanged.";
+        }
 
         $was = '';
         self::withinTransaction($receipt->getConnection(), function () use ($app, $handle, $version, &$was): void {
@@ -262,6 +280,12 @@ final class ModuleLifecycle
         });
 
         return "Upgraded {$handle} from {$was} to {$version}.";
+    }
+
+    /** Composer owns these spellings: named branches use dev-*, numeric development branches end in -dev. */
+    private static function isDevelopmentVersion(string $version): bool
+    {
+        return str_starts_with(strtolower($version), 'dev-') || str_ends_with(strtolower($version), '-dev');
     }
 
     /**
