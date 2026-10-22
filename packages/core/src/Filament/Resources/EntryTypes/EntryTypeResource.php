@@ -283,7 +283,7 @@ class EntryTypeResource extends Resource
      *
      * ⚠️ OWNER-ONLY, AND THE LIMITATION IS REAL. `architecture.md` publishes a vocabulary of five actions on
      * ENTRIES and nothing else, so there is no `schema.manage` to ask for — and inventing one widens the
-     * extension surface, which Standing Principle #1 keeps shut until v1.2. So an org cannot delegate schema
+     * extension surface, which Standing Principle #2 keeps shut until v1.2. So an org cannot delegate schema
      * editing without making somebody an owner. That is written here and in the roadmap rather than left to
      * be discovered.
      *

@@ -250,9 +250,11 @@ Not to be discouraging — just so nobody wastes an afternoon:
 - **Anything contradicting a decision log entry** without amending the ADR first
 - **A model without a tenancy declaration**
 - **The Exhibit B notice**, anywhere
-- **A new public API surface before v1.2.** The extension API is intentionally unstable; broadening it early is how ecosystems get broken later (Standing Principle #1)
+- **A new public API surface before v1.2.** The extension API is intentionally unstable; broadening it early is how ecosystems get broken later (Standing Principle #2)
 
   ⚠️ **Amended 2026-09-20 by [ADR-038](docs/decision-log.md): the Phase 3 module kernel is a named exception, and a narrow one.** ADR-011 puts the module *system* inside v1.0 while deferring the plugin SDK and the API freeze to v1.2, so building it is authorised and making it a public contract is not. Three symbols a module can reach — a base service provider and two enable/disable events — plus one `@internal` admin seam. It is first-party only: there is no third-party validation, tenancy audit or allowlist before v1.2/v1.4, so nothing outside this repository may rely on it, and 0.x carries no stability promise (Phase 6). Anything wider than that still won't be merged. ⚠️ The "(Standing Principle #1)" citation above is also **misrouted**, here and in ten other places: the v1.2 clause lives in Standing Principle **#2**. The rule is settled project law either way; repointing the citations is an ADR amendment of its own, not an edit to make in passing
+
+  **Amended 2026-10-22 ([ADR-033 citation amendment](docs/decision-log.md#citation-amendment--2026-10-22-issue-258)):** the active citations now point to Principle #2. The earlier notice above preserves why the correction required an amendment; the first-party exceptions and freeze are unchanged.
 
   ⚠️ **Amended 2026-10-02 by [ADR-039](docs/decision-log.md): one more named exception** — `Kitsune\Core\Auth\Contracts\ProvisionsMembership`, the interface the host's user model implements so core can create the first owner without naming the host's columns or pivots. Three methods; first-party only before v1.2, on ADR-038's footing; 0.x carries no stability promise
 
