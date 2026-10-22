@@ -20,6 +20,7 @@ use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Modules\ModuleLifecycle;
 use Kitsune\Fixture\Module\FixtureModuleServiceProvider;
+use Symfony\Component\Process\Process;
 
 /** The fixture is installed by Composer; only the temporary schema supplied by its provider changes. */
 const DEVELOPMENT_MODULE = 'kitsune/fixture-module';
@@ -377,4 +378,123 @@ it('checks a schema-free development package without replaying its install hook 
         ->and(Schema::hasTable('fixture_dev_upgrade_rows'))->toBeFalse()
         ->and(is_file(app()->getCachedRoutesPath()))->toBeFalse()
         ->and(FixtureModuleServiceProvider::$calls)->toBe([]);
+});
+
+/** @param list<string> $tokens @return array<string, mixed> */
+function developmentColdProbe(string $temporary, string $mode, array $tokens = []): array
+{
+    $root = dirname(__DIR__, 3);
+    $process = new Process([PHP_BINARY, $root.'/tests/Core/Fixtures/ModuleColdCommandProbe.php', $root, $temporary, $mode, ...$tokens], $root);
+    $process->setTimeout(30);
+    $process->mustRun();
+
+    return json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+}
+
+it('upgrades an enabled development module before runtime boot on an actual fresh Artisan process', function (array $options): void {
+    $temporary = $this->developmentDirectory.'/cold';
+    mkdir($temporary, 0700);
+    try {
+        $seed = developmentColdProbe($temporary, 'seed');
+        expect($seed['status'])->toBe(0)->and($seed['receipt']['is_enabled'])->toBeIn([true, 1, '1']);
+        developmentPendingMigration($temporary.'/migrations');
+        $normal = developmentColdProbe($temporary, 'command', ['list']);
+        expect($normal['status'])->toBe(1)->and($normal['calls'])->toBe(['register', 'boot'])
+            ->and($normal['output'])->toContain('development_note');
+
+        $tokens = [...$options, 'kitsune:module', 'upgrade', DEVELOPMENT_MODULE];
+        $upgrade = developmentColdProbe($temporary, 'command', $tokens);
+        expect($upgrade['status'])->toBe(0, $upgrade['output'])->and($upgrade['calls'])->toBe([])
+            ->and($upgrade['maintenanceReads'])->toBe(0)->and($upgrade['column'])->toBeTrue()
+            ->and($upgrade['receipt'])->toBe($seed['receipt'])->and($upgrade['rows'][0]['name'])->toBe('retained cold content')
+            ->and($upgrade['rows'][0]['generation'])->toBe(1)->and($upgrade['pendingRecorded'])->toBe(1);
+        $repeat = developmentColdProbe($temporary, 'command', $tokens);
+        expect($repeat['status'])->toBe(0)->and($repeat['receipt'])->toBe($seed['receipt'])
+            ->and($repeat['rows'][0]['generation'])->toBe(1)->and($repeat['pendingRecorded'])->toBe(1);
+        $normal = developmentColdProbe($temporary, 'command', ['list']);
+        expect($normal['status'])->toBe(0, $normal['output'])->and($normal['calls'])->toBe(['register', 'boot']);
+    } finally {
+        expect(developmentColdProbe($temporary, 'cleanup'))->toBe(['cleaned' => true]);
+    }
+})->with([[[]], [['--env', 'testing', '--no-interaction']], [['--quiet', '--env=testing']]]);
+
+it('keeps every canonical lifecycle action cold while core still handles its arguments', function (array $tokens, int $status, bool $migrated, bool $enabled): void {
+    $temporary = $this->developmentDirectory.'/cold';
+    mkdir($temporary, 0700);
+    try {
+        $seed = developmentColdProbe($temporary, 'seed');
+        expect($seed['status'])->toBe(0);
+        developmentPendingMigration($temporary.'/migrations');
+        $result = developmentColdProbe($temporary, 'command', $tokens);
+        expect($result['status'])->toBe($status, $result['output'])->and($result['calls'])->toBe([])
+            ->and($result['maintenanceReads'])->toBe(0)->and($result['column'])->toBe($migrated)
+            ->and((bool) $result['receipt']['is_enabled'])->toBe($enabled)
+            ->and($result['receipt']['version'])->toBe($seed['receipt']['version'])
+            ->and($result['rows'][0]['name'])->toBe('retained cold content');
+    } finally {
+        expect(developmentColdProbe($temporary, 'cleanup'))->toBe(['cleaned' => true]);
+    }
+})->with([
+    'default status' => [['kitsune:module'], 0, false, true],
+    'status' => [['kitsune:module', 'status'], 0, false, true],
+    'install' => [['kitsune:module', 'install', DEVELOPMENT_MODULE], 1, false, true],
+    'enable' => [['kitsune:module', 'enable', DEVELOPMENT_MODULE], 0, false, true],
+    'disable' => [['kitsune:module', 'disable', DEVELOPMENT_MODULE], 0, false, false],
+    'uninstall refusal' => [['kitsune:module', 'uninstall', DEVELOPMENT_MODULE], 1, false, true],
+    'unknown action' => [['kitsune:module', 'nonsense'], 1, false, true],
+    'missing package' => [['kitsune:module', 'upgrade'], 1, false, true],
+    'trailing globals' => [['kitsune:module', '--env', 'testing', 'upgrade', DEVELOPMENT_MODULE, '--no-ansi'], 0, true, true],
+    'end of options' => [['--', 'kitsune:module', 'upgrade', DEVELOPMENT_MODULE], 0, true, true],
+]);
+
+it('does not infer a cold lifecycle operation from unrelated console input or a web boot', function (string $mode, array $tokens): void {
+    $temporary = $this->developmentDirectory.'/cold';
+    mkdir($temporary, 0700);
+    try {
+        $seed = developmentColdProbe($temporary, 'seed');
+        expect($seed['status'])->toBe(0);
+        developmentPendingMigration($temporary.'/migrations');
+        $result = developmentColdProbe($temporary, $mode, $tokens);
+        expect($result['status'])->toBe(1)->and($result['calls'])->toBe(['register', 'boot'])
+            ->and($result['output'])->toContain('development_note');
+    } finally {
+        expect(developmentColdProbe($temporary, 'cleanup'))->toBe(['cleaned' => true]);
+    }
+})->with([
+    'ordinary console' => ['command', ['list']],
+    'no console command' => ['command', []],
+    'argument value' => ['command', ['list', 'kitsune:module']],
+    'separate option value' => ['command', ['--env', 'kitsune:module', 'list']],
+    'joined option value' => ['command', ['--env=kitsune:module', 'list']],
+    'unsupported abbreviation' => ['command', ['kitsune:mod', 'upgrade', DEVELOPMENT_MODULE]],
+    'malformed global option' => ['command', ['--unknown-global', 'kitsune:module']],
+    'web ignores console argv' => ['web', ['kitsune:module', 'upgrade', DEVELOPMENT_MODULE]],
+]);
+
+it('verifies a cold enabled development package before migration and recovers without booting its runtime', function (): void {
+    $temporary = $this->developmentDirectory.'/cold';
+    mkdir($temporary, 0700);
+    try {
+        $seed = developmentColdProbe($temporary, 'seed');
+        expect($seed['status'])->toBe(0);
+        developmentPendingMigration($temporary.'/migrations');
+        $path = $temporary.'/package/composer.json';
+        $original = file_get_contents($path);
+        $manifest = json_decode($original, true, flags: JSON_THROW_ON_ERROR);
+        $manifest['extra']['kitsune']['scoping'] = ['site'];
+        file_put_contents($path, json_encode($manifest, JSON_THROW_ON_ERROR));
+        $tokens = ['kitsune:module', 'upgrade', DEVELOPMENT_MODULE];
+        $refused = developmentColdProbe($temporary, 'command', $tokens);
+        expect($refused['status'])->toBe(1)->and($refused['calls'])->toBe([])
+            ->and($refused['maintenanceReads'])->toBe(0)->and($refused['column'])->toBeFalse()
+            ->and($refused['pendingRecorded'])->toBe(0)->and($refused['receipt'])->toBe($seed['receipt'])
+            ->and($refused['output'])->toContain('Unscoped');
+        file_put_contents($path, $original);
+        $retry = developmentColdProbe($temporary, 'command', $tokens);
+        expect($retry['status'])->toBe(0, $retry['output'])->and($retry['calls'])->toBe([])
+            ->and($retry['column'])->toBeTrue()->and($retry['pendingRecorded'])->toBe(1)
+            ->and($retry['receipt'])->toBe($seed['receipt']);
+    } finally {
+        expect(developmentColdProbe($temporary, 'cleanup'))->toBe(['cleaned' => true]);
+    }
 });

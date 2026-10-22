@@ -3872,6 +3872,23 @@ and checks the resulting schema, ledger, content, receipt and absent runtime hoo
 and numeric development spellings, stable/prerelease controls, verification/migration/cache failures and retry.
 Native engine qualification is recorded separately from the default fresh-schema suite.
 
+The first implementation exercised the lifecycle inside an already booted test application. Review exposed a
+missing earlier boundary: on a fresh console process an enabled equal-version provider could register and boot
+before Artisan reached upgrade, and fail while reading its newly introduced column. The real command reproduced
+that failure with retained rows. The lifecycle's unregistered migration provider alone did not make the process cold.
+
+The fully spelled `php artisan kitsune:module` command now declines all module runtime registration and retained-data
+command declarations during application booting, before reading receipts. This covers status and every lifecycle
+action, including malformed actions that must still reach core's argument handling. Core's own command registration
+remains available. Symfony's global-option parser, including Laravel's `--env`, identifies the exact canonical
+command; option values containing that name and unrelated commands do not select this boundary. The command has
+no declared aliases. Symfony abbreviations, host-added aliases, nested calls and `Artisan::call()` in an already
+booted process are not supported cold entry points: use the full command in a new process. The boundary never
+checks pending migrations or fingerprints arbitrary module source on a web request or ordinary console boot.
+An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
+that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
+data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
 **Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Amended 2026-10-04 — the merge, as built**: a later version may only add, and one new pre-flight refusal; see the end of this entry · **Amended 2026-10-04 — Marketing Site 1.1.0, as built**: a meta description, and ADR-030's second condition met; see the end of this entry · **Amended 2026-10-05 — the reverse, as built**: one action on the existing command, removing only what a blueprint created and nothing holds data or authority for; see the end of this entry · **Amended 2026-10-05 — the DAM, as built**: `EntryTypeDeclaration` gains `isMedia` and the manifest one key, the first declaration parameter and manifest key since 2026-10-02; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the

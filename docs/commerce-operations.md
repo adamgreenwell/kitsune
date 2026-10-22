@@ -25,6 +25,14 @@ An upgrade may already have applied schema migrations before cache clearing fail
 and retry rather than editing the receipt. A version-changing upgrade keeps its old, stale receipt until success;
 a same-version development upgrade deliberately leaves the receipt's version and timestamps unchanged.
 
+Run lifecycle operations using the full `php artisan kitsune:module ...` command in a **new process**. That
+canonical console entry point keeps enabled module runtime providers and retained-data command declarations cold
+until core has handled the operation. Normal global options such as `--env=testing` are supported before or after
+the command. The command declares no aliases; abbreviations, host aliases and already booted `Artisan::call()` or
+direct lifecycle calls do not provide this preboot boundary. After upgrade, a subsequent ordinary process boots
+runtime normally. This is particularly important when a new development migration adds a column that enabled
+runtime code immediately reads.
+
 For a development checkout still reporting the same `dev-main`, another `dev-*` branch or a numeric `*-dev`
 version, run the ordinary verified upgrade command after updating its code:
 
