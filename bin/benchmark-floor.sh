@@ -133,9 +133,9 @@ if [[ -n "$lock" ]]; then
   cp "$lock" "$app/composer.lock"
 fi
 
-# ⚠️ RESOLVED FOR THE IMAGE'S PHP, NOT THIS HOST'S. Composer runs here, and left alone it resolves against this
-# machine's PHP — so a host on 8.5 measuring an 8.4 image could install an 8.5-only release that then fails in the
-# container, and a lock valid for a newer image could be refused here (Codex, #126).
+# ⚠️ RESOLVED FOR THE IMAGE'S PHP, NOT THIS HOST'S. Fresh resolution runs inside that image too (#320), so host-only
+# extensions cannot influence fresh resolution. The image-derived overrides remain in the recorded lock: a
+# re-check installs that graph and lets the actual in-image runtime check refuse an incompatible interpreter.
 # Only pinning PHP still refused an install when the image provided intl/zip but Composer's host did not (#128).
 # Add the image's present extensions too, never host-derived absent/false overrides. Ignoring ext-* instead removes
 # those requirements from Composer's generated runtime check — measured with Composer 2.10.3. Platform overrides
@@ -185,6 +185,25 @@ composer config -d "$app" platform-check true >/dev/null
 
 composer config -d "$app" repositories.kitsune-packages \
   '{"type":"path","url":"../packages/*","options":{"symlink":false}}' >/dev/null
+
+if [[ -z "$lock" ]]; then
+  # The official image supplies only pinned tool bytes, never the resolver's interpreter. Do not disable
+  # host-only extensions in config.platform: that makes the recorded lock depend on which host ran it.
+  # Resolve without installing, then let the host install EXACTLY that lock. Keeping extraction on the
+  # host also lets a recorded graph reach platform_check.php in an image lacking intl/zip, as before.
+  composer_image=composer:2.10.3@sha256:b6dcd72ca98fa19d0e5b8476de179859704891fad06dd9e0b96833d4c430a5fc
+  docker run --rm --network none --entrypoint /bin/cat "$composer_image" /usr/bin/composer > "$work/composer.phar" \
+    || refuse "could not export the pinned Composer binary"
+  [[ -s "$work/composer.phar" ]] || refuse "the pinned Composer binary was empty"
+  if ! docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -e COMPOSER_HOME=/work/composer-home \
+    -v "$work":/work -w /work/skeleton "$image" php /work/composer.phar update --no-install \
+    --no-dev --no-interaction --no-scripts --no-plugins > "$work/resolve.log" 2>&1; then
+    tail -20 "$work/resolve.log" >&2
+    refuse "dependency resolution failed in [$image]"
+  fi
+  [[ -f "$app/composer.lock" ]] || refuse "image resolution left no composer.lock"
+fi
+
 if ! composer install -d "$app" --no-dev --no-interaction --prefer-dist --optimize-autoloader \
   --no-scripts >"$work/install.log" 2>&1; then
   tail -20 "$work/install.log" >&2
