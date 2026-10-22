@@ -11523,6 +11523,9 @@ When it lands:
   migration it has already recorded. Each of those changes is therefore absent from any database migrated before it.
   ADR-042 adds `is_media` by a new migration for this reason; whether earlier changes need the same, and whether
   in-place edits stop before v1.0, is undecided
+  The [schema upgrade baseline audit](schema-upgrade-baseline-audit.md) inventories full-graph and main-history
+  shapes, remote tags and recorded installation evidence. It selects no supported origin or migration policy
+  and supplies no retained-data upgrade proof; #217 remains open for those decisions and implementation.
 - **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
   `client_max_body_size` is not one, and stage's PHP upload limits are recorded nowhere; a real 4 MB upload settles
   it. ~~Nothing runs `schedule:run` either, which ADR-042's intake sweep needs.~~ Nothing runs `schedule:run` either,
