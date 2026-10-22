@@ -11,6 +11,7 @@ declare(strict_types=1);
 use App\Models\Reader;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
+use Illuminate\Database\DeadlockException;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Filesystem\LocalFilesystemAdapter;
@@ -394,7 +395,9 @@ it('sends a holder the bytes as stored, with exactly the file headers', function
         ->and($document['response']->headers->get('Content-Length'))->toBe((string) strlen(DL_PDF))
         ->and($document['response']->headers->get('Content-Type'))->toBe('application/pdf')
         ->and($document['response']->headers->get('Content-Disposition'))->toBe("attachment; filename=annual-report-2026.pdf; filename*=utf-8''Annual%20report%202026.pdf")
-        ->and($document['queries'])->toBe(9);
+        // The existing custody fence: one SQLite write and three bounded snapshot reads after authority.
+        ->and($document['queries'])->toBeLessThanOrEqual(15)
+        ->and($document['queries'])->toBeGreaterThanOrEqual(12);
 
     dlHasFileHeaders($document['response']);
 
@@ -960,6 +963,80 @@ it('answers a holder whose file has lost its bytes with the 404 and one line, an
             ->and($logged)->toBe([])
             ->and(RefusingDisk::$log)->toBe([]);
     }
+});
+
+it('refuses a holder whose opened file has changed length before GET or HEAD succeeds', function (string $method, string $bytes): void {
+    $held = dlOffer(dlStore('golfdom', 'Held'));
+    dlGrant('golfdom');
+    dlSignIn();
+    $refused = dlCall('GET', dlPage(999999))['body'];
+    Storage::disk(MediaDisks::PRIVATE)->put(dlRow($held)->path, $bytes);
+    $call = null;
+    $logged = dlLogged(function () use ($method, $held, &$call): void {
+        $call = dlCall($method, dlFile($held));
+    });
+
+    expect($call['status'])->toBe(404)
+        ->and($call['body'])->toBe($method === 'HEAD' ? '' : $refused)
+        ->and($call['response']->headers->has('Content-Disposition'))->toBeFalse()
+        ->and($logged)->toHaveCount(1)
+        ->and($logged[0][1])->toContain('could not verify an opened media file against its recorded size')
+        ->and($logged[0][1])->not->toContain('subscriber@kitsune.test', DL_HELD);
+})->with(['GET', 'HEAD'])->with(['shorter' => 'x', 'longer' => str_repeat('x', 100)]);
+
+it('refuses an offer withdrawn between its authorized row read and the custody fence without opening bytes', function (): void {
+    $held = dlOffer(dlStore('golfdom'));
+    dlGrant('golfdom');
+    dlSignIn();
+    $changed = false;
+    DB::listen(static function (QueryExecuted $query) use ($held, &$changed): void {
+        if (! $changed && preg_match('/\bfrom\s+[`"]?media_files[`"]?/i', $query->sql) === 1) {
+            $changed = true;
+            DB::table('media_files')->where('entry_id', $held->getKey())->update(['reader_entitlement' => null]);
+        }
+    });
+
+    RefusingDisk::forgetLog();
+    $call = dlCall('GET', dlFile($held));
+
+    expect($changed)->toBeTrue()
+        ->and($call['status'])->toBe(404)
+        ->and(RefusingDisk::$log)->toBe([]);
+});
+
+it('answers a custody lock refusal with the private 503 and closes no successful body', function (): void {
+    $held = dlOffer(dlStore('golfdom'));
+    dlGrant('golfdom');
+    dlSignIn();
+    Exceptions::fake();
+    $failing = true;
+    $refusals = 0;
+    DB::connection()->beforeExecuting(static function (string $query) use (&$failing, &$refusals): void {
+        if ($failing && preg_match('/select\s+[`"]?id[`"]?,\s*[`"]?deleted_at[`"]?\s+from\s+[`"]?entries[`"]?/i', $query) === 1) {
+            $refusals++;
+            throw new DeadlockException('SQLSTATE[40001]: private lock diagnostic');
+        }
+    });
+    RefusingDisk::forgetLog();
+    $call = null;
+
+    try {
+        $logged = dlLogged(function () use ($held, &$call): void {
+            $call = dlCall('GET', dlFile($held));
+        });
+    } finally {
+        $failing = false;
+    }
+
+    expect($refusals)->toBe(1)
+        ->and($call['status'])->toBe(503)
+        ->and($call['body'])->not->toContain('private lock diagnostic')
+        ->and($call['response']->headers->has('Content-Disposition'))->toBeFalse()
+        ->and($logged)->toHaveCount(1)
+        ->and($logged[0][1])->toContain('SQLSTATE 40001')
+        ->and(RefusingDisk::$log)->toBe([])
+        ->and(dlCall('GET', dlFile($held))['body'])->toBe(DL_PDF);
+    Exceptions::assertNothingReported();
 });
 
 it('reads a disk that throws as one without the bytes: the 404 and one line, never a 500', function (): void {

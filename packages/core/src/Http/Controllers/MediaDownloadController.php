@@ -123,7 +123,7 @@ final class MediaDownloadController
          * with its ASCII fallback. It reads this row's disk/path, including custody's private fallback and legacy
          * disks, and retains the missing-bytes warning before refusing a failed open (ADR-041, #249).
          */
-        $handle = MediaStream::open($entry, $file);
+        $handle = MediaStream::openCurrent($entry, $file);
 
         if ($handle === null) {
             abort(404);

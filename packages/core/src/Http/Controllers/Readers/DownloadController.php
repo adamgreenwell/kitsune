@@ -25,6 +25,7 @@ use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Readers\ReaderPage;
 use Kitsune\Core\Tenancy\Context;
+use PDOException;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -108,7 +109,11 @@ final class DownloadController
         [$entry, $file] = $found;
 
         // ⚠️ AFTER THE YES, as the page's check is: a non-holder causes no disk read.
-        $handle = MediaStream::open($entry, $file);
+        try {
+            $handle = MediaStream::openCurrent($entry, $file);
+        } catch (PDOException $refused) {
+            return $this->unavailable($site, ReaderAccounts::sqlstate($refused));
+        }
 
         if ($handle === null) {
             return $this->refused($site);
