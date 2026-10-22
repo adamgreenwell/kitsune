@@ -2066,8 +2066,8 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 ⚠️ **Amended 2026-10-06 (ADR-040's admin):** owner-only in v1.0 now also covers setting, replacing and removing an
 org's credentials and switching it between test and live mode. Still no subject: `credential.manage` would be refused
-by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
-#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
+by `Permissions::allows()` even for an owner. **Historical citation notice (superseded 2026-10-22):** ~~The v1.2 clause this paragraph and the next cite as "Standing Principle
+#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.~~
 
 ⚠️ **Amended 2026-10-07 (ADR-040's entitlements page):** owner-only in v1.0 also covers listing who holds what on a
 site, giving a comp, revoking one source and reading a row's history. Still no subject: `entitlement.manage` would be
