@@ -288,12 +288,15 @@ jobs:
 
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:diagnostics
       - run: npx playwright test
 
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           # One name per PHP version: a second upload under the same name conflicts.
-          name: playwright-report-php-${{ matrix.php }}
-          path: playwright-report/
+          # Only whitelisted attempt metadata is exported, including successful retries (#278).
+          # HTML reports and traces can contain credentials, session cookies and request bodies.
+          name: playwright-diagnostics-php-${{ matrix.php }}
+          path: playwright-diagnostics/summary.json
           retention-days: 7
