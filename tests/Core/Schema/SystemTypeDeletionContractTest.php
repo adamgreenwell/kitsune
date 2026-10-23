@@ -40,6 +40,8 @@ function deletionContractType(bool $system, ?int $orgId, string $handle = 'contr
 
 function deleteContractType(EntryType $type, string $door): mixed
 {
+    // The locked Laravel 13.30.1 defines forceDestroy/forceDelete on Model without SoftDeletes.
+    // Keep the direct calls: a pre-constrained builder would hide unsafe instance forwarding.
     return match ($door) {
         'model' => $type->delete(),
         'quiet' => $type->deleteQuietly(),
@@ -62,10 +64,16 @@ dataset('entry type deletion doors', [
 
 it('allows programmatic deletion of an unused type regardless of its descriptive flag', function (bool $system, bool $global, string $door): void {
     $type = deletionContractType($system, $global ? null : $this->org->id);
+    $bystanders = [
+        deletionContractType($system, $this->org->id, 'kept_own_type'),
+        deletionContractType($system, $this->rival->id, 'kept_rival_type'),
+        deletionContractType($system, null, 'kept_global_type'),
+    ];
 
     deleteContractType($type, $door);
 
-    expect(EntryType::query()->whereKey($type->id)->exists())->toBeFalse();
+    expect(EntryType::query()->whereKey($type->id)->exists())->toBeFalse()
+        ->and(EntryType::query()->whereKey(array_map(fn (EntryType $row): int => $row->id, $bystanders))->count())->toBe(3);
 })->with([false, true])->with([false, true])->with('entry type deletion doors');
 
 it('preserves a type and all referenced data through every guarded delete door', function (bool $system, string $reference, string $door): void {
