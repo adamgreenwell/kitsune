@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Kitsune\Core\Http\Middleware\ReaderArea;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderMailbox;
 
@@ -229,7 +230,7 @@ it('asks for the password twice, under the address a password manager saves it f
         ->and($dom->query('//label[@for="password_confirmation"]')->item(0)?->textContent)->toBe('Type the same password again')
         ->and($password?->getAttribute('type'))->toBe('password')
         ->and($password?->getAttribute('autocomplete'))->toBe('new-password')
-        ->and($password?->getAttribute('aria-describedby'))->toBe('password-hint')
+        ->and($password?->getAttribute('aria-describedby'))->toBe('password-hint password-requirements')
         ->and($dom->query('//p[@id="password-hint"]')->item(0)?->textContent)->toBe('At least 15 characters. A few words in a row is easy to remember and hard to guess.')
         ->and($again?->getAttribute('type'))->toBe('password')
         ->and($again?->getAttribute('autocomplete'))->toBe('new-password')
@@ -240,7 +241,7 @@ it('asks for the password twice, under the address a password manager saves it f
 
     $refused = pagesDom((string) $this->readerPost('/golfdom/account/reset', ['password' => 'a different long password', 'password_confirmation' => 'something else'])->assertStatus(422)->getContent());
 
-    expect($refused->query('//input[@id="password"]')->item(0)?->getAttribute('aria-describedby'))->toBe('password-hint')
+    expect($refused->query('//input[@id="password"]')->item(0)?->getAttribute('aria-describedby'))->toBe('password-hint password-requirements')
         ->and($refused->query('//input[@id="password_confirmation"]')->item(0)?->getAttribute('aria-describedby'))->toBe('password_confirmation-error')
         ->and($refused->query('//input[@id="password_confirmation"]')->item(0)?->getAttribute('aria-invalid'))->toBe('true')
         ->and($refused->query('//input[@type="password"][@value]')->length)->toBe(0)
@@ -255,6 +256,33 @@ it('says the minimum configured in the hint', function (): void {
 
     $this->readerGet('/golfdom/account/reset')->assertOk()->assertSeeText('At least 20 characters.');
 });
+
+it('offers local password feedback only on live password-choice forms, with the exact script pinned by CSP', function (string $purpose): void {
+    config(['kitsune.passwords.min_characters' => 20]);
+    ReaderFixture::mode($this->world['golfdom'], 'open');
+    if ($purpose === 'recover') {
+        ReaderFixture::reader($this->world['golfdom'], 'subscriber@kitsune.test');
+    }
+    $this->readerPost('/golfdom/account/'.$purpose, ['email' => 'subscriber@kitsune.test'])->assertStatus(303);
+    $this->readerGet((string) ReaderMailbox::link())->assertStatus(303);
+    $path = '/golfdom/account/'.($purpose === 'recover' ? 'reset' : 'register/complete');
+
+    foreach ([$this->readerGet($path)->assertOk(), $this->readerPost($path, ['password' => 'short', 'password_confirmation' => 'short'])->assertStatus(422)] as $response) {
+        $dom = pagesDom((string) $response->getContent());
+        $scripts = $dom->query('//script');
+        expect($scripts->length)->toBe(1);
+        $script = $scripts->item(0);
+        expect($script?->hasAttribute('src'))->toBeFalse();
+        $hash = base64_encode(hash('sha256', $script?->textContent ?? '', true));
+        $response->assertHeader('Content-Security-Policy', ReaderArea::HEADERS['Content-Security-Policy']."; script-src 'sha256-".$hash."'");
+        expect($dom->query('//*[@data-password-feedback]')->item(0)?->getAttribute('data-min'))->toBe('20')
+            ->and($dom->query('//*[@data-password-feedback]')->item(0)?->getAttribute('data-max-bytes'))->toBe('72')
+            ->and($dom->query('//*[@id="password-strength-announcement"][@role="status"][@aria-live="polite"]')->length)->toBe(1)
+            ->and($dom->query('//input[@type="password"][@value]')->length)->toBe(0);
+    }
+    $this->readerGet('/golfdom/account/sign-in')->assertDontSee('data-password-feedback', false)
+        ->assertHeader('Content-Security-Policy', ReaderArea::HEADERS['Content-Security-Policy']);
+})->with(['recover', 'register']);
 
 it('shows the address a link is for as text, never as markup', function (): void {
     ReaderFixture::mode($this->world['golfdom'], 'open');
