@@ -50,7 +50,7 @@ The early audience is people who currently install CMS plugins by uploading a zi
 
 ## ADR-001 — Extensibility: layered kernel + runtime schema engine
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23** — the schema engine remains in core (#257)
 
 Thin module kernel (registry, hooks, service providers, auth/RBAC, audit) with the runtime schema engine as the flagship first-party module. Developers extend with PHP; non-developers build with the schema engine.
 
@@ -65,6 +65,36 @@ Thin module kernel (registry, hooks, service providers, auth/RBAC, audit) with t
 **Carried risk — query cost.** Drupal core issue #3022864 (open since Dec 2018) documents entity queries with 27+ redundant joins: 1.3s on MySQL 5.7, 13.4s on MariaDB 10.4, one production query at **697 seconds before timeout**. Mitigated by ADR-006 + ADR-010.
 
 **Carried risk — a blank entity builder is not a product.** Drupal spent ~10 years discovering this, then shipped Drupal CMS 1.0 with "Recipes." **Kitsune ships Blueprints in v1.0.**
+
+### Amendment — The schema engine stays in core, 2026-10-23 (#257)
+
+The original "flagship first-party module" description above is retained as the proposal it was. **The runtime
+schema engine stays in `kitsune/core`, available without a module receipt or switch.** PHP modules remain the
+developer extension path; schema configuration and blueprints remain the non-developer path. The two audiences
+do not require two independently optional packages.
+
+This resolves a mismatch with the implementation, rather than extracting code to make the old description true.
+The [dependency and lifecycle assessment](schema-engine-boundary.md) measured two candidate file sets: Fields plus
+Schema has 36 files and 69 incoming explicit imports from 22 files; including the six content models has 42 files
+and 142 incoming imports from 48 files. These are lower bounds, not a complete dependency graph or an effort
+estimate. Permissions and content models depend on each other; core owns the schema migrations, registry binding,
+Entry policy and blueprint mechanism. Moving files does not make those consumers optional.
+
+Fresh local applications resolved all 12 field types and SchemaManager before any module was installed, and with
+disabled, stale or missing module packages. Core was refused by the module install/disable/uninstall doors.
+The real Person lifecycle retained content on disable and refused uninstall while content existed; repeating
+already-applied core migrations preserved every row. These are SQLite observations, not a native-engine DDL
+recovery claim. The measured console boot used development dependencies on the local host, not the resource floor.
+
+A mandatory Composer split would leave the engine required while adding packaging and migration-ownership work;
+no independent release or installation requirement has been established for it. An optional module would also need
+defined admission for every dependent consumer, continued access to retained content and privacy operations while
+disabled or stale, missing-package recovery, and an upgrade path for already-recorded core migrations. Those are
+new behaviors, not the effect of a package move. No extraction prototype, migration transfer, alternative performance
+benchmark or person-day estimate is claimed here. Retaining core changes none of those behaviors and needs no
+data conversion. **Extraction is not selected, so no implementation follow-ups are opened.** Reopening this decision
+requires a concrete consumer need and a measured install/upgrade/disable/retained-data/recovery design, including
+ADR-038's existing partial-DDL limits. Bare-clone SQLite and the 1 vCPU / 1 GB floor remain requirements (ADR-024/027).
 
 ---
 
@@ -3918,6 +3948,22 @@ checks pending migrations or fingerprints arbitrary module source on a web reque
 An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
 that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
 data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
+### Amendment — The built-in schema engine is outside the module lifecycle, 2026-10-23 (#257)
+
+[ADR-001's amendment](#amendment--the-schema-engine-stays-in-core-2026-10-23-257) withdraws the unimplemented
+first-party-module packaging claim. The engine remains part of core, whose ordinary Laravel provider loads its
+migrations and binds the field registry independently of the kernel's receipts. It is not a module exempted from
+this ADR's manifest or scope checks: it has no module identity to admit. Person and other packages that use it are
+still modules and must satisfy every check here.
+
+No core migration is moved, renamed or replayed, and no engine receipt is synthesized for existing installations.
+Disablement and uninstall keep their existing meanings for actual modules, including retained data and their own
+refusal hooks. The transaction and partial-DDL recovery limitations above remain unchanged. A future optional
+engine would have to specify how dependent modules and retained content behave when its runtime is unavailable;
+the current kernel does not supply that contract merely by discovering a package.
+
+---
 
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
@@ -11686,9 +11732,6 @@ When it lands:
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
   admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
   to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
-- **ADR-001 and the README call the runtime schema engine "the flagship first-party module", and it is not one** — it
-  lives inside `kitsune/core`, booted unconditionally. ADR-038 did not resolve this. Either it is extracted once the
-  kernel can carry it, or ADR-001 is amended to say it stayed in core and why
 - **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
   wrong everywhere it appears, and repointing it is an amendment rather than a sweep
