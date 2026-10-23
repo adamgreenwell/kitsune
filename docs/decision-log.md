@@ -2902,6 +2902,18 @@ job.
   the interrupted command returns (read), so a flag set after the rename could still say "not activated" once the
   rename had happened. That Forge's own activation behaves the same is inferred until the first alpha deploy.
 
+⚠️ **Amended 2026-10-23 — final caches must see the migrated admission schema (#264).** Keep the original
+pre-migration cache and serving check: it still refuses a broken release before any schema write. A new
+module-admission table can be absent in an existing installation, however, so fail-closed boot excludes modules
+while that first cache is built. Both the native release script and isolated Coolify startup therefore rebuild
+the five explicit caches and repeat the serving check after migration, before accepting the release. The old
+two-post-migration-step claim above no longer describes every possible failure: this extra build can fail after
+the database changed, and rollback still does not undo migrations. No missing admission table is treated as
+permission to register modules. A disposable fresh-application route-cache test measures the omitted enabled
+module route, its continued absence after migration alone, and its recovery after the final cache rebuild;
+the release-script fixture executes and verifies both cache/serving passes. This is local qualification, not
+a deployment or authorization to activate either environment.
+
 ### Rejected
 
 | Rejected | Why it lost |
@@ -3851,6 +3863,11 @@ uninstall. Process loss or a failed reset leaves the marker: install and all oth
 runtime and retained-data command registration decline even a planted enabled receipt, and status reports
 incomplete uninstall with a failing command exit even when no installed receipt remains. A missing/unreadable
 marker table fails closed; core migrations must precede module admission after this upgrade.
+
+The marker-table migration refuses rollback while any incomplete uninstall remains, so rollback/reapply cannot
+erase the admission guard. A failed guard read also refuses rollback. ADR-035's additive cache amendment keeps
+the pre-migration serving check and requires a final cache rebuild after migration; otherwise an upgrade could
+retain routes built while the new admission table was absent.
 
 The recovery decision is a complete consistent pre-uninstall backup restore with matching code/assets and
 quiescent writers, not automatic execution of arbitrary broken `down()` again. The marker has no force-clear

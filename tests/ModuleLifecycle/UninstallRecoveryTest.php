@@ -77,6 +77,47 @@ afterEach(function (): void {
     (new Filesystem)->deleteDirectory($this->uninstallDirectory);
 });
 
+it('refuses core rollback while an incomplete uninstall remains and preserves admission guards', function (): void {
+    ModuleLifecycle::install(app(), UNINSTALL_PACKAGE);
+    file_put_contents($this->uninstallDirectory.'/fail-down', 'owned failure switch');
+    expect(fn () => ModuleLifecycle::uninstall(app(), UNINSTALL_PACKAGE))
+        ->toThrow(RuntimeException::class, 'uninstall is incomplete');
+    $migration = require __DIR__.'/../../packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php';
+
+    expect(fn () => $migration->down())->toThrow(RuntimeException::class, 'incomplete uninstall');
+    expect(Schema::hasTable('module_uninstalls'))->toBeTrue()
+        ->and(ModuleUninstall::query()->count())->toBe(1);
+    expect(fn () => ModuleLifecycle::install(app(), UNINSTALL_PACKAGE))
+        ->toThrow(RuntimeException::class, 'uninstall is incomplete');
+});
+
+it('permits core rollback and reapply only with an empty uninstall marker table', function (): void {
+    $migration = require __DIR__.'/../../packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php';
+    $migration->down();
+    expect(Schema::hasTable('module_uninstalls'))->toBeFalse();
+    $migration->up();
+    expect(Schema::hasTable('module_uninstalls'))->toBeTrue()
+        ->and(ModuleUninstall::query()->count())->toBe(0);
+});
+
+it('refuses core rollback when the retained marker query cannot be read', function (): void {
+    ModuleUninstall::create(['handle' => UNINSTALL_PACKAGE, 'version' => ModuleDiscovery::version(UNINSTALL_PACKAGE), 'started_at' => now()]);
+    $migration = require __DIR__.'/../../packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php';
+    $refuse = true;
+    DB::connection()->beforeExecuting(static function (string $sql) use (&$refuse): void {
+        if ($refuse && str_contains($sql, 'module_uninstalls')) {
+            throw new RuntimeException('Owned rollback guard query failure');
+        }
+    });
+    try {
+        expect(fn () => $migration->down())->toThrow(RuntimeException::class, 'Owned rollback guard query failure');
+    } finally {
+        $refuse = false;
+    }
+    expect(Schema::hasTable('module_uninstalls'))->toBeTrue()
+        ->and(ModuleUninstall::query()->count())->toBe(1);
+});
+
 it('records failed reset after committing receipt removal and blocks every lifecycle retry', function (): void {
     expect(DB::connection()->transactionLevel())->toBe(0);
     ModuleLifecycle::install(app(), UNINSTALL_PACKAGE);

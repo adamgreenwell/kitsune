@@ -26,6 +26,12 @@ runtime and retained-data command registration even if an enabled receipt is pla
 `Module::isEnabled()` also refuses admission. A marker-query failure cannot be treated as absence: lifecycle
 reads fail, and ordinary kernel boot logs the database failure and registers no modules. Apply core migrations
 before expecting module admission after a code upgrade; a missing marker table is not permission to boot.
+The marker-table migration refuses rollback while any marker remains, and a failed guard query also refuses
+rollback. Core rollback/reapply is not a way to clear an interrupted uninstall.
+
+The native release and isolated Coolify startup keep their pre-migration cache/serving preflight and rebuild
+the explicit caches after migration, followed by another serving check. An old schema without the marker
+table suppresses module boot, so caches built on that schema cannot be the final caches for activation.
 
 This marker is evidence of unfinished work, not an inventory of every table a module might own. Arbitrary
 PHP `down()` methods can lie, omit old files or affect other stores. Core does not infer schema health from
