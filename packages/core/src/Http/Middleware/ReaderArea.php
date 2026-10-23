@@ -12,10 +12,13 @@ namespace Kitsune\Core\Http\Middleware;
 
 use Closure;
 use Filament\Facades\Filament;
+use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response as PageResponse;
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Auth;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Readers\PasswordStrength;
 use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderRoutes;
 use Kitsune\Core\Readers\ReaderTokens;
@@ -37,7 +40,8 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Then `Auth::shouldUse()` the reader guard, so on a reader route `auth()->user()`, `Permissions::currentUser()` and any
  * audit actor are the reader or nobody — never a staff user riding the same session. And on the way out, headers for a
- * page that holds a form for a password: never cached, never framed, never a referrer, no script.
+ * page that holds a form for a password: never cached, never framed, never a referrer, no script except the
+ * password-choice view's hash-pinned local feedback (#301 / ADR-037 amendment).
  *
  * ⚠️ A FILE'S BYTES GET HEADERS OF THEIR OWN — ADR-041, the reader's download route (decisions 1–4, Adam, 2026-10-11).
  * `FILE_HEADERS` in place of `HEADERS`, and only where both say it is a file: the route asked for `download`, and the
@@ -122,6 +126,13 @@ final class ReaderArea
 
         $response = $next($request);
         $headers = $pages === 'download' && $response->headers->has('Content-Disposition') ? self::FILE_HEADERS : self::HEADERS;
+
+        // Only a rendered password-choice view permits the one hash-pinned, local enhancement. Redirects, dead links,
+        // sign-in, downloads and other reader pages keep their original no-script policy (#301 / ADR-037).
+        $original = $response instanceof PageResponse ? $response->getOriginalContent() : null;
+        if ($headers === self::HEADERS && $original instanceof View && $original->name() === 'kitsune::readers.password') {
+            $headers['Content-Security-Policy'] .= '; script-src '.PasswordStrength::source();
+        }
 
         foreach ($headers as $name => $value) {
             $response->headers->set($name, $value);

@@ -124,6 +124,7 @@ test('signs up from the keyboard, end to end — and the link works no more', as
     await expect(page).toHaveTitle('Choose your password — Golfdom');
     await expect(page.getByLabel('Account', { exact: true })).toHaveValue(email);
     await expect(page.getByLabel('Account', { exact: true })).toHaveAttribute('readonly', '');
+    await expect(page.locator('[data-password-feedback]')).toBeVisible();
 
     await page.getByLabel('New password', { exact: true }).focus();
     await page.keyboard.type(CHOSEN);
@@ -249,6 +250,8 @@ test('passes axe on every new page in both colour schemes, and reflows at 320 px
             await page.goto(link);
             // The address a password manager saves under, read-only, legible in either scheme.
             expect(await contrastOf(page.getByLabel('Account', { exact: true }))).toBeGreaterThanOrEqual(4.5);
+            await page.getByLabel('New password', { exact: true }).fill('passwordpasswordpassword');
+            await expect(page.locator('#password-strength')).toContainText('weak pattern');
         }],
         ['a refused password', async () => {
             await page.goto('/golfdom/account/register/complete');
@@ -271,6 +274,104 @@ test('passes axe on every new page in both colour schemes, and reflows at 320 px
             await page.setViewportSize({ width: 320, height: 640 });
             const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
             expect(overflow, `${name} in ${scheme} at 320 px`).toBeLessThanOrEqual(0);
+            if (name === 'the password page') {
+                await page.screenshot({ path: testInfo.outputPath(`password-${scheme}.png`), fullPage: true });
+            }
         }
+    }
+});
+
+test('keeps strength feedback local, textual and quiet, without changing keyboard or pasted values', async ({ page }, testInfo) => {
+    const email = fresh(testInfo, 'strength');
+    await page.goto('/golfdom/account/register');
+    await page.goto(String(mailLink(await ask(page, email))));
+    const password = page.getByLabel('New password', { exact: true });
+    const visual = page.locator('#password-strength');
+    const live = page.locator('#password-strength-announcement');
+    await expect(page.locator('[data-password-feedback]')).toBeVisible();
+    await expect(live).toHaveText('');
+    const requests = [];
+    page.on('request', () => requests.push('request'));
+
+    // fill dispatches the input event password managers and a paste also use; no keyboard filter may rewrite it.
+    for (const [value, message] of [
+        ['tiny', 'too short'],
+        ['passwordpasswordpassword', 'weak pattern'],
+        [' surfing beyond dawn ', 'either end'],
+        ['🌊'.repeat(19), 'over 72 bytes'],
+        [email, 'email address'],
+        ['different words', 'fair estimate'],
+        [CHOSEN, 'stronger estimate'],
+    ]) {
+        await password.fill(value);
+        await expect(visual).toContainText(message);
+        await expect(password).toHaveValue(value);
+    }
+    // A real keyboard burst updates the visual words immediately, not the polite live region per character.
+    await password.fill('tiny');
+    await password.focus();
+    const before = await live.textContent();
+    await page.keyboard.type(' choice');
+    await expect(visual).toContainText('too short');
+    await expect(live).toHaveText(before || '');
+    await page.keyboard.press('Tab');
+    await expect(page.getByLabel('Type the same password again', { exact: true })).toBeFocused();
+    await expect(live).toContainText('too short');
+    await password.fill(CHOSEN);
+    await expect(live).toContainText('stronger estimate');
+    await expect(password).not.toHaveAttribute('value');
+    expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    expect(requests).toEqual([]);
+    await page.evaluate(() => {
+        const unapproved = document.createElement('script');
+        unapproved.textContent = 'window.unapprovedPasswordScript = true';
+        document.body.append(unapproved);
+    });
+    expect(await page.evaluate(() => window['unapprovedPasswordScript'])).toBeUndefined();
+    await axe(page);
+});
+
+test('accepts a generated password change event on reset and still leaves refusal to the server', async ({ page }) => {
+    await page.goto('/golfdom/account/recover');
+    await page.goto(String(mailLink(await ask(page, GOLFDOM2.email))));
+    const password = page.getByLabel('New password', { exact: true });
+    const generated = 'L8v#pZ4^sW2!nJ6@qT9%rB3&';
+    await password.evaluate((input, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, generated);
+    await expect(page.locator('#password-strength')).toContainText('stronger estimate');
+    await expect(password).toHaveValue(generated);
+    await page.getByLabel('Type the same password again', { exact: true }).fill('different');
+    await page.getByRole('button', { name: 'Change my password', exact: true }).click();
+    await expect(page).toHaveTitle('Error: Choose a new password — Golfdom');
+    await expect(page.locator('.summary a')).toHaveText('The two passwords don\'t match.');
+    await expect(page.locator('#password_confirmation-error')).toContainText('The two passwords don\'t match.');
+    await expect(password).toHaveValue('');
+    await expect(page.locator('[data-password-feedback]')).toBeVisible();
+});
+
+test('creates and resets passwords with scripts disabled, retaining all server checks', async ({ browser }, testInfo) => {
+    const context = await browser.newContext({ javaScriptEnabled: false, baseURL: testInfo.project.use.baseURL });
+    const page = await context.newPage();
+    try {
+        for (const purpose of ['register', 'recover']) {
+            const email = purpose === 'register' ? fresh(testInfo, 'noscript') : GOLFDOM2.email;
+            await page.goto(`/golfdom/account/${purpose}`);
+            await page.goto(String(mailLink(await ask(page, email))));
+            await expect(page.locator('[data-password-feedback]')).toBeHidden();
+            await expect(page.locator('#password-hint')).toContainText('At least 15 characters');
+            await expect(page.locator('#password-requirements')).toContainText('72 bytes');
+            for (const value of ['short', CHOSEN]) {
+                await page.getByLabel('New password', { exact: true }).fill(value);
+                await page.getByLabel('Type the same password again', { exact: true }).fill(value);
+                await page.getByRole('button', { name: purpose === 'register' ? 'Create my account' : 'Change my password', exact: true }).click();
+                if (value === 'short') await expect(page).toHaveTitle(/^Error:/);
+                else await expect(page).toHaveURL(/\/golfdom\/account$/);
+            }
+            await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+        }
+    } finally {
+        await context.close();
     }
 });
