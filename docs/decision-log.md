@@ -3741,6 +3741,8 @@ already states.
 `unique(['org_id', 'handle'])` and NULLs compare distinct on every engine, so a global row's handle is claimed
 install-wide. A module taking `name` or `email` unprefixed blocks every later module and every org that wanted them.
 
+**Historical observation — the claim is withdrawn by the following amendment.**
+
 ⚠️ **`is_system` is published as "undeletable" and is enforced nowhere** — it exists as a cast and a column in the
 admin, and `guardCascade()` counts entries and revisions without consulting it. The proving module's type does not
 rely on it; protection comes from `org_id IS NULL`, which `EntryTypeResource::ownsRecord()` already refuses to edit.
@@ -3865,6 +3867,40 @@ still declines without making onboarding depend on a service. This adds no worke
 The narrow command factory is internal until the v1.2 extension freeze. `ReaderAccount` and its erasure contract
 are unchanged. Focused kernel regressions exercise real command invocation with disabled/stale receipts, no
 receipt, invalid declarations and fresh provider boot ordering; full feature qualification remains separate.
+
+### Amendment — system identity is descriptive; deletion protects references, 2026-10-23
+
+**Status:** Amended · issue #256
+
+The earlier `architecture.md` claim that `is_system` means "undeletable" is **withdrawn**, not made into a new
+lock. The flag remains a descriptive system badge. Global visibility and schema-admin protection come from
+`org_id IS NULL`; schema deletion in that admin requires an owner and current-org ownership, for either flag
+value. The bulk action checks authority before reaching `deleteSelected()`, whose job is whole-selection
+ownership checking and atomic deletion, not independent role authorization.
+
+Measured on the default SQLite floor: an unused type with either flag can be deleted through model, quiet,
+eventless, destroy, model force-delete, builder delete/force-delete, projected queries and scope suspension.
+Every one of those doors refuses live or trashed entries and surviving revisions of retyped entries. A global
+type's references in another org are counted too. A mixed admin selection removes nothing if a later row is
+global, belongs to another org or has referenced data. An owner may delete an unused org-owned type regardless
+of the badge; the badge cannot grant a non-owner permission or make a global type org-owned.
+
+This contract preserves the module lifecycle rather than inventing an immutable flag and a second bypass:
+`kitsune/person` sets `is_system` and its supported uninstall removes its unused global type. Making that flag
+an unconditional lock would break uninstall; adding a way around it would need a separate authority contract
+and would not make "undeletable" true. The reference guard already protects what must survive. The flag is not
+added to blueprint declarations: those declare org-owned schema, not install-wide system identity.
+
+Permanent org teardown remains the deliberate database-cascade exception and removes its types, entries and
+revisions; soft-deleting the org retains them. `entry_revisions.entry_type_id` therefore uses CASCADE, not
+RESTRICT: the PHP reference count protects a standalone type delete. Direct SQL bypasses these PHP guards,
+and guarded builders refuse `truncate()`. No flag values or existing rows are migrated, no authorization or
+deletion behavior is changed, and no public API or resource-floor requirement is added. The historical
+observation above stays visible; this amendment answers its open question.
+
+`SystemTypeDeletionContractTest` pins the two flag values across those doors, reference states, admin
+predicates, atomic selections, cross-org references, teardown and direct-SQL boundary. `PersonModuleTest`
+continues to exercise the actual module uninstall rather than a substitute type deletion.
 
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
@@ -11630,9 +11666,6 @@ When it lands:
 
 ## Open questions
 
-- **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
-  admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
-  to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
 - **ADR-001 and the README call the runtime schema engine "the flagship first-party module", and it is not one** — it
   lives inside `kitsune/core`, booted unconditionally. ADR-038 did not resolve this. Either it is extracted once the
   kernel can carry it, or ADR-001 is amended to say it stayed in core and why
