@@ -453,7 +453,7 @@ responsibilities *(amended 2026-10-06 by ADR-040: the credential store joins the
 already on the roadmap; and entitlements, the kernel guard ADR-040 decided, as built in Phase 5a)*:
 
 ```
-Module registry     discovery, enable/disable, dependency resolution, ordering
+Module registry     discovery and registration from checked, enabled receipts
 Lifecycle           install / upgrade / uninstall, with migrations and rollback
 Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
@@ -476,6 +476,11 @@ answer that Composer and Packagist do that job. ~~One payload ships inside `kits
 `MarketingSiteBlueprint` and `DamBlueprint`), registered by core's own provider.
 
 ### Module manifest
+
+Composer resolves package dependencies. Kitsune adds no module dependency resolver or provider load-order
+contract ([ADR-038](decision-log.md#adr-038--a-module-is-a-composer-package-core-keeps-a-receipt-for-and-the-kernel-is-a-record-and-a-refusal)).
+An installed package is not automatically an enabled module: ordinary runtime registration requires an enabled
+receipt, a version matching Composer and an accepted manifest. The existing lifecycle owns enable and disable.
 
 ⚠️ **Amended 2026-09-20 by [ADR-038](decision-log.md).** The manifest is an `extra.kitsune` block in the module's own
 `composer.json`, not a `kitsune.yaml` — a YAML parser on the boot path is a floor cost (ADR-027) and a second source of
