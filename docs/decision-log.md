@@ -1091,6 +1091,13 @@ ran but `promoted_by` stayed empty, so erasure could not attribute and clear tha
 quiet writes now record the same owner. A retype or unrelated save does not take ownership of a column
 it did not write, and no extra schema lookup is added to writes that need no conversion.
 
+The attribution map is merged with the database row under the builder's write lock, not with the
+caller's loaded copy. Review reproduced a stale instance writing a date after another instance had
+written a slug: replacing the map from the stale instance lost the slug's owner and stranded it at
+erasure. One locking read of the current map on the write connection preserves independent writers'
+attributions. Inserts and writes carrying no promoted column need no additional row read. The merged
+map is sent in the value's SQL payload and synchronized onto the caller's model.
+
 The columns come from the registered field types' `promotedColumn()`, rather than a second hardcoded
 list containing today's `slug`. Registry lookup needs no schema query. The restriction applies even
 when no field on the matched rows currently claims that column: a bulk statement has no one entry

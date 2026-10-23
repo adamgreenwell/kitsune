@@ -2492,10 +2492,10 @@ class Entry extends Model implements RequiresModelSave
         // moved only `title`. Two queries against the 1 vCPU / SQLite floor in ADR-027,
         // for a column no field storage can write.
         //
-        // `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
-        // they are not user-definable, so nothing projects into them and there is no
-        // provenance to record. Only a column some registered type promotes can have any,
-        // and the registry knows that list without a query.
+        // A platform column has provenance only when a registered field type
+        // promotes into it; the default types do not claim title or published_at.
+        // The registry knows that list without a query, including custom types
+        // that do claim those columns.
         if (! $this->touchesPromotedColumn($registry)) {
             return;
         }
@@ -3122,8 +3122,7 @@ class Entry extends Model implements RequiresModelSave
             $encoded = true;
         }
 
-        $promotedBy = $this->promoted_by ?? [];
-        $previousPromotedBy = $promotedBy;
+        $writtenPromotedBy = [];
 
         foreach ($lockedFields ?? EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
@@ -3198,15 +3197,21 @@ class Entry extends Model implements RequiresModelSave
                 $fieldType,
                 $fieldType->toStorage($values[$column], $config),
             );
-            $promotedBy[$column] = $storage->getKey();
+            $writtenPromotedBy[$column] = $storage->getKey();
         }
 
-        // A first quiet write suppresses the saving listener, so conversion must
-        // record its writer in the same SQL payload. Attribute only columns this
-        // write carries, using the definitions already held by the builder: a
-        // retype or unrelated save must not claim a column it did not write.
-        if ($promotedBy !== $previousPromotedBy) {
-            $this->promoted_by = $promotedBy;
+        // The builder already holds this row's write lock. Merge into its current
+        // provenance, not a stale model's map: a writer of one promoted column
+        // must not discard another column's owner. The locking read uses the
+        // write connection and original save key, and costs nothing on inserts
+        // or writes carrying no promoted column.
+        if ($writtenPromotedBy !== []) {
+            $stored = $this->exists
+                ? EntryWriteReads::query($this->newQueryWithoutScopes())->useWritePdo()
+                    ->whereKey($this->getKeyForSaveQuery())->lockForUpdate()->first(['promoted_by'])
+                : null;
+            $promotedBy = $this->exists ? ($stored->promoted_by ?? []) : ($this->promoted_by ?? []);
+            $this->promoted_by = array_replace($promotedBy, $writtenPromotedBy);
             $values['promoted_by'] = $this->getAttributes()['promoted_by'];
         }
 

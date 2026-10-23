@@ -215,12 +215,51 @@ describe('a promoted column with an Eloquent date cast', function (): void {
         };
         app(FieldTypeRegistry::class)->register($this->dateType);
         $storage = FieldStorage::create(['org_id' => $this->org->id, 'handle' => 'release_date', 'type' => 'promoted_date_fixture', 'pii_class' => 'none', 'cardinality' => 1]);
+        $this->dateStorage = $storage;
         Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Release date']);
 
         // Seed the populated case below Eloquent so the setup does not exercise the save under test.
         DB::table('entries')->where('id', $this->entry->id)->update(['published_at' => '2026-01-02 03:04:05']);
         $this->entry->refresh();
     });
+
+    it('preserves the locked row owner when a stale instance writes another promoted column', function (string $first, string $door): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Two promoted writers']);
+        $stale = $entry->fresh();
+        $fresh = $entry->fresh();
+        $second = $first === 'slug' ? 'published_at' : 'slug';
+        $values = ['slug' => 'Personal Slug', 'published_at' => '2026-02-03 04:05:06'];
+        $fresh->setAttribute($first, $values[$first]);
+        $fresh->save();
+        $stale->setAttribute($second, $values[$second]);
+        match ($door) {
+            'save' => $stale->save(),
+            'quiet save' => $stale->saveQuietly(),
+            'eventless save' => Entry::withoutEvents(fn () => $stale->save()),
+        };
+
+        $stored = $entry->fresh();
+        $writers = $stored->promoted_by ?? [];
+        $returnedWriters = $stale->promoted_by ?? [];
+        ksort($writers);
+        ksort($returnedWriters);
+        $slug = $stored->slug;
+        $date = $stored->published_at->format('Y-m-d H:i:s');
+        $slugRedactions = $stored->redactField('permalink');
+        $dateRedactions = $stored->fresh()->redactField('release_date');
+
+        expect($slugRedactions)->toBeGreaterThan(0)
+            ->and($dateRedactions)->toBeGreaterThan(0)
+            ->and($writers['slug'] ?? null)->toBe($this->storage->id)
+            ->and($writers['published_at'] ?? null)->toBe($this->dateStorage->id)
+            ->and($returnedWriters)->toBe($writers)
+            ->and($slug)->toBe('personal-slug')
+            ->and($date)->toBe('2026-02-03 04:05:06')
+            ->and($entry->fresh()->slug)->toBeNull()
+            ->and($entry->fresh()->published_at)->toBeNull()
+            ->and($entry->revisions()->whereNotNull('slug')->exists())->toBeFalse()
+            ->and($entry->revisions()->whereNotNull('published_at')->exists())->toBeFalse();
+    })->with(['slug', 'published_at'])->with(['save', 'quiet save', 'eventless save']);
 
     it('preserves a populated date while saving a date, another promoted field or an ordinary field', function (string $door): void {
         $quiet = str_starts_with($door, 'quiet_');
