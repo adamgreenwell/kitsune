@@ -55,16 +55,28 @@ it('arms a first quiet update without locking empty configured fields', function
         ->and($entry->fresh()->values['amount'])->toBe(0);
 });
 
-it('arms configured promoted storage through a bulk update or arithmetic extra', function (bool $arithmetic): void {
+it('leaves promoted storage unlocked when an unconvertible bulk or arithmetic write is refused', function (bool $arithmetic): void {
     $this->storage->update(['type' => 'slug', 'settings' => []]);
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No slug']);
     expect($this->storage->fresh()->is_locked)->toBeFalse();
     $query = Entry::query()->whereKey($entry->id);
-    if ($arithmetic) {
-        $query->increment('author_id', 0, ['slug' => 'first-value']);
-    } else {
-        $query->update(['slug' => 'first-value']);
-    }
+    $write = $arithmetic
+        ? fn () => $query->increment('author_id', 0, ['slug' => 'first-value'])
+        : fn () => $query->update(['slug' => 'first-value']);
+
+    expect($write)->toThrow(RuntimeException::class, '[slug] cannot be written in bulk')
+        ->and($this->storage->fresh()->is_locked)->toBeFalse()
+        ->and($entry->fresh()->slug)->toBeNull();
+})->with([false, true]);
+
+it('arms configured promoted storage through an ordinary or quiet model save', function (bool $quiet): void {
+    $this->storage->update(['type' => 'slug', 'settings' => []]);
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No slug']);
+    expect($this->storage->fresh()->is_locked)->toBeFalse();
+
+    $entry->slug = 'First Value';
+    $quiet ? $entry->saveQuietly() : $entry->save();
+
     expect($this->storage->fresh()->is_locked)->toBeTrue()->and($entry->fresh()->slug)->toBe('first-value');
 })->with([false, true]);
 

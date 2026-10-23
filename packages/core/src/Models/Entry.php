@@ -321,7 +321,7 @@ class Entry extends Model implements RequiresModelSave
      */
     public static function columnsRequiringModelSave(): array
     {
-        return [
+        $columns = [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
 
             /*
@@ -378,6 +378,15 @@ class Entry extends Model implements RequiresModelSave
             'site_id' => 'moving an entry into a site has to recheck every relation pointing at it, '
                 .'including ones invisible from where it is now — and a bulk write has no row to check.',
         ];
+
+        // The registry knows the physical columns without a schema read. A prototype has neither
+        // per-entry conversion config nor promoted provenance, even if a caller gives it a loaded model.
+        foreach (self::promotableColumns(app(FieldTypeRegistry::class)) as $column) {
+            $columns[$column] ??= 'a promoted field needs its entry\'s conversion and provenance; '
+                .'write it through a model save under its canonical column name (ADR-021, issue #131).';
+        }
+
+        return $columns;
     }
 
     /**

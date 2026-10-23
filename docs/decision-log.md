@@ -1062,7 +1062,33 @@ The kernel enforces isolation at the write, and at the builder rather than in a 
 
 **And a key is the id the database stores, not the one `(int)` reads.** The same question, asked of a value rather than a name. `(int) '13.9'` is 13, and MySQL and MariaDB store `'13.9'` in an integer column as 14 — `'13.9e0'` and the float `13.9` too — so the scope-key comparison `(int) $value === $current`, in `ScopedBuilder`, `EnforcesScope` and `AppendOnlyBuilder` alike, passed a key the database then wrote into the next org. Measured on both, from org 1 with a key of `'1.9'`: a mass update, a save, a create, a hand-rolled insert and an audit append each stored org 2. A relation's storage key went the same way by another road: looked up as `'5.4'` it found no storage, so ownership, cardinality and target type each stood aside as though the storage were global, and the engine stored 5 — another org's. A key now counts only as an integer or its exact decimal string (`ReadsWrittenKeys`, `@internal`); a relation refuses any other shape for its four keys before it looks anything up; and a storage key that names no row is refused rather than read as global. SQLite and PostgreSQL refuse the fraction themselves, which was luck, not a guard.
 
+**Historical limit at 2026-09-19 — the promoted-column case is superseded by the following amendment.**
+
 **What it does not claim.** A builder guards the columns it names. A model hook that reads some *other* attribute by name is covered only where a builder refuses that column under another spelling — this amendment makes the comparisons the builders make agree with the database, not every attribute read in every model. One such read is known and left: `Entry::convertFieldValuesForWrite()` finds a promoted column such as `slug` by that name, so a save of `SLUG` stores the value unslugified — measured — as a bulk write of `slug` spelled correctly already does, since a bulk write has no entry type to convert against. That conversion normalises; no guard rests on it. And below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at this layer can stand, as every guard in the kernel already states.
+
+### Amendment — promoted field data requires a model save, 2026-10-22
+
+**Status:** Amended · issue #131
+
+The historical normalization gap above is closed by the same rule as `values`: **a promoted column is
+written through the entry's own model save, under its canonical column name**. A save of `slug` runs
+the field's conversion and records its promoted provenance; a save of `SLUG` or `entries.slug` is
+refused with the canonical name to use. Quiet saves retain the conversion, because it runs in the
+builder. A bulk update, including a query carrying a loaded model, cannot stand in for that save.
+Arithmetic columns and their extra assignments obey the same restriction.
+
+The columns come from the registered field types' `promotedColumn()`, rather than a second hardcoded
+list containing today's `slug`. Registry lookup needs no schema query. The restriction applies even
+when no field on the matched rows currently claims that column: a bulk statement has no one entry
+whose field configuration or provenance it can use. Updates to ordinary columns such as `title`
+remain available in bulk when no registered field type promotes into them.
+
+Folding only the conversion lookup would fix one spelling while leaving bulk writes unconverted,
+and would leave other model-side readers, including provenance, asking for a different attribute.
+Canonical spelling keeps those readers on the same value without inventing a model-wide attribute
+renaming policy. This is a normalization decision, not a new isolation boundary or disclosure.
+The existing explicit `ScopeWrites` maintenance suspension and direct SQL remain outside the
+per-model refusal; they gain no claim to field conversion. Existing stored slugs are not rewritten.
 
 ### Amendment — a site's address from the console, 2026-10-08
 
