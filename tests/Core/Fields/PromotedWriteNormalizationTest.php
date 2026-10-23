@@ -45,6 +45,54 @@ it('keeps canonical model saves normalized and records their promoted provenance
         ->and($this->entry->fresh()->promoted_by['slug'])->toBe($this->storage->id);
 })->with([false, true]);
 
+it('attributes a first promoted write so erasure reaches its live and revision values', function (string $door): void {
+    $attributes = ['org_id' => $this->org->id, 'site_id' => $this->site->id,
+        'entry_type_id' => $this->type->id, 'title' => 'First promoted write'];
+
+    if (str_contains($door, 'create')) {
+        $attributes['slug'] = 'Personal Slug';
+        $entry = match ($door) {
+            'create' => Entry::create($attributes),
+            'quiet create' => Entry::createQuietly($attributes),
+            'eventless create' => Entry::withoutEvents(fn () => Entry::create($attributes)),
+        };
+    } else {
+        $entry = Entry::create($attributes);
+        expect($entry->promoted_by['slug'] ?? null)->toBeNull();
+        $entry->slug = 'Personal Slug';
+        match ($door) {
+            'save' => $entry->save(),
+            'quiet save' => $entry->saveQuietly(),
+            'eventless save' => Entry::withoutEvents(fn () => $entry->save()),
+        };
+    }
+
+    $stored = $entry->fresh();
+    $writtenBy = $stored->promoted_by['slug'] ?? null;
+    $storedSlug = $stored->slug;
+
+    expect($stored->redactField('permalink'))->toBeGreaterThan(0)
+        ->and($entry->promoted_by['slug'] ?? null)->toBe($this->storage->id)
+        ->and($writtenBy)->toBe($this->storage->id)
+        ->and($storedSlug)->toBe('personal-slug')
+        ->and($entry->fresh()->slug)->toBeNull()
+        ->and($entry->revisions()->whereNotNull('slug')->exists())->toBeFalse();
+})->with(['create', 'quiet create', 'eventless create', 'save', 'quiet save', 'eventless save']);
+
+it('does not hand existing provenance to a destination field on a quiet retype', function (bool $withoutEvents): void {
+    $otherType = EntryType::create(['org_id' => $this->org->id, 'handle' => 'other', 'name' => 'Other', 'plural_name' => 'Others']);
+    $otherStorage = FieldStorage::create(['org_id' => $this->org->id, 'handle' => 'other_permalink', 'type' => 'slug', 'pii_class' => 'none', 'cardinality' => 1]);
+    Field::create(['entry_type_id' => $otherType->id, 'field_storage_id' => $otherStorage->id, 'label' => 'Other permalink']);
+    $this->entry->entry_type_id = $otherType->id;
+    $withoutEvents ? Entry::withoutEvents(fn () => $this->entry->save()) : $this->entry->saveQuietly();
+
+    expect($this->entry->fresh()->promoted_by['slug'])->toBe($this->storage->id)
+        ->and($this->entry->fresh()->redactField('other_permalink'))->toBe(0)
+        ->and($this->entry->fresh()->slug)->toBe('before-slug')
+        ->and($this->entry->fresh()->redactField('permalink'))->toBeGreaterThan(0)
+        ->and($this->entry->fresh()->slug)->toBeNull();
+})->with([false, true]);
+
 it('refuses an alternate promoted-column spelling on an ordinary or quiet model save', function (string $column, bool $quiet): void {
     $before = AuditLog::count();
     $this->entry->setAttribute($column, 'After Slug');

@@ -1084,6 +1084,13 @@ when recording and checking the snapshot preserves valid saves while keeping a l
 detectable. Arbitrary objects remain refused; array key-order normalization and exact comparison of
 numeric-looking text remain unchanged.
 
+Promoted provenance is also recorded by the builder while it converts each written column, using the
+same locked field definitions and the same SQL payload as the value. Review found that the `saving`
+listener alone missed a first `saveQuietly()`, `createQuietly()` or `withoutEvents()` write: conversion
+ran but `promoted_by` stayed empty, so erasure could not attribute and clear that value. Ordinary and
+quiet writes now record the same owner. A retype or unrelated save does not take ownership of a column
+it did not write, and no extra schema lookup is added to writes that need no conversion.
+
 The columns come from the registered field types' `promotedColumn()`, rather than a second hardcoded
 list containing today's `slug`. Registry lookup needs no schema query. The restriction applies even
 when no field on the matched rows currently claims that column: a bulk statement has no one entry

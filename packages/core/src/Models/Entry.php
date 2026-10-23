@@ -130,8 +130,9 @@ class Entry extends Model implements RequiresModelSave
             }
         });
 
-        // ⚠️ Recorded BEFORE any guard reads a promoted column, and recorded rather
-        // than derived. See `recordPromotedProvenance()`.
+        // ⚠️ Recorded BEFORE any guard reads a promoted column. The builder also
+        // records the fields it actually converts, including when events are suppressed.
+        // See `recordPromotedProvenance()`.
         static::saving(fn (self $entry) => $entry->recordPromotedProvenance());
 
         // type_handle is denormalised for routing lookups, so it must never
@@ -3121,6 +3122,9 @@ class Entry extends Model implements RequiresModelSave
             $encoded = true;
         }
 
+        $promotedBy = $this->promoted_by ?? [];
+        $previousPromotedBy = $promotedBy;
+
         foreach ($lockedFields ?? EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
 
@@ -3194,6 +3198,16 @@ class Entry extends Model implements RequiresModelSave
                 $fieldType,
                 $fieldType->toStorage($values[$column], $config),
             );
+            $promotedBy[$column] = $storage->getKey();
+        }
+
+        // A first quiet write suppresses the saving listener, so conversion must
+        // record its writer in the same SQL payload. Attribute only columns this
+        // write carries, using the definitions already held by the builder: a
+        // retype or unrelated save must not claim a column it did not write.
+        if ($promotedBy !== $previousPromotedBy) {
+            $this->promoted_by = $promotedBy;
+            $values['promoted_by'] = $this->getAttributes()['promoted_by'];
         }
 
         if ($inline !== null) {
