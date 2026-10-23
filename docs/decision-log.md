@@ -3836,6 +3836,34 @@ migrations or teardown writes, so it does not encounter it; a later destructive 
 procedure, a backup and quiescent writers rather than a promise that reinstall always repairs it.
 [#264](https://github.com/adamgreenwell/kitsune/issues/264) tracks reproduction and recovery.
 
+⚠️ **Amended 2026-10-23 — interrupted uninstall is a separate recorded state (#264).** The residual above is
+now reproduced on disposable SQLite 3.53.4, PostgreSQL 17.11, MySQL 8.4.7 and MariaDB 10.6.28 with an actual
+installed Composer fixture and Laravel's migrator. A successful first drop followed by a failing second drop
+leaves that first table/data absent on SQLite and both MySQL engines, while its migration remains recorded
+and its receipt is gone. The previous install and enable then accept the damaged schema. PostgreSQL rolls
+the failed file's DDL back; that does not roll receipt deletion back. No production incident is claimed.
+
+Keep the original ordering reason: schema reset still follows the data-hook/receipt transaction and stays
+outside it. Add an installation-wide `module_uninstalls` marker, independent of a receipt, committed in that
+transaction before DDL. A hook refusal rolls it back with the receipt changes. Only a successful reset,
+reconciliation of the current migration filenames with the ledger and checked marker deletion finish the
+uninstall. Process loss or a failed reset leaves the marker: install and all other lifecycle actions refuse,
+runtime and retained-data command registration decline even a planted enabled receipt, and status reports
+incomplete uninstall with a failing command exit even when no installed receipt remains. A missing/unreadable
+marker table fails closed; core migrations must precede module admission after this upgrade.
+
+The recovery decision is a complete consistent pre-uninstall backup restore with matching code/assets and
+quiescent writers, not automatic execution of arbitrary broken `down()` again. The marker has no force-clear
+command; manually removing it, planting a receipt or editing the migration ledger proves no repair. A
+disposable complete-database backup/restore experiment reproduces the failure and restores the same recovery
+point twice on every engine, comparing 42 physical tables, columns/indexes/foreign keys, row fingerprints,
+ledger and original disabled receipt. Backups exist only in process memory and are not retained as exports.
+This proves that synthetic database recovery point, not coordinated external-store recovery or universal DDL
+repair. Older unmarked damage is not discovered by adding the marker table. Modules whose hooks issue DDL or
+whose writes span other connections/stores remain subject to the transaction limits recorded above and need
+their own coordinated recovery procedure. [Module operations](module-operations.md) records the bounded steps,
+unsupported cases and the requirement to stop already-running processes; disabling does not unload them.
+
 The verifier's scope-attribute, trait and manifest checks also do not inspect migrated column nullability or
 scope-leading indexes. Such schema claims remain requirements on a module's migration and engine tests;
 commerce's empty manifest proves no business-model schema. #190 must assert its real org/site columns and indexes

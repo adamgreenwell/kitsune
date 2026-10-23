@@ -130,7 +130,11 @@ final class ModuleKernel
             // Eloquent's connection resolver. The database manager is already bound during registration.
             // Modules are genuinely global; this read introduces no Org/Site scope bypass.
             $receipts = [];
-            foreach (DB::table('modules')->useWritePdo()->orderBy('handle')->get(['handle', 'version', 'is_enabled']) as $row) {
+            foreach (DB::table('modules')->useWritePdo()
+                ->leftJoin('module_uninstalls', 'module_uninstalls.handle', '=', 'modules.handle')
+                ->whereNull('module_uninstalls.handle')
+                ->orderBy('modules.handle')
+                ->get(['modules.handle', 'modules.version', 'modules.is_enabled']) as $row) {
                 if (! is_string($row->handle) || ! is_string($row->version)
                     || ! in_array($row->is_enabled, [true, false, 0, 1, '0', '1'], true)) {
                     throw new \RuntimeException('An installed module receipt is malformed.');

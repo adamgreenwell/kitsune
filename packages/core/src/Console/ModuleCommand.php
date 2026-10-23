@@ -94,6 +94,8 @@ final class ModuleCommand extends Command
             ], $rows),
         );
 
-        return self::SUCCESS;
+        return collect($rows)->contains(fn (array $row): bool => str_starts_with($row['status'], 'uninstall incomplete'))
+            ? self::FAILURE
+            : self::SUCCESS;
     }
 }

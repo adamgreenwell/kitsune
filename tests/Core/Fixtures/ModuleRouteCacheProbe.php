@@ -29,6 +29,7 @@ if (str_starts_with($mode, 'seed-')) {
         .var_export($root, true).', '.var_export($temporary, true).');');
     $pdo = new PDO('sqlite:'.$temporary.'/modules.sqlite');
     $pdo->exec('CREATE TABLE modules (id INTEGER PRIMARY KEY, handle TEXT, version TEXT, is_enabled INTEGER, installed_at TEXT)');
+    $pdo->exec('CREATE TABLE module_uninstalls (handle TEXT PRIMARY KEY, version TEXT, started_at TEXT)');
     $insert = $pdo->prepare('INSERT INTO modules (handle, version, is_enabled) VALUES (?, ?, ?)');
     $insert->execute(['kitsune/commerce', InstalledVersions::getPrettyVersion('kitsune/commerce'), $mode === 'seed-enabled' ? 1 : 0]);
 }
