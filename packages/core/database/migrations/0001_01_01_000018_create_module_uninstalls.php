@@ -28,7 +28,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (DB::table('module_uninstalls')->exists()) {
+        if (DB::table('module_uninstalls')->useWritePdo()->exists()) {
             throw new RuntimeException('The uninstall guard cannot be removed while an incomplete uninstall remains.');
         }
         Schema::dropIfExists('module_uninstalls');

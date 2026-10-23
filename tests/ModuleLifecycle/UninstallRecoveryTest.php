@@ -91,6 +91,29 @@ it('refuses core rollback while an incomplete uninstall remains and preserves ad
         ->toThrow(RuntimeException::class, 'uninstall is incomplete');
 });
 
+it('refuses core rollback when an empty read replica has not received the writer marker', function (): void {
+    $connection = DB::connection();
+    expect($connection->transactionLevel())->toBe(0);
+    ModuleUninstall::create(['handle' => UNINSTALL_PACKAGE, 'version' => ModuleDiscovery::version(UNINSTALL_PACKAGE), 'started_at' => now()]);
+    $migration = require __DIR__.'/../../packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php';
+    $replica = new PDO('sqlite::memory:');
+    $replica->exec('create table '.$connection->getQueryGrammar()->wrapTable('module_uninstalls').' (handle varchar(255) primary key)');
+    $originalRead = $connection->getRawReadPdo();
+    $modified = $connection->hasModifiedRecords();
+    $connection->setReadPdo($replica);
+    $connection->forgetRecordModificationState();
+    try {
+        expect($connection->table('module_uninstalls')->exists())->toBeFalse()
+            ->and($connection->table('module_uninstalls')->useWritePdo()->exists())->toBeTrue();
+        expect(fn () => $migration->down())->toThrow(RuntimeException::class, 'incomplete uninstall');
+    } finally {
+        $connection->setReadPdo($originalRead);
+        $connection->setRecordModificationState($modified);
+    }
+    expect(Schema::hasTable('module_uninstalls'))->toBeTrue()
+        ->and(ModuleUninstall::query()->useWritePdo()->count())->toBe(1);
+});
+
 it('permits core rollback and reapply only with an empty uninstall marker table', function (): void {
     $migration = require __DIR__.'/../../packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php';
     $migration->down();
