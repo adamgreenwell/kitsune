@@ -31,6 +31,13 @@ function withUnicodeCommerceTables(string $prefix, array $suffixes, Closure $tes
         foreach ($suffixes as $suffix) {
             $table = $prefix.$suffix;
             $connection->getSchemaBuilder()->create($table, function (Blueprint $definition) use ($suffix): void {
+                if ($suffix === 'module_uninstalls') {
+                    $definition->string('handle')->primary();
+                    $definition->string('version');
+                    $definition->timestamp('started_at');
+
+                    return;
+                }
                 $definition->id();
                 if ($suffix === 'modules') {
                     $definition->string('handle');
@@ -188,7 +195,7 @@ it('checks a future table whose own suffix contains another commerce namespace',
 });
 
 it('refuses real lifecycle uninstall before deleting its prefixed receipt or issuing teardown DDL', function (): void {
-    withUnicodeCommerceTables('İ', ['commerce_future', 'modules'], function (Connection $connection): void {
+    withUnicodeCommerceTables('İ', ['commerce_future', 'modules', 'module_uninstalls'], function (Connection $connection): void {
         $connection->table('commerce_future')->insert(['org_id' => 222222, 'deleted_at' => now()]);
         $connection->table('modules')->insert(['handle' => 'kitsune/commerce', 'version' => 'fixture', 'is_enabled' => false, 'installed_at' => now()]);
         $original = DB::getDefaultConnection();
@@ -197,6 +204,7 @@ it('refuses real lifecycle uninstall before deleting its prefixed receipt or iss
         try {
             expect(fn () => ModuleLifecycle::uninstall(app(), 'kitsune/commerce'))->toThrow(RuntimeException::class, 'still holds data');
             expect(Module::query()->where('handle', 'kitsune/commerce')->exists())->toBeTrue()
+                ->and($connection->table('module_uninstalls')->count())->toBe(0)
                 ->and($connection->table('commerce_future')->count())->toBe(1);
             foreach ($connection->getQueryLog() as $query) {
                 expect(preg_match('/\A(?:drop|delete|alter|truncate)\b/i', $query['query']))->toBe(0);

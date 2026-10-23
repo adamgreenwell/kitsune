@@ -13,6 +13,7 @@ require $root.'/vendor/autoload.php';
 
 use Composer\InstalledVersions;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Commerce\CommerceServiceProvider;
 use Kitsune\Commerce\Filament\CurrencyResource;
 use Kitsune\Core\Models\Module;
@@ -29,8 +30,11 @@ if (str_starts_with($mode, 'seed-')) {
         .var_export($root, true).', '.var_export($temporary, true).');');
     $pdo = new PDO('sqlite:'.$temporary.'/modules.sqlite');
     $pdo->exec('CREATE TABLE modules (id INTEGER PRIMARY KEY, handle TEXT, version TEXT, is_enabled INTEGER, installed_at TEXT)');
+    if ($mode !== 'seed-legacy-enabled') {
+        $pdo->exec('CREATE TABLE module_uninstalls (handle TEXT PRIMARY KEY, version TEXT, started_at TEXT)');
+    }
     $insert = $pdo->prepare('INSERT INTO modules (handle, version, is_enabled) VALUES (?, ?, ?)');
-    $insert->execute(['kitsune/commerce', InstalledVersions::getPrettyVersion('kitsune/commerce'), $mode === 'seed-enabled' ? 1 : 0]);
+    $insert->execute(['kitsune/commerce', InstalledVersions::getPrettyVersion('kitsune/commerce'), in_array($mode, ['seed-enabled', 'seed-legacy-enabled'], true) ? 1 : 0]);
 }
 
 $app = ModuleRouteCacheHost::application($root, $temporary);
@@ -48,6 +52,10 @@ if (str_starts_with($mode, 'seed-') || $mode === 'cache') {
     ModuleLifecycle::disable($app, 'kitsune/commerce');
 } elseif ($mode === 'stale') {
     Module::query()->where('handle', 'kitsune/commerce')->firstOrFail()->update(['version' => 'old-version']);
+} elseif ($mode === 'migrate-guard') {
+    (require $root.'/packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php')->up();
+} elseif ($mode === 'clear') {
+    $cacheCommand = $kernel->call('route:clear');
 }
 
 $route = $app->make('router')->getRoutes()->getByName('filament.admin.resources.storefront.currency.index');
@@ -56,7 +64,7 @@ echo json_encode([
     'cache_command' => $cacheCommand,
     'cache_file' => is_file($app->getCachedRoutesPath()),
     'cache_memo' => $app->routesAreCached(),
-    'enabled' => Module::isEnabled('kitsune/commerce'),
+    'enabled' => Schema::hasTable('module_uninstalls') ? Module::isEnabled('kitsune/commerce') : null,
     'provider_registered' => $app->getProviders(CommerceServiceProvider::class) !== [],
     'currency_route' => $route?->uri(),
     'currency_url' => $route === null ? null : CurrencyResource::getUrl('index', ['tenant' => 'golfdom'], panel: 'admin'),

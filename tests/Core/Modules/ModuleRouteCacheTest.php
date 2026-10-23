@@ -75,6 +75,26 @@ it('does not register stale enabled module code merely because an old cached URI
         ->and($fresh['currency_route'])->toEndWith('/storefront/currency')->and($fresh['provider_registered'])->toBeFalse();
 });
 
+it('rebuilds enabled module routes after the admission table migration instead of keeping a pre-migration cache', function (): void {
+    $temporary = $this->cacheDirectory.'/host';
+    mkdir($temporary, 0700);
+    $before = moduleCachedBoot($temporary, 'seed-legacy-enabled');
+    expect($before['cache_command'])->toBe(0)->and($before['cache_file'])->toBeTrue()
+        ->and($before['provider_registered'])->toBeFalse()->and($before['currency_route'])->toBeNull();
+
+    moduleCachedBoot($temporary, 'migrate-guard');
+    $staleCache = moduleCachedBoot($temporary, 'read');
+    expect($staleCache['provider_registered'])->toBeTrue()->and($staleCache['currency_route'])->toBeNull();
+    // A separate command removes the old route set before any final cache command boots its application.
+    expect(moduleCachedBoot($temporary, 'clear')['cache_command'])->toBe(0);
+    $rebuilt = moduleCachedBoot($temporary, 'cache');
+    expect($rebuilt['cache_command'])->toBe(0)
+        ->and($rebuilt['currency_route'])->toEndWith('/storefront/currency');
+    $fresh = moduleCachedBoot($temporary, 'read');
+    expect($fresh['provider_registered'])->toBeTrue()
+        ->and($fresh['currency_url'])->toEndWith('/admin/golfdom/storefront/currency');
+});
+
 it('leaves a cancelled switch unchanged with an uncached application safe to boot', function (): void {
     $receipt = Module::create(['handle' => 'kitsune/fixture-module', 'version' => ModuleDiscovery::version('kitsune/fixture-module'), 'is_enabled' => false, 'installed_at' => now()]);
     file_put_contents(app()->getCachedRoutesPath(), 'old module routes');

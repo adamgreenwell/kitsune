@@ -39,6 +39,13 @@ for cache in config event route view icons; do
 done
 run_app 'php deploy/release-check.php serving 1'
 run_app 'php skeleton/artisan migrate --force --no-interaction'
+# A new admission table can suppress module boot in the pre-migration caches. Build the final caches only
+# after the schema exists, then repeat the serving gate before starting the runtime (ADR-035 / #264).
+run_app 'php skeleton/artisan route:clear --no-interaction'
+for cache in config event route view icons; do
+    run_app "php skeleton/artisan $cache:cache --no-interaction"
+done
+run_app 'php deploy/release-check.php serving 1'
 run_app 'php skeleton/artisan kitsune:credentials status --strict --no-interaction'
 run_app 'php skeleton/artisan kitsune:audit-patterns --strict --no-interaction'
 run_app 'php skeleton/artisan kitsune:schema-sync --no-interaction'

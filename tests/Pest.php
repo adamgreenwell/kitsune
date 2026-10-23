@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Kitsune\Core\Tests\CommerceLifecycleTestCase;
 use Kitsune\Core\Tests\CommerceTestCase;
 use Kitsune\Core\Tests\LevelZeroTestCase;
+use Kitsune\Core\Tests\ModuleLifecycleTestCase;
 use Kitsune\Core\Tests\ReaderTestCase;
 use Kitsune\Core\Tests\TestCase;
 use Kitsune\Core\Tests\UlidHostTestCase;
@@ -21,6 +22,9 @@ uses(CommerceTestCase::class)->in(__DIR__.'/Commerce');
 
 // Actual outer commits and bounded provider I/O on the default SQLite floor and all supported test engines.
 uses(CommerceLifecycleTestCase::class)->in(__DIR__.'/CommerceLifecycle');
+
+// Interrupted teardown must commit before failed DDL; exercise that ordering on every supported engine.
+uses(ModuleLifecycleTestCase::class)->in(__DIR__.'/ModuleLifecycle');
 
 // A host whose users carry ULIDs, run in the same process; the base test case rebuilds the schema between them (#91).
 uses(UlidHostTestCase::class)->in(__DIR__.'/UlidHost');

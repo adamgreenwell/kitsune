@@ -48,7 +48,8 @@
 #  15. Proves the release serves before the schema changes: the caches exist, no provider registers an optimize task
 #      this script does not know, the environment still holds against the cached config, and GET /up through the
 #      HTTP kernel answers 200.
-#  16. Migrates. Only the two steps after it need the new schema, so only they can fail after it has changed.
+#  16. Migrates, then rebuilds the caches and repeats the serving gate against the migrated schema. A newly added
+#      module-admission guard table may have refused module boot during the pre-migration cache build (ADR-038).
 #  17. Runs kitsune:audit-patterns --strict, Kitsune's deploy gate.
 #  18. Runs kitsune:schema-sync as a report. Without --force it never changes anything.
 #
@@ -275,6 +276,17 @@ check_the_app serving
 
 # 16. The schema, with exactly the cached config that will serve. --force because APP_ENV is production.
 "$PHP_BIN" skeleton/artisan migrate --force --no-interaction
+
+# The first cache build proves the release before a schema write. It cannot be the final cache when a new
+# admission table is missing in the old schema: fail-closed module boot omitted its routes/listeners/config.
+# Keep that preflight, then rebuild every explicit cache on the migrated schema before accepting the release.
+"$PHP_BIN" skeleton/artisan route:clear --no-interaction
+"$PHP_BIN" skeleton/artisan config:cache --no-interaction
+"$PHP_BIN" skeleton/artisan event:cache --no-interaction
+"$PHP_BIN" skeleton/artisan route:cache --no-interaction
+"$PHP_BIN" skeleton/artisan view:cache --no-interaction
+"$PHP_BIN" skeleton/artisan icons:cache --no-interaction
+check_the_app serving
 
 # Refuse promotion when retained credentials need an APP_KEY absent from APP_KEY / APP_PREVIOUS_KEYS.
 # This counts every stored slot, including disabled modules, without exposing or decrypting any value.
