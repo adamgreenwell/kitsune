@@ -1344,6 +1344,21 @@ documented support that is never exercised is a claim, not a feature.
 
 > **Amended 2026-09-15:** the browser job now runs on PHP 8.4 and 8.5, because it is the only job that boots the skeleton (ADR-013 amendment) — two browser jobs, and thirteen jobs in all.
 
+**Amended 2026-10-23 — bounded browser diagnostics survive a successful retry (#278).** A green browser job can contain
+a failed first attempt: the reader-to-staff sign-in case once missed its expected rejection, then passed on retry, and
+the failure-only artifact upload kept no report. A controlled delayed password-component load now reproduces a visible
+input losing a value typed before binding; the fixture waits for the existing component readiness signal. This is a
+reproduced mechanism, not proof of the cause of that historical CI failure. The original boundary checks stay, beside
+a delayed-initialization regression, without a larger timeout or another retry.
+
+CI uploads a small diagnostic JSON on completion, including when retry succeeds: source file/line, attempt number,
+status, duration, a fixed normal/delayed-password variant and explicitly allowed reader/staff state booleans and
+HTTP statuses. The variant distinguishes generated cases that share one source line. It excludes titles, errors,
+console output, request bodies, cookies, passwords, arbitrary attachments and traces. Rows, arrays and bytes are bounded;
+retention remains seven days. Local HTML reports and traces remain available to the developer, as reasoned above, but
+are not exported by this workflow. Reporter privacy/bounds checks run in the browser job alone; the bare-clone suite
+still requires neither Node nor a service.
+
 ---
 
 ## ADR-025 — Laravel Boost: a development dependency, and Kitsune ships guidelines rather than the runtime
