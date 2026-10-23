@@ -50,7 +50,7 @@ The early audience is people who currently install CMS plugins by uploading a zi
 
 ## ADR-001 — Extensibility: layered kernel + runtime schema engine
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23** — the schema engine remains in core (#257)
 
 Thin module kernel (registry, hooks, service providers, auth/RBAC, audit) with the runtime schema engine as the flagship first-party module. Developers extend with PHP; non-developers build with the schema engine.
 
