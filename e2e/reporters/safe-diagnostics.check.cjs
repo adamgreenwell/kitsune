@@ -78,3 +78,21 @@ test('writes a bounded empty report for a clean first-attempt run', () => {
     assert.deepEqual(data.attempts, []);
     assert.equal(data.total_attempts, 1);
 });
+
+test('distinguishes generated variants at one source location without retaining arbitrary variant content', () => {
+    const secret = 'credential-like-variant-do-not-retain';
+    const data = JSON.parse(run((reporter) => {
+        for (const variant of ['normal', 'delayed-password', secret]) {
+            reporter.onTestEnd({ location }, {
+                retry: 0, status: 'failed', duration: 100,
+                attachments: [{
+                    name: 'reader-staff-boundary', contentType: 'application/json',
+                    body: Buffer.from(JSON.stringify({ stage: 'rejection', variant })),
+                }],
+            });
+        }
+    }));
+    assert.deepEqual(data.attempts.map((row) => row.boundary.variant), ['normal', 'delayed-password', undefined]);
+    assert.equal(JSON.stringify(data).includes(secret), false);
+    assert.equal(new Set(data.attempts.map((row) => `${row.file}:${row.line}`)).size, 1);
+});

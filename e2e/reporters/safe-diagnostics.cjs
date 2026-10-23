@@ -9,6 +9,7 @@ const ROOT = path.resolve(__dirname, '../..');
 const STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted']);
 const STAGES = new Set(['navigation', 'readiness', 'credentials', 'rejection', 'reader-account', 'complete']);
 const PAGES = new Set(['staff-login', 'reader-account', 'other']);
+const VARIANTS = new Set(['normal', 'delayed-password']);
 const integer = (value, maximum) => Number.isFinite(value) ? Math.max(0, Math.min(maximum, Math.floor(value))) : 0;
 
 /** Only the explicit diagnostic schema crosses into an uploaded artifact. Never copy errors, logs or traces. */
@@ -20,6 +21,7 @@ function boundary(attachments = []) {
             const value = JSON.parse(attachment.body.toString('utf8'));
             if (!value || !STAGES.has(value.stage)) continue;
             const safe = { stage: value.stage };
+            if (VARIANTS.has(value.variant)) safe.variant = value.variant;
             if (PAGES.has(value.page)) safe.page = value.page;
             for (const key of ['component_ready', 'rejection_visible', 'reader_account_accessible']) {
                 if (typeof value[key] === 'boolean') safe[key] = value[key];

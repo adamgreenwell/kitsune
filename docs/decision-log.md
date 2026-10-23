@@ -1352,7 +1352,8 @@ reproduced mechanism, not proof of the cause of that historical CI failure. The 
 a delayed-initialization regression, without a larger timeout or another retry.
 
 CI uploads a small diagnostic JSON on completion, including when retry succeeds: source file/line, attempt number,
-status, duration and explicitly allowed reader/staff state booleans and HTTP statuses. It excludes titles, errors,
+status, duration, a fixed normal/delayed-password variant and explicitly allowed reader/staff state booleans and
+HTTP statuses. The variant distinguishes generated cases that share one source line. It excludes titles, errors,
 console output, request bodies, cookies, passwords, arbitrary attachments and traces. Rows, arrays and bytes are bounded;
 retention remains seven days. Local HTML reports and traces remain available to the developer, as reasoned above, but
 are not exported by this workflow. Reporter privacy/bounds checks run in the browser job alone; the bare-clone suite

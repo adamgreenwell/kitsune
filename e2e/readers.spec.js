@@ -209,7 +209,7 @@ test('cannot drive a panel\'s component as a reader, even with a snapshot the pa
 for (const delayed of [false, true]) {
     test(`cannot reach a panel as a reader, from the reader's side${delayed ? ' with delayed password initialization' : ''}`, async ({ page }, testInfo) => {
         // No error text, credential values, URLs with query strings or request bodies enter this attachment.
-        const diagnostic = { stage: 'navigation', panel_redirects: [], component_ready: false, update_statuses: [], rejection_visible: false, reader_account_accessible: false };
+        const diagnostic = { stage: 'navigation', variant: delayed ? 'delayed-password' : 'normal', panel_redirects: [], component_ready: false, update_statuses: [], rejection_visible: false, reader_account_accessible: false };
         page.on('response', (response) => {
             if (diagnostic.update_statuses.length < 16 && callsMethod(response, 'authenticate')) diagnostic.update_statuses.push(response.status());
         });
