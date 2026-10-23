@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tenancy\Concerns;
 
+use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -169,12 +170,25 @@ trait DerivesGuardedColumns
         }
 
         foreach (static::columnsRequiringModelSave() as $column => $ignored) {
-            if (! self::sameGuardedValue($this->guardedColumnsDerived[$column] ?? null, $this->getAttribute($column))) {
+            if (! self::sameGuardedValue($this->guardedColumnsDerived[$column] ?? null, $this->guardedColumnValue($column))) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * A date cast is an object on read, but a formatted scalar at the database.
+     * Snapshot that scalar so a populated promoted date does not invalidate every
+     * save, and a mutable date object cannot change the snapshot after derivation.
+     * Other objects remain unverified; arrays retain their order-independent proof.
+     */
+    private function guardedColumnValue(string $column): mixed
+    {
+        $value = $this->getAttribute($column);
+
+        return $value instanceof DateTimeInterface ? $this->fromDateTime($value) : $value;
     }
 
     /**
@@ -247,7 +261,7 @@ trait DerivesGuardedColumns
         $snapshot = [];
 
         foreach (static::columnsRequiringModelSave() as $column => $ignored) {
-            $snapshot[$column] = $this->getAttribute($column);
+            $snapshot[$column] = $this->guardedColumnValue($column);
         }
 
         $this->guardedColumnsDerived = $snapshot;
