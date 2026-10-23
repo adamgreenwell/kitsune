@@ -8,8 +8,10 @@
 
 declare(strict_types=1);
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\Control;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Fields\Types\BaseFieldType;
@@ -121,4 +123,112 @@ it('uses registered promoted columns rather than a hardcoded slug list', functio
     expect(fn () => Entry::query()->whereKey($this->entry->id)->update(['title' => 'After']))
         ->toThrow(RuntimeException::class, '[title] cannot be written in bulk')
         ->and($this->entry->fresh()->title)->toBe('Before');
+});
+
+describe('a promoted column with an Eloquent date cast', function (): void {
+    beforeEach(function (): void {
+        $this->dateType = new class extends BaseFieldType
+        {
+            public ?Closure $duringConversion = null;
+
+            public static function handle(): string
+            {
+                return 'promoted_date_fixture';
+            }
+
+            public static function label(): string
+            {
+                return 'Promoted date fixture';
+            }
+
+            public function control(): Control
+            {
+                return Control::DateTime;
+            }
+
+            public function strategy(): StorageStrategy
+            {
+                return StorageStrategy::Promoted;
+            }
+
+            public function promotedColumn(): string
+            {
+                return 'published_at';
+            }
+
+            protected function castToStorage(mixed $input, FieldConfig $config): mixed
+            {
+                if ($this->duringConversion !== null) {
+                    ($this->duringConversion)($config);
+                }
+
+                return $input;
+            }
+        };
+        app(FieldTypeRegistry::class)->register($this->dateType);
+        $storage = FieldStorage::create(['org_id' => $this->org->id, 'handle' => 'release_date', 'type' => 'promoted_date_fixture', 'pii_class' => 'none', 'cardinality' => 1]);
+        Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Release date']);
+
+        // Seed the populated case below Eloquent so the setup does not exercise the save under test.
+        DB::table('entries')->where('id', $this->entry->id)->update(['published_at' => '2026-01-02 03:04:05']);
+        $this->entry->refresh();
+    });
+
+    it('preserves a populated date while saving a date, another promoted field or an ordinary field', function (string $door): void {
+        $quiet = str_starts_with($door, 'quiet_');
+        $operation = str_replace('quiet_', '', $door);
+
+        if ($operation === 'create') {
+            $attributes = ['org_id' => $this->org->id, 'site_id' => $this->site->id, 'entry_type_id' => $this->type->id,
+                'title' => 'Dated', 'slug' => 'Dated Slug', 'published_at' => '2026-01-02 03:04:05'];
+            $entry = $quiet ? Entry::createQuietly($attributes) : Entry::create($attributes);
+        } else {
+            $entry = $this->entry;
+            $entry->setAttribute(match ($operation) {
+                'date' => 'published_at',
+                'slug' => 'slug',
+                'title' => 'title',
+            }, match ($operation) {
+                'date' => '2026-02-03 04:05:06',
+                'slug' => 'After Slug',
+                'title' => 'After',
+            });
+            $quiet ? $entry->saveQuietly() : $entry->save();
+        }
+
+        expect($entry->fresh()->published_at->format('Y-m-d H:i:s'))
+            ->toBe($operation === 'date' ? '2026-02-03 04:05:06' : '2026-01-02 03:04:05')
+            ->and($entry->fresh()->slug)->toBe(match ($operation) {
+                'create' => 'dated-slug',
+                'slug' => 'after-slug',
+                default => 'before-slug',
+            })
+            ->and(AuditLog::for($entry)->latest('id')->first()->action)
+            ->toBe($operation === 'create' ? 'entry.created' : 'entry.updated');
+    })->with(['create', 'quiet_create', 'date', 'quiet_date', 'slug', 'quiet_slug', 'title', 'quiet_title']);
+
+    it('also preserves an immutable date cast through an ordinary or quiet save', function (bool $quiet): void {
+        $entry = $this->entry->mergeCasts(['published_at' => 'immutable_datetime']);
+        expect($entry->published_at)->toBeInstanceOf(CarbonImmutable::class);
+        $entry->published_at = CarbonImmutable::parse('2026-02-03 04:05:06', 'UTC');
+
+        $quiet ? $entry->saveQuietly() : $entry->save();
+
+        expect($entry->published_at)->toBeInstanceOf(CarbonImmutable::class)
+            ->and(DB::table('entries')->where('id', $entry->id)->value('published_at'))->toBe('2026-02-03 04:05:06')
+            ->and(AuditLog::for($entry)->latest('id')->first()->action)->toBe('entry.updated');
+    })->with([false, true]);
+
+    it('refuses a date changed after its save proof was recorded', function (): void {
+        $this->dateType->duringConversion = static function (FieldConfig $config): void {
+            $config->record->published_at = '2026-03-04 05:06:07';
+        };
+        $before = AuditLog::count();
+        $this->entry->forceFill(['slug' => 'After Slug', 'published_at' => '2026-02-03 04:05:06']);
+
+        expect(fn () => $this->entry->save())->toThrow(RuntimeException::class, 'cannot be written in bulk')
+            ->and(DB::table('entries')->where('id', $this->entry->id)->value('published_at'))->toBe('2026-01-02 03:04:05')
+            ->and($this->entry->fresh()->slug)->toBe('before-slug')
+            ->and(AuditLog::count())->toBe($before);
+    });
 });

@@ -1077,6 +1077,13 @@ refused with the canonical name to use. Quiet saves retain the conversion, becau
 builder. A bulk update, including a query carrying a loaded model, cannot stand in for that save.
 Arithmetic columns and their extra assignments obey the same restriction.
 
+The save proof records date-cast attributes in their database date format, not as Carbon objects.
+Review found that a registered type promoting into `published_at` made legitimate date and slug saves
+fail once the date was populated: the generic proof deliberately refuses objects. Formatting dates
+when recording and checking the snapshot preserves valid saves while keeping a later date change
+detectable. Arbitrary objects remain refused; array key-order normalization and exact comparison of
+numeric-looking text remain unchanged.
+
 The columns come from the registered field types' `promotedColumn()`, rather than a second hardcoded
 list containing today's `slug`. Registry lookup needs no schema query. The restriction applies even
 when no field on the matched rows currently claims that column: a bulk statement has no one entry
