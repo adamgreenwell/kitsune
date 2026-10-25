@@ -50,7 +50,7 @@ class ManageEntryRelations extends ManageRelatedRecords
                 // A screen is only as complete as the enumeration behind it.
                 TextColumn::make('title')->searchable()
                     ->extraAttributes(['dir' => 'auto']),
-                TextColumn::make('type_handle')->badge()->label('Type'),
+                TextColumn::make('type_handle')->badge()->label(__('kitsune::admin.type')),
             ])
             /*
              * ⚠️ THE LISTED ROWS AND THE ATTACH DIALOG BOTH QUERY `Entry`, AND A POLICY GOVERNS NEITHER.

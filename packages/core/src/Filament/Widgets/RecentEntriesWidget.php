@@ -57,14 +57,14 @@ final class RecentEntriesWidget extends TableWidget
     public function table(Table $table): Table
     {
         return $table
-            ->heading('Recently updated')
+            ->heading(__('kitsune::admin.recent_heading'))
             ->query(fn (): Builder => self::recentQuery(KitsunePanel::viewableTypesHere()))
             ->columns([
                 // `dir="auto"` for the reason the entry list gives: titles in one org can be in several scripts.
-                TextColumn::make('title')->extraAttributes(['dir' => 'auto']),
-                TextColumn::make('type_handle')->badge()->label('Type'),
-                TextColumn::make('status')->badge(),
-                TextColumn::make('updated_at')->since()->label('Updated'),
+                TextColumn::make('title')->label(__('kitsune::admin.title'))->extraAttributes(['dir' => 'auto']),
+                TextColumn::make('type_handle')->badge()->label(__('kitsune::admin.type')),
+                TextColumn::make('status')->label(__('kitsune::admin.status'))->badge(),
+                TextColumn::make('updated_at')->since()->label(__('kitsune::admin.updated')),
             ])
             /*
              * ⚠️ THE VIEW PAGE, NOT THE EDIT PAGE. `view` is the grant that put the row here; a viewer who holds
@@ -75,7 +75,7 @@ final class RecentEntriesWidget extends TableWidget
                 'record' => $entry,
             ]))
             ->paginated(false)
-            ->emptyStateHeading('Nothing has been written yet');
+            ->emptyStateHeading(__('kitsune::admin.recent_empty'));
     }
 
     /**

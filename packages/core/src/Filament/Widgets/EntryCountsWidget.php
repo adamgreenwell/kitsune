@@ -18,6 +18,7 @@ use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
+use Kitsune\Core\Localization\CountMessage;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 
@@ -111,11 +112,11 @@ final class EntryCountsWidget extends StatsOverviewWidget
 
         foreach (Entry::STATUSES as $status) {
             if (($byStatus[$status] ?? 0) > 0) {
-                $parts[] = $byStatus[$status].' '.$status;
+                $parts[] = CountMessage::format('kitsune::admin.counted_status.'.$status, $byStatus[$status]);
             }
         }
 
-        return $parts === [] ? 'None yet' : implode(', ', $parts);
+        return $parts === [] ? __('kitsune::admin.none_yet') : implode(__('kitsune::admin.list_separator'), $parts);
     }
 
     /**
@@ -127,11 +128,11 @@ final class EntryCountsWidget extends StatsOverviewWidget
     private static function nothingToCount(): Stat
     {
         if (EntryTypeResource::canViewAny()) {
-            return Stat::make('Entry types', 0)
-                ->description('None yet. Create one to start adding content.')
+            return Stat::make(__('kitsune::admin.entry_types'), 0)
+                ->description(__('kitsune::admin.counts_create'))
                 ->url(EntryTypeResource::getUrl('index'));
         }
 
-        return Stat::make('Content', 0)->description('No entry type on this site is shared with you yet.');
+        return Stat::make(__('kitsune::admin.content'), 0)->description(__('kitsune::admin.counts_unshared'));
     }
 }

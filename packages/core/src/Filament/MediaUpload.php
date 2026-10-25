@@ -19,6 +19,7 @@ use Filament\Support\Icons\Heroicon;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Localization\CountMessage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Media\MediaLibrary;
@@ -257,8 +258,8 @@ final class MediaUpload
         $asked = $stored === count(array_filter($results, static fn (array $r): bool => $r['outcome'] === self::STORED));
 
         $title = match (true) {
-            $stored === $count => trans_choice('kitsune::media.upload.stored_all', $count, ['count' => $count]),
-            $stored === 0 => trans_choice('kitsune::media.upload.stored_none', $count, ['count' => $count]),
+            $stored === $count => CountMessage::format('kitsune::media.upload.stored_all', $count, ['count' => $count]),
+            $stored === 0 => CountMessage::format('kitsune::media.upload.stored_none', $count, ['count' => $count]),
             default => __('kitsune::media.upload.stored_some', ['stored' => $stored, 'count' => $count]),
         };
 
