@@ -27,6 +27,7 @@ use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Schema\FieldStorageWrites;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Validation\ScopedUnique;
 use RuntimeException;
 
 /** Row-only optional content, committed once and subsequently operator-owned — ADR-039. @internal */
@@ -410,6 +411,10 @@ final class BlueprintSeeder
                     $payload[$column] = $value;
                 }
             }
+            if ($column === 'slug') {
+                // Collision policy compares the stored slug, including a normalised promoted value.
+                $payload['slug'] = $fieldType->toStorage($value, new FieldConfig($storage, $field, $entry));
+            }
         }
 
         return $payload;
@@ -424,6 +429,11 @@ final class BlueprintSeeder
         $type = app(FieldTypeRegistry::class)->get($storage->type);
         $config = new FieldConfig($storage, $field, $entry);
         $rules = ['value' => $type->validationRules($config)];
+        if ($type->promotedColumn() === 'slug') {
+            // This batch's locked collision checks own slug uniqueness and Fail/Skip policy.
+            // Keep syntax, requiredness and normalised-length validation before any conversion/write.
+            $rules['value'] = array_values(array_filter($rules['value'], static fn (mixed $rule): bool => ! $rule instanceof ScopedUnique));
+        }
         $elements = $type->elementValidationRules($config);
         if ($elements !== []) {
             $rules['value.*'] = $elements;

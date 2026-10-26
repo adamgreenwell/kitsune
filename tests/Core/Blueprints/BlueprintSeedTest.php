@@ -184,6 +184,81 @@ it('records skip collisions without adopting an operator entry or using it as re
     expect(Entry::count())->toBe(1)->and($operator->fresh()->title)->toBe('Operator');
 });
 
+it('honors skip for a normalized promoted slug collision without adopting live or trashed operator content', function (bool $trashed): void {
+    $definition = new SeedBlueprint([
+        new SeedEntryDeclaration('occupied', 'seed_slug_article', 'Do not replace', 'Same URL', ['seed_slug' => 'Same URL'], onCollision: OnCollision::Skip),
+        new SeedEntryDeclaration('fresh', 'seed_slug_article', 'Fresh', 'Fresh URL', ['seed_slug' => 'Fresh URL']),
+    ], '1.1.0', [...$this->definition->entryTypes(), new EntryTypeDeclaration('seed_slug_article', 'Slug article', 'Slug articles', fields: [
+        new FieldDeclaration('seed_slug', 'slug', 'Slug', 'none', isRequired: true),
+    ])]);
+    BlueprintApplier::apply($definition);
+    $type = EntryType::query()->where('handle', 'seed_slug_article')->sole();
+    $operator = Entry::create(['entry_type_id' => $type->id, 'title' => 'Operator', 'slug' => 'same-url']);
+    if ($trashed) {
+        $operator->delete();
+    }
+    $attributes = $operator->fresh()->getAttributes();
+    $revisions = $operator->revisions()->count();
+    $result = BlueprintSeeder::seed($definition, $this->site, 'en');
+    expect($result)->toBe(['created' => ['fresh'], 'skipped' => ['occupied'], 'retained' => []])
+        ->and($operator->fresh()->getAttributes())->toBe($attributes)
+        ->and($operator->revisions()->count())->toBe($revisions)
+        ->and(Entry::query()->where('title', 'Fresh')->sole()->slug)->toBe('fresh-url')
+        ->and(Entry::query()->withTrashed()->count())->toBe(2);
+    $facts = BlueprintSeeder::facts(BlueprintSeed::query()->sole());
+    expect($facts['occupied']['outcome'])->toBe('skipped')->and($facts['occupied']['entry_id'])->toBeNull();
+    $counts = [Entry::query()->withTrashed()->count(), DB::table('entry_revisions')->count(), AuditLog::count()];
+    BlueprintSeeder::seed($definition, $this->site, 'en');
+    expect([Entry::query()->withTrashed()->count(), DB::table('entry_revisions')->count(), AuditLog::count()])->toBe($counts);
+})->with([false, true]);
+
+it('honors skip for a same-batch promoted slug collision after normalization', function (): void {
+    $definition = new SeedBlueprint([
+        new SeedEntryDeclaration('first', 'seed_slug_article', 'First', 'Same URL', ['seed_slug' => 'Same URL']),
+        new SeedEntryDeclaration('occupied', 'seed_slug_article', 'Do not duplicate', 'SAME URL', ['seed_slug' => 'SAME URL'], onCollision: OnCollision::Skip),
+        new SeedEntryDeclaration('fresh', 'seed_slug_article', 'Fresh', 'Fresh URL', ['seed_slug' => 'Fresh URL']),
+    ], '1.1.0', [...$this->definition->entryTypes(), new EntryTypeDeclaration('seed_slug_article', 'Slug article', 'Slug articles', fields: [
+        new FieldDeclaration('seed_slug', 'slug', 'Slug', 'none', isRequired: true),
+    ])]);
+    BlueprintApplier::apply($definition);
+    $result = BlueprintSeeder::seed($definition, $this->site, 'en');
+    expect($result)->toBe(['created' => ['first', 'fresh'], 'skipped' => ['occupied'], 'retained' => []])
+        ->and(Entry::query()->orderBy('id')->pluck('slug')->all())->toBe(['same-url', 'fresh-url']);
+    $facts = BlueprintSeeder::facts(BlueprintSeed::query()->sole());
+    expect($facts['occupied']['entry_id'])->toBeNull();
+    $counts = [Entry::count(), DB::table('entry_revisions')->count(), AuditLog::count()];
+    BlueprintSeeder::seed($definition, $this->site, 'en');
+    expect([Entry::count(), DB::table('entry_revisions')->count(), AuditLog::count()])->toBe($counts);
+});
+
+it('still fails a normalized promoted slug collision atomically with the default policy', function (): void {
+    $definition = new SeedBlueprint([
+        new SeedEntryDeclaration('fresh', 'seed_slug_article', 'Fresh', 'fresh'),
+        new SeedEntryDeclaration('occupied', 'seed_slug_article', 'Do not replace', 'Same URL'),
+    ], '1.1.0', [...$this->definition->entryTypes(), new EntryTypeDeclaration('seed_slug_article', 'Slug article', 'Slug articles', fields: [
+        new FieldDeclaration('seed_slug', 'slug', 'Slug', 'none', isRequired: true),
+    ])]);
+    BlueprintApplier::apply($definition);
+    $type = EntryType::query()->where('handle', 'seed_slug_article')->sole();
+    $operator = Entry::create(['entry_type_id' => $type->id, 'title' => 'Operator', 'slug' => 'same-url']);
+    $counts = [Entry::count(), DB::table('entry_revisions')->count(), AuditLog::count()];
+    expect(fn () => BlueprintSeeder::seed($definition, $this->site, 'en'))->toThrow(RuntimeException::class, 'collides with an existing entry')
+        ->and([Entry::count(), DB::table('entry_revisions')->count(), AuditLog::count()])->toBe($counts)
+        ->and(BlueprintSeed::query()->count())->toBe(0)->and($operator->fresh()->title)->toBe('Operator');
+});
+
+it('retains promoted slug syntax and size validation when skip is selected', function (mixed $value): void {
+    $definition = new SeedBlueprint([
+        new SeedEntryDeclaration('invalid', 'seed_slug_article', 'Invalid', values: ['seed_slug' => $value], onCollision: OnCollision::Skip),
+    ], '1.1.0', [...$this->definition->entryTypes(), new EntryTypeDeclaration('seed_slug_article', 'Slug article', 'Slug articles', fields: [
+        new FieldDeclaration('seed_slug', 'slug', 'Slug', 'none', isRequired: true),
+    ])]);
+    BlueprintApplier::apply($definition);
+    $audits = AuditLog::count();
+    expect(fn () => BlueprintSeeder::seed($definition, $this->site, 'en'))->toThrow(RuntimeException::class, 'Seed field [seed_slug] is invalid')
+        ->and(BlueprintSeed::query()->count())->toBe(0)->and(Entry::count())->toBe(0)->and(AuditLog::count())->toBe($audits);
+})->with(['empty after normalization' => ['!!!'], 'wrong shape' => [['bad']], 'too long' => [str_repeat('x', 256)]]);
+
 it('names moved and retyped seed content as a reverse obstacle', function (): void {
     BlueprintSeeder::seed($this->definition, $this->site, 'en');
     $entry = Entry::query()->sole();
