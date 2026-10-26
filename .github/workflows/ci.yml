@@ -255,8 +255,8 @@ jobs:
     name: Playwright (PHP ${{ matrix.php }}, skeleton smoke)
     runs-on: ubuntu-latest
     needs: scope
-    # ⚠️ NOT for a prose-only change: the browser lane boots the skeleton and clicks it, and no file
-    # under docs/ is reachable from a rendered page. It still runs on main, where it is the merge check.
+    # The full skeleton lane still skips prose-only pull requests. Documentation source/link checks run
+    # in Pest; this eligible browser lane also exercises the independent static reading artifact.
     if: needs.scope.outputs.docs_only != 'true'
     timeout-minutes: 20
     strategy:
@@ -290,10 +290,18 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
 
+      # The static builder uses the monorepo's Composer development install.
+      - uses: ramsey/composer-install@4.0.0
+
+      - name: Read the static documentation artifact
+        run: npx playwright test --config=playwright.docs.config.js
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           # One name per PHP version: a second upload under the same name conflicts.
           name: playwright-report-php-${{ matrix.php }}
-          path: playwright-report/
+          path: |
+            playwright-report/
+            build/documentation-browser-results/
           retention-days: 7
