@@ -7321,6 +7321,46 @@ holds the name; only the dialog and the audit row stand in the way. A reader-tab
 when a site with offered files has its reader accounts switched off; offering a selection; a size check against
 `size_bytes` before streaming; a canonical lower-case prefix.
 
+**Amendment — offering a selection (#252, 2026-10-26 implementation choice).**
+
+The media list gains *Offer selected to readers*, for whoever may publish its type. This chooses the behavior
+left open above; it is not a further answer attributed to Adam. The earlier reasoning and *Owed* item remain
+visible while the implementation's independent qualification is pending.
+
+The operator enters one entitlement name and types it again to confirm the exact name. The modal says that
+it replaces any different name already offered by an eligible selected file, says that readers holding only the old
+name lose that download, and repeats decision 4's warning about the bytes as stored. A matching current name is
+unchanged and receives no invented audit event.
+Malformed or mismatched confirmation refuses the entire request before any writer runs, including a forged
+submission that bypasses the form.
+
+The selection uses `BulkSelection`'s existing fifty-record bound and request budget, at most fifteen seconds:
+take the deadline before fetching, fetch at most fifty plus one through the selected query, and refuse the whole
+selection above fifty rather than truncating it. An explicit key selection above fifty also refuses. Each file
+is attempted separately, the first always, with none started once the budget expires; an attempt in hand finishes.
+No transaction encloses the selection. Successful earlier offers remain when a later file refuses or cannot
+be confirmed. One escaped, persistent notification gives each result and identifies unavailable or unattempted
+selections without exposing foreign titles. The selection clears only when every selected file is as requested;
+otherwise the operator can adjust it and run again. Repeated matching offers are idempotent.
+
+Each attempt reloads its row within the current Org, Site and list type, and rechecks publish permission.
+The only writer remains `MediaVisibility::offer()`: it rechecks the stored row and permission under custody,
+refuses shared/public/trashed/missing files, and audits each new or changed offer in its own transaction.
+A stale or forged model's attributes cannot choose another type, scope or feedback title. If an unexpected
+commit error occurs, a fresh scoped read may establish that the requested offer now stands; otherwise the result
+says it could not be confirmed, rather than claiming that nothing changed. This is a per-file operation and a
+current-state report, not an atomic batch or a promise about a subsequent concurrent change.
+
+**Measured locally — selection (#252).** In the isolated SQLite browser fixture on the development Mac, fifty
+private files were offered and individually audited in 357 ms from submission to the visible result; the earlier
+measurement was 351 ms. Every stored checksum was unchanged, the other Site's file was untouched, and all fifty
+offers completed with zero retries. This measures that local request, not the 1 vCPU floor or a worst-case custody
+wait. The existing fifty-record/fifteen-second limits are unchanged. A first narrow-layout check found a 3,138-pixel
+notification at a 320-pixel viewport. The result list now has a named, keyboard-focusable scroll region capped at
+40vh, with the summary and close button outside it; Home/End reach the first and last result, and the current browser
+checks pass axe at the project's admin severity threshold. Mixed selections preserve successful offers, explain each
+refusal and stay selected. Full-suite and exact-head CI/review qualification remain owed.
+
 **Amendment — Your downloads (#250, 2026-10-21).** The individual landing/file door above remains the authority
 for bytes. The account now links to `{prefix}/account/downloads`, a list of current private offers whose live
 entitlement names the signed-in reader holds on this Site. This resolves the list/batch-check item in the earlier

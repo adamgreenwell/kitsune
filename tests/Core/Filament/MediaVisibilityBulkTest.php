@@ -188,7 +188,7 @@ describe('the actions, as the list builds them', function (): void {
         ($this->grant)('view', 'publish', 'delete');
         $actions = bulkVisActions();
 
-        expect(array_keys($actions))->toBe(['makeSelectedPublic', 'makeSelectedPrivate', 'delete', 'restore', 'forceDelete'])
+        expect(array_keys($actions))->toBe(['makeSelectedPublic', 'makeSelectedPrivate', 'offerSelectedToReaders', 'delete', 'restore', 'forceDelete'])
             ->and($actions['makeSelectedPublic'])->toBeInstanceOf(BulkAction::class)->not->toBeInstanceOf(DeleteBulkAction::class)
             ->and($actions['makeSelectedPublic']->getLabel())->toBe('Make selected public')
             ->and($actions['makeSelectedPrivate']->getLabel())->toBe('Make selected private')

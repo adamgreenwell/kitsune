@@ -214,7 +214,7 @@ describe('the actions', function (): void {
     it('keeps Filament\'s three, in their place, on every list', function (): void {
         $actions = bulkRmActions();
 
-        expect(array_keys($actions))->toBe(['makeSelectedPublic', 'makeSelectedPrivate', 'delete', 'restore', 'forceDelete'])
+        expect(array_keys($actions))->toBe(['makeSelectedPublic', 'makeSelectedPrivate', 'offerSelectedToReaders', 'delete', 'restore', 'forceDelete'])
             ->and($actions['delete'])->toBeInstanceOf(DeleteBulkAction::class)
             ->and($actions['restore'])->toBeInstanceOf(RestoreBulkAction::class)
             ->and($actions['forceDelete'])->toBeInstanceOf(ForceDeleteBulkAction::class)
