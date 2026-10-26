@@ -4413,6 +4413,119 @@ invalid format refusal before intent, owner-adapted formats and a frozen Storefr
 
 ---
 
+### Amendment — Receipted availability preserves operator decisions, 2026-10-26 (#204)
+
+**Decision; implementation and qualification are still owed.** The third blueprint key uses the existing
+`EntryTypeAvailability` rows and ADR-022's resolver. A site decision overrides its site group, which overrides
+its org; absent everywhere still means enabled. It adds no settings store, target-creation mechanism, admin
+route, dependency or third-party extension promise. The PHP definition remains first-party and unstable
+before v1.2. Content, the fourth key, remains separate.
+
+**Measured before choosing this contract.** On the current SQLite kernel with foreign keys enabled, two orgs
+with identically named site groups and site handles resolve independently, and a site override leaves its
+sibling's inherited decision alone. The unique availability tuple refuses a second value without overwriting
+the first. A direct availability-model write nevertheless accepts a foreign-org target ID: the model is
+deliberately unscoped and its polymorphic target has no foreign key, so neither that declaration nor the unique
+index supplies the writer's org fence. This is a constraint on the new writer, not a claim that a public write
+door exists today.
+
+The controlled reverse also removed two operator decisions with a blueprint-created type: one the operator
+had changed and one added at a site. Unrelated decisions in both orgs survived. The first probe's reverse
+assertion failed only because a newly created model's array ordered its ID differently from a reloaded row;
+the corrected probe compared stored rows on both sides and reran only that failed case. The two preceding
+successful measurements were not rerun. The original failure remains recorded; this is not an all-green claim
+for that original execution. No application source changed for those measurements.
+
+**Keep frozen PHP definitions loadable.** The five frozen first-party definitions all load against the current
+interface. In isolated PHP processes, adding a required `availability()` method to that interface made all
+five fail to load with a missing-abstract-method error; a separate optional typed capability left all five
+loadable. No frozen source was edited. Those copies are explicitly never edited by `ReleasedBlueprintsTest`,
+and changing them to accommodate a new required method would rewrite the historical inputs that test exists
+to protect.
+
+This amends the earlier preference for further required methods on one interface, whose reasoning remains
+above: four permanent seams would cost more than one. Preserving real older definitions wins over that
+preference here. The existing four-method `BlueprintDefinition` stays unchanged. A first-party definition
+opts in by implementing `DeclaresAvailability`, which extends it with `availability(): array`; an older
+definition means an empty list. The kernel recognizes the typed capability with `instanceof`, not a magic
+method name. This is the explicit decision to grow the first-party blueprint author's surface from five
+symbols to seven: the unchanged original five, `DeclaresAvailability` and `AvailabilityDeclaration`. Everything
+else remains internal. The two additions have the same first-party-only, pre-v1.2 footing as the existing
+definition and declarations, with no third-party or 0.x stability promise. This does not decide the fourth
+key's future surface.
+
+**Address existing targets by org-local handles.** `DeclaresAvailability::availability()` will return a list of
+`AvailabilityDeclaration` values: entry-type handle, scope (`org`, `site_group` or `site`), nullable target
+handle, boolean `isEnabled`, and the existing `OnCollision` policy. Org means the org in context and requires
+a null target. Site groups and sites use their exact existing handles within that org, never a database ID,
+site route slug, URL or another org selector. A numeric string is a handle if such a handle exists, never an ID
+shortcut. Handles are compared exactly after the scoped lookup, so a database's case-folding collation cannot
+quietly substitute another spelling. A site group has no slug; a site's globally unique route slug is a
+different name from its org-unique handle.
+
+Every declaration names an entry type this definition declares and this blueprint creates or previously
+created and still holds. It may not change availability on a global type, another blueprint's type or one
+adopted under `Skip`: adapting the operator's existing type is the operator's decision. Resolve all prospective
+targets and refuse unknown or foreign-org targets, invalid shapes and duplicate resolved tuples before an
+intent or data write. Recheck the resolved identities and org ownership inside the rows' transaction. Taking
+a later version must not bind a recorded decision to a replacement row that happens to reuse an old handle.
+
+**A collision is not ownership, even when the values agree.** Default `Fail` refuses an existing tuple.
+Explicit `Skip` leaves the existing row and value exactly as found and records that it was not created by this
+blueprint. The receipt records the declaration, outcome, row ID and resolved parent/target identities in the
+same transaction as the rows. An additive merge may add new tuples only: it refuses changes to or removal of
+recorded declarations, never rewrites their live values and never recreates a decision the operator removed.
+The existing finished same-version no-op remains a no-op. An interrupted finish uses the manifest's committed
+facts rather than replaying current declarations or recreating rows; absent or taken-over rows are named and
+left alone. Row writes and receipt state still commit together, before the existing index finish.
+
+A legacy manifest without the availability key means an empty declaration list: every older writer lacked
+that key entirely. This compatibility is exactly that historical absence, not a default for a malformed
+present key or record. The existing unreadable-manifest rules remain: merge and finish refuse, while reverse
+may clear only the receipt and guesses no row ownership.
+
+**Reverse cannot use the parent cascade to evade ownership.** A reverse may remove a decision only while its
+recorded row, tuple, boolean value, current-org type and target still match a `created` record. A skipped,
+changed, replaced or unrecorded decision is the operator's. A missing decision stays missing. If deleting a
+created type would cascade any decision the reverse does not own, refuse the whole reverse before writes,
+name the obstruction, and leave the receipt and all rows intact. The operator must explicitly remove that
+decision before reversing; there is no force, purge or silent adoption option.
+
+This **amends the reverse's accepted loss of edited availability**, stated above and retained as the old
+rationale. That cascade was acceptable while availability had no independent declaration or receipt record.
+Once the third key distinguishes its own decisions from an operator's, continuing to erase the latter through
+the parent would contradict that ownership claim. The strengthened guard also applies to old receipts with
+operator availability; their missing key authorizes no decision deletion. Other existing reverse boundaries,
+including content, history, role holders and the accepted loss of an otherwise removable row's presentation
+edits, remain unchanged.
+
+Receipt, org, current types, targets and availability must be read under a consistent lock order before the
+first mutation; native tests must establish protection against both edits and new decision insertions while
+a reverse waits. Use the existing model connection and transaction boundaries, not a default-connection
+shortcut. SQLite's serialization does not establish the PostgreSQL, MySQL or MariaDB lock contract.
+
+**Initial implementation gate, retained:** this amendment settled the contract before interface expansion.
+At that point #204 still owed the key and its receipt projections, fresh apply/collision/merge/finish/reverse
+coverage, old and malformed receipts, target identity and operator-edit checks, and native concurrency proof.
+The optional definition capability and declaration alone did not deliver or qualify the kernel behavior.
+
+**As implemented, 2026-10-26:** `BlueprintApplier` now validates the optional key, resolves new targets before
+intent, rechecks their captured identities under transaction locks, and commits sparse decisions with their
+ownership records. Merge carries old records verbatim and adds only new tuples. Interrupted finish names
+missing or changed decisions without replaying them. Reverse locks recorded parents, targets and decisions
+before its first plain-read plan and refuses the entire operation before a cascade would erase any decision
+it does not still own unchanged. Old definitions and the five frozen released PHP payloads remain unchanged.
+
+Default SQLite tests include independent-PDO, actual-level-zero receipt/rollback/finish observations. Native
+PostgreSQL, MySQL and MariaDB tests exercise rival decision edits and FK insertions in both winning orders,
+on connections outside the testing wrapper. Isolated PostgreSQL mutations removing the decision lock or
+parent lock respectively break the edit or insert fence test. PostgreSQL's different text collation also
+exposed an old grant-membership assertion: membership is still checked exactly, now sorted consistently in
+PHP; neither permission behavior nor database collation changed. Full CI/browser/exact-head review and
+verified main integration remain separate acceptance gates; this as-built record does not mark #204 Done.
+
+---
+
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below

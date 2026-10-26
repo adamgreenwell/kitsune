@@ -31,10 +31,11 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  *
  * ⚠️ ~~ONE OF THE FOUR KEYS IS HERE~~ TWO OF THE FOUR KEYS ARE HERE. ADR-039 cut the roadmap's six to four — entry
  * types with their fields, roles with their grants, entry type availability, and content — and this interface
- * carries the first two. The other two arrive as further methods on this interface rather than as further
- * interfaces, because everything still standing at v1.2 is a permanent obligation (Standing Principle #2) and one
- * seam is cheaper to keep than four. A definition that declares no types and no roles is legitimate and applies as
- * a no-op.
+ * carries the first two. The original plan put the other keys on this same interface: one seam is cheaper than four
+ * permanent obligations at v1.2 (Standing Principle #2). ADR-039's availability amendment preserves that reasoning
+ * but changes the plan: a new required method makes every never-edited frozen PHP definition fail to load.
+ * DeclaresAvailability is the optional typed third key; an older definition means an empty list, without editing
+ * its historical payload. Content remains separate. A legacy definition with no types or roles remains a no-op.
  */
 interface BlueprintDefinition
 {
