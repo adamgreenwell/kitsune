@@ -356,6 +356,29 @@ again, by registration, sign-in and recovery for readers, built as Phase 5a's sl
 commerce. The reason is the one above: ADR-040 brought the four scenarios into v1.0 so that v1.0 could serve them,
 and three of the four need a reader who can sign in. The REST API, theming and the privacy tooling stay in v1.1.
 
+### Amendment — Versioning and retained upgrade admission, 2026-10-26 (#211)
+
+The scope cut and the v1.2 extension freeze above remain in force. Phase 6's semantic-versioning commitment
+needed an application/operator boundary distinct from that later extension contract, and the original
+"nothing is released" prose no longer described the 0.x packages already recorded in the roadmap. Those
+packages are development releases, without a retroactive stability or stable-version security-support promise.
+
+Adam selected **the latest stable minor at its latest patch** for security maintenance, and **case-by-case
+origin fingerprinting and rehearsal** for retained pre-v1.0 upgrades. The
+[versioning and upgrade policy](versioning-and-upgrades.md) separates core, first-party modules, blueprint
+receipts and copied host-owned skeleton code; defines the stable version-number meanings; and records the
+required operator sequence, open acceptance matrix and recovery limits. Neither choice supplies missing
+historical schema metadata or turns the #217 source audit into a qualified upgrade. Pre-alpha data is not
+disposable without its operator's explicit confirmation.
+
+No support duration, transition/notice window, EOL date or superseded-major coverage was chosen. Actual stable
+versions and those terms must be recorded at the release gates before an announcement commits to them. v1.0
+remains unreleased; #212's operational security rehearsal and #213–#218's artifacts, installation and upgrade
+proofs remain separate. A code rollback does not reverse destructive DDL or recover historical unknowns.
+The existing resource floor and response targets are unchanged. Standing Principle #2 still requires a
+deliberately narrow v1.2 extension contract, then deprecation without removal within a major; this amendment
+does not open a third-party API early, authorize a tag or authorize deployment.
+
 ---
 
 ## ADR-012 — Admin routing: entity type as a route parameter

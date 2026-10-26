@@ -518,7 +518,10 @@ a product can have one. The **DAM** starter is Phase 5's, and
 
 - [ ] Security review, especially every tenancy boundary
 - [ ] Documentation site — explicitly *not* settled by [ADR-030](decision-log.md), which covers the marketing site only. Search, versioning and deep cross-linking may or may not be a Kitsune workload; that wants evidence rather than symmetry
-- [ ] Semantic versioning commitment and published upgrade policy
+- [ ] Semantic versioning commitment and published upgrade policy — [policy candidate](versioning-and-upgrades.md)
+      records the latest-stable-minor/latest-patch maintenance model and case-by-case fingerprint/rehearsal
+      admission for retained pre-v1.0 data, chosen by Adam in #211. Support dates/transition terms, reviewer-approved
+      publication and actual origin/path upgrade evidence remain separate open gates; no v1.0 release is implied.
 - [ ] Staffed security disclosure process
 - [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
   - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, with the distribution's own PHP where it meets `^8.4` (26.04 ships 8.5) and packages.sury.org where it does not (ADR-026 amendment)
