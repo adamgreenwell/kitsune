@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Blueprint;
+use Kitsune\Core\Models\BlueprintSeed;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -96,6 +97,7 @@ it('refuses a bulk insert on every guarded model', function (): void {
      * — that the door is shut is.
      */
     $rows = [
+        BlueprintSeed::class => ['org_id' => $this->org->id, 'blueprint_id' => 1, 'original_site_id' => 1, 'locale' => 'en'],
         Site::class => ['org_id' => $this->org->id, 'handle' => 'x', 'slug' => 'x', 'name' => 'X'],
         EntryType::class => ['org_id' => $this->org->id, 'handle' => 'y', 'name' => 'Y', 'plural_name' => 'Ys'],
         Entry::class => ['entry_type_id' => 1, 'title' => 'Z'],
@@ -234,7 +236,7 @@ it('rests on a discriminator no caller can arrange', function (): void {
      * what one blueprint wrote onto another's name.
      */
     $guarded = [
-        Blueprint::class, Entry::class, EntryType::class, Field::class,
+        Blueprint::class, BlueprintSeed::class, Entry::class, EntryType::class, Field::class,
         Module::class, Org::class, Site::class, SiteGroup::class,
     ];
 

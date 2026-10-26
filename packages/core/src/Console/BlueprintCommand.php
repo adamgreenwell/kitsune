@@ -17,23 +17,25 @@ use Kitsune\Core\Auth\FirstOwnerCredentials;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\BlueprintSeeder;
 use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Blueprints\OnCollision;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Blueprint;
+use Kitsune\Core\Models\BlueprintSeed;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 use Symfony\Component\Console\Input\StreamableInputInterface;
 use Throwable;
 
 /**
- * List, apply, reverse and report on blueprints — ADR-039.
+ * List, apply, seed, reverse and report on blueprints — ADR-039.
  *
- * ⚠️ ONE COMMAND, ~~NOT THREE~~ NOT FOUR, for the reason `kitsune:module` gives: the split in this repo is by blast
- * radius rather than by verb, and ~~three~~ four names is four things frozen at v1.2 for one subject. The work lives in
- * `BlueprintApplier`, so it is testable without a console and this class is argument handling.
+ * One command, split by blast radius rather than verb, as `kitsune:module` is. Schema
+ * work lives in `BlueprintApplier`, row-only content in `BlueprintSeeder`; this is argument handling.
  *
  * ⚠️ `reverse` ACTS AT ONCE, WITH NO `--force` AND NO PROMPT (Adam, 2026-10-05), as `kitsune:module uninstall` does —
  * the precedent ADR-039 names for it. It already stops, writing nothing, on everything that matters: content, a holder,
@@ -59,14 +61,14 @@ use Throwable;
  */
 final class BlueprintCommand extends Command
 {
-    private const ACTIONS = ['list', 'status', 'apply', 'reverse'];
+    private const ACTIONS = ['list', 'status', 'apply', 'seed', 'reverse'];
 
     /** What only `apply` takes: each can create an organisation or its owner, and a reverse creates nothing. */
     private const APPLY_ONLY = ['--owner', '--owner-password-stdin', '--org-name', '--site', '--locale'];
 
-    protected $signature = 'kitsune:blueprint {action=list : list, status, apply or reverse} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into — created with a first site when the installation has none — or to reverse out of} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale} {--owner= : on an installation with no organisation and no account only — the email address of its first owner, created with the organisation; the password is asked twice, hidden (ADR-026)} {--owner-password-stdin : read the first owner\'s password from the first line of standard input instead of asking}';
+    protected $signature = 'kitsune:blueprint {action=list : list, status, apply, seed or reverse} {handle? : the blueprint, e.g. blog} {--org= : the org slug; apply may create the first org, seed and reverse require one to exist} {--org-name= : the name for an org apply creates, defaulting to a humanised slug} {--site= : apply: first-site slug; seed: exact existing current-org site handle (required)} {--locale=en : apply: first-site locale; seed: explicit current site locale (required)} {--owner= : on an installation with no organisation and no account only — the email address of its first owner, created with the organisation; the password is asked twice, hidden (ADR-026)} {--owner-password-stdin : read the first owner\'s password from the first line of standard input instead of asking}';
 
-    protected $description = 'List, apply, reverse and report on Kitsune blueprints (ADR-039)';
+    protected $description = 'List, apply, seed, reverse and report on Kitsune blueprints (ADR-039)';
 
     public function handle(): int
     {
@@ -83,6 +85,7 @@ final class BlueprintCommand extends Command
             'list' => $this->list(),
             'status' => $this->status(),
             'apply' => $this->apply(),
+            'seed' => $this->seed(),
             'reverse' => $this->reverse(),
         };
     }
@@ -144,6 +147,83 @@ final class BlueprintCommand extends Command
         }
 
         $this->table(['Org', 'Handle', 'Version', 'Applied'], $rows);
+
+        // Installation-wide operator report, like schema status above. No scope is inferred from these reads.
+        $seedRows = [];
+        foreach (BlueprintSeed::query()->withoutGlobalScopes()->orderBy('org_id')->orderBy('id')->get() as $seed) {
+            try {
+                $facts = BlueprintSeeder::facts($seed);
+                $created = count(array_filter($facts, static fn (array $fact): bool => $fact['outcome'] === 'created'));
+                $state = $created.' created / '.(count($facts) - $created).' skipped';
+            } catch (RuntimeException) {
+                $state = 'MALFORMED — investigate; no replay authority';
+            }
+            $seedRows[] = [$seed->org_id, $seed->blueprint_id, $seed->original_site_id, $seed->locale, $seed->version,
+                $seed->site_id === null ? 'SITE REMOVED — '.$state : $state];
+        }
+        if ($seedRows !== []) {
+            $this->table(['Org', 'Schema receipt', 'Original site', 'Locale', 'Seed version', 'Content facts'], $seedRows);
+        }
+
+        return self::SUCCESS;
+    }
+
+    private function seed(): int
+    {
+        foreach (['--owner', '--owner-password-stdin', '--org-name'] as $option) {
+            if ($this->input->hasParameterOption($option, true)) {
+                $this->error("`{$option}` belongs to apply. Seed creates no organisation, site or owner.");
+
+                return self::FAILURE;
+            }
+        }
+        $handle = $this->argument('handle');
+        $orgSlug = $this->optionAsString('org');
+        $siteHandle = $this->optionAsString('site');
+        $locale = $this->optionAsString('locale');
+        if (! is_string($handle) || $handle === '' || $orgSlug === null || $siteHandle === null
+            || $locale === null || ! $this->input->hasParameterOption('--locale', true)) {
+            $this->error('Seed needs a blueprint, existing --org, exact --site handle and explicit --locale. Nothing was written.');
+
+            return self::FAILURE;
+        }
+        $definition = app(BlueprintRegistry::class)->get($handle);
+        $org = Org::query()->where('slug', $orgSlug)->first();
+        if ($definition === null || $org === null) {
+            $this->error('Seed needs a registered blueprint and an existing organisation. Nothing was created.');
+
+            return self::FAILURE;
+        }
+        $context = app(Context::class);
+        $previousOrg = $context->org();
+        $previousSite = $context->site();
+        try {
+            $context->forget();
+            $context->setOrg($org);
+            // A numeric-looking handle is still a name, never a primary-key fallback.
+            $site = Site::query()->where('org_id', $org->id)->where('handle', $siteHandle)->first();
+            if ($site === null) {
+                throw new RuntimeException("No current-org site has handle [{$siteHandle}]. Nothing was written.");
+            }
+            $result = BlueprintSeeder::seed($definition, $site, $locale);
+        } catch (Throwable $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        } finally {
+            $context->forget();
+            if ($previousSite !== null) {
+                $context->setSite($previousSite);
+            } elseif ($previousOrg !== null) {
+                $context->setOrg($previousOrg);
+            }
+        }
+        foreach ($result as $kind => $keys) {
+            foreach ($keys as $key) {
+                $this->line("  {$kind} seed {$key}");
+            }
+        }
+        $this->info("Seeded {$handle} into {$orgSlug}/{$siteHandle} ({$locale}). Existing content remains operator-owned.");
 
         return self::SUCCESS;
     }

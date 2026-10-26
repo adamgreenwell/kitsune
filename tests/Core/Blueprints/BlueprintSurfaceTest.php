@@ -12,17 +12,20 @@ use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
+use Kitsune\Core\Blueprints\DeclaresSeedContent;
 use Kitsune\Core\Blueprints\OnCollision;
 
 /*
  * What a blueprint author may build on — ADR-039's public surface, and nothing past it.
  *
- * ⚠️ FIVE SYMBOLS, AND A SIXTH IS A DECISION. Everything else under `Blueprints/` is `@internal` on ADR-038's
+ * ⚠️ SEVEN SYMBOLS: ADR-039's #205 amendment adds the optional seed capability and declaration.
+ * The original five remain unchanged. Everything else under `Blueprints/` is `@internal` on ADR-038's
  * precedent, Blog's own class included: its handle and what it creates are the contract, the class is not. A
  * symbol that loses the tag, or a new one that arrives without it, is a promise made without anybody deciding to.
  */
 
-it('makes exactly five symbols public', function (): void {
+it('makes exactly seven decided first-party author symbols public', function (): void {
     $root = dirname(__DIR__, 3).'/packages/core/src/Blueprints';
     $public = [];
 
@@ -50,6 +53,8 @@ it('makes exactly five symbols public', function (): void {
         EntryTypeDeclaration::class,
         FieldDeclaration::class,
         RoleDeclaration::class,
+        SeedEntryDeclaration::class,
+        DeclaresSeedContent::class,
         OnCollision::class,
     ]);
 });
