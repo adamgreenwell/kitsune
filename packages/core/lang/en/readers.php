@@ -136,6 +136,12 @@ return [
         // Counted: `ReaderPage` picks the form by `:count`, the whole minutes still to wait.
         'account' => '{1} Too many attempts to sign in to this account. Please wait a minute, or choose a new password.|[2,*] Too many attempts to sign in to this account. Please wait :count minutes, or choose a new password.',
     ],
+    'mode_warning' => [
+        // Labels with numeric values, not a grammatical plural selector.
+        'impact' => 'Reader download impact — offered files: :files; affected sites: :sites.',
+        'consequence' => 'Reader sign-in, account pages and download links will return 404 while accounts are off. Files, offers and entitlements are kept. Turn reader accounts back on to restore access.',
+        'confirm' => 'Refusing: this change closes reader download links. Run it again with --force to acknowledge the warning. Nothing was written.',
+    ],
     'errors' => [
         'summary' => 'There is a problem',
     ],

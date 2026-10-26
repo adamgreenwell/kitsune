@@ -25,6 +25,7 @@ use Kitsune\Core\Readers\ReaderExport;
 use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Readers\ReaderMail;
 use Kitsune\Core\Readers\ReaderMode;
+use Kitsune\Core\Readers\ReaderModeImpact;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Settings\SettingsWriter;
@@ -64,7 +65,7 @@ final class ReadersCommand extends Command
         {--org= : The organisation\'s slug}
         {--site= : For mode — the site\'s handle; without it, the organisation\'s own setting. Addresses are the organisation\'s alone}
         {--reader= : For export and erase — the reader\'s identifier, instead of their address on standard input}
-        {--force : Confirm erase, which deletes}';
+        {--force : Confirm erase, or acknowledge closing reader download links when changing mode}';
 
     protected $description = 'Report whether readers can sign in, set where they may and whether owners see their addresses, and find, export or erase one reader (ADR-037)';
 
@@ -228,6 +229,19 @@ final class ReadersCommand extends Command
         }
 
         $writer = app(SettingsWriter::class);
+
+        if ($setting === SettingsGuard::READER_ACCOUNTS) {
+            $impact = app(ReaderModeImpact::class)->count($scope, $value);
+
+            if ($impact['files'] > 0) {
+                $this->warn(__('kitsune::readers.mode_warning.impact', $impact));
+                $this->line(__('kitsune::readers.mode_warning.consequence'));
+
+                if (! $this->option('force')) {
+                    return $this->refuse(__('kitsune::readers.mode_warning.confirm'));
+                }
+            }
+        }
 
         if ($value === self::INHERIT) {
             $writer->revert($scope, $setting);
