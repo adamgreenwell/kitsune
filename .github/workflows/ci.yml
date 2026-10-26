@@ -290,6 +290,9 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
 
+      # The static builder uses the monorepo's Composer development install.
+      - uses: ramsey/composer-install@4.0.0
+
       - name: Read the static documentation artifact
         run: npx playwright test --config=playwright.docs.config.js
 
