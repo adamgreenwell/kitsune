@@ -33,6 +33,12 @@ non-required personal data while retaining only allowed purchase and purpose-bou
 Account erasure, holds, access-lifetime and quarantine/restore rules follow the existing privacy guide.
 JSONL and CSV include distinct free-completion and unit-correction records; no payment is fabricated.
 
+The completed order's guest erase form uses its exact unclaimed order proof, including in an anonymous
+HTTP request. It requires neither a staff login nor console execution. The proof and Org/Site boundary
+are checked again after the audit callback; losing proof or introducing a claim rolls back the entire
+minimization. The producer audit has no invented reader actor. Rotating the committed order's ownership
+key withdraws the old guest access without changing its free-completion receipt or frozen retention policy.
+
 ## Implementation boundaries
 
 `CheckoutReview` revalidates ownership, original line identity, current price, tax configuration, purchase
