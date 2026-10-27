@@ -1471,6 +1471,38 @@ never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
 
+### Amendment — Signed artifact verification format, 2026-10-26 (#213)
+
+The requirements above remain: versioned nonredirecting HTTPS on the project domain, independently pinned
+bootstrap bytes, download/inspect/run first, signed fetched artifacts, no default administrator and no telemetry.
+The [artifact verification contract](release-artifacts.md) uses a bounded canonical ASCII manifest, a detached
+RSA PKCS#1 v1.5/SHA-256 signature and SHA-256/size bindings for the actual artifacts. A separately confirmed
+DER SubjectPublicKeyInfo fingerprint pins a 3072–8192-bit RSA public key. A downloaded key is not its own trust
+root, and a valid signature is not platform, upgrade-origin or security-support admission.
+
+The format is deliberately readable before PHP is installed. The earlier Ed25519/JSON spike verified local
+interoperability but did not establish an available pre-PHP parser or OpenSSL3 on all supported targets.
+RSA/SHA-256 can use the existing OpenSSL extension after PHP starts; this amendment adds no application
+extension, dependency, service or resource-floor requirement. The pre-PHP Bash/awk verifier uses the OpenSSL
+CLI; supported native-target capabilities still require measurement, not an assumption from this choice.
+
+The intended signing boundary is offline maintainer-controlled custody, outside CI. Actual custodian, protected
+storage, passphrase entry, backup/continuity responsibility and recovery channels must be recorded before any
+production key is created or used. Rotation requires a reviewed versioned trust update and independent
+fingerprint/readback; compromise requires re-establishing trust out of band, not trusting a replacement key
+from the same potentially compromised host. Historical signatures remain evidence, not automatic downgrade
+permission. Nothing here creates a key, publishes a release, changes account access or authorizes deployment.
+
+The current implementation builds source-bound manifests, signs them through protected input channels and
+verifies manifests/artifact bytes offline. The standalone pre-PHP verifier fetches only literal versioned
+project-domain routes, requires verified TLS/HTTP200 without redirects, authenticates metadata before
+requesting a selected payload and promotes verified bytes exclusively. The instruction generator binds the
+shipped verifier's exact bytes to independently distributed size/hash pins and a local trusted public key;
+download/inspect/run remains primary, with a companion pinned download-and-verify command. Neither executes
+or extracts the fetched payload. Final package resolution/bundle proof, native/Docker integration and separately authorized real
+signing/publication with independent fetched-byte verification remain open under #213–#216. The existing
+core-only split workflow cannot silently stand in for the skeleton's complete first-party dependency graph.
+
 ---
 
 ## ADR-027 — The resource floor is a designed constraint, with a number

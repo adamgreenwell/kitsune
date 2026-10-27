@@ -13,6 +13,10 @@ URL, signing key or fabricated verification command. Track issues #213–#216 an
 release has been qualified. Use the [development checkout instructions](../README.md#running-it-locally) to evaluate the
 current code locally, with disposable data.
 
+The development [artifact tooling](release-artifacts.md) builds and signs local candidate manifests, verifies
+selected downloads before PHP starts, and generates pinned download/inspect/run commands from authenticated
+bytes. It supplies no production trust root, installer download or public one-liner; those release gates stay open.
+
 ## Choose a hosting path
 
 The designed reference floor is **1 vCPU, 1 GB RAM, SQLite, no container runtime and no external services**.
