@@ -3,7 +3,8 @@
 > A multi-purpose content and application platform for Laravel.
 > **Status: pre-alpha, under active development.**
 > The [roadmap](docs/roadmap.md) tracks what exists today, item by item.
-> Nothing is released and nothing is stable.
+> 0.x development packages exist; v1.0 is not released. They carry no stable compatibility or security-support
+> promise. Read the [versioning and upgrade policy](docs/versioning-and-upgrades.md) before retaining data.
 >
 > **[kitsunecms.org](https://kitsunecms.org)**
 
@@ -40,6 +41,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 | [`docs/architecture.md`](docs/architecture.md) | **How.** Data model, admin routing, tenancy security model, module and migration contracts |
 | [`docs/field-types.md`](docs/field-types.md) | **The field contract.** Storage strategies, the four faces every field type must answer, and the twelve types shipping in v1.0 |
 | [`docs/accessibility-inventory.md`](docs/accessibility-inventory.md) | **What is inherited.** Measured WCAG and RTL conformance, what Filament supplies, and the gaps that are Kitsune's to build |
+| [`docs/versioning-and-upgrades.md`](docs/versioning-and-upgrades.md) | **What a version promises.** Package and host-code boundaries, security maintenance, upgrade admission and recovery limits |
 
 ## Shape of the thing
 
@@ -58,7 +60,7 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 |---|---|
 | PHP | `^8.4` |
 | Laravel | 13.x |
-| Admin | Filament `^5.4` — Livewire + Alpine, server-rendered |
+| Admin | Filament `^5.6` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
 ## Running it locally

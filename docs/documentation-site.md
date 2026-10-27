@@ -61,5 +61,8 @@ Only snapshots actually built appear in the version navigation. A source commit 
 provenance, not a security-support table.
 
 Local build, link, search and browser evidence belongs with the pull request. No public URL or successful public
-readback is claimed by a local build. Issue #210 remains open until the merged implementation and its scoped
-acceptance evidence are verified; issue #211 owns the unresolved compatibility/support policy.
+readback is claimed by a local build. [#210](https://github.com/adamgreenwell/kitsune/issues/210) closed after
+the implementation merged through #339 and all five scoped local acceptance requirements were independently
+verified. Public publication and its readback still need separate authorization. The
+[versioning and upgrade policy](versioning-and-upgrades.md) records the selected maintenance/admission models
+and the unresolved release/support terms; a documentation snapshot does not qualify an upgrade.

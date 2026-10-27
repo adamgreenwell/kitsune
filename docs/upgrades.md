@@ -4,8 +4,11 @@
 
 Use the documentation snapshot that matches the code under review or installed on your host. A development
 snapshot, a clean CI result and a version label are not a stable-release or security-support promise. The
-[security policy](../SECURITY.md#supported-versions) owns the current support statement; issue #211 still owns
-the published compatibility matrix and support commitments. No duration is invented here.
+[security policy](../SECURITY.md#supported-versions) owns the current support statement. The
+[versioning and upgrade policy](versioning-and-upgrades.md) separates core, modules, blueprints and copied host
+code, records the latest-stable-minor/latest-patch maintenance model, and requires case-by-case fingerprints
+and rehearsal for retained pre-v1.0 data. Its upgrade matrix keeps unqualified paths explicit. No support
+duration, transition/EOL date or actual upgrade admission is invented here.
 
 Before changing an installation, retain a [recoverable backup and its matching keys](backup-restore.md), inspect
 the target release notes and migration requirements, and rehearse the exact change against a restored copy.
