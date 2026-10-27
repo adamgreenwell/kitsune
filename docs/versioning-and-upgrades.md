@@ -160,10 +160,11 @@ key and field-storage gates; its source forbids `migrate:fresh` and replacing `A
 that every origin above can upgrade. The [host runbook](../deploy/runbook/README.md) has separate intrusive
 host checks and maintenance-window requirements; reading this policy does not authorize running them.
 
-Installation, backup and upgrade guides proposed in [#339](https://github.com/adamgreenwell/kitsune/pull/339)
-are pending, as is the cold module-upgrade correction in [#313](https://github.com/adamgreenwell/kitsune/pull/313).
-They are not current-main operator instructions. Link their merged procedures and actual acceptance evidence
-when available; do not replace the missing evidence with this document's requirements.
+The merged [installation](install.md), [backup/restore](backup-restore.md) and [upgrade](upgrades.md) guides
+describe the current operator boundaries; unfinished installer, signing and retained-upgrade work stays explicit.
+The cold module-upgrade correction in [#313](https://github.com/adamgreenwell/kitsune/pull/313) is still pending
+and is not current-main behavior. Link actual origin-specific acceptance evidence when available; do not
+replace it with this document's requirements or a successful documentation build.
 
 ## Release communication and decisions still open
 

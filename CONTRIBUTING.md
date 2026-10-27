@@ -50,6 +50,10 @@ The [GitHub wiki](https://github.com/adamgreenwell/kitsune/wiki) holds two kinds
 
 `docs/` is the source of truth either way. It is versioned with the code and gated by the amendment rule above; nothing gates a wiki page. **If a wiki page contradicts `docs/`, the document wins.**
 
+The [versioned reading artifact](docs/documentation-site.md) is generated from that same source by
+`php bin/docs-build.php`. Edit Markdown, not generated HTML. Its immutable snapshots, local search and source
+copies are development documentation, with publication and release/support commitments kept separate.
+
 **Issues and discussions are open. Feature PRs are not.**
 
 ---

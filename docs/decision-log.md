@@ -11716,3 +11716,46 @@ provider I/O. Ownership, Org/Site custody, checked historical presentation, the 
 financial/allocation/access holds remain unchanged. Guest and native reader HTTP fixtures cover both
 allocated and disputed held payments, with unchanged retained rows and zero provider calls; browser
 checks submit stale guest and reader forms after confirmation. No live admission or deployment is implied.
+
+---
+
+## ADR-043 — Documentation is a source snapshot, searchable without a running application
+
+**Status:** Decided · 2026-10-26 · Resolves ADR-030's explicitly open documentation-site question, without changing its marketing-site decision.
+
+The needs were recorded before the delivery choice in [Documentation delivery](documentation-site.md): install,
+upgrade, schema, Org/Site and first-party module tasks, each traced to the existing source. At main
+`4e6f9059d841533b7ff45e18685da2c7022392ab`, the inspected Markdown corpus was 27 documents / 1,834,692 bytes;
+the decision log alone was 1,293,161 bytes / 42 ADRs. The real locked CommonMark parse found 463 headings and
+331 links, with no unresolved local targets or fragments. These are corpus facts, not a usability or latency benchmark.
+
+**Build a static artifact from the repository, using the PHP Markdown parser already in its development lock.**
+No new package, application boot, database, service, Node build or operator runtime dependency is required.
+The current wiki generates two navigation pages and links to main; it does not supply immutable snapshots or
+snapshot-local search. A Kitsune-hosted docs application would couple recovery reading to an application and
+require the public-theme/search work that the roadmap leaves for later. No running-CMS trial is claimed.
+The tradeoff is owning a small build tool and its source, link, search and reading tests.
+
+`docs/` stays authoritative. Each built snapshot retains exact source text and hashes, resolved source commit,
+version label and working-copy status. A label is not a release, compatibility commitment or support duration.
+Read the security policy for support; issue #211 still owns the compatibility-policy decision.
+
+The decision log is split for reading, **after assigning document-wide heading identities**. Duplicate headings
+and links into another ADR therefore retain their original source fragment; a per-page slugger would silently
+send a duplicate heading to the wrong decision. Source links inside the covered documents stay within the
+chosen snapshot. Links to other repository files name the resolved commit, while explicit historical external
+links keep their original target.
+
+Search runs in the reader's browser against that snapshot's index. Navigation and text work without JavaScript;
+no analytics, external search, remote font or third-party image request is added. Older snapshot files are not
+rewritten when another snapshot is built. Their version chooser discovers the catalogue, with an ordinary
+catalogue link as the no-JavaScript fallback.
+
+Operator guides lead with download-inspect-run, the native default and optional Docker path, no default
+administrator and no installer telemetry. They name unfinished installer/signing work rather than fabricating
+a download or key. Backup/key custody, restore/erasure replay, upgrades, export limits and the pre-v1.2
+first-party boundary are part of the reading path, not stable-API promises.
+
+**Local artifact verification and public publication are separate gates.** This decision authorises the build
+and local reading checks only. It does not select a host, deploy documentation, publish a release, authorise a
+provider action or make the marketing site's ADR-030 trigger true. The original reasoning above remains visible.

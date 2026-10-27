@@ -517,7 +517,11 @@ a product can have one. The **DAM** starter is Phase 5's, and
 *6–8 weeks.*
 
 - [ ] Security review, especially every tenancy boundary
-- [ ] Documentation site — explicitly *not* settled by [ADR-030](decision-log.md), which covers the marketing site only. Search, versioning and deep cross-linking may or may not be a Kitsune workload; that wants evidence rather than symmetry
+- [x] Documentation site — [#210](https://github.com/adamgreenwell/kitsune/issues/210), merged through #339.
+      [Measured task requirements and three delivery approaches](documentation-site.md) selected the static
+      source-snapshot reader; ADR-043 records why. Search, stable ADR links, local artifact integrity and
+      mobile/keyboard reading are verified. Public publication and host readback remain separately authorized;
+      ADR-030 still concerns marketing rather than choosing the documentation platform.
 - [ ] Semantic versioning commitment and published upgrade policy — [policy candidate](versioning-and-upgrades.md)
       records the latest-stable-minor/latest-patch maintenance model and case-by-case fingerprint/rehearsal
       admission for retained pre-v1.0 data, chosen by Adam in #211. Support dates/transition terms, reviewer-approved

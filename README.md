@@ -35,6 +35,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 
 | Doc | What it answers |
 |---|---|
+| [`docs/index.md`](docs/index.md) | **Start a task.** Install, upgrade, restore and find the matching source; [build the versioned reading site locally](docs/documentation-site.md#build-and-verify-locally) |
 | [`docs/decision-log.md`](docs/decision-log.md) | **Why.** Every decision, every rejected alternative, and the reason it lost |
 | [`docs/roadmap.md`](docs/roadmap.md) | **What and when.** Phased plan to v1.0 and beyond, with honest timelines |
 | [`docs/architecture.md`](docs/architecture.md) | **How.** Data model, admin routing, tenancy security model, module and migration contracts |
