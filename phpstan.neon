@@ -27,6 +27,8 @@ parameters:
         - bin/install-commerce-skeleton.php
         - bin/docs
         - bin/docs-build.php
+        - bin/release
+        - bin/release-artifacts.php
         - deploy/release-check.php
         # The runbook's outside checks (issue #111). They are shipped code in the sense that matters
         # here: they run against a live server and decide whether it holds ADR-034's conditions, so a
