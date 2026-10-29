@@ -23,8 +23,9 @@ concurrency:
 # recorded in #113: 25 successful workflows, green maxima 9:41 (PHP 8.4) and 9:40 (8.5), plus repeated 10-minute
 # cancellations on #267. #274's larger suite later completed the PHP 8.4 bare job in 12:16 and hit the 15-minute
 # PHP 8.5 ceiling with passing recovery tests near the end. Both bare jobs later exhausted 20 minutes on #201;
-# their bounded allowance below reached 25 minutes. Both versions then exhausted it on #292; the allowance is
-# now 30 minutes. #113 retains the tail-measurement work and historical engine ceilings.
+# their bounded allowance below reached 25 minutes. Both versions then exhausted it on #292; the allowance
+# reached 30 minutes. #313 then exhausted it on both PHP versions; the bare jobs below receive
+# five provisional minutes for the complete suite and whole-job overhead. #113 retains tail measurement.
 jobs:
   # What this run needs, decided once and consumed by every matrix below. The reasoning, the measured
   # cost per run and the fail-closed rule are in .github/scripts/ci-scope.sh, which the test suite drives —
@@ -92,7 +93,10 @@ jobs:
     # #292 run 38994972454, head dffc5f1: jobs 117285453105/117285453078 explicitly exceeded 25m0s,
     # while still passing late LevelZero recovery cases. Keep the same tests/extensions and no services;
     # add five bounded minutes provisionally, with the completed tail still to be measured in #113.
-    timeout-minutes: 30
+    # #313 head 512f683: both bare jobs exceeded 30m0s. PHP 8.5 emitted 10,594 passed /
+    # 65,171 assertions and 121 skips at 1796.31s, but the whole job was cancelled. This
+    # bounded allowance is provisional, not a measured green tail; keep all tests and no services (#113).
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
