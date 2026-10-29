@@ -109,7 +109,8 @@ jobs:
       - uses: ramsey/composer-install@4.0.0
 
       - name: Run the default suite with nothing else available
-        run: vendor/bin/pest --colors=always
+        # Reduce progress output without changing test selection or the job's ceiling (#113).
+        run: vendor/bin/pest --compact --colors=always
 
   engines:
     name: PHP ${{ matrix.php }} / ${{ matrix.engine }}
