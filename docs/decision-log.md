@@ -3921,6 +3921,59 @@ The narrow command factory is internal until the v1.2 extension freeze. `ReaderA
 are unchanged. Focused kernel regressions exercise real command invocation with disabled/stale receipts, no
 receipt, invalid declarations and fresh provider boot ordering; full feature qualification remains separate.
 
+### Amendment — Same-version development upgrades, 2026-10-22 (#269)
+
+A version receipt still gates runtime registration, and a version-changing upgrade still verifies the package,
+runs its migrations, clears the checked route cache and writes the new receipt. The original same-version exit
+cleared route cache without inspecting schema. That remains the behavior for stable and prerelease versions:
+the kernel does not redefine a published version as a mutable development branch.
+
+Composer's development versions are different. A `dev-*` branch or `*-dev` version can acquire another migration
+while the recorded version stays identical. The installed fixture package reproduced the old exit with retained
+content and a newly added migration: both enabled and disabled receipts returned without creating the new column.
+Equality is therefore not evidence that a development package's migrations are current.
+
+For an equal development version, the existing upgrade command now verifies the current manifest and model
+declarations before asking a fresh **unregistered** provider for its migration path. Laravel's ordinary migrator
+applies pending files and its ledger makes an already-current repeat idempotent. Afterward the lifecycle reloads
+and locks the receipt, refuses if its version changed meanwhile, and clears the checked route cache. It does not
+save the receipt, alter installation timestamps or enablement, invoke install/uninstall hooks, or register/boot
+the module's runtime provider. The version is still equal; the command reports that the development migrations
+were checked rather than implying another version was installed. This opens no extension API and requires no
+worker or service on the default SQLite floor.
+
+Verification, migration and cache failures leave the receipt unchanged. Migrations remain outside the receipt
+transaction. PostgreSQL's migrator wraps a transactional migration and can roll its failed DDL back. SQLite itself
+supports transactional DDL, but Laravel's SQLite schema grammar does not open a per-file migration transaction;
+SQLite, MySQL and MariaDB can therefore retain DDL from a failed file without recording that file as complete.
+Successful earlier files remain recorded on every engine.
+The kernel does not repair partially applied DDL or make an unsafe migration retryable: inspect that state and
+retry only a migration written or repaired to tolerate it. Never uninstall/reinstall retained data or rewrite a
+receipt to force the command past this boundary. Operators still serialize code updates, lifecycle commands and
+cache generation and restart persistent workers; a development version is not a source-content fingerprint.
+
+The regression contract uses an installed module with retained rows, adds a real migration after installation,
+and checks the resulting schema, ledger, content, receipt and absent runtime hook calls. It also covers branch
+and numeric development spellings, stable/prerelease controls, verification/migration/cache failures and retry.
+Native engine qualification is recorded separately from the default fresh-schema suite.
+
+The first implementation exercised the lifecycle inside an already booted test application. Review exposed a
+missing earlier boundary: on a fresh console process an enabled equal-version provider could register and boot
+before Artisan reached upgrade, and fail while reading its newly introduced column. The real command reproduced
+that failure with retained rows. The lifecycle's unregistered migration provider alone did not make the process cold.
+
+The fully spelled `php artisan kitsune:module` command now declines all module runtime registration and retained-data
+command declarations during application booting, before reading receipts. This covers status and every lifecycle
+action, including malformed actions that must still reach core's argument handling. Core's own command registration
+remains available. Symfony's global-option parser, including Laravel's `--env`, identifies the exact canonical
+command; option values containing that name and unrelated commands do not select this boundary. The command has
+no declared aliases. Symfony abbreviations, host-added aliases, nested calls and `Artisan::call()` in an already
+booted process are not supported cold entry points: use the full command in a new process. The boundary never
+checks pending migrations or fingerprints arbitrary module source on a web request or ordinary console boot.
+An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
+that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
+data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
 **Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Amended 2026-10-04 — the merge, as built**: a later version may only add, and one new pre-flight refusal; see the end of this entry · **Amended 2026-10-04 — Marketing Site 1.1.0, as built**: a meta description, and ADR-030's second condition met; see the end of this entry · **Amended 2026-10-05 — the reverse, as built**: one action on the existing command, removing only what a blueprint created and nothing holds data or authority for; see the end of this entry · **Amended 2026-10-05 — the DAM, as built**: `EntryTypeDeclaration` gains `isMedia` and the manifest one key, the first declaration parameter and manifest key since 2026-10-02; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the

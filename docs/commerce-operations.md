@@ -21,13 +21,34 @@ php artisan kitsune:module enable kitsune/commerce
 Enable, disable and upgrade clear the application's configured route-cache file before changing their receipt.
 Deletion is checked and read back. A failure refuses the receipt change; fix access to the cache directory and retry
 the same command. Repeating an already completed enable, disable or upgrade also clears stale cached routes.
-An upgrade may already have applied schema migrations before cache clearing fails; its unchanged receipt continues
-to require an upgrade, so repair the filesystem problem and retry rather than editing the receipt.
+An upgrade may already have applied schema migrations before cache clearing fails. Repair the filesystem problem
+and retry rather than editing the receipt. A version-changing upgrade keeps its old, stale receipt until success;
+a same-version development upgrade deliberately leaves the receipt's version and timestamps unchanged.
 
-For a development checkout still reporting the same `dev-main` version, the existing same-version migration
-upgrade gap is tracked in [#269](https://github.com/adamgreenwell/kitsune/issues/269). Do not uninstall/reinstall to
-force these migrations when data exists. New-version upgrades and fresh installations use the module lifecycle;
-a same-version receipt is not evidence that newly added order tables have been applied.
+Run lifecycle operations using the full `php artisan kitsune:module ...` command in a **new process**. That
+canonical console entry point keeps enabled module runtime providers and retained-data command declarations cold
+until core has handled the operation. Normal global options such as `--env=testing` are supported before or after
+the command. The command declares no aliases; abbreviations, host aliases and already booted `Artisan::call()` or
+direct lifecycle calls do not provide this preboot boundary. After upgrade, a subsequent ordinary process boots
+runtime normally. This is particularly important when a new development migration adds a column that enabled
+runtime code immediately reads.
+
+For a development checkout still reporting the same `dev-main`, another `dev-*` branch or a numeric `*-dev`
+version, run the ordinary verified upgrade command after updating its code:
+
+```sh
+php artisan kitsune:module upgrade kitsune/commerce
+```
+
+The lifecycle verifies the current module before running its pending migrations, without registering or booting
+the runtime provider or changing enablement. Repeating it skips migrations already in Laravel's ledger and clears
+stale cached routes again. Stable and prerelease versions retain their existing same-version no-op behavior.
+A same-version receipt alone does not prove that newly added order tables have been applied. Do not
+uninstall/reinstall to force migrations when data exists, and do not rewrite the receipt by hand. If a migration
+fails, successful earlier files remain applied. SQLite, MySQL and MariaDB may also retain partial DDL from the
+failing file: Laravel does not wrap SQLite migrations in a per-file transaction, although SQLite itself supports
+transactional DDL. Inspect the schema and ensure that file is safe to retry before repeating the command. The
+kernel cannot undo that DDL or make a non-idempotent migration retryable.
 
 Routes reflect the new state on the next application boot. A process that has already booted keeps its providers
 and route collection; restart persistent application workers through the host's normal procedure. On a fresh owner
