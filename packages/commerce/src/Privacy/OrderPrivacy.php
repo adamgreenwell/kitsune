@@ -103,12 +103,24 @@ final class OrderPrivacy
     {
         $this->safe(function () use ($connection, $request, $order): void {
             $this->state->inside($connection, $order);
-            if ($order->state !== 'completed_free' || $order->reader_id !== null
-                || app(OrderAccess::class)->guestProof($request, (new Order)->newFromBuilder(get_object_vars($order))) === null
-                || $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->lockForUpdate()->exists()) {
+            $order = clone $order;
+            if (get_object_vars($this->fresh($connection, $order)) !== get_object_vars($order)) {
                 throw new RetentionRefused;
             }
-            $this->minimize($connection, $order, true, null);
+            // Pin the original proof through minimization: the committed row deliberately gets a new owner key.
+            // Only this private transition can substitute exact guest proof for staff/console authority.
+            $authorize = function () use ($connection, $request, $order): array {
+                $this->state->inside($connection, $order);
+                if ($this->context->siteId() !== (int) $order->site_id || $order->state !== 'completed_free' || $order->reader_id !== null
+                    || app(OrderAccess::class)->guestProof($request, $order) === null
+                    || $connection->table('commerce_order_claims')->useWritePdo()->where('order_id', $order->id)->lockForUpdate()->exists()) {
+                    throw new RetentionRefused;
+                }
+
+                return ['org' => (int) $order->org_id, 'site' => (int) $order->site_id, 'type' => null, 'id' => null];
+            };
+            $authorize();
+            $this->minimize($connection, $order, true, null, $authorize);
         });
     }
 
@@ -468,7 +480,8 @@ final class OrderPrivacy
         }
     }
 
-    private function minimize(Connection $connection, object $order, bool $subject, ?string $reader): void
+    /** @param (Closure():array{org:int,site:?int,type:?string,id:?string})|null $authorize */
+    private function minimize(Connection $connection, object $order, bool $subject, ?string $reader, ?Closure $authorize = null): void
     {
         $state = $this->state->checked($connection, $order, true) ?? throw new RetentionRefused;
         if ($state['policy'] === null) {
@@ -543,7 +556,7 @@ final class OrderPrivacy
             $current = $this->fresh($connection, $order);
             $this->state->seal($connection, $current, $commitments, $flags);
             $this->state->remember($connection, $current);
-        });
+        }, authorize: $authorize);
     }
 
     /** No current product or stock balance may replace an immutable access promise.
@@ -646,11 +659,13 @@ final class OrderPrivacy
         return true;
     }
 
-    /** The audited transition and exact complete raw graph are reread after every host callback. */
-    private function change(Connection $connection, object $order, string $action, Closure $change, ?string $reason = null, ?string $policyBefore = null, ?string $policyAfter = null): void
+    /** The audited transition and exact complete raw graph are reread after every host callback.
+     * @param  (Closure():array{org:int,site:?int,type:?string,id:?string})|null  $authorize
+     */
+    private function change(Connection $connection, object $order, string $action, Closure $change, ?string $reason = null, ?string $policyBefore = null, ?string $policyAfter = null, ?Closure $authorize = null): void
     {
         $native = $connection->getPdo();
-        $identity = $this->authority(false);
+        $identity = $authorize === null ? $this->authority(false) : $authorize();
         if ($connection->getPdo() !== $native) {
             throw new RetentionRefused;
         }
@@ -669,8 +684,12 @@ final class OrderPrivacy
             'before_hash' => $before, 'after_hash' => $after, 'created_at' => PrivacyState::now()]);
         $this->state->update($connection, $current, $state['work'], ['revision' => $revision]);
         $expected = $this->graph($connection, $current);
-        $audit = $this->audit($connection, $current, 'commerce.order_privacy_'.$action, $identity);
-        $this->assertAuthority($identity, false);
+        $audit = $this->audit($connection, $current, 'commerce.order_privacy_'.$action, $identity, producer: $authorize !== null);
+        if ($authorize === null) {
+            $this->assertAuthority($identity, false);
+        } elseif ($authorize() !== $identity) {
+            throw new RetentionRefused;
+        }
         if ($connection->getPdo() !== $native) {
             throw new RetentionRefused;
         }
@@ -859,7 +878,7 @@ final class OrderPrivacy
     /** @param array{org:int,site:?int,type:?string,id:?string} $identity
      * @return array{audit:AuditLog,expected:array<string,mixed>}
      */
-    private function audit(Connection $connection, object $order, string $action, array $identity): array
+    private function audit(Connection $connection, object $order, string $action, array $identity, bool $producer = false): array
     {
         $target = new Order;
         $expected = ['org_id' => $identity['org'], 'site_id' => $identity['site'], 'actor_type' => $identity['type'], 'actor_id' => $identity['id'],
@@ -867,7 +886,8 @@ final class OrderPrivacy
         if ((new AuditLog)->getConnection() !== $connection) {
             throw new RetentionRefused;
         }
-        $audit = $this->auditor->recordOrFail($action, $target->newFromBuilder(get_object_vars($order)));
+        $target = $target->newFromBuilder(get_object_vars($order));
+        $audit = $producer ? $this->auditor->recordForProducerOrFail($action, $target) : $this->auditor->recordOrFail($action, $target);
 
         return ['audit' => $audit, 'expected' => $expected];
     }

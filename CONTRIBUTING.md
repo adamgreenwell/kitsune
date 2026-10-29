@@ -2,7 +2,7 @@
 
 Thanks for looking. Read the short version first, because it will save you time:
 
-> **Kitsune is pre-alpha: nothing is released and nothing is stable.** There *is* code — a working admin, a runtime schema engine and a tenancy kernel — and [`docs/roadmap.md`](docs/roadmap.md) tracks what exists item by item. What is not open is feature pull requests, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk.
+> **Kitsune is pre-alpha: 0.x development packages exist, and v1.0 is not released.** They carry no stable compatibility or security-support promise. There *is* code — a working admin, a runtime schema engine and a tenancy kernel — and [`docs/roadmap.md`](docs/roadmap.md) tracks what exists item by item. What is not open is feature pull requests, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk. The [versioning and upgrade policy](docs/versioning-and-upgrades.md) separates package promises, host-owned code and retained-data upgrade admission.
 
 What *is* wanted right now is further down under [What's useful today](#whats-useful-today).
 
@@ -49,6 +49,10 @@ The [GitHub wiki](https://github.com/adamgreenwell/kitsune/wiki) holds two kinds
 **Hand-written pages** cover ground `docs/` does not: orientation, FAQs, how-tos. Those are edited in the wiki directly.
 
 `docs/` is the source of truth either way. It is versioned with the code and gated by the amendment rule above; nothing gates a wiki page. **If a wiki page contradicts `docs/`, the document wins.**
+
+The [versioned reading artifact](docs/documentation-site.md) is generated from that same source by
+`php bin/docs-build.php`. Edit Markdown, not generated HTML. Its immutable snapshots, local search and source
+copies are development documentation, with publication and release/support commitments kept separate.
 
 **Issues and discussions are open. Feature PRs are not.**
 

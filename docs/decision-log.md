@@ -356,6 +356,29 @@ again, by registration, sign-in and recovery for readers, built as Phase 5a's sl
 commerce. The reason is the one above: ADR-040 brought the four scenarios into v1.0 so that v1.0 could serve them,
 and three of the four need a reader who can sign in. The REST API, theming and the privacy tooling stay in v1.1.
 
+### Amendment — Versioning and retained upgrade admission, 2026-10-26 (#211)
+
+The scope cut and the v1.2 extension freeze above remain in force. Phase 6's semantic-versioning commitment
+needed an application/operator boundary distinct from that later extension contract, and the original
+"nothing is released" prose no longer described the 0.x packages already recorded in the roadmap. Those
+packages are development releases, without a retroactive stability or stable-version security-support promise.
+
+Adam selected **the latest stable minor at its latest patch** for security maintenance, and **case-by-case
+origin fingerprinting and rehearsal** for retained pre-v1.0 upgrades. The
+[versioning and upgrade policy](versioning-and-upgrades.md) separates core, first-party modules, blueprint
+receipts and copied host-owned skeleton code; defines the stable version-number meanings; and records the
+required operator sequence, open acceptance matrix and recovery limits. Neither choice supplies missing
+historical schema metadata or turns the #217 source audit into a qualified upgrade. Pre-alpha data is not
+disposable without its operator's explicit confirmation.
+
+No support duration, transition/notice window, EOL date or superseded-major coverage was chosen. Actual stable
+versions and those terms must be recorded at the release gates before an announcement commits to them. v1.0
+remains unreleased; #212's operational security rehearsal and #213–#218's artifacts, installation and upgrade
+proofs remain separate. A code rollback does not reverse destructive DDL or recover historical unknowns.
+The existing resource floor and response targets are unchanged. Standing Principle #2 still requires a
+deliberately narrow v1.2 extension contract, then deprecation without removal within a major; this amendment
+does not open a third-party API early, authorize a tag or authorize deployment.
+
 ---
 
 ## ADR-012 — Admin routing: entity type as a route parameter
@@ -1447,6 +1470,38 @@ settings and `KITSUNE_PASSWORD_MIN_CHARACTERS` — the first owner's minimum too
 never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
+
+### Amendment — Signed artifact verification format, 2026-10-26 (#213)
+
+The requirements above remain: versioned nonredirecting HTTPS on the project domain, independently pinned
+bootstrap bytes, download/inspect/run first, signed fetched artifacts, no default administrator and no telemetry.
+The [artifact verification contract](release-artifacts.md) uses a bounded canonical ASCII manifest, a detached
+RSA PKCS#1 v1.5/SHA-256 signature and SHA-256/size bindings for the actual artifacts. A separately confirmed
+DER SubjectPublicKeyInfo fingerprint pins a 3072–8192-bit RSA public key. A downloaded key is not its own trust
+root, and a valid signature is not platform, upgrade-origin or security-support admission.
+
+The format is deliberately readable before PHP is installed. The earlier Ed25519/JSON spike verified local
+interoperability but did not establish an available pre-PHP parser or OpenSSL3 on all supported targets.
+RSA/SHA-256 can use the existing OpenSSL extension after PHP starts; this amendment adds no application
+extension, dependency, service or resource-floor requirement. The pre-PHP Bash/awk verifier uses the OpenSSL
+CLI; supported native-target capabilities still require measurement, not an assumption from this choice.
+
+The intended signing boundary is offline maintainer-controlled custody, outside CI. Actual custodian, protected
+storage, passphrase entry, backup/continuity responsibility and recovery channels must be recorded before any
+production key is created or used. Rotation requires a reviewed versioned trust update and independent
+fingerprint/readback; compromise requires re-establishing trust out of band, not trusting a replacement key
+from the same potentially compromised host. Historical signatures remain evidence, not automatic downgrade
+permission. Nothing here creates a key, publishes a release, changes account access or authorizes deployment.
+
+The current implementation builds source-bound manifests, signs them through protected input channels and
+verifies manifests/artifact bytes offline. The standalone pre-PHP verifier fetches only literal versioned
+project-domain routes, requires verified TLS/HTTP200 without redirects, authenticates metadata before
+requesting a selected payload and promotes verified bytes exclusively. The instruction generator binds the
+shipped verifier's exact bytes to independently distributed size/hash pins and a local trusted public key;
+download/inspect/run remains primary, with a companion pinned download-and-verify command. Neither executes
+or extracts the fetched payload. Final package resolution/bundle proof, native/Docker integration and separately authorized real
+signing/publication with independent fetched-byte verification remain open under #213–#216. The existing
+core-only split workflow cannot silently stand in for the skeleton's complete first-party dependency graph.
 
 ---
 
@@ -11746,3 +11801,46 @@ provider I/O. Ownership, Org/Site custody, checked historical presentation, the 
 financial/allocation/access holds remain unchanged. Guest and native reader HTTP fixtures cover both
 allocated and disputed held payments, with unchanged retained rows and zero provider calls; browser
 checks submit stale guest and reader forms after confirmation. No live admission or deployment is implied.
+
+---
+
+## ADR-043 — Documentation is a source snapshot, searchable without a running application
+
+**Status:** Decided · 2026-10-26 · Resolves ADR-030's explicitly open documentation-site question, without changing its marketing-site decision.
+
+The needs were recorded before the delivery choice in [Documentation delivery](documentation-site.md): install,
+upgrade, schema, Org/Site and first-party module tasks, each traced to the existing source. At main
+`4e6f9059d841533b7ff45e18685da2c7022392ab`, the inspected Markdown corpus was 27 documents / 1,834,692 bytes;
+the decision log alone was 1,293,161 bytes / 42 ADRs. The real locked CommonMark parse found 463 headings and
+331 links, with no unresolved local targets or fragments. These are corpus facts, not a usability or latency benchmark.
+
+**Build a static artifact from the repository, using the PHP Markdown parser already in its development lock.**
+No new package, application boot, database, service, Node build or operator runtime dependency is required.
+The current wiki generates two navigation pages and links to main; it does not supply immutable snapshots or
+snapshot-local search. A Kitsune-hosted docs application would couple recovery reading to an application and
+require the public-theme/search work that the roadmap leaves for later. No running-CMS trial is claimed.
+The tradeoff is owning a small build tool and its source, link, search and reading tests.
+
+`docs/` stays authoritative. Each built snapshot retains exact source text and hashes, resolved source commit,
+version label and working-copy status. A label is not a release, compatibility commitment or support duration.
+Read the security policy for support; issue #211 still owns the compatibility-policy decision.
+
+The decision log is split for reading, **after assigning document-wide heading identities**. Duplicate headings
+and links into another ADR therefore retain their original source fragment; a per-page slugger would silently
+send a duplicate heading to the wrong decision. Source links inside the covered documents stay within the
+chosen snapshot. Links to other repository files name the resolved commit, while explicit historical external
+links keep their original target.
+
+Search runs in the reader's browser against that snapshot's index. Navigation and text work without JavaScript;
+no analytics, external search, remote font or third-party image request is added. Older snapshot files are not
+rewritten when another snapshot is built. Their version chooser discovers the catalogue, with an ordinary
+catalogue link as the no-JavaScript fallback.
+
+Operator guides lead with download-inspect-run, the native default and optional Docker path, no default
+administrator and no installer telemetry. They name unfinished installer/signing work rather than fabricating
+a download or key. Backup/key custody, restore/erasure replay, upgrades, export limits and the pre-v1.2
+first-party boundary are part of the reading path, not stable-API promises.
+
+**Local artifact verification and public publication are separate gates.** This decision authorises the build
+and local reading checks only. It does not select a host, deploy documentation, publish a release, authorise a
+provider action or make the marketing site's ADR-030 trigger true. The original reasoning above remains visible.
