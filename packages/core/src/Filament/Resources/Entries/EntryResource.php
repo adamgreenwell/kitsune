@@ -50,6 +50,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\EntryTrash;
 use Kitsune\Core\Filament\MediaBulkRemoval;
 use Kitsune\Core\Filament\MediaReaderActions;
+use Kitsune\Core\Filament\MediaReaderBulk;
 use Kitsune\Core\Filament\MediaTileColumn;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -515,6 +516,7 @@ class EntryResource extends Resource
              */
             ->toolbarActions([BulkActionGroup::make([
                 ...MediaVisibilityActions::bulk(),
+                ...MediaReaderBulk::bulk(),
                 ...self::removals($warning),
             ])])
             ->defaultSort(self::DEFAULT_SORT, 'desc')
@@ -528,8 +530,8 @@ class EntryResource extends Resource
              * mode exists to avoid, for every user who may delete — and, on a media list, every user who may update or
              * publish its type, whom *Make selected public* and *Make selected private* give checkboxes too (decision 34).
              * A media list's bulk actions act on the page in view. It bounds what the select-all box selects, and nothing
-             * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound, for each of a media list's five bulk
-             * actions and every list's three removals (decisions 34–36).
+             * on the server: `BulkSelection::MOST_AT_ONCE` is the server's own bound, for each of a media list's six bulk
+             * actions and every list's three removals (ADR-041 selection amendment; ADR-042 decisions 34–36).
              *
              * ⚠️ AND EVERY ROW ON ANY OTHER LIST, AS FILAMENT HAS IT — decision 36, a default for Adam to overrule. A list
              * that pages with a total reads its select-all count off its paginator, so it costs no query, and Filament

@@ -20,8 +20,8 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Kitsune\Core\Models\Entry;
 
 /**
- * What every bounded selection shares — a media list's five bulk actions and every entry list's three removals, ADR-042
- * decisions 34, 35 and 36.
+ * What every bounded selection shares — media visibility, reader offering (ADR-041's #252 amendment), and every entry
+ * list's three removals (ADR-042 decisions 34, 35 and 36).
  *
  * @internal
  *
