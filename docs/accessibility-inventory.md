@@ -62,6 +62,22 @@ badge says its word, so colour is never the only cue. Scanned with the Comp moda
 keyboard alone, and in the accessibility and RTL scans (`entitlements.spec.js`, `accessibility.spec.js`,
 `rtl.spec.js`). Inherited and recorded: the same grey placeholder elsewhere in the admin, where Filament draws it.
 
+*Candidate amendment 2026-10-26 (#206, ADR-039):* Blueprints uses Filament sections, text, actions and its labelled
+confirmation field. The Org-wide effect is stated before the actions and in each advisory review. Installed and
+available versions, unfinished receipts and reverse obstacles are words rather than colour-only badges. The typed
+confirmation names both the blueprint and Org. Refused confirmation errors use the mounted field's full state path;
+the initial browser run caught invisible errors when the key was only `confirmation`. Successful writes reload the
+page to show committed receipt state. No custom view or stylesheet is added.
+
+The focused `blueprints.spec.js` journeys passed keyboard Enter, text-field focus, Escape and return to the initiating
+button, plus WCAG 2.1 A/AA axe with the RTL modal open on the controlled local Filament 5.10.3 fixture. The scan waits
+for opacity 1: scanning during fade-in reported transition colours, as previously observed on Credentials. This
+specific result does not replace the older inherited focus limitation above or qualify every Filament modal. The
+375px dark screenshot requires a fresh mobile load; the first capture caught a desktop sidebar transition and is
+retained as a diagnostic. Full canonical browser and fresh mobile visual qualification remain owed for this candidate.
+English fallback strings and their punctuation under an Arabic preference still need a reader's assessment; automated
+geometry and axe cannot establish comprehensible reading order.
+
 *Amended 2026-10-10 (ADR-037 decisions 1–3, readers named):* where the operator shows them, the entitlements page has an
 *Email address* column beside *Reader* — Filament's own text column, the address as text, with a static `dir="auto"`,
 since an address reads left to right and core's words are English: in an RTL paragraph `12345@gmail.com` is drawn
@@ -315,6 +331,7 @@ Mirrored geometry is not the same as comprehensible reading order. This folds in
 | `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on ~~five~~ *eight (2026-10-09)* page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
 | `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on ~~five~~ *eight (2026-10-09)* page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
 | `tests/Core/TextDirectionTest.php` | `Kitsune::textDirection()` across the six RTL languages, LTR languages, `ar_EG`/`ar-EG`/`AR` subtag forms, and the unknown-locale fallback |
+| `e2e/blueprints.spec.js` (`blueprint-admin` project, #206 candidate) | Owner navigation outside `/c/{type}`, visible validation, actual apply/reverse and content refusals, stale review and hostile Org URL; RTL keyboard/focus, open-modal axe and 375px dark view. Full canonical qualification is still owed. |
 
 The RTL project needs a second server, which `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
 
@@ -339,5 +356,11 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    in from the link, hear the page's title and its one link, and download; then the refusal notice. And offer a file
    from its media page: whether the dialog's warning about location is heard, and whether *Copy reader link*'s
    confirmation is announced.
+
+7. **Review and change a blueprint with NVDA and VoiceOver** (*added 2026-10-26, #206 candidate*) — hear the Org-wide
+   effect, installed/available versions and unfinished state, then the reverse's remove/keep/block lists. Submit a
+   wrong confirmation and a stale review, cancel by keyboard, and confirm a successful unused reverse. Record error
+   announcement, modal reading order and focus after the fresh page load. Ask an Arabic or Hebrew reader whether
+   mixed blueprint handles, Org names and English fallback declarations are understandable. These checks remain open.
 
 Until those happen, the honest claim is the one at the top of this document: no detectable failures, on a surface that is almost entirely inherited. That is a good starting position and it is not a conformance statement, and ADR-018 is explicit that a boilerplate conformance claim is exactly what this project will not make.

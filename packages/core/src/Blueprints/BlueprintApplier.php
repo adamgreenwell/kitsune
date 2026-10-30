@@ -128,7 +128,7 @@ final class BlueprintApplier
      * @throws InvalidArgumentException for a malformed definition, before anything is read or written
      * @throws RuntimeException
      */
-    public static function apply(BlueprintDefinition $definition): array
+    public static function apply(BlueprintDefinition $definition, ?string $expectedReceipt = null): array
     {
         $orgId = app(Context::class)->orgId();
 
@@ -152,6 +152,8 @@ final class BlueprintApplier
         self::refuseMalformed($definition);
 
         $receipt = Blueprint::receiptFor($definition->handle());
+
+        self::refuseChangedReview($receipt, $expectedReceipt);
 
         if ($receipt !== null && $receipt->applied_at !== null) {
             if ($receipt->version === $definition->version()) {
@@ -1604,7 +1606,7 @@ final class BlueprintApplier
      * @throws RuntimeException no org, no receipt, the refusal naming every obstacle, a receipt that moved, a write that
      *                          contended, or a model guard's own refusal wrapped — in every case with nothing written
      */
-    public static function reverse(string $handle): array
+    public static function reverse(string $handle, ?string $expectedReceipt = null): array
     {
         $orgId = app(Context::class)->orgId();
 
@@ -1627,7 +1629,7 @@ final class BlueprintApplier
 
         /* ⚠️ On the MODEL's connection, as the apply's: the facade's is always the default one. */
         try {
-            $result = $receipt->getConnection()->transaction(function () use ($handle, $orgId, $receipt, &$locked, &$own): array {
+            $result = $receipt->getConnection()->transaction(function () use ($handle, $orgId, $receipt, $expectedReceipt, &$locked, &$own): array {
                 /* ⚠️ 1. THE RECEIPT, FOR UPDATE, AND EVERY DECISION FROM WHAT THAT READ — not from the read before it. */
                 $locked = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
 
@@ -1636,6 +1638,8 @@ final class BlueprintApplier
 
                     throw $own;
                 }
+
+                self::refuseChangedReview($locked, $expectedReceipt);
 
                 $version = (string) $locked->version;
 
@@ -1767,6 +1771,72 @@ final class BlueprintApplier
             'dropped' => $dropped,
             'undropped' => $undropped,
         ];
+    }
+
+    /**
+     * An advisory view of reverse's current decisions, without performing a reverse or simulating one by rollback.
+     *
+     * The same manifest reader, lock order and obstacle planner as reverse; no model save/delete, audit or DDL. Locks
+     * end with this read transaction. A later submission MUST still call reverse(), which obtains its own locks and
+     * rechecks everything: a clear preview is not a promise that the organisation will remain unchanged.
+     *
+     * @return array{handle: string, version: string, outcome: 'reversed'|'abandoned'|'receipt-only', removed: list<string>, kept: list<string>, gone: list<string>, notes: list<string>, problems: list<string>, refusals: list<string>}
+     */
+    public static function previewReverse(string $handle): array
+    {
+        $orgId = app(Context::class)->orgId();
+
+        if ($orgId === null) {
+            throw new RuntimeException('Cannot preview a blueprint reverse without an organisation in context.');
+        }
+
+        return (new Blueprint)->getConnection()->transaction(static function () use ($handle, $orgId): array {
+            $receipt = Blueprint::query()->where('org_id', $orgId)->where('handle', $handle)->lockForUpdate()->first();
+
+            if ($receipt === null) {
+                throw new RuntimeException(self::notApplied($handle));
+            }
+
+            $version = (string) $receipt->version;
+            $refusals = [];
+
+            if ($receipt->manifest === null && $receipt->applied_at === null) {
+                $result = self::reverseOutcome('abandoned', $version);
+            } else {
+                [$recorded, $problems] = self::readManifest($receipt);
+                $held = null;
+
+                if ($problems === []) {
+                    [$held, $problems] = self::lockRecorded($recorded, $orgId);
+                }
+
+                if ($problems !== [] || $held === null) {
+                    $result = self::reverseOutcome('receipt-only', $version, problems: $problems);
+                } else {
+                    $plan = self::reversePlan($handle, $recorded, $orgId, $held);
+                    $refusals = $plan['refusals'];
+                    $result = self::reverseOutcome('reversed', $version, $plan);
+                }
+            }
+
+            // Never pass the planner's model instances (or its column-drop work) to a page's response snapshot.
+            unset($result['indexed']);
+
+            return ['handle' => $handle, ...$result, 'refusals' => $refusals];
+        });
+    }
+
+    /** A review names receipt facts, never an Eloquent instance or plaintext manifest in the browser. @internal */
+    public static function receiptIdentity(?Blueprint $receipt): string
+    {
+        return hash('sha256', serialize($receipt?->getRawOriginal()));
+    }
+
+    private static function refuseChangedReview(?Blueprint $receipt, ?string $expected): void
+    {
+        if ($expected !== null && ! hash_equals($expected, self::receiptIdentity($receipt))) {
+            throw new RuntimeException('The blueprint receipt changed after review. Review it again; nothing was written.');
+        }
     }
 
     /**

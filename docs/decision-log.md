@@ -4521,6 +4521,49 @@ invalid format refusal before intent, owner-adapted formats and a frozen Storefr
 
 ---
 
+### Amendment — Existing-installation admin blueprint flow, 2026-10-26 (#206)
+
+The admin flow belongs with the owner's Structure screens. A blueprint changes **Org-wide** schema and roles even
+when the panel is opened through one Site. The page must say which Org it changes; the current authenticated Owner
+of that Org is the authority, checked at the page, every review and every submission. A client-supplied Org id,
+definition class, handle or stale modal is not authority. This is an existing-installation flow, not the first-owner
+claim or a package marketplace. Only definitions already registered by installed code are available to apply.
+
+Review presents the registered declaration and the current receipt separately: available and installed versions,
+an unfinished apply, types, fields and roles. Apply, additive upgrade and interrupted completion use the existing
+`BlueprintApplier::apply()`; the page must not reproduce its writes or imply that a declaration summary is a
+successful dry run. The kernel's named refusals remain visible, with unexpected storage failures mapped without
+exposing SQL or its bindings.
+
+Reverse needs a read-only obstacle review before concrete confirmation of the blueprint and Org. Its preview uses
+the **same manifest reader, lock order and obstacle planner** as the actual reverse, in a transaction containing
+locking reads only. It must never obtain a preview by performing reverse and rolling it back: reverse includes
+schema work outside its row transaction, and rollback would not make that safe on every engine. The preview
+reports what would be removed, kept or already gone, named obstacles, and receipt-only cleanup of an uncommitted or
+untrusted manifest. It performs no save, delete, audit or DDL and returns no planner model instances.
+
+This review is advisory. Locks end when it returns; another request may create content, assign a holder or change
+the receipt before confirmation. A submit rechecks current ownership and the reviewed identity, and the actual
+reverse takes its own locks and recomputes its plan. A previously clear preview never grants permission to delete
+past new content or authority. No purge option, storage unlock or first-owner shortcut is added.
+
+**Implementation status:** this candidate adds the owner-only Structure page, local declarations and receipt versions,
+concrete signed review identity, and the existing apply/reverse writers. A purpose-prefixed HMAC-SHA256 of current
+facts, keyed by the server's application key, binds the actor, Site, Org,
+operation, definition and exact receipt; the kernel checks the receipt again after the page recheck. The browser gets
+only the digest, not a receipt or a decryptable payload. A missing key refuses review and a rotated key invalidates it.
+The first full candidate used an encrypted token and failed the credential-surface guard: ADR-040 reserves core's
+encryption/decryption for its credential cipher. Signing authenticates these facts without opening another cipher
+door, and that guard remains unchanged. This token is not an
+ownership lease. Revocation before a submission is refused, and lifecycle row locks still govern concurrent writes.
+Wrong or stale confirmation errors belong to the mounted field's full state path so they are visible; a successful
+action performs a fresh page load so the owner sees the committed receipt rather than the pre-action schema cache.
+Focused SQLite and four browser journeys have passed, including dashboard navigation, content refusal, stale review,
+cross-org access refusal, keyboard/focus and RTL axe checks. Full/native and complete canonical browser qualification
+remain owed, as do the accessibility inventory's human checks. No delivery or conformance is claimed here. Earlier CLI and reverse
+reasoning above remains unchanged. Later availability/seed extensions must remain visible to this flow's kernel
+review when independently integrated; pending feature branches do not establish support on current main.
+
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below

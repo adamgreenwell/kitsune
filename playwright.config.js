@@ -132,6 +132,12 @@ module.exports = defineConfig({
             use: { ...devices['Desktop Chrome'] },
         },
         {
+            name: 'blueprint-admin',
+            testMatch: /blueprints\.spec\.js/,
+            dependencies: ['setup', 'setup-rtl', 'setup-reader'],
+            use: { ...devices['Desktop Chrome'] },
+        },
+        {
             name: 'reader-downloads',
             testMatch: /reader-downloads\.spec\.js/,
             dependencies: ['setup', 'setup-rtl'],
