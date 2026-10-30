@@ -1,7 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
-const { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList } = require('./reader-download-list-fixture');
+const { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode } = require('./reader-download-list-fixture');
 
 // No staff storageState: these are the actual reader forms, in a fixture Org/Site separate from other browser lanes.
 test.describe.configure({ mode: 'serial' });
@@ -96,4 +96,73 @@ test('Arabic document retains readable fallback copy and isolated filenames', as
     await expect(page.locator('main')).toHaveAttribute('dir', 'ltr');
     await expect(page.locator('main li bdi')).toHaveCount(24);
     await axe(page);
+});
+
+test('warns at the real settings door before closing offered links and keeps a sibling site usable', async ({ page, browser, baseURL }, testInfo) => {
+    const siblingContext = await browser.newContext({ baseURL });
+    const sibling = await siblingContext.newPage();
+    let primaryFailure = false;
+
+    try {
+        await signIn(page, PREFIX);
+        await page.goto(`${PREFIX}/account/downloads`);
+        const href = await page.getByRole('link', { name: 'Fixture file 01', exact: true }).getAttribute('href');
+        expect(href).toMatch(new RegExp(`^${PREFIX}/account/downloads/[0-9]+$`));
+
+        const refused = downloadListMode('off');
+        expect(refused.status).toBe(1);
+        // Fifty recorded offers here; another hundred on this org's other sites do not enter the warning.
+        expect(refused.output).toContain('offered files: 50; affected sites: 1');
+        expect(refused.output).toContain('download links will return 404');
+        expect(refused.output).toContain('--force');
+        expect(refused.output).toContain('Nothing was written.');
+        for (const hidden of ['Hidden private offer', 'Fixture file 01', 'fixture.downloads', 'fixture.unheld', HOLDER.email, EMPTY.email]) {
+            expect(refused.output).not.toContain(hidden);
+        }
+        expect((await page.goto(href || 'missing'))?.status()).toBe(200);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('\u2068Fixture file 01\u2069');
+        const fileHref = await page.getByRole('link', { name: 'Download', exact: true }).getAttribute('href');
+        expect(fileHref).toBeTruthy();
+
+        await signIn(sibling, NESTED);
+        await sibling.goto(`${NESTED}/account/downloads`);
+        const siblingHref = await sibling.getByRole('link', { name: 'Fixture file 01', exact: true }).getAttribute('href');
+        expect((await sibling.goto(siblingHref || 'missing'))?.status()).toBe(200);
+        const siblingFileHref = await sibling.getByRole('link', { name: 'Download', exact: true }).getAttribute('href');
+
+        const changed = downloadListMode('off', true);
+        expect(changed.status).toBe(0);
+        expect(changed.output).toContain('offered files: 50; affected sites: 1');
+        expect(changed.output.indexOf('download links')).toBeLessThan(changed.output.indexOf('Reader accounts on'));
+        expect((await page.goto(href || 'missing'))?.status()).toBe(404);
+        expect((await page.request.get(fileHref || 'missing')).status()).toBe(404);
+        expect((await page.request.get(`${PREFIX}/account/sign-in`)).status()).toBe(404);
+
+        expect((await sibling.reload())?.status()).toBe(200);
+        await expect(sibling.getByRole('heading', { level: 1 })).toHaveText('\u2068Fixture file 01\u2069');
+        const siblingFile = await sibling.request.get(siblingFileHref || 'missing');
+        expect(siblingFile.status()).toBe(200);
+        expect((await siblingFile.body()).toString('utf8')).toBe(PDF);
+
+        const restored = downloadListMode('sign-in');
+        expect(restored.status).toBe(0);
+        expect(restored.output).toBe('Reader accounts on [downloads-list]: sign-in.');
+        expect((await page.goto(href || 'missing'))?.status()).toBe(200);
+        const originalFile = await page.request.get(fileHref || 'missing');
+        expect(originalFile.status()).toBe(200);
+        expect((await originalFile.body()).toString('utf8')).toBe(PDF);
+    } catch (error) {
+        primaryFailure = true;
+        throw error;
+    } finally {
+        const restored = downloadListMode('sign-in');
+        await siblingContext.close();
+        if (restored.status !== 0) {
+            await testInfo.attach('reader-mode-fixture-restoration', {
+                body: Buffer.from(JSON.stringify({ restored: false, status: restored.status })),
+                contentType: 'application/json',
+            });
+            if (!primaryFailure) throw new Error('Reader mode fixture restoration failed.');
+        }
+    }
 });

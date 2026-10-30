@@ -1,6 +1,6 @@
 // @ts-check
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 // Throwaway fixtures in Playwright's fresh database only. No real application or provider is contacted.
 const HOLDER = { email: 'download-list@kitsune.test', password: 'correct-horse-battery-staple' };
@@ -37,4 +37,13 @@ function seedDownloadList() {
     if (result !== 'download-list fixture ready') throw new Error(`Download list fixture failed: ${result}`);
 }
 
-module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList };
+// The actual operator door. No reader address, password or file metadata goes in argv or diagnostics.
+function downloadListMode(value, force = false) {
+    const args = ['artisan', 'kitsune:readers', 'mode', value, '--org=reader-download-list', '--site=downloads-list', '--no-interaction'];
+    if (force) args.push('--force');
+    const result = spawnSync('php', args, { cwd: path.join(__dirname, '..', 'skeleton'), encoding: 'utf8' });
+    if (result.error) throw new Error('Reader mode fixture command could not start.');
+    return { status: result.status, output: result.stdout.trim() };
+}
+
+module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode };

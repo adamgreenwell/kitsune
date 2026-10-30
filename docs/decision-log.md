@@ -1245,6 +1245,14 @@ org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR me
 
 `locked_keys`, this entry's open question, is still open; nothing in this key needs it.
 
+**Amendment — warning before reader downloads close (#251, 2026-10-25).** The existing installation-operator
+`kitsune:readers mode` command remains the human settings door. Before `off` or a revert to `inherit` would change a
+site's effective mode from `sign-in`/`open` to `off`, it previews recorded private file offers in the affected sites.
+An org-level write respects site and SiteGroup overrides; a site revert uses the stored parents and platform
+default. A positive count requires an explicit `--force` acknowledgement before the existing audited
+`SettingsWriter` runs, including interactive use. ADR-041's #251 amendment below defines the count, words and
+residual race. There is no new staff settings route or change to owner/publisher authorization.
+
 ### Amendment — a third platform key, `reader_addresses`, the organisation's alone, 2026-10-10
 
 **Status:** Amended · ADR-037 decision 1, as built
@@ -7539,6 +7547,39 @@ The existing #249 measurements above remain visible. Synthetic Guzzle PSR-7 wrap
 stat/reset capability, unknown-size and nonseekable refusal, and correcting an already-consumed underlying object;
 they are not qualification of a deployed remote adapter. Successful reader file GETs remain bounded by fifteen SQL
 statements in the engine regression suite; the existing unauthorized eight-read comparisons remain unchanged.
+
+### Amendment — warn before reader accounts close offered links (#251, 2026-10-25)
+
+The original download amendment's *Owed* warning is implemented at the actual settings door:
+`kitsune:readers mode`, run by the installation operator (ADR-037). There is no admin settings page to attach a
+confirmation to. No new staff route or privilege is introduced; offering still requires the media type's existing
+publish permission and owner-only account/entitlement operations keep their existing fences.
+
+**Before a write.** A change to `off`, or `inherit` that resolves to `off`, counts offers only for sites changing
+from `sign-in` or `open` to `off`. An org change skips lower-level overrides; a site revert is previewed through
+`SettingsResolver`'s supported unsaved-Site input, with no id/memo and its own override removed. Preview never writes
+and rolls back a setting to discover its effect. Site rows and grouped counts are read in batches of at most 100;
+each entry count carries both the affected site keys and their owning org on the scope's own connection.
+
+**What is counted and said.** A recorded offer is a non-trashed, site-specific entry whose file row is private and
+holds a nonempty reader entitlement. Shared/public/trashed/unoffered and foreign-org rows do not contribute. This is
+a count of recorded offers, not a claim that each file is presently on disk, published by an enabled type or held by
+a reader. No file title, path, entitlement name, reader or grant is read for this count. The translated warning gives
+the file count and affected-site count as numeric labels, then says that reader sign-in, account pages and download
+links return 404 while accounts are off. Files, offers and entitlements remain stored; turning accounts back on
+restores the access they allow.
+
+**Acknowledgement.** With a positive count the command refuses before `SettingsWriter` unless `--force` was passed,
+even on an interactive terminal. The refusal names that remedy and says nothing was written; an acknowledged write
+still prints the warning before it changes the mode. No affected offer means the existing behavior, with no extra
+acknowledgement. Already-off sites and changes that keep sign-in available do not produce this warning. The existing
+writer remains the only audited settings write in this command; neither files nor grants are changed.
+
+**Residual and reach.** Counts are an advisory snapshot, not a lock on concurrent settings or offering changes. A
+later offer or override can change the count; `--force` acknowledges the consequence of closing reader pages, not an
+immutable list of files. Programmatic model/SettingsWriter writes do not acquire a console confirmation. A host
+that builds its own settings editor must provide the warning there. Browser coverage drives the real command and
+checks the reader links it leaves reachable or closes; it does not invent an admin screen to satisfy that test.
 
 ---
 
