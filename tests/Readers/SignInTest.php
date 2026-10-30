@@ -222,11 +222,11 @@ it('keeps the page a guest asked for, when it is one of this site\'s reader page
 
     expect(app('session.store')->get(RequireReader::INTENDED))->toBe('/golfdom/account');
 
-    // A spelling that is not the site's own is still sent to sign in, and nothing is kept.
+    // An incoming prefix alias is kept canonically; the stored-return fence above still refuses noncanonical paths.
     app('session.store')->forget(RequireReader::INTENDED);
     $this->readerGet('/GOLFDOM/account')->assertStatus(303)->assertHeader('Location', SIGN_IN);
 
-    expect(app('session.store')->has(RequireReader::INTENDED))->toBeFalse();
+    expect(app('session.store')->get(RequireReader::INTENDED))->toBe('/golfdom/account');
 });
 
 it('sends a signed-in reader from the sign-in page to their account', function (): void {

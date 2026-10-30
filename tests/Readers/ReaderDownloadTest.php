@@ -699,14 +699,14 @@ it('answers 404 while reader accounts cannot work here, and inside a panel\'s UR
         ->and(dlCall('GET', dlFile($pdf))['body'])->toBe(DL_PDF);
 });
 
-it('serves an upper-case prefix as ReaderArea does, and keeps no page there to return to', function (): void {
+it('serves an upper-case prefix as ReaderArea does, and keeps its canonical page to return to', function (): void {
     $pdf = dlOffer(dlStore('golfdom'));
     dlGrant('golfdom');
 
     $guest = dlCall('GET', dlPage($pdf, '/GOLFDOM'));
 
     expect($guest['status'])->toBe(303)
-        ->and(app('session.store')->get(RequireReader::INTENDED))->toBeNull();
+        ->and(app('session.store')->get(RequireReader::INTENDED))->toBe(dlPage($pdf));
 
     dlSignIn();
 

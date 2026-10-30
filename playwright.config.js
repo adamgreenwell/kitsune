@@ -57,7 +57,7 @@ module.exports = defineConfig({
         {
             name: 'skeleton',
             // Readers sign in with no storage state: every reader spec starts as a stranger, and signs its owner in itself.
-            testMatch: /(skeleton|public-site-locale|readers|reader-sessions|reader-mail)\.spec\.js/,
+            testMatch: /(skeleton|public-site-locale|canonical-site-prefix|readers|reader-sessions|reader-mail)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {
