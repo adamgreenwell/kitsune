@@ -1767,7 +1767,7 @@ additive re-apply and cannot be met for a field that already holds data; see the
 ~~condition 2 met for a re-apply at the same version and not for an upgrade, which waits on ADR-039's merge~~
 ~~condition 2's upgrade is built and tested (ADR-039, the merge, as built, 2026-10-04) and is met when a released
 Marketing Site 1.1.0 exists~~ condition 2 met by the released Marketing Site 1.1.0, upgraded from 1.0.0 by a named test
-(ADR-039, Marketing Site 1.1.0, as built, 2026-10-04); condition 3's figures owed. **Not met** — on condition 3 alone. Once met, the public side is the placeholder and the admin until v1.1, said publicly
+(ADR-039, Marketing Site 1.1.0, as built, 2026-10-04); ~~condition 3's figures owed~~ **2026-10-22 (#207): constrained-container apply figures [recorded](benchmarks/blueprint-floor-2026-10-22.md); condition 3's real native-host evidence remains owed**. **Not met** — on condition 3 alone. Once met, the public side is the placeholder and the admin until v1.1, said publicly
 
 Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
 
@@ -4518,6 +4518,14 @@ The Storefront payload belongs to the optional commerce package and registers on
 Its two content types remain ordinary org-owned schema. Apply, reapply, merge, reverse, collision and recovery
 behavior use the existing applier. Tests pin the declaration surface, fresh manifests, captured pre-media receipts,
 invalid format refusal before intent, owner-adapted formats and a frozen Storefront 1.0.0 payload.
+
+---
+
+### Measurement update — blueprint applies in constrained containers, 2026-10-22 (#207)
+
+The container measurements owed by the earlier amendments are now [recorded with their graph and platform](benchmarks/blueprint-floor-2026-10-22.md), at application source `4e6f9059d841533b7ff45e18685da2c7022392ab`. Blog's fresh-owner applies took 719/753 ms and its applies into 1,000/100,000 entries took 448/434 ms; Marketing Site's corresponding figures were 785/743 ms and 427/418 ms. All eight full Artisan commands ran under verified 1 vCPU / 1,024 MiB container limits with no swap, completed successfully and left finished receipts. The saved dated Composer lock permits another run on the same graph; the earlier lock and developer-host observations stay visible.
+
+This meets Phase 5's stated **constrained-container 60-second apply criterion**. It leaves ADR-030's **real native-host floor condition** open, together with concurrency and full-system memory evidence. Docker Desktop on a developer laptop does not demonstrate that the native recommended install serves the project site at the floor. No architectural decision, resource floor, deployment or site-move authorization changes.
 
 ---
 
