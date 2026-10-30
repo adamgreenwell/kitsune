@@ -8,7 +8,7 @@ Report it privately through GitHub:
 
 **→ [Report a vulnerability](https://github.com/adamgreenwell/kitsune/security/advisories/new)**
 
-That opens a private advisory visible only to you and the maintainer. It is preferred over email: the report is encrypted in transit, the discussion stays attached to the eventual fix, and a CVE can be issued from it directly if one is warranted.
+That opens a private advisory. Access follows [GitHub’s advisory permissions](https://docs.github.com/en/code-security/reference/permissions/repository-security-advisory), including eligible repository security roles and explicitly invited collaborators. The report is encrypted in transit, the discussion stays attached to the eventual fix, and a CVE can be issued from it if warranted. Review the participants before adding sensitive material.
 
 If GitHub is not an option for you, say so in a public issue **without any detail about the vulnerability itself** — just that you need a private channel — and one will be arranged.
 
@@ -21,6 +21,14 @@ If GitHub is not an option for you, say so in a public issue **without any detai
 | Fix or mitigation plan | communicated with the assessment |
 
 This is a single-maintainer project with a stated bus factor of one ([`GOVERNANCE.md`](GOVERNANCE.md)). These are honest targets rather than a contractual SLA, and if one slips you will be told rather than left waiting.
+
+## Operational responsibility and availability
+
+**Adam Greenwell (`adamgreenwell`) is the primary owner of intake, triage, private patch coordination and release/disclosure decisions.** These are responsibilities held by the same maintainer, not additional staff or continuous coverage.
+
+No continuity delegate is currently named and qualified. When Adam is unavailable, responses can be delayed and security release/disclosure decisions wait for an available, authorized owner. A delayed report is acknowledged when the owner returns. Nothing automatically forwards private reports, grants access, publishes an advisory or transfers release authority. A future delegate needs their consent, appropriate private access and a verified notification handoff before being relied on.
+
+The existing 5- and 10-working-day targets remain targets, not a new availability guarantee. The [response runbook](docs/security-response.md) separates written procedure from an actual intake, notification and human-acknowledgement rehearsal. A form or enabled setting alone does not establish that the process works.
 
 ## Severity, and the category that outranks everything
 
