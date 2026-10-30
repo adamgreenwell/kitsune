@@ -812,7 +812,8 @@ it('notes a grant and a relation that name a handle no type will hold, and chang
         'field storage notice_refs targets dispatch, which this reverse removes: it stays, and targets whatever type '
         .'takes dispatch next',
     ])
-        ->and(RolePermission::query()->where('role_id', $lead->getKey())->orderBy('permission')->pluck('permission')->all())
+        /* Permission membership is exact; SQL text collation does not define this test's set order. */
+        ->and(RolePermission::query()->where('role_id', $lead->getKey())->pluck('permission')->sort(SORT_STRING)->values()->all())
         ->toBe(['entry.*.publish', 'entry.dispatch.update', 'entry.dispatch.view'])
         ->and($refs->fresh()->settings)->toBe($settings);
 });
