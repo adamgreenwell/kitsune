@@ -170,7 +170,7 @@ class EntryResource extends Resource
                  * sent, so an ordinary save of a shared entry never names the column.
                  */
                 ->hidden(fn (?Entry $record): bool => $record?->isStoredAsShared() ?? false)
-                ->helperText('The entry\'s address on this site. Entries shared across the organisation have none.')
+                ->helperText(__('kitsune::admin.address_help'))
                 // scopedUnique, never Laravel's unique: that rule does not go
                 // through Eloquent, so it ignores global scopes and would tell
                 // one org that another org holds the slug.
@@ -469,7 +469,7 @@ class EntryResource extends Resource
 
         $table = self::listsMedia() ? self::asTiles($table, $title) : $table->columns([
             $title,
-            TextColumn::make('type_handle')->badge()->label('Type'),
+            TextColumn::make('type_handle')->badge()->label(__('kitsune::admin.type')),
             // Withheld for a media type, as its control is (ADR-042 decision 3): `store()` creates media entries published
             // and delivery never reads status. A status set before this, or restored from a revision saved then, stays
             // stored and has no effect. A media list is tiles, which carry none (`asTiles()`).
