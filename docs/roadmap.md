@@ -320,7 +320,7 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
 
   **Restoring adds a version rather than rewriting history**: restoring version 1 leaves versions 2 and 3 in place and appends version 4. Rewriting would make *what did this say last Tuesday* unanswerable, which is the question revisions exist to answer. There is deliberately **no delete** — erasure goes through `redactField()`, which replaces in place so the history of *what changed when* survives an erasure of *what it said* (ADR-020).
 
-  Retention is capped at `Entry::KEEP_REVISIONS` (50). The decision log's *revision storage growth — full-JSON snapshots get expensive; consider diffs* is still open; a bound applied on write is the honest interim answer, and diffs would raise that number rather than remove it.
+  Retention remains capped at `Entry::KEEP_REVISIONS` (50). The [2026-10-23 revision-growth measurement](benchmarks/revision-growth.md) compared nine field-rule-valid histories and a bounded checkpoint/diff prototype, including read/restore, erasure, recovery and migration costs. ADR-020's amendment keeps full snapshots and the current cap; a future format change needs its own measured proposal. No production representation changed.
 
   ⚠️ **Two defects found by clicking it.** `wasRecentlyCreated` stays true for the lifetime of an instance, so every later save on a freshly created entry recorded another revision — fixed by hooking `created` and `updated` separately. And a restore left the **pre-restore values sitting in the form**, so the next save wrote them back and silently undid the restore the user had just watched succeed
 
