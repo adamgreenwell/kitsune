@@ -3383,6 +3383,20 @@ from the floor of fifteen to a ceiling of sixty-four, for readers and the first 
 above the ceiling or not a whole number is replaced by the bound and named by `kitsune:readers status` — "should not
 be allowed to be weak ever even by manual override".
 
+⚠️ **Amended 2026-10-23 — optional password-strength feedback (#301).** The original no-script reader pages keep
+their form and server checks. Only a rendered password-choice view (sign-up completion or reset, including a refused
+POST) now permits one static script by its exact SHA-256 CSP hash. Other reader pages, redirects, dead links and files
+keep their original policy; no script origin, inline wildcard, network connection or dependency is added. The script
+reads the field locally and writes translated text: required minimum, the 72-byte ceiling, unusable characters/edges,
+the address itself, a few repeated/common patterns, and a length-based estimate. It neither changes nor submits the
+password, saves it, nor consults a strength service. Requirements remain visible without JavaScript, and the server's
+`PasswordRules` remain authoritative. The estimate is explicitly limited: no entropy claim or breach-list check, and a
+long predictable phrase outside its small pattern list can still look stronger. A unique generated password or
+unrelated words are suggested without new composition rules. Feedback uses words rather than colour; a polite live
+region announces a changed category after a pause or on blur, instead of every keystroke. Existing keyboard, paste and
+new-password autocomplete remain. Staff have no web creation/reset form in this slice: the first owner still uses the
+hidden CLI prompt or standard input (ADR-039), and no staff reset route is invented here.
+
 **The pages.** Eight more routes per prefix, every one a fallback as before: `/account/register` asks for a sign-up
 link and `/account/register/complete` uses one, both only where the site is `open` (`ReaderArea::class.':open'`, in
 place of the plain gate, never beside it); `/account/recover` asks for a recovery link and `/account/reset` uses one,
