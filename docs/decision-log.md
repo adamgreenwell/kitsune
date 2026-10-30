@@ -4521,6 +4521,91 @@ invalid format refusal before intent, owner-adapted formats and a frozen Storefr
 
 ---
 
+### Amendment — optional content has its own committed facts, 2026-10-26 (#205)
+
+This is the seed-content contract before its implementation, not a claim that seeding has shipped. Schema apply
+still seeds nothing. The original reasoning above stays: a first nonempty value permanently locks the storage it
+actually writes, and content needs one explicitly selected site in its own locale. No administrator, organisation,
+site, field reshaping, media upload, declarative export or default demo is created by this phase.
+
+**Measured before choosing the boundary.** `BlueprintSeedWritePrimitiveTest` runs without a testing wrapper and
+reads the same SQLite file through an independent PDO. Its first six cases passed 48 assertions; three further
+cases passed 24. Entry rows, revisions, audit and first-value locks were invisible before the outer commit and
+visible together afterwards. An outer failure after creating relations rolled all of them back. An audit failure
+left no entry or lock. Zero and false armed their fields; null, empty string and empty list did not. Creating all
+entry rows first allowed forward and cyclic relations; an identical subsequent relation sync added no history.
+A failure after commit left content and locks committed. Trash retained a slug collision, while a sibling site
+had its own namespace; explicit sibling/foreign-site writes and a foreign-org type were refused. A failed batch
+then succeeded once with one entry, revision and audit. These are existing SQLite primitive measurements, not a
+seed-receipt, concurrent-writer or all-engine qualification. Those remain tests owed by #205.
+
+**An optional PHP capability, not another required method.** The earlier statement that the last two keys would
+be required methods predates frozen first-party PHP definitions. A required method would prevent their classes
+from loading, before the kernel could help. Keep `BlueprintDefinition`'s four required methods and every released
+definition unchanged. `DeclaresSeedContent` extends it with `seedContent(): array`, a list of readonly
+`SeedEntryDeclaration` values. Together these add two named first-party author symbols; everything implementing
+seeding and its receipts is internal. This independently MAIN-based change does not assume the unmerged #204
+availability capability exists. Their eventual integration must count both capabilities rather than suppressing
+the surface gate. Third-party support and a 0.x stability promise are still absent.
+
+**Address content by stable author keys, never by an entry ID or a title.** Each declaration names a unique ASCII
+lowercase snake-case key, an entry-type handle, title, optional slug, a supported status (draft by default), scalar
+field values and ordered relation targets expressed as other seed keys. Scope, author IDs, arbitrary columns and
+callbacks are not declaration values. Fields and types resolve only through the current org's validated schema
+receipt, with exact row identities and attachment rechecked under locks; a type explicitly adopted by schema apply
+may receive new content, but an existing operator entry is never adopted. Binary media needs MediaLibrary custody,
+which this row-only declaration cannot manufacture; media entry types are refused, not populated with phantom
+files. This does not replace the separate media/import workflow.
+
+**Selection is explicit and cannot bootstrap.** `kitsune:blueprint seed` is a separate opt-in action on the existing
+command, requiring the blueprint, existing org, exact current-org site handle and explicit locale equal to the
+site's current locale. Numeric-looking handles remain names. No fallback to the first site or the ambient context,
+and no `--owner`, bootstrap options or generated credential. Core validates the same selection independently of
+the console and restores the caller's context. Foreign/missing/moved sites and a wrong locale are refused before
+an intent or content write. Apply's existing `--site` bootstrap semantics stay action-specific and documented.
+
+**One row transaction for the requested batch, with a separate org-scoped seed receipt.** There is no DDL or file
+write in this phase. Lock the schema receipt first, so apply/merge/reverse cannot remove or replace the authority
+while seeding, then recheck the selected site, current types and fields on the models' writer connection. Create
+all new entry rows before ordered relation sync, so forward references and cycles do not require a partial commit.
+The new `blueprint_seeds` receipt, its declaration facts and every entry/relation/audit/revision/first-value lock
+commit together. A failure before that outer commit leaves no seed receipt and no batch rows; an interruption after
+it reads committed facts on retry rather than replaying a second creation or audit. A separately committed
+"started" receipt would add an unrecoverable ownership state without the DDL reason schema apply has, so it is not
+used. Actual level-zero and independent-connection failure tests must establish this on every supported engine.
+
+The receipt is keyed by org, exact schema-receipt identity and the original site identity, with the site's locale
+recorded. Changing a locale does not create another copy in the same site; a later call refuses that drift. A
+deleted site may null its live reference without erasing the original identity/facts. A reused site handle is a
+different site, not recovery authority over the old entries. The manifest records seed keys, initial declaration
+fingerprints, exact type/field/entry identities and created/skipped outcomes. It does not retain a second plaintext
+copy of content or personal values. Fingerprints use a deterministic, versioned encoding of the validated PHP
+declaration; unsupported values refuse before writing. A malformed manifest grants no adoption or replay authority.
+
+**Collisions and later versions do not overwrite.** `OnCollision::Fail` is the default for a new key's slug;
+`Skip` records that key as skipped and leaves the existing entry completely alone, including its history. Trash
+is a collision too. A skipped key cannot be used as authority for a new relation to an operator entry. A later
+definition may add keys, and may neither remove nor change a recorded declaration fingerprint. It carries old
+facts verbatim and never repopulates edited, moved, retyped, trashed or deleted entries, nor binds a replacement
+under a reused slug. A new relation to an old created key requires that original entry still have the recorded
+org/site/type identity and remain a usable target; otherwise the whole new batch refuses. Already committed
+content remains operator-owned even when reporting names such a missing or changed target. Seed version checks
+also require the selected schema version to have completed, rather than silently applying schema first.
+
+**Reverse still refuses content, rather than deleting it.** The schema reverse must lock/read separate seed facts
+and name remaining created content even if an operator moved or retyped it; it counts trash and related/revision
+obstacles past display scopes. It does not offer a destructive seed undo, empty trash, clear relations or unlock
+field storage. Only a successful ordinary schema reverse after its existing obstacles are cleared may remove its
+now-data-free seed bookkeeping with the schema receipt. A removed or malformed seed fact cannot authorize erasing
+an entry or replacing its owner. The permanent storage-lock rule and its existing retained-storage report remain.
+
+Required verification before delivery: all four #205 acceptance items, both Org/Site boundaries and sibling sites,
+invalid input before writes, real outer commit/rollback and interruption, additive version/collision/operator-edit
+cases, ordered/forward/cyclic relations, concurrent seed/merge/reverse and independent connections on all engines,
+frozen PHP definitions and the explicit author-surface gate, console refusal/context restoration, canonical browser
+regressions, full Composer CI and separate skeleton Pint, current/committed source witnesses, owned cleanup and
+exact-head CI/Codex review. The primitive measurements above do not substitute for these gates.
+
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below

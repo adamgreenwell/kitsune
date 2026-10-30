@@ -35,6 +35,11 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  * interfaces, because everything still standing at v1.2 is a permanent obligation (Standing Principle #2) and one
  * seam is cheaper to keep than four. A definition that declares no types and no roles is legitimate and applies as
  * a no-op.
+ *
+ * ⚠️ Amended by ADR-039's #205 seed contract: the required-method plan above predates frozen
+ * PHP definitions. The optional `DeclaresSeedContent` capability adds content without making
+ * any released class unloadable. These four required methods remain unchanged; schema apply
+ * never requests or writes seed content.
  */
 interface BlueprintDefinition
 {
