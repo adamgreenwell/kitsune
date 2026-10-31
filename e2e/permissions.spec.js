@@ -124,7 +124,7 @@ test.describe('a user holds only what was granted', () => {
          *
          * Schema editing is owner-only in v1.0. The vocabulary `architecture.md` publishes is five actions
          * on ENTRIES and nothing else, so there is no `schema.manage` to ask for — and inventing one widens
-         * the extension surface, which Standing Principle #1 keeps shut until v1.2.
+         * the extension surface, which Standing Principle #2 keeps shut until v1.2.
          */
         const refused = await page.goto(`/admin/${SITE}/entry-types`);
         expect(refused?.status()).toBe(403);
@@ -145,7 +145,7 @@ test.describe('a user holds only what was granted', () => {
          *
          * Owner-only in v1.0, because `architecture.md` publishes five actions on ENTRIES and nothing else,
          * so there is no `role.manage` to ask for and inventing a subject widens the extension surface
-         * Standing Principle #1 keeps shut until v1.2.
+         * Standing Principle #2 keeps shut until v1.2.
          */
         const refused = await page.goto(`/admin/${SITE}/roles`);
         expect(refused?.status()).toBe(403);

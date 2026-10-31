@@ -266,7 +266,7 @@ The **Kitsune name and logo are separate from the code license.** The code is yo
 
 ## Contributing
 
-Feature PRs aren't open yet — the extension API is deliberately unstable and undocumented until v1.2, and inviting plugin authors before it settles is the single most reliable way to wreck an ecosystem (see Standing Principle #1 in the decision log).
+Feature PRs aren't open yet — the extension API is deliberately unstable and undocumented until v1.2, and inviting plugin authors before it settles is the single most reliable way to wreck an ecosystem (see Standing Principle #2 in the decision log).
 
 **Issues and discussion are open, in any language.** Especially valuable right now: prior-art knowledge from anyone who has shipped a runtime schema engine or watched one fail, and holes in the reasoning — the decision log makes falsifiable claims, so falsify one.
 
