@@ -4523,7 +4523,7 @@ invalid format refusal before intent, owner-adapted formats and a frozen Storefr
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below · **Amended 2026-10-31 — timestamp portability beyond credentials**: media file rows and module receipts keep their stored time on MariaDB before 10.10; see *Timestamp portability beyond credentials*
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -6288,6 +6288,52 @@ The complete focused credential and webhook-HTTP suite then passed on that uncha
 359 tests and 4,099 assertions, including the original failing overlap case and existing attacker-side integrity
 checks. Its SQLite run passed 352 tests and 4,052 assertions, with seven explicit engine skips. The disposable
 database was removed afterwards; no user database or server configuration was changed.
+
+**Timestamp portability beyond credentials, 2026-10-31.** Amends the paragraph above, which ~~fixed the class
+for credentials~~ *fixed the class for credentials alone; it was not credential-only*. A docs-only PR's CI run
+(#389, PHP 8.4 / MariaDB 10.6) failed `MediaOfferTest`: an offer moved `media_files.created_at` one second,
+because the second ticked over between the insert and the update. Measured on MariaDB 10.6.28 with its default
+`explicit_defaults_for_timestamp=0`, after migrating core, commerce and the skeleton's own tables (90 tables):
+six columns carry the implicit `ON UPDATE CURRENT_TIMESTAMP` — `audit_log.created_at`, `credentials.changed_at`,
+`erasure_log.erased_at`, `media_files.created_at`, `modules.installed_at` and `org_credential_modes.changed_at`.
+Commerce adds none, and `failed_jobs.failed_at`, declared `useCurrent()`, gets the default without the clause.
+Also measured: an UPDATE that sets the column to itself keeps it, and one that changes no column at all fires
+nothing, so the lock writes that set a column to itself need no change.
+
+What each column needs, decided by Adam on 2026-10-31: explicit writes, as for credentials, rather than a
+MariaDB-only migration that drops the clause; and `modules` fixed here rather than listed.
+
+- `media_files.created_at` — custody's move off a disk, a withdrawal, the visibility switch and the offer each
+  rewrote it. All four write below the model, and each now sets `created_at` to itself through
+  `MediaFile::keepingCreatedAt()`. Model writes already refuse the column, which is fixed at creation.
+- `modules.installed_at` — enable, disable and upgrade rewrote it. Receipt saves now write the raw value, as
+  credentials write `changed_at`.
+- `credentials.changed_at`, `org_credential_modes.changed_at` — fixed on 2026-10-15, above.
+- `audit_log.created_at` — append-only. No code updates it, and `AppendOnlyBuilder` refuses model writes. The one
+  test that writes the table below the model already sets the column to itself (`EntitlementPageTest`).
+- `erasure_log.erased_at` — nothing writes the table yet. Its first writer must only insert, or keep the column
+  as these do.
+
+A new table whose first TIMESTAMP is `NOT NULL` with no default gets the same clause on these servers. Make it
+nullable, give it `useCurrent()`, or write it explicitly on every update.
+
+**Measured — timestamp portability beyond credentials.** Before the fix, all four media cases and both module
+cases in `MediaFileCreatedAtTest` and `ModuleInstalledAtTest` failed on MariaDB 10.6.28: the frozen
+`2001-02-03 04:05:06` became the server's clock on every run. With the fix they pass on SQLite, PostgreSQL 17,
+MySQL 8.4 and MariaDB 10.6.28. On 10.6.28 the media, credential, entitlement and reader suites then passed
+3,154 tests and 21,151 assertions with 32 skips, `MediaOfferTest` among them, and the module suite passed 236
+tests with 23 skips.
+
+**Landed — mutation families, and the test that caught each** (killed on SQLite and MariaDB 10.6.28 alike):
+
+- one of the three media writes leaving the column out — that write's frozen-time case, and the source scan;
+- `keepingCreatedAt()` returning nothing, or `now()` — every media case;
+- a fifth `media_files` update planted without it — the source scan;
+- the module override removed, or writing the clock — both module cases.
+
+One mutant survived and was equivalent: dropping the override's `$dirty !== []` check. `save()` never asks a
+model with no change, so the check was removed from `Module`. `WritesExplicitChangeTime` carries the same check
+and is left as it is.
 
 ---
 

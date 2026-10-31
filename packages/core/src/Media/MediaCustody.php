@@ -531,7 +531,8 @@ final class MediaCustody
             $stays = isset($setAside[$named]) && ! in_array($named, [$private, MediaDisks::PRIVATE], true);
 
             if ($named !== $target && ! $stays) {
-                $connection->table('media_files')->where('entry_id', (int) $file->entry_id)->update(['disk' => $target]);
+                $connection->table('media_files')->where('entry_id', (int) $file->entry_id)
+                    ->update(['disk' => $target, ...MediaFile::keepingCreatedAt()]);
                 $changed = true;
             }
 

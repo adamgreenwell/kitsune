@@ -103,6 +103,30 @@ class Module extends Model implements RequiresModelSave
     }
 
     /**
+     * Every receipt save names `installed_at`, unchanged as it is.
+     *
+     * ⚠️ MARIADB BEFORE 10.10 WOULD MOVE IT OTHERWISE. It is the table's first TIMESTAMP, which
+     * `explicit_defaults_for_timestamp=0` — that server's default until 10.10, and CI's 10.6 — gives an implicit
+     * `ON UPDATE CURRENT_TIMESTAMP`; Eloquent leaves an unchanged column out, so enabling, disabling or upgrading
+     * stored the server's clock as the install time (measured on 10.6.28). The raw attribute, as the credentials
+     * write `changed_at` (`WritesExplicitChangeTime`, ADR-040's *Credential timestamp portability*). Asked only of a
+     * save with a change: `save()` sends no UPDATE for a clean model, so there is no empty write to guard against.
+     *
+     * @return array<string, mixed>
+     */
+    protected function getDirtyForUpdate(): array
+    {
+        $dirty = parent::getDirtyForUpdate();
+        $attributes = $this->getAttributes();
+
+        if (array_key_exists('installed_at', $attributes)) {
+            $dirty['installed_at'] = $attributes['installed_at'];
+        }
+
+        return $dirty;
+    }
+
+    /**
      * Whether `$handle` is installed and on.
      *
      * ⚠️ ABSENT IS DISABLED, and this method exists so that reading is never `Module::where(...)->first()->is_enabled`

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Query\Expression;
 use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
@@ -179,6 +180,24 @@ class MediaFile extends Model implements FixesColumnsAtCreation, RefusesInserted
             'reader_entitlement' => 'only Offer to readers, Change and Stop offering write it, below the model and under '
                 .'custody\'s lock, after deciding that the file is private and kept to one site (ADR-041 decisions 1 and 2).',
         ];
+    }
+
+    /**
+     * `created_at` set to itself, for every UPDATE of the row below the model to carry.
+     *
+     * ⚠️ MARIADB BEFORE 10.10 WOULD MOVE IT OTHERWISE. With `explicit_defaults_for_timestamp=0`, its default until 10.10
+     * and CI's 10.6, the server gives a table's first TIMESTAMP `ON UPDATE CURRENT_TIMESTAMP`, and this is that column: an
+     * UPDATE that leaves it out stores the server's clock as when the file was stored. Measured on 10.6.28 — custody's move,
+     * a withdrawal, the visibility switch and the offer each did. Naming it as itself keeps it there and is a no-op on every
+     * other engine, as the credentials' explicit `changed_at` is (ADR-040's *Credential timestamp portability*). An UPDATE
+     * that changes no column moves nothing, so the lock `MediaCustody::locked()` takes on SQLite needs none. Unquoted:
+     * the name is lower case and reserved by none of the four engines.
+     *
+     * @return array{created_at: Expression<'created_at'>}
+     */
+    public static function keepingCreatedAt(): array
+    {
+        return ['created_at' => new Expression('created_at')];
     }
 
     public function isPublic(): bool
