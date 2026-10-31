@@ -39,7 +39,7 @@ afterEach(function (): void {
  * A `docker` stub that records every argv it is given and answers with a canned benchmark run.
  *
  * ⚠️ A STUB THAT ANSWERS LIKE THE REAL COMMAND, not one tidier than it. `docker info`, `image inspect`, the
- * two `php -r` probes and the benchmark itself all come through the same binary, so the stub has to tell them
+ * PHP metadata probes and the benchmark itself all come through the same binary, so the stub has to tell them
  * apart the way Docker would — and a stub that answered everything identically would hide the very argv this
  * test exists to read.
  */
@@ -59,7 +59,18 @@ function floorStubs(
     string $marketingReport = 'Applied marketing-site 1.1.0 into X. 0 indexed.',
     string $marketingStatus = 'applied',
     bool $marketingOwner = true,
+    string $imageExtensions = '{"ext-intl":"8.4.25","ext-zip":"1.22.8"}',
+    int $imageExtensionsExit = 0,
+    bool $refuseHostResolution = false,
+    int $composerExportExit = 0,
+    bool $emptyComposerExport = false,
+    int $imageResolveExit = 0,
+    bool $imageLeavesLock = true,
 ): void {
+    $imageExtensionsArgument = escapeshellarg($imageExtensions);
+    $refuseHostResolutionFlag = $refuseHostResolution ? 1 : 0;
+    $emptyComposerExportFlag = $emptyComposerExport ? 1 : 0;
+    $imageLeavesLockFlag = $imageLeavesLock ? 1 : 0;
     $platformFailsFlag = $platformFails ? 1 : 0;
     $blogOwnerFlag = $blogOwner ? 1 : 0;
     $blogStatusLine = $blogStatus === 'applied' ? '| 1 | blog | 1.0.0 | 2026-10-02 12:00:00 |' : '| 1 | blog | 1.0.0 | INTERRUPTED — rows written, not finished; re-run to finish |';
@@ -74,11 +85,31 @@ function floorStubs(
       info*) exit 0 ;;
       build*) exit 0 ;;
       *image\\ inspect*) echo 'kitsune-floor@sha256:stubbed' ; exit 0 ;;
+      *--entrypoint\ /bin/cat*\ /usr/bin/composer)
+        [[ "$emptyComposerExportFlag" == 1 ]] || printf 'composer-binary-from-pinned-image'
+        exit $composerExportExit
+        ;;
     esac
+
+    # The exported Composer runs with the selected image's PHP, against the whole disposable work tree.
+    prev=
+    for arg in "\$@"; do
+      if [[ "\$prev" == -v && "\$arg" == *:/work ]]; then
+        work=\${arg%:/work}
+      fi
+      prev=\$arg
+    done
+    if [[ "\$*" == */work/composer.phar* ]]; then
+      while [[ "\$1" != /work/composer.phar ]]; do shift; done
+        shift
+        cp "\$work/composer.phar" "$dir/resolver-composer.phar"
+        exec env FLOOR_COMPOSER_IN_IMAGE=1 "$dir/bin/composer" "\$@" -d "\$work/skeleton"
+    fi
 
     # The image's PHP version, read before Composer resolves; and Composer's own platform check, run in the image.
     case "\$*" in
       *"PHP_VERSION;"*) echo '8.4.25' ; exit 0 ;;
+      *get_loaded_extensions*) printf '%s\\n' $imageExtensionsArgument ; exit $imageExtensionsExit ;;
       *platform_check.php*)
         if [[ "$platformFailsFlag" == 1 ]]; then
           echo 'Composer detected issues in your platform: Your Composer dependencies require the following PHP extensions to be installed: intl, zip.'
@@ -165,11 +196,22 @@ function floorStubs(
     File::put($dir.'/bin/composer', <<<STUB
     #!/usr/bin/env bash
     printf 'composer %s\\n' "\$*" >> "$dir/argv.log"
+    printf 'composer context=%s\\n' "\${FLOOR_COMPOSER_IN_IMAGE:-host}" >> "$dir/argv.log"
     for arg in "\$@"; do
       case "\$prev" in -d) app=\$arg ;; esac
       prev=\$arg
     done
+    if [[ "\$1" == update && "\${FLOOR_COMPOSER_IN_IMAGE:-host}" == 1 ]]; then
+      [[ "$imageResolveExit" == 0 ]] || exit $imageResolveExit
+      [[ "$imageLeavesLockFlag" == 1 ]] || exit 0
+      echo '{"packages":[{"name":"laravel/framework","version":"v13.0.0-resolved"}]}' > "\$app/composer.lock"
+      cp "\$app/composer.lock" "$dir/image-resolved.lock"
+      echo "install: resolved fresh" >> "$dir/argv.log"
+    fi
     if [[ "\$1" == install ]]; then
+      [[ "$refuseHostResolutionFlag" != 1 || -f "\$app/composer.lock" ]] || exit 73
+      [[ ! -f "\$app/composer.lock" ]] || cp "\$app/composer.lock" "$dir/install-composer.lock"
+      cp "\$app/composer.json" "$dir/install-composer.json"
       # As a path repository over `../packages/*` installs: one copy per package there — or only the one named.
       echo "packages: \$(cd "\$app/../packages" && ls | tr '\\n' ' ')" >> "$dir/argv.log"
       for pkg in "\$app"/../packages/*/; do
@@ -427,7 +469,7 @@ it('builds the floor interpreter from the committed Dockerfile when no image is 
 
 it('resolves the graph for the image\'s PHP, not this host\'s, before the install', function (): void {
     /*
-     * ⚠️ COMPOSER RUNS ON THE HOST. Left alone it resolves for the host's PHP, so a host on 8.5 measuring an 8.4 image
+     * ⚠️ THE INSTALLER RUNS ON THE HOST. Left alone it resolved for the host's PHP, so a host on 8.5 measuring an 8.4 image
      * could install a release the image cannot run (Codex, #126). The image's version is read first and handed to
      * Composer as its platform, and `platform-check` turned on, both before `composer install` runs.
      */
@@ -451,6 +493,93 @@ it('refuses an image that cannot run what was installed, naming what it lacks', 
     expect($run->isSuccessful())->toBeFalse('an image missing required extensions was measured')
         ->and($run->getErrorOutput())->toContain('cannot run the installed application')
         ->and($run->getErrorOutput())->toContain('intl, zip');
+});
+
+it('hands the image extension platform to the installer without ignoring runtime requirements', function (): void {
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $installed = json_decode((string) File::get($this->dir.'/install-composer.json'), true);
+    $argv = (string) File::get($this->dir.'/argv.log');
+
+    // These are the selected image's versions, even when Composer's host cannot load either extension.
+    // An extension the host alone loads must not become an image-derived override.
+    expect($installed['config']['platform'] ?? null)->toBe(['ext-intl' => '8.4.25', 'ext-zip' => '1.22.8'])
+        ->and($argv)->toContain('get_loaded_extensions')
+        ->toContain('platform-check true')
+        ->not->toContain('--ignore-platform-req');
+});
+
+it('resolves with the selected image before asking the host to install the recorded graph', function (): void {
+    floorStubs($this->dir, refuseHostResolution: true);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25', '--image', 'floor-php:8.4']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $argv = (string) File::get($this->dir.'/argv.log');
+
+    expect($argv)->toContain('floor-php:8.4 php /work/composer.phar update --no-install')
+        ->toContain('--entrypoint /bin/cat composer:2.10.3@sha256:')
+        ->toContain('install: from an existing lock')
+        ->and(substr_count($argv, 'composer context=1'))->toBe(1)
+        ->and((string) File::get($this->dir.'/resolver-composer.phar'))->toBe('composer-binary-from-pinned-image')
+        ->and((string) File::get($this->dir.'/install-composer.lock'))->toBe((string) File::get($this->dir.'/image-resolved.lock'));
+});
+
+it('refuses a failed or empty Composer export before installation', function (int $exit, bool $empty): void {
+    floorStubs($this->dir, composerExportExit: $exit, emptyComposerExport: $empty);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('Composer binary')
+        ->and((string) File::get($this->dir.'/argv.log'))->not->toContain('composer install')
+        ->not->toContain('kitsune:benchmark-floor');
+})->with([
+    'failed export' => [7, false],
+    'empty export' => [0, true],
+]);
+
+it('refuses image resolution that fails or produces no lock before host installation', function (int $exit, bool $lock, string $message): void {
+    floorStubs($this->dir, imageResolveExit: $exit, imageLeavesLock: $lock);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($message)
+        ->and((string) File::get($this->dir.'/argv.log'))->not->toContain('composer install')
+        ->not->toContain('kitsune:benchmark-floor');
+})->with([
+    'failed resolver' => [7, false, 'dependency resolution failed'],
+    'missing lock' => [0, false, 'image resolution left no composer.lock'],
+]);
+
+it('refuses unusable image extension information before installing or measuring', function (string $json, int $exit): void {
+    floorStubs($this->dir, imageExtensions: $json, imageExtensionsExit: $exit);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('extension platform')
+        ->and((string) File::get($this->dir.'/argv.log'))->not->toContain('composer install')
+        ->not->toContain('kitsune:benchmark-floor');
+})->with([
+    'probe failed' => ['{}', 7],
+    'not JSON' => ['not-json', 0],
+    'not an object' => ['[]', 0],
+    'a PHP override among the extensions' => ['{"php":"8.4.25"}', 0],
+    'an extension disabled instead of declared present' => ['{"ext-intl":false}', 0],
+    'an empty version' => ['{"ext-intl":""}', 0],
+]);
+
+it('keeps an image extension whose version is unknown declared present at version zero', function (): void {
+    floorStubs($this->dir, imageExtensions: '{"ext-intl":"8.4.25","ext-mysqlnd":"0","ext-zip":"1.22.8"}');
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $installed = json_decode((string) File::get($this->dir.'/install-composer.json'), true);
+
+    expect($installed['config']['platform']['ext-mysqlnd'] ?? null)->toBe('0');
 });
 
 it('installs every package the skeleton requires through one path repository', function (): void {

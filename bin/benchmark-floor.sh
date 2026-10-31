@@ -133,18 +133,77 @@ if [[ -n "$lock" ]]; then
   cp "$lock" "$app/composer.lock"
 fi
 
-# ⚠️ RESOLVED FOR THE IMAGE'S PHP, NOT THIS HOST'S. Composer runs here, and left alone it resolves against this
-# machine's PHP — so a host on 8.5 measuring an 8.4 image could install an 8.5-only release that then fails in the
-# container, and a lock valid for a newer image could be refused here (Codex, #126). Only the version is pinned to
-# the image, so the lock does not depend on which extensions this host happens to load; `platform-check` then has
-# the autoloader verify the extensions, IN the image, before anything boots — see the check after the install.
+# ⚠️ RESOLVED FOR THE IMAGE'S PHP, NOT THIS HOST'S. Fresh resolution runs inside that image too (#320), so host-only
+# extensions cannot influence fresh resolution. The image-derived overrides remain in the recorded lock: a
+# re-check installs that graph and lets the actual in-image runtime check refuse an incompatible interpreter.
+# Only pinning PHP still refused an install when the image provided intl/zip but Composer's host did not (#128).
+# Add the image's present extensions too, never host-derived absent/false overrides. Ignoring ext-* instead removes
+# those requirements from Composer's generated runtime check — measured with Composer 2.10.3. Platform overrides
+# preserve that check, which still runs IN the image before anything boots — see the check after the install.
 image_php=$(docker run --rm "$image" php -r 'echo PHP_VERSION;') || refuse "could not read the PHP version of [$image]"
 [[ "$image_php" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || refuse "[$image] reported its PHP version as [$image_php]"
+image_extensions=$(docker run --rm "$image" php -r '
+  $versions = [];
+  foreach (get_loaded_extensions() as $extension) {
+    if (in_array($extension, ["Core", "standard"], true)) {
+      continue;
+    }
+    $name = "ext-".str_replace(" ", "-", strtolower($extension));
+    $version = phpversion($extension) ?: "0";
+    // Composer represents an unparseable version such as "mysqlnd 8.4.25" as present at version zero.
+    $versions[$name] = preg_match("/\A[0-9][0-9A-Za-z.+_-]*\z/D", $version) === 1 ? $version : "0";
+  }
+  ksort($versions);
+  echo json_encode($versions, JSON_THROW_ON_ERROR);
+') || refuse "could not read the extension platform of [$image]"
+php -r '
+  try {
+    $extensions = json_decode($argv[2], true, 512, JSON_THROW_ON_ERROR);
+    if (! is_array($extensions) || $extensions === [] || array_is_list($extensions)) {
+      throw new RuntimeException("Expected an extension object");
+    }
+    foreach ($extensions as $name => $version) {
+      if (! is_string($name) || preg_match("/\Aext-[a-z0-9][a-z0-9_-]*\z/D", $name) !== 1
+          || ! is_string($version) || preg_match("/\A[0-9][0-9A-Za-z.+_-]*\z/D", $version) !== 1) {
+        throw new RuntimeException("Expected present extensions with version strings");
+      }
+    }
+    $file = $argv[1]."/composer.json";
+    $composer = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+    $composer["config"]["platform"] = array_replace($composer["config"]["platform"] ?? [], $extensions);
+    ksort($composer["config"]["platform"]);
+    if (file_put_contents($file, json_encode($composer, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n") === false) {
+      throw new RuntimeException("Could not write the disposable platform configuration");
+    }
+  } catch (Throwable $error) {
+    fwrite(STDERR, "Invalid image extension platform.\n");
+    exit(1);
+  }
+' "$app" "$image_extensions" || refuse "could not configure the extension platform of [$image]"
 composer config -d "$app" platform.php "$image_php" >/dev/null
 composer config -d "$app" platform-check true >/dev/null
 
 composer config -d "$app" repositories.kitsune-packages \
   '{"type":"path","url":"../packages/*","options":{"symlink":false}}' >/dev/null
+
+if [[ -z "$lock" ]]; then
+  # The official image supplies only pinned tool bytes, never the resolver's interpreter. Do not disable
+  # host-only extensions in config.platform: that makes the recorded lock depend on which host ran it.
+  # Resolve without installing, then let the host install EXACTLY that lock. Keeping extraction on the
+  # host also lets a recorded graph reach platform_check.php in an image lacking intl/zip, as before.
+  composer_image=composer:2.10.3@sha256:b6dcd72ca98fa19d0e5b8476de179859704891fad06dd9e0b96833d4c430a5fc
+  docker run --rm --network none --entrypoint /bin/cat "$composer_image" /usr/bin/composer > "$work/composer.phar" \
+    || refuse "could not export the pinned Composer binary"
+  [[ -s "$work/composer.phar" ]] || refuse "the pinned Composer binary was empty"
+  if ! docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -e COMPOSER_HOME=/work/composer-home \
+    -v "$work":/work -w /work/skeleton "$image" php /work/composer.phar update --no-install \
+    --no-dev --no-interaction --no-scripts --no-plugins > "$work/resolve.log" 2>&1; then
+    tail -20 "$work/resolve.log" >&2
+    refuse "dependency resolution failed in [$image]"
+  fi
+  [[ -f "$app/composer.lock" ]] || refuse "image resolution left no composer.lock"
+fi
+
 if ! composer install -d "$app" --no-dev --no-interaction --prefer-dist --optimize-autoloader \
   --no-scripts >"$work/install.log" 2>&1; then
   tail -20 "$work/install.log" >&2
