@@ -784,6 +784,28 @@ A field that has not been classified does not save. Same discipline as the tenan
 > half of the same row. Neither column ever carried a foreign key (erasing a user must not destroy the
 > trail), so the type was holding an assumption rather than a constraint.
 
+> **Amended 2026-10-22 — identity types must fit without changing their meaning (#136).**
+> The class-name rule above remains the default, but it did not account for PHP's anonymous class names:
+> they contain a NUL followed by a deployment path. Measured, PostgreSQL stored only the prefix before
+> the NUL, SQLite stored the whole value, and MySQL/MariaDB refused an overlong value. The same action
+> therefore either acquired a misleading identity or rolled back depending on its database.
+>
+> Both `actor_type` and `target_type` retain their nullable `varchar(255)` columns. A supplied type must
+> be nonempty valid UTF-8, contain no NUL, and fit in **255 Unicode characters**, rather than 255 bytes.
+> A Laravel integer morph alias is accepted as its decimal text. Other value shapes, including SQL
+> expressions whose result cannot be inspected before insertion, are refused. NULL still means the
+> system actor or an absent target; an invalid identity must never be converted to NULL.
+>
+> The audit builder checks every row before any insert, including bulk/ignore/returning inserts,
+> suppressed model events and suspended scope checks. A refusal names the column and constraint,
+> without copying the identity or deployment path into the exception. Through audited entry writes,
+> it rolls back the content write and audit together. Direct SQL remains outside this Eloquent guard.
+>
+> An anonymous Eloquent actor or target can use a host-declared bounded morph alias; a non-Eloquent
+> actor needs a named class that fits this contract. Widening the column would not fix the NUL problem.
+> Truncation, a basename or a hash would change what the existing polymorphic type identifies, so none
+> is an automatic fallback. Existing stored rows are not rewritten by this amendment.
+
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
 **6. Encryption at rest for `sensitive`-classified fields**, and retention policies that attach to classified fields.
