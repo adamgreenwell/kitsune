@@ -532,7 +532,7 @@ final class MediaCustody
 
             if ($named !== $target && ! $stays) {
                 $connection->table('media_files')->where('entry_id', (int) $file->entry_id)
-                    ->update(['disk' => $target, ...MediaFile::keepingCreatedAt($connection)]);
+                    ->update(['disk' => $target, ...MediaFile::keepingCreatedAt()]);
                 $changed = true;
             }
 

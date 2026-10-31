@@ -11,7 +11,6 @@ declare(strict_types=1);
 namespace Kitsune\Core\Models;
 
 use Carbon\CarbonInterface;
-use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Query\Expression;
@@ -191,13 +190,14 @@ class MediaFile extends Model implements FixesColumnsAtCreation, RefusesInserted
      * UPDATE that leaves it out stores the server's clock as when the file was stored. Measured on 10.6.28 — custody's move,
      * a withdrawal, the visibility switch and the offer each did. Naming it as itself keeps it there and is a no-op on every
      * other engine, as the credentials' explicit `changed_at` is (ADR-040's *Credential timestamp portability*). An UPDATE
-     * that changes no column moves nothing, so the lock `MediaCustody::locked()` takes on SQLite needs none.
+     * that changes no column moves nothing, so the lock `MediaCustody::locked()` takes on SQLite needs none. Unquoted:
+     * the name is lower case and reserved by none of the four engines.
      *
-     * @return array{created_at: Expression}
+     * @return array{created_at: Expression<'created_at'>}
      */
-    public static function keepingCreatedAt(Connection $connection): array
+    public static function keepingCreatedAt(): array
     {
-        return ['created_at' => new Expression($connection->getQueryGrammar()->wrap('created_at'))];
+        return ['created_at' => new Expression('created_at')];
     }
 
     public function isPublic(): bool

@@ -642,7 +642,7 @@ final class MediaVisibility
             $columns['size_bytes'] = $sizeBytes;
         }
 
-        $written = $connection->table(MediaFile::TABLE)->where('entry_id', $entryId)->update([...$columns, ...MediaFile::keepingCreatedAt($connection)]);
+        $written = $connection->table(MediaFile::TABLE)->where('entry_id', $entryId)->update([...$columns, ...MediaFile::keepingCreatedAt()]);
 
         if ($written !== 1) {
             throw new LogicException(sprintf('Refusing to go on: entry %d\'s file row was written %d times, not once (ADR-042 decision 32).', $entryId, $written));

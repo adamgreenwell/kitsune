@@ -123,7 +123,7 @@ final class MediaWithdrawal
 
         if ($moving !== []) {
             $this->connection->table('media_files')->whereIntegerInRaw('entry_id', $moving)
-                ->update(['disk' => $private, ...MediaFile::keepingCreatedAt($this->connection)]);
+                ->update(['disk' => $private, ...MediaFile::keepingCreatedAt()]);
         }
 
         foreach ($candidates as $file) {
