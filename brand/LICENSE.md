@@ -20,4 +20,4 @@ You may fork the code — the MPL guarantees it and GOVERNANCE.md calls that a f
 
 ---
 
-⚠️ **Provisional, and not yet reviewed by a lawyer.** This file is a placeholder for the policy the roadmap commits to publishing as `TRADEMARK.md`, modelled on the WordPress Foundation's. It states the intent so the boundary exists from the moment assets land; it is not the final instrument and it is not legal advice. The mark itself is provisional pending the name clearance in software and SaaS classes — see ADR-032.
+⚠️ **Provisional, and not yet reviewed by a lawyer.** This file covers the copyright in the asset files. How the name and the marks may be used is [`TRADEMARK.md`](../TRADEMARK.md), which is equally provisional; where the two overlap they say the same thing, and the trademark policy is the one to read. Neither is legal advice. The mark itself is provisional pending the name clearance in software and SaaS classes — see ADR-032.

@@ -11844,3 +11844,45 @@ first-party boundary are part of the reading path, not stable-API promises.
 **Local artifact verification and public publication are separate gates.** This decision authorises the build
 and local reading checks only. It does not select a host, deploy documentation, publish a release, authorise a
 provider action or make the marketing site's ADR-030 trigger true. The original reasoning above remains visible.
+
+---
+
+## ADR-044 — The trademark policy is published before the mark is registered
+
+**Status:** Decided · 2026-10-30 · Publishes the policy ADR-005 committed to. Leaves ADR-032's provisional status and its open exit criteria unchanged.
+
+ADR-005 made the trademark, not the licence, the thing that stops a fork being called Kitsune, and the README
+promised `TRADEMARK.md` "alongside the first release". Roadmap [#2](https://github.com/adamgreenwell/kitsune/issues/2)
+bundled three things: the filing, the logo registration and the policy. **Only the first two cost money, and
+the filing is not affordable now.** The policy does not need a registration to say how the project asks the
+name to be used, so it is published now and the filing stays open on #2 behind clearance (#1).
+
+The mark is used unregistered. The policy says so, and writes ™, never ®: ® claims a registration that does not
+exist. Nothing in this ADR says what the unregistered mark is worth in a dispute. That is a question for counsel,
+and the policy states that it has not been reviewed by one.
+
+**Four decisions, each by Adam:**
+
+1. **Hosts may describe; they may not name.** "Managed hosting for Kitsune sites" is allowed without asking;
+   "Kitsune Cloud by Acme" is not. Rejected: permission for every commercial host, because the maintainer runs a
+   competing hosted service (ADR-004) and a permission gate held by a competitor reads as gatekeeping, however
+   it is exercised. Also rejected: anything that is not confusing, which cannot be enforced once a market has
+   formed around it. **This decision benefits the hosted service and the open project differently**, as
+   GOVERNANCE.md requires an ADR to say: the maintainer's service may use the name as a name, and no one else's may.
+   The policy states that in so many words, and reserves no descriptive use for it.
+2. **No registered domain names; subdomains and paths are fine.** `kitsunehosting.com` is out;
+   `kitsune.example.edu` and `example.com/kitsune` are in. Rejected: WordPress's stricter rule, which would stop a
+   university naming its own install's subdomain, and buys nothing a registered-domain rule does not.
+3. **Extensions say "for Kitsune", and package names may carry the word after the vendor.** "SEO Toolkit for
+   Kitsune" and `acme/kitsune-seo` are allowed; "Kitsune SEO" as a product name is not. Rejected: banning the word
+   in package names, which makes extensions harder to find and is not where confusion about origin happens.
+4. **Free community events need no permission; merchandise for sale does.** "Kitsune Meetup Cleveland" with free
+   entry is fine. Selling anything with the marks on it, or an event that charges entry, asks first. Rejected:
+   permission for every event, which turns the maintainer into a bottleneck for the thing the project most wants.
+
+The permission route is a public issue, so an answer serves the next person with the same question. The policy
+joins the documentation site's root documents (ADR-043), and `brand/LICENSE.md` now points to it for the name and
+covers only the copyright in the asset files.
+
+**Not decided here:** whether the filing is made, in which classes and jurisdictions, and by whom; whether
+ADR-032's provisional status ends on filing or on grant; and any review by counsel. Each remains open on #1 and #2.

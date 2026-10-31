@@ -44,7 +44,7 @@ beforeEach(function (): void {
     mkdir($this->docsRoot.'/docs', 0755, true);
     mkdir($this->docsRoot.'/brand/source', 0755, true);
     copy(dirname(__DIR__, 2).'/brand/source/kitsune-lockup-compact.svg', $this->docsRoot.'/brand/source/kitsune-lockup-compact.svg');
-    foreach (['CONTRIBUTING.md', 'GOVERNANCE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CLA.md'] as $name) {
+    foreach (['CONTRIBUTING.md', 'GOVERNANCE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CLA.md', 'TRADEMARK.md'] as $name) {
         file_put_contents($this->docsRoot.'/'.$name, '# '.basename($name, '.md')."\n");
     }
     mkdir($this->docsRoot.'/deploy/runbook', 0755, true);
