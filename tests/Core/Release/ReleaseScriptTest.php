@@ -443,11 +443,54 @@ it('runs every step in order, and nothing else', function (): void {
             'artisan icons:cache --no-interaction',
             'php check serving',
             'artisan migrate --force --no-interaction',
+            'artisan route:clear --no-interaction',
+            'artisan config:cache --no-interaction',
+            'artisan event:cache --no-interaction',
+            'artisan route:cache --no-interaction',
+            'artisan view:cache --no-interaction',
+            'artisan icons:cache --no-interaction',
+            'php check serving',
             'artisan kitsune:credentials status --strict --no-interaction',
             'artisan kitsune:audit-patterns --strict --no-interaction',
             'artisan kitsune:schema-sync --no-interaction',
         ]);
 });
+
+it('keeps the Coolify cache preflight and requires the post-migration rebuild before later gates', function (bool $failFinalCache): void {
+    // Execute the committed startup's application-command section without its host/storage/TLS provisioning.
+    $source = file_get_contents(dirname(__DIR__, 3).'/deploy/coolify/start.sh');
+    $start = strpos($source, "run_app 'php deploy/release-check.php environment 1'");
+    $end = strpos($source, "\nnginx -t");
+    expect($start)->not->toBeFalse()->and($end)->not->toBeFalse();
+    $directory = $this->dir.'/coolify-command-probe';
+    File::ensureDirectoryExists($directory.'/skeleton/public');
+    symlink($directory, $directory.'/skeleton/public/storage');
+    $prefix = <<<'SH'
+set -eu
+migrated=0
+run_app() {
+    printf '%s\n' "$1"
+    if test "$1" = 'php skeleton/artisan migrate --force --no-interaction'; then migrated=1; fi
+    if test "$migrated" = 1 && test "$1" = 'php skeleton/artisan config:cache --no-interaction' && test "$FAIL_FINAL_CACHE" = 1; then return 7; fi
+}
+SH;
+    $run = new Process(['sh', '-c', $prefix."\n".substr($source, $start, $end - $start)], $directory, ['FAIL_FINAL_CACHE' => $failFinalCache ? '1' : '0']);
+    $run->run();
+    $calls = explode("\n", trim($run->getOutput()));
+    $migration = array_search('php skeleton/artisan migrate --force --no-interaction', $calls, true);
+    expect($migration)->not->toBeFalse()
+        ->and($calls[$migration - 1])->toBe('php deploy/release-check.php serving 1')
+        ->and($calls[$migration + 1])->toBe('php skeleton/artisan route:clear --no-interaction');
+    if ($failFinalCache) {
+        expect($run->getExitCode())->toBe(7)
+            ->and($calls)->not->toContain('php skeleton/artisan kitsune:credentials status --strict --no-interaction');
+    } else {
+        expect($run->isSuccessful())->toBeTrue()
+            ->and(array_count_values($calls)['php skeleton/artisan route:cache --no-interaction'])->toBe(2)
+            ->and(array_count_values($calls)['php deploy/release-check.php serving 1'])->toBe(2)
+            ->and(array_slice($calls, -1))->toBe(['php skeleton/artisan kitsune:schema-sync --no-interaction']);
+    }
+})->with([false, true]);
 
 it('links the shared state, and builds the caches inside the release', function (): void {
     $site = $this->dir.'/site';

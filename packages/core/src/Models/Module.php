@@ -112,8 +112,10 @@ class Module extends Model implements RequiresModelSave
     public static function isEnabled(string $handle): bool
     {
         return self::query()
+            ->useWritePdo()
             ->where('handle', $handle)
             ->where('is_enabled', true)
+            ->whereNotIn('handle', ModuleUninstall::query()->select('handle'))
             ->exists();
     }
 }
