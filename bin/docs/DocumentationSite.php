@@ -26,7 +26,7 @@ use RuntimeException;
 /** @internal Development-only documentation tooling; no application boot or extension contract. */
 final class DocumentationSite
 {
-    private const ROOT_DOCUMENTS = ['README.md', 'CONTRIBUTING.md', 'GOVERNANCE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CLA.md'];
+    private const ROOT_DOCUMENTS = ['README.md', 'CONTRIBUTING.md', 'GOVERNANCE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'CLA.md', 'TRADEMARK.md'];
 
     private const REPOSITORY = 'https://github.com/adamgreenwell/kitsune';
 
