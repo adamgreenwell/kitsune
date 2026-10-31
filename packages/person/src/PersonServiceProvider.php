@@ -35,8 +35,8 @@ use RuntimeException;
  * ⚠️ THE TYPE IS GLOBAL (`org_id` NULL), which is what makes it a SYSTEM type: `EntryType::visibleFor()`
  * includes `whereNull('org_id')`, so every org sees it, and `EntryTypeResource::ownsRecord()` returns false for
  * a null org, so no org can edit or delete it from the admin. Protection comes from that, not from `is_system`
- * — which `architecture.md` publishes as "undeletable" and nothing enforces (recorded as an open question by
- * ADR-038). The flag is set because it is true, and nothing here relies on it.
+ * — ADR-038 defines that flag as a descriptive badge and withdraws the earlier "undeletable" claim. An unused
+ * type remains removable by this module's guarded uninstall; the flag adds no deletion lock.
  *
  * ⚠️ AND THE FIELD HANDLES ARE PREFIXED. `field_storage` carries `unique(['org_id', 'handle'])` and NULLs
  * compare distinct on every engine, so a GLOBAL field's handle is claimed install-wide. Taking `name` and
