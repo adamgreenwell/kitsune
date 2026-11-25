@@ -13,6 +13,7 @@ namespace Kitsune\Core\Media;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\Log;
+use Kitsune\Core\Models\MediaFile;
 use RuntimeException;
 use stdClass;
 
@@ -121,7 +122,8 @@ final class MediaWithdrawal
         ));
 
         if ($moving !== []) {
-            $this->connection->table('media_files')->whereIntegerInRaw('entry_id', $moving)->update(['disk' => $private]);
+            $this->connection->table('media_files')->whereIntegerInRaw('entry_id', $moving)
+                ->update(['disk' => $private, ...MediaFile::keepingCreatedAt()]);
         }
 
         foreach ($candidates as $file) {
