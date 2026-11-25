@@ -56,6 +56,20 @@ function facts() {
         + "'allocation'=>DB::table('commerce_order_allocations')->where('org_id',$org->id)->first(['awarded','unavailable'])]);"));
 }
 
+/** The fixture's explicit retained fields, without exposing ownership or bearer material. */
+function privacyFacts() {
+    return JSON.parse(php(context()
+        + "$order=DB::table('commerce_orders')->where('org_id',$org->id)->latest('id')->first();"
+        + "$privacy=DB::table('commerce_order_privacy')->where('org_id',$org->id)->where('order_id',$order->id)->first();"
+        + "$completion=DB::table('commerce_free_completions')->where('org_id',$org->id)->where('order_id',$order->id)->first();"
+        + "echo json_encode(['state'=>$order->state,'contact_removed'=>$order->contact_email===null,'delivery_removed'=>$order->delivery===null,"
+        + "'reader_id'=>$order->reader_id,'billing'=>$order->billing===null?null:json_decode($order->billing,true,flags:JSON_THROW_ON_ERROR),"
+        + "'completion_id'=>(string)$completion->id,'completed_at'=>$completion->completed_at,'policy_hash'=>$privacy->policy_hash,'retained_until'=>$privacy->retained_until,"
+        + "'subject_erased'=>$privacy->subject_erased_at!==null,'claims'=>DB::table('commerce_order_claims')->where('order_id',$order->id)->count(),"
+        + "'tokens'=>DB::table('commerce_order_access_tokens')->where('order_id',$order->id)->count(),"
+        + "'access_state'=>DB::table('commerce_access_work')->where('order_id',$order->id)->value('state')]);"));
+}
+
 async function prepare(page, quantity = 1) {
     await page.goto(`/${SITE}/catalogue`);
     await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Free browser course', exact: true }) })
@@ -78,4 +92,4 @@ async function prepare(page, quantity = 1) {
     return path;
 }
 
-module.exports = { SITE, CART, context, seed, clear, stock, facts, prepare };
+module.exports = { SITE, CART, context, seed, clear, stock, facts, privacyFacts, prepare };

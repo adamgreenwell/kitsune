@@ -59,6 +59,8 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] Public repository from the first commit, planning docs included (ADR-014)
 - [ ] **Trademark** ([#2](https://github.com/adamgreenwell/kitsune/issues/2)): file "Kitsune" in software/SaaS classes; design and register the logo. Publish `TRADEMARK.md` modeled on the WordPress Foundation's.
 
+  **[`TRADEMARK.md`](../TRADEMARK.md) is published, 2026-10-30 — ADR-044**, ahead of any filing: the policy does not need a registration, and the filing waits on clearance and on money. The box stays open for the filing.
+
   **The mark is designed and provisionally adopted, 2026-09-12 — ADR-032.** Three marks on a ladder that abstracts rather than reduces: nine-tail lockup, compact fox, two-tail glyph. A one-tailed fox was rejected as generic at the size where distinctiveness matters most, and a single tail lost to the mirrored pair on a render test at icon sizes. **Filing still waits on clearance below.** The vector redraw is in progress; nothing in [`brand/`](../brand/README.md)'s manifest is built yet, and the palette is unmeasured by design rather than by oversight
 - [ ] **`CLA.md` + CLA bot wired in before the first external PR** ([#3](https://github.com/adamgreenwell/kitsune/issues/3)). The only irreversible item in the project
 - [x] **`GOVERNANCE.md`** — stated BDFL with a disclosed bus factor, binding licence and open/paid commitments, staged succession, and a disclosed commercial conflict of interest (ADR-023)
@@ -137,7 +139,7 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 
   — the floor image is built from its Dockerfile when no `--image` is named. Re-run that way on 2026-09-19: the same interpreter, ICU 76.1, the same lock hash, 40.5 MB and 12 workers in both columns.
 
-  ⚠️ **At today's head that lock no longer installs**, because it names no `kitsune/person` and the skeleton requires it. So the next measurement resolves fresh and keeps its graph with `--save-lock docs/benchmarks/floor.composer.lock`, and the figures above are re-checked from the commit that recorded them, as the sentence before this one says. Owed with the first run on a host with Docker — see Phase 5.
+  ⚠️ **At today's head that historical lock no longer installs**, because it names no `kitsune/person` and the skeleton requires it. ~~So the next measurement resolves fresh and keeps its graph with `--save-lock docs/benchmarks/floor.composer.lock`. Owed with the first run on a host with Docker.~~ **Measured 2026-10-22 (#207):** the current graph is saved separately as [`floor-2026-10-22.composer.lock`](benchmarks/floor-2026-10-22.composer.lock), preserving this historical lock and its figures. The [dated report](benchmarks/blueprint-floor-2026-10-22.md) records PHP 8.4.25, Laravel v13.38.0, Filament v5.10.3 and Livewire v4.4.8 on an Apple Silicon Docker Desktop VM. At both 1,000 and 100,000 entries, bootstrap/serving peaks were 42.5/44.5 MiB in both constrained and unconstrained containers. These are new observations on a different graph; the historical table below is unchanged. Native-host and concurrency evidence remain open.
 
   ⚠️ **For eleven days the floor was measured on an interpreter that could not run the application.** The official `php:8.4-cli` loads neither ext-intl, which `filament/support` requires, nor ext-zip, which `openspout/openspout` requires; the benchmark booted regardless, because its samples call neither. It surfaced on #126 when Composer was made to resolve for the image's PHP rather than the host's, and then — with `platform-check` on — refused the install outright. The harness now builds the floor image, resolves Composer for its PHP version, and runs Composer's own platform check *in the image* before anything boots, so an image missing an extension the graph requires is a refusal naming it rather than a measurement. With both extensions loaded the figures did not move — which says something about the metric as much as the image: `memory_get_peak_usage()` counts PHP's heap, not memory a native library such as ICU allocates for itself.
 
@@ -186,7 +188,7 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 - [x] `scopedUnique()` / `scopedExists()` — go through Eloquent so global scopes apply, and are wired into the entry form. Laravel's `unique` would tell one org that another holds a slug; its `exists` would accept another org's id and let the app write a reference to it
 - [x] **`IdentifyEntryType` middleware, `isPersistent: true`** — validates `{type}` exists, belongs to the current org, *and* is enabled for the current site (ADR-022), 404s otherwise, and sets `URL::defaults(['type' => ...])`. Verified in a browser as an authenticated user: own type 200, global system type 200, another org's type **404**, unknown type **404**
 - [x] Reserved type-handle list, **enforced** at save time rather than merely known — the exception says why, since the collision is with the URL contract and escaping cannot fix it
-- [x] Every composite index leads with its scope key — `site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` (ADR-021), as written in the tenancy and schema migrations
+- [x] Composite lookup indexes lead with the scope key by default. The recorded exceptions cover [global name claims used during bootstrap](decision-log.md#adr-021--sites-a-third-structural-level-and-filaments-tenant-is-the-site) and [Org-fenced lookups that admit Org-shared rows](decision-log.md#adr-042--the-media-admin-shared-by-default-uploaded-through-one-path-and-withdrawn-from-the-web-when-deleted). See the [contributor index rules](../CONTRIBUTING.md#composite-lookup-indexes-lead-with-their-scope-key).
 - [x] **Two deliberately hostile test groups** — cross-site within one org, and cross-org, both written from the attacker's side. Includes the org-shared case, where a bare `site_id IS NULL` check would expose every org's shared media
 
 ## Phase 3 — Kernel
@@ -393,7 +395,7 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
   **ADR-030's four conditions, 2026-10-04** — each box ticked only when its artifact exists:
   - [x] Applies to a fresh install in one command: `BlueprintCommandOwnerTest` and `BlueprintCommandTest`, on a bare clone
   - [x] Applies idempotently: at the same version, `MarketingSiteBlueprintTest`; ~~the upgrade half waits on [ADR-039](decision-log.md)'s merge, the next slice~~ the upgrade, `MarketingSiteUpgradeTest` ~~against a test's 1.1.0~~ from the released 1.0.0 to the released 1.1.0, `ReleasedBlueprintsTest`, and `BlueprintCommandTest`'s upgrade in one command ([ADR-039](decision-log.md), Marketing Site 1.1.0, as built), on a bare clone
-  - [ ] At the ADR-027 floor: `bin/benchmark-floor.sh` times it, figures owed
+  - [ ] At the ADR-027 floor: [constrained-container apply figures recorded 2026-10-22](benchmarks/blueprint-floor-2026-10-22.md), 418–785 ms for Marketing Site; the real native-host condition of ADR-030 remains unmeasured
   - [x] Editable by its operator through the admin: `e2e/marketing-site.spec.js`
 - [ ] Blueprints are a **kernel primitive**, not a module — narrowed by [ADR-039](decision-log.md) to the only sense the log defines: the mechanism is core and unreplaceable, the payload may live anywhere
 
@@ -402,6 +404,8 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 ⚠️ **Not met yet, 2026-10-02, on two counts.** **The 60 seconds are owed**: `bin/benchmark-floor.sh` now times `kitsune:blueprint apply blog` under the floor's limits, on an empty installation and into the corpus org, and the harness was fixed to install every package — but the Blog slice landed where Docker could not build the floor image (the image's apt mirror was out of the network's reach), so Adam runs `bin/benchmark-floor.sh --entries 1000 --save-lock docs/benchmarks/floor.composer.lock` and `--entries 100000 --lock docs/benchmarks/floor.composer.lock` and records both. On the host it was built on (4 CPUs, no limits — a host figure, not the floor's) the command took 0.30 s either way, 0.26 s of it booting artisan. ~~**And "working blog" is not reached**: after the one command nobody can sign in, because no user exists — the first-user path is the next slice (ADR-039's amendment of 2026-10-02).~~
 
 **"Working blog" is reached, 2026-10-02:** `kitsune:blueprint apply blog --org=… --owner=<email>` creates the first owner in the same command ([ADR-026](decision-log.md)'s amendment), and the browser test signs in as that owner and publishes a tagged post. The 60 s are still owed, now timed with `--owner-password-stdin` on the fresh leg, and the done-when is two runs that cannot be one — fresh with the owner, and into the corpus org with content already in the table. On the same host, with the owner, the fresh command took 0.64 s, 0.23 s of it the password's hash.
+
+**The container timing criterion is met, 2026-10-22 (#207):** [the measured report](benchmarks/blueprint-floor-2026-10-22.md) records both blueprints under verified 1 vCPU / 1,024 MiB limits with no swap, at source `4e6f9059d841533b7ff45e18685da2c7022392ab`. Blog's fresh-owner applies took 719/753 ms and its applies into 1,000/100,000 entries took 448/434 ms. Marketing Site's corresponding figures were 785/743 ms and 427/418 ms. All eight commands completed with finished receipts and independently checked database state. A fresh dependency graph is saved in the dated lock; the original lock and developer-host observations above remain historical evidence. This satisfies this paragraph's constrained-container 60-second measurement, while ADR-030's native-host condition, concurrency and #219's private-media stage evidence remain open. No site move or deployment follows from these timings.
 
 ⚠️ **Amended from "one click" by [ADR-039](decision-log.md).** On a fresh install there is nowhere to click: Filament's tenant *is* the Site, the panel registers three resources and none of them creates an org, a site group or a site. The click arrives with ADR-026's installer in Phase 6, where the first-user flow already lives; `kitsune:blueprint apply` creates the first org and site so that ADR-030's *"no manual step outside the apply flow"* is satisfiable at all. "Working blog" means admin-editable — public rendering is theming, which ADR-011 moved to v1.1.
 
@@ -517,8 +521,15 @@ a product can have one. The **DAM** starter is Phase 5's, and
 *6–8 weeks.*
 
 - [ ] Security review, especially every tenancy boundary
-- [ ] Documentation site — explicitly *not* settled by [ADR-030](decision-log.md), which covers the marketing site only. Search, versioning and deep cross-linking may or may not be a Kitsune workload; that wants evidence rather than symmetry
-- [ ] Semantic versioning commitment and published upgrade policy
+- [x] Documentation site — [#210](https://github.com/adamgreenwell/kitsune/issues/210), merged through #339.
+      [Measured task requirements and three delivery approaches](documentation-site.md) selected the static
+      source-snapshot reader; ADR-043 records why. Search, stable ADR links, local artifact integrity and
+      mobile/keyboard reading are verified. Public publication and host readback remain separately authorized;
+      ADR-030 still concerns marketing rather than choosing the documentation platform.
+- [ ] Semantic versioning commitment and published upgrade policy — [policy candidate](versioning-and-upgrades.md)
+      records the latest-stable-minor/latest-patch maintenance model and case-by-case fingerprint/rehearsal
+      admission for retained pre-v1.0 data, chosen by Adam in #211. Support dates/transition terms, reviewer-approved
+      publication and actual origin/path upgrade evidence remain separate open gates; no v1.0 release is implied.
 - [ ] Staffed security disclosure process
 - [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
   - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, with the distribution's own PHP where it meets `^8.4` (26.04 ships 8.5) and packages.sury.org where it does not (ADR-026 amendment)
