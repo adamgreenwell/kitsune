@@ -166,11 +166,12 @@ Laravel's `unique` and `exists` rules don't use Eloquent, so they ignore global 
 
 Use `scopedUnique()` and `scopedExists()`. They're the defaults in Kitsune's form layer; you have to go out of your way to get this wrong, so don't.
 
-### Every composite index leads with its scope key
+### Composite lookup indexes lead with their scope key
 
-`site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` ones, and the pivot's `(foreign_key, org_id)` for `#[OrgScopedThroughPivot]`. No exceptions.
+Use `site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` models, and the pivot's `(foreign_key, org_id)` for `#[OrgScopedThroughPivot]`. A Site belongs to exactly one Org, so a Site-leading index also serves that Org boundary.
 
-Leading with `site_id` is sufficient for org isolation too: a site is globally unique and belongs to exactly one org, so the guarantee holds transitively on a narrower index (ADR-021).
+- A **globally scarce name** can have a global unique index when a documented bootstrap query claims or resolves it before scope exists through `withoutScopeBecause()`. Explain both conditions beside the index in the migration. The Site address index enforces exact uniqueness on `(canonical_host, path_prefix)`. `Site::refuseOverlappingClaim()` guards overlapping claims. [ADR-021](docs/decision-log.md#adr-021--sites-a-third-structural-level-and-filaments-tenant-is-the-site)
+- An **Org-shared row** in a Site-scoped table can use an Org-leading lookup index when the row can have `site_id IS NULL` and every query the index serves explicitly fences the current Org with `org_id = ?`. Keep the Site-leading indexes for Site-only reads and explain the choice beside the new index in the migration. [ADR-042, decision 2](docs/decision-log.md#adr-042--the-media-admin-shared-by-default-uploaded-through-one-path-and-withdrawn-from-the-web-when-deleted)
 
 ### Anything reachable from a URL is untrusted
 

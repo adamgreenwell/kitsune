@@ -1010,6 +1010,41 @@ final class BlueprintApplier
     }
 
     /**
+     * The seed kernel holds this schema receipt's writer lock before calling. Reuse the
+     * schema reader and additive comparison rather than a second, weaker manifest parser.
+     * No schema application, DDL, or repair is performed here. @internal
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public static function schemaForSeed(BlueprintDefinition $definition, Blueprint $receipt): array
+    {
+        self::refuseMalformed($definition);
+        if ($receipt->applied_at === null || $receipt->version !== $definition->version()) {
+            throw new RuntimeException('Seed content requires this exact schema version to have completed first.');
+        }
+        [$recorded, $problems] = self::readManifest($receipt);
+        if ($problems !== []) {
+            throw new RuntimeException('Cannot seed from a malformed schema receipt: '.implode('; ', $problems));
+        }
+        self::refuseChanges($definition, $recorded, $receipt->version, (int) $receipt->org_id);
+        $availability = BlueprintAvailability::declarations($definition);
+        BlueprintAvailability::refuseChanges($availability, $recorded['availability']);
+        // Additions to PHP under an unchanged version are not applied schema authority either.
+        if (count($definition->entryTypes()) !== count($recorded['entry_types'])
+            || count($definition->roles()) !== count($recorded['roles'])
+            || count($availability) !== count($recorded['availability'])) {
+            throw new RuntimeException('Seed schema declarations differ from the applied schema receipt.');
+        }
+        foreach ($definition->entryTypes() as $type) {
+            if (count($type->fields) !== count($recorded['entry_types'][$type->handle]['fields'])) {
+                throw new RuntimeException('Seed fields differ from the applied schema receipt.');
+            }
+        }
+
+        return $recorded['entry_types'];
+    }
+
+    /**
      * One row of the manifest, checked: its handle and what a merge reads of it — or null, with the problem added.
      *
      * @param  'entry type'|'role'|'field'  $kind
@@ -1676,8 +1711,13 @@ final class BlueprintApplier
 
                 $version = (string) $locked->version;
 
+                $seedReceipts = BlueprintSeeder::lockForReverse($locked);
+
                 /* 2. No row of any version committed: none can be this blueprint's, so the receipt goes alone. */
                 if ($locked->manifest === null && $locked->applied_at === null) {
+                    if ($seedReceipts !== []) {
+                        throw new RuntimeException('Seed facts exist without a completed schema; reverse wrote nothing.');
+                    }
                     self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                     return self::reverseOutcome('abandoned', $version);
@@ -1695,6 +1735,9 @@ final class BlueprintApplier
                 }
 
                 if ($problems !== [] || $held === null) {
+                    if ($seedReceipts !== []) {
+                        throw new RuntimeException('A malformed schema with seed facts requires investigation; reverse wrote nothing.');
+                    }
                     self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                     return self::reverseOutcome('receipt-only', $version, problems: $problems);
@@ -1755,6 +1798,9 @@ final class BlueprintApplier
                     self::refuseVetoed($role->delete(), "role {$role->handle}");
                 }
 
+                foreach ($seedReceipts as $seedReceipt) {
+                    self::refuseVetoed($seedReceipt->delete(), 'the data-free seed receipt');
+                }
                 self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                 return self::reverseOutcome('reversed', $version, $plan);
