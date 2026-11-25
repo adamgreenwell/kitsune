@@ -57,9 +57,22 @@ final class Signature
 
     public static function verify(string $raw, string $signature, string $publicPem, string $expectedFingerprint, string $version, string $channel): Manifest
     {
+        self::verifyDetached($raw, $signature, $publicPem, $expectedFingerprint);
+
+        $manifest = Manifest::parse($raw);
+        if ($manifest->version !== $version || $manifest->channel !== $channel) {
+            throw new InvalidArgumentException('Signed release does not match the requested version and channel.');
+        }
+
+        return $manifest;
+    }
+
+    /** Authenticate a bounded release or transition record before parsing its bytes. */
+    public static function verifyDetached(string $raw, string $signature, string $publicPem, string $expectedFingerprint): void
+    {
         if (strlen($raw) > Manifest::MAX_BYTES || ! preg_match('/\A[a-f0-9]{64}\z/D', $expectedFingerprint)
             || ! hash_equals($expectedFingerprint, self::fingerprint($publicPem))) {
-            throw new InvalidArgumentException('Release trust fingerprint or manifest size refused.');
+            throw new InvalidArgumentException('Release trust fingerprint or record size refused.');
         }
 
         $key = self::publicKey($publicPem);
@@ -72,13 +85,6 @@ final class Signature
         if (openssl_verify($raw, $signature, $key, OPENSSL_ALGO_SHA256) !== 1) {
             throw new InvalidArgumentException('Release signature verification failed.');
         }
-
-        $manifest = Manifest::parse($raw);
-        if ($manifest->version !== $version || $manifest->channel !== $channel) {
-            throw new InvalidArgumentException('Signed release does not match the requested version and channel.');
-        }
-
-        return $manifest;
     }
 
     private static function publicKey(string $pem): OpenSSLAsymmetricKey
