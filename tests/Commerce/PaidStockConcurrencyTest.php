@@ -9,27 +9,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\File;
+use Kitsune\Core\Tests\Fixtures\CommerceRaceNamespace;
 use Symfony\Component\Process\Process;
-
-function paidStockCopyApplication(string $source, string $target): void
-{
-    File::ensureDirectoryExists($target);
-    foreach (new FilesystemIterator($source, FilesystemIterator::SKIP_DOTS) as $item) {
-        if ($item->getFilename() === 'vendor' || $item->isLink()) {
-            continue;
-        }
-        $destination = $target.'/'.$item->getFilename();
-        if ($item->isDir()) {
-            if (str_ends_with($destination, '/bootstrap/cache')) {
-                File::ensureDirectoryExists($destination);
-            } else {
-                paidStockCopyApplication($item->getPathname(), $destination);
-            }
-        } else {
-            File::copy($item->getPathname(), $destination);
-        }
-    }
-}
 
 /** @param list<Process> $processes */
 function paidStockBarrier(string $path, array $processes = []): array
@@ -56,7 +37,7 @@ it('serialises sibling-site paid allocations and stale manual changes at native 
     File::ensureDirectoryExists($directory);
     touch($directory.'/race.sqlite');
     foreach (['controller', 'A', 'B', 'read', 'cleanup'] as $role) {
-        paidStockCopyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
+        CommerceRaceNamespace::copyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
     }
     $processes = [];
     $child = static function (string $mode, string $role) use ($root, $directory, $scenario, &$processes): Process {
@@ -118,7 +99,7 @@ it('reads coherent checkout custody during independent payment confirmation with
     File::ensureDirectoryExists($directory);
     touch($directory.'/race.sqlite');
     foreach (['controller', 'A', 'read', 'cleanup'] as $role) {
-        paidStockCopyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
+        CommerceRaceNamespace::copyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
     }
     $processes = [];
     $child = static function (string $mode, string $role) use ($root, $directory, $scenario, &$processes): Process {

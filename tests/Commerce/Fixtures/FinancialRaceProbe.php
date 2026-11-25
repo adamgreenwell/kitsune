@@ -28,6 +28,7 @@ use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\CommerceRaceNamespace;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\FinancialAccessFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
@@ -94,23 +95,8 @@ if ($connection->transactionLevel() !== 0 || $connection->getPdo()->inTransactio
     throw new RuntimeException('The paid stock race must begin outside a transaction.');
 }
 
+CommerceRaceNamespace::prepareChild($connection, $isolation, $directory, $mode);
 if ($mode === 'cleanup') {
-    if ($driver === 'pgsql') {
-        $connection->statement('DROP SCHEMA IF EXISTS "'.$isolation.'" CASCADE');
-        exit;
-    }
-    $schema = $connection->getSchemaBuilder();
-    $tables = array_filter($schema->getTableListing(null, false), static fn (string $table): bool => str_starts_with($table, $prefix));
-    $schema->disableForeignKeyConstraints();
-    try {
-        foreach (array_reverse(array_values($tables)) as $table) {
-            // Schema grammar adds the prefix itself; strip only this probe's exact verified prefix.
-            $name = substr($table, strlen($prefix));
-            $schema->drop($name);
-        }
-    } finally {
-        $schema->enableForeignKeyConstraints();
-    }
     exit;
 }
 
@@ -122,9 +108,6 @@ app()->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' 
 }])));
 
 if ($mode === 'init') {
-    if ($driver === 'pgsql') {
-        $connection->statement('CREATE SCHEMA "'.$isolation.'"');
-    }
     $code = Artisan::call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations',
         $root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'], '--realpath' => true, '--force' => true]);
     if ($code !== 0) {

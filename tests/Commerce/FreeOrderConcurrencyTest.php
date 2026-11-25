@@ -9,27 +9,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\File;
+use Kitsune\Core\Tests\Fixtures\CommerceRaceNamespace;
 use Symfony\Component\Process\Process;
-
-function freeOrderCopyApplication(string $source, string $target): void
-{
-    File::ensureDirectoryExists($target);
-    foreach (new FilesystemIterator($source, FilesystemIterator::SKIP_DOTS) as $item) {
-        if ($item->getFilename() === 'vendor' || $item->isLink()) {
-            continue;
-        }
-        $destination = $target.'/'.$item->getFilename();
-        if ($item->isDir()) {
-            if (str_ends_with($destination, '/bootstrap/cache')) {
-                File::ensureDirectoryExists($destination);
-            } else {
-                freeOrderCopyApplication($item->getPathname(), $destination);
-            }
-        } else {
-            File::copy($item->getPathname(), $destination);
-        }
-    }
-}
 
 /** @param list<Process> $processes */
 function freeOrderBarrier(string $path, array $processes = []): array
@@ -56,7 +37,7 @@ it('serializes free completion retries sibling-site stock and stale manual adjus
     File::ensureDirectoryExists($directory);
     touch($directory.'/race.sqlite');
     foreach (['controller', 'A', 'B', 'read', 'cleanup'] as $role) {
-        freeOrderCopyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
+        CommerceRaceNamespace::copyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
     }
     $processes = [];
     $child = static function (string $mode, string $role) use ($root, $directory, $scenario, &$processes): Process {
