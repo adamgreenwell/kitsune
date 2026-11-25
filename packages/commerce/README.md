@@ -150,5 +150,6 @@ from checked historical records, independently of the current catalogue and prov
 
 See [the export guide](../../docs/commerce-exports.md) for the versioned linked-record layout, reader/guest boundary,
 spreadsheet guarding, page consistency and portability limits. The full local gate, native export suite and
-owner-browser checks passed in the review candidate; review and merge remain pending. This does not enable live
-checkout, supply an importer or replace quarantined backup erasure replay.
+owner-browser checks passed for the candidate recorded in [PR #286](https://github.com/adamgreenwell/kitsune/pull/286).
+That PR merged and [issue #202](https://github.com/adamgreenwell/kitsune/issues/202) closed. Live checkout admission,
+import and quarantined backup erasure replay remain separate from the export.
