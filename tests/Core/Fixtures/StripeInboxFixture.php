@@ -39,7 +39,10 @@ final class StripeInboxFixture
             $order = OrderFixture::plant($site, overrides: ['currency' => $currency]);
             $record = app(OrderReaderData::class)->record(DB::connection(), $order);
             $reference = bin2hex(random_bytes(16));
-            $expires = CarbonImmutable::now('UTC')->startOfSecond()->addSeconds(1860);
+            // Creation and review are one instant even if preparing the fixture crosses a clock tick.
+            $reviewed = CarbonImmutable::now('UTC')->startOfSecond();
+            $timestamp = $reviewed->format('Y-m-d H:i:s');
+            $expires = $reviewed->addSeconds(1860);
             $payload = CheckoutAttempts::payload($record, $reference, $expires->getTimestamp(), rtrim($site->base_url, '/'));
             $data = ['org_id' => $site->org_id, 'site_id' => $site->getKey(), 'order_id' => $order->id, 'reference' => $reference,
                 'active_order_id' => in_array($state, ['expired', 'completed', 'rejected'], true) ? null : $order->id,
@@ -48,8 +51,8 @@ final class StripeInboxFixture
                 'request_hash' => CheckoutAttempts::digest($payload), 'order_hash' => CheckoutReview::orderHash($record),
                 'session_id' => in_array($state, ['creating', 'uncertain', 'rejected'], true) ? null : 'cs_test_'.bin2hex(random_bytes(16)),
                 'checkout_url' => $state === 'open' ? 'https://checkout.stripe.com/c/pay/inboxFixture' : null,
-                'reviewed_at' => OrderFixture::now(), 'expires_at' => $expires->format('Y-m-d H:i:s'),
-                'lease_token' => null, 'lease_until' => null, 'created_at' => OrderFixture::now(), 'updated_at' => OrderFixture::now()];
+                'reviewed_at' => $timestamp, 'expires_at' => $expires->format('Y-m-d H:i:s'),
+                'lease_token' => null, 'lease_until' => null, 'created_at' => $timestamp, 'updated_at' => $timestamp];
             $id = DB::table('commerce_checkout_attempts')->insertGetId($data);
             $attempt = (object) [...$data, 'id' => $id];
             if ($route) {

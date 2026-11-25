@@ -15,6 +15,7 @@ use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\UserProvider;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
@@ -56,7 +57,7 @@ use Throwable;
  * and the org it makes is one nobody can sign in to.
  *
  * ⚠️ THE SITE CLAIMS NO HOST. `base_url` is left null, which is the admin-only site ADR-021 describes, so
- * none of the host-claim machinery runs: no canonical host, no overlap check, no mutex. A fresh install does
+ * none of the host-claim machinery runs: no canonical host, overlap check or host-specific lock. A fresh install does
  * not know its own public URL yet, and guessing one would take a claim the operator has not made —
  * `kitsune:site address` is how the operator makes it.
  */
@@ -167,7 +168,13 @@ final class FirstOrg
      */
     public static function refuseUnlessEmpty(?string $userModel): void
     {
-        $orgs = Org::query()->withTrashed()->count();
+        self::checkEmpty($userModel, lockRows: false);
+    }
+
+    /** @param class-string<Model>|null $userModel */
+    private static function checkEmpty(?string $userModel, bool $lockRows): void
+    {
+        $orgs = self::countRows(Org::query()->withTrashed(), $lockRows);
 
         if ($userModel === null) {
             if ($orgs > 0) {
@@ -182,7 +189,7 @@ final class FirstOrg
             return;
         }
 
-        $accounts = $userModel::query()->withoutGlobalScopes()->count();
+        $accounts = self::countRows($userModel::query()->withoutGlobalScopes(), $lockRows);
 
         if ($orgs > 0 || $accounts > 0) {
             throw new RuntimeException(sprintf(
@@ -193,6 +200,23 @@ final class FirstOrg
                 $accounts,
             ));
         }
+    }
+
+    /**
+     * A locking read sees current rows even after an earlier MySQL snapshot.
+     * Count in the outer query because PostgreSQL disallows FOR UPDATE on an aggregate.
+     *
+     * @param Builder<*> $query
+     */
+    private static function countRows(Builder $query, bool $lockRows): int
+    {
+        if (! $lockRows) {
+            return $query->count();
+        }
+
+        $rows = $query->select($query->getModel()->getQualifiedKeyName())->lockForUpdate()->toBase();
+
+        return $rows->newQuery()->fromSub($rows, 'bootstrap_rows')->useWritePdo()->count();
     }
 
     /**
@@ -226,19 +250,21 @@ final class FirstOrg
          * for good — so the account, its memberships, the owner role and its assignment commit with the org, or none of
          * them do. Every nested transaction below (the guarded membership, `Role::save`, `assignTo`, the auditor) is a
          * savepoint on this connection: `ownerModel()` has already proved the user model and `role_user` share it.
-         */
-        /*
+         *
          * ⚠️ AND THE CONTEXT IS CLEARED WHEN IT ROLLS BACK. The transaction sets the new org in context, and a
          * rollback took the org away and left the context naming it — an org no row holds any longer. Cleared, not
          * restored: this runs only on an installation with no org, so no org or site was in context before it that
          * a caller could want back.
          */
         try {
-            return (new Org)->getConnection()->transaction(static function () use (
-                $context, $slug, $name, $siteSlug, $locale, $userModel, $ownerEmail, $ownerPasswordHash, &$step,
+            $connection = (new Org)->getConnection();
+
+            return $connection->transaction(static function () use (
+                $connection, $context, $slug, $name, $siteSlug, $locale, $userModel, $ownerEmail, $ownerPasswordHash, &$step,
             ): Org {
-                /* Again inside, where it holds: the check before the password was asked for was an early answer, not this one. */
-                self::refuseUnlessEmpty($userModel);
+                // Like the host-claim lock, upsert takes a write lock even when the mutex does not exist yet.
+                $connection->table('first_org_lock')->upsert([['id' => 1]], ['id'], ['id']);
+                self::checkEmpty($userModel, lockRows: true);
 
                 $step = 'creating the organisation';
                 /* `Org` is `#[Unscoped]` — it is the root of the hierarchy, so there is no context to set first. */

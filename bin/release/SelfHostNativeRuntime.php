@@ -50,7 +50,19 @@ final class SelfHostNativeRuntime
         return hash_final($hash);
     }
 
-    private static function addDirectory(HashContext $hash, string $root, string $relative): void
+    public static function packageFingerprint(string $directory): string
+    {
+        if (realpath($directory) !== $directory || ! is_dir($directory)) {
+            throw new InvalidArgumentException('The native application is missing a local module package.');
+        }
+
+        $hash = hash_init('sha256');
+        self::addDirectory($hash, $directory, '', false);
+
+        return hash_final($hash);
+    }
+
+    private static function addDirectory(HashContext $hash, string $root, string $relative, bool $application = true): void
     {
         $directory = $relative === '' ? $root : $root.'/'.$relative;
         $children = @scandir($directory, SCANDIR_SORT_NONE);
@@ -63,7 +75,7 @@ final class SelfHostNativeRuntime
                 continue;
             }
             $path = $relative === '' ? $name : $relative.'/'.$name;
-            if (isset(self::STATE_LINKS[$path])) {
+            if ($application && isset(self::STATE_LINKS[$path])) {
                 self::row($hash, 'state-link', $path, self::STATE_LINKS[$path]);
 
                 continue;
@@ -79,15 +91,15 @@ final class SelfHostNativeRuntime
             $type = $stat['mode'] & 0170000;
             if ($type === 0040000) {
                 // Filament/Laravel publish runtime caches here. Their layout is checked and rebuilt by the adapter.
-                if ($path !== 'bootstrap/cache') {
+                if (! $application || $path !== 'bootstrap/cache') {
                     self::row($hash, 'directory', $path, (string) ($stat['mode'] & 0777));
-                    self::addDirectory($hash, $root, $path);
+                    self::addDirectory($hash, $root, $path, $application);
                 }
 
                 continue;
             }
 
-            if ($path === 'bootstrap/cache' || $type !== 0100000 || $stat['nlink'] !== 1) {
+            if (($application && $path === 'bootstrap/cache') || $type !== 0100000 || $stat['nlink'] !== 1) {
                 throw new InvalidArgumentException('The native runtime contains an unexpected link or file type.');
             }
             $digest = @hash_file('sha256', $absolute);

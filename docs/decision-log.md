@@ -635,7 +635,7 @@ entries
 
 ## ADR-018 — Product internationalization is a requirement, not a nice-to-have
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry · **Amended 2026-10-07** — a reader's pages are core's first public copy; see the end of this entry
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry · **Amended 2026-10-07** — a reader's pages are core's first public copy; see the end of this entry · **Amended 2026-10-25** — integer cardinal messages and the first build-failing UI-copy boundary, below
 
 Kitsune's own interface, errors and eventually docs are translatable from the first commit. *Open source means open to everyone, not open to everyone who reads English.*
 
@@ -692,6 +692,43 @@ site's when `kitsune::readers` exists in it, the application's fallback otherwis
 `<html lang="ar" dir="rtl">` around English copy marked `<main lang="en" dir="ltr">`, and follows by itself once a
 host adds `lang/vendor/kitsune/ar/readers.php`. Counted sentences use Laravel's choice syntax (`trans_choice`), the
 first in core — not the pluralization rules this entry leaves open.
+
+⚠️ **Amended 2026-10-25 — the two-form premise above is false; choose a format for the copy we actually render (#106).**
+The earlier reasoning stays visible. Laravel 13's selector is locale-dependent, not an English two-form
+selector: the committed fixtures exercise all six Arabic integer categories and Polish and Russian
+integer boundaries, including their different treatment of 21. Its
+[documented catalog format](https://laravel.com/framework/docs/localization#pluralization) already carries
+our reader and media copy. Retain that format: ordinary messages use `__()`, and **counted product messages
+use the internal `CountMessage::format()` boundary with a nonnegative integer cardinal count**. It rejects
+floats, numeric strings and other coercible values before selection; `:count` always comes from that count.
+Each new counted message needs whole-message fixtures for its relevant count boundaries. These fixtures
+prove the selected cases, not complete conformance for every language or a language expert's translation.
+
+This is an explicit boundary, not a claim that cardinal selection is a general message formatter.
+[CLDR distinguishes decimal operands and ordinal rules](https://unicode.org/reports/tr35/tr35-numbers.html#Language_Plural_Rules).
+The measured Polish 1.5 mismatch is why **fractions must not enter this integer selector**. A decimal
+quantity may be interpolated into a complete, count-independent translated message; it must not be rounded
+to pick a noun form. A finite semantic selection chooses a complete catalog key, not a concatenation of
+translated fragments. An ordinal must not use cardinal categories or append an English suffix: current
+rank copy must use a translated, ordinal-neutral label and number. If a feature needs fractional noun
+agreement or grammatical ordinals, it needs an explicitly tested formatter decision before that copy is
+introduced. Those capabilities are not silently supplied by `trans_choice` and are not implemented by
+this amendment. No mandatory `intl` extension, service or new runtime dependency is added to the floor.
+
+**Rule 1's build check was promised and absent.** The default Pest suite now runs `UiStringGuard` over
+core PHP for the eight UI entry points named in #106: `label`, `heading`, `description`, `placeholder`,
+`helperText`, `title`, `modalHeading`, `emptyStateHeading`. It follows rendered concatenations, conditional
+branches and callback returns, including escaped copy; it does not mistake translation keys or selector
+conditions for rendered words. Exact path/method/value exceptions carry a reason, and stale exceptions
+fail the build. Current exceptions are only nonverbal separators, absence and the empty-note dash.
+The scoped existing copy lives in `kitsune::admin`, in English with the host's normal catalog override
+and fallback. Dashboard headings, four column labels and counted status sentences use those catalogs;
+entry-type names and field labels stored by an Org remain runtime content, as decided above.
+
+The check is deliberately described by its real boundary: it is not whole-program taint analysis and
+does not prove that arbitrary helpers, implicit framework labels, every notification body or every Blade
+view is translated. Those paths still need rendering/translation tests when touched. A passing static
+check alone does not certify the whole interface, its RTL layout or translation quality.
 
 
 ---
@@ -1588,6 +1625,38 @@ settings and `KITSUNE_PASSWORD_MIN_CHARACTERS` — the first owner's minimum too
 never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
+
+### Amendment — First-owner handoff starts in the operator's terminal, 2026-11-25 (#214)
+
+Both installer paths hand the operator to the existing first-owner command and then to the ordinary admin
+sign-in page. On an empty installation, the operator selects a first-party blueprint (Blog is the default),
+supplies the organisation and owner details, and types the password twice at the command's hidden prompt.
+The command owns the atomic creation of the first organisation, site and account. The installer prepares
+the application and schema without demo data, and uses the configured application URL for sign-in.
+
+The local operator is the only person who can start the claim. Possession of the public URL gives a visitor
+access to the sign-in page only. A piped installer reads interactive answers from the controlling terminal.
+If none exists, installation can leave the schema ready, report that owner setup is pending, and print the
+command to resume from an operator shell. It leaves the organisation and account tables empty. Automation
+may separately opt into the existing password-on-standard-input path. Passwords stay out of arguments,
+environment variables and logs in both cases.
+
+First-owner claims must serialize on the installation's database before rechecking that it is empty. The
+check before the password prompt gives early feedback and the one under the lock decides whether to write.
+On rerun, an existing organisation or account closes the first-owner path. If the account was committed
+before a later blueprint apply step was interrupted, the operator resumes the blueprint without the
+first-owner option, keeping the account and its authority. Native and Docker qualification must demonstrate
+the terminal handoff, empty-installation claim, interrupted and repeated setup, and sign-in at the reported
+URL. The browser check includes keyboard focus and readable sign-in feedback. The manual assistive-technology
+journey remains part of #41.
+
+**Measured on the development skeleton.** On a fresh migrated SQLite database, both password prompts disabled
+PTY echo, and the command printed the configured sign-in URL. With assets published from the skeleton's
+installed Filament version, browser focus began at email, Tab moved to password, Enter submitted the form,
+and the owner reached the new site's dashboard after correcting the password. Two overlapping CLI setup
+commands against a separate empty SQLite database committed one organisation, one site, one account and its
+memberships. These runs exercise the terminal and browser steps of the application. Installer handoff and
+restart still need qualification on the supported hosts.
 
 ### Amendment — Signed artifact verification format, 2026-10-26 (#213)
 

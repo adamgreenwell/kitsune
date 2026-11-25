@@ -15,7 +15,6 @@ use Kitsune\Release\SelfHostDockerUpgrade;
 use Kitsune\Release\SelfHostDockerVolume;
 use Kitsune\Release\SelfHostNativeRuntime;
 use Kitsune\Release\SelfHostNativeUpgrade;
-use Kitsune\Release\SelfHostSqliteWitness;
 use Kitsune\Release\SelfHostUpgradeAdmission;
 use Kitsune\Release\SelfHostUpgradeExecution;
 use Kitsune\Release\SelfHostUpgradeJournal as Journal;
@@ -45,7 +44,13 @@ beforeEach(function (): void {
     $this->journalPath = $this->workspace.'/journal';
     mkdir($this->journalPath, 0700);
     $this->backup = $this->workspace.'/backup';
-    $this->admission = selfHostExecutionAdmission($this->databasePath);
+    $journal = Journal::open($this->journalPath);
+    try {
+        $this->deployment = $journal->initializeDeployment($this->state);
+    } finally {
+        $journal->close();
+    }
+    $this->admission = selfHostExecutionAdmission($this->databasePath, $this->deployment);
     $this->plan = $this->admission->plan;
 });
 
@@ -133,6 +138,22 @@ it('refuses to enter migrations when the backup fails, and quarantines incomplet
     expect(fn () => Journal::open($this->journalPath))->toThrow(RuntimeException::class, 'incomplete or invalid record');
 });
 
+it('aborts if the writer fence changes after backup verification and before any migration', function (): void {
+    $journal = Journal::open($this->journalPath);
+    try {
+        expect(fn () => SelfHostUpgradeExecution::migrate($journal, $this->admission, $this->state, $this->backup,
+            fn () => $this->fail('The migration must not start without its writer fence.'),
+            function () use ($journal): void {
+                expect($journal->state()['phase'])->toBe(Journal::BACKUP_VERIFIED);
+                throw new RuntimeException('A writer resumed.');
+            }))->toThrow(RuntimeException::class, 'A writer resumed.')
+            ->and($journal->state()['phase'])->toBe(Journal::ABORTED)
+            ->and(is_file($this->backup.'/database.sqlite'))->toBeTrue();
+    } finally {
+        $journal->close();
+    }
+});
+
 it('finishes forward after interrupted traffic publication and preserves writes after cutover', function (): void {
     $journal = Journal::open($this->journalPath);
     $nothing = static function (): void {};
@@ -180,10 +201,14 @@ it('records an interrupted pre-migration abort and prevents reuse of its plan', 
 
 function selfHostExecutionAdmission(
     string $backup,
+    string $deployment,
     ?string $runtimeOverride = null,
     string $mode = 'docker',
     ?string $originDigest = null,
     ?string $targetDigest = null,
+    ?string $deploymentOverride = null,
+    ?string $nonceOverride = null,
+    ?string $targetArchiveOverride = null,
 ): SelfHostUpgradeAdmission {
     static $private;
     $private ??= openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 3072]);
@@ -193,6 +218,7 @@ function selfHostExecutionAdmission(
         $raw = "kitsune-release-manifest-v1\nversion\t$version\nchannel\ttest\nsource\t$source\n"
             .'tree'."\t".str_repeat('b', 40)."\nsignature\trsa-pkcs1-sha256\n"
             ."artifact\tfixture.tar.gz\tnative\tlinux-arm64\t1\t".str_repeat('c', 64)."\n"
+            ."artifact\tother.tar.gz\tnative\tany\t1\t".str_repeat('d', 64)."\n"
             ."package\tkitsune/core\tdev-$source\t$source\t".str_repeat('d', 64)."\tsplit\n";
         openssl_sign($raw, $signature, $private, OPENSSL_ALGO_SHA256);
 
@@ -202,21 +228,63 @@ function selfHostExecutionAdmission(
     $target = $manifest('v1.0.0-test.2', str_repeat('b', 40));
     $originRuntime = $originDigest ?? str_repeat('e', 64);
     $targetRuntime = $targetDigest ?? str_repeat('f', 64);
-    $record = [
-        'format' => 'kitsune-self-host-admission-v1', 'mode' => $mode, 'platform' => 'linux-arm64',
-        'origin_manifest_sha256' => hash('sha256', $origin->bytes()),
-        'target_manifest_sha256' => hash('sha256', $target->bytes()),
-        'origin_runtime_sha256' => $originRuntime, 'target_runtime_sha256' => $targetRuntime,
-    ] + SelfHostSqliteWitness::inspect($backup);
-    $raw = json_encode($record, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)."\n";
+    $raw = SelfHostUpgradeAdmission::request($origin, $target, $mode, 'linux-arm64',
+        $originRuntime, $targetRuntime, str_repeat('c', 64), $deployment, str_repeat('b', 64), $backup);
     openssl_sign($raw, $signature, $private, OPENSSL_ALGO_SHA256);
 
     return SelfHostUpgradeAdmission::verify($raw, $signature, $public, $pin, $origin, $target, $mode, 'linux-arm64',
-        $originRuntime, $runtimeOverride ?? $targetRuntime, str_repeat('a', 64), str_repeat('b', 64));
+        $originRuntime, $runtimeOverride ?? $targetRuntime, $targetArchiveOverride ?? str_repeat('c', 64), $deploymentOverride ?? $deployment,
+        $nonceOverride ?? str_repeat('b', 64));
 }
 
+it('binds the signed transition to one installation and attempt', function (): void {
+    $sameApproval = selfHostExecutionAdmission($this->databasePath, $this->deployment);
+    expect($sameApproval->plan)->toBe($this->admission->plan)
+        ->and(fn () => selfHostExecutionAdmission($this->databasePath, $this->deployment, deploymentOverride: str_repeat('c', 64)))
+        ->toThrow(InvalidArgumentException::class, 'does not authorize this installation and attempt')
+        ->and(fn () => selfHostExecutionAdmission($this->databasePath, $this->deployment, nonceOverride: str_repeat('d', 64)))
+        ->toThrow(InvalidArgumentException::class, 'does not authorize this installation and attempt')
+        ->and(fn () => selfHostExecutionAdmission($this->databasePath, $this->deployment, targetArchiveOverride: str_repeat('d', 64)))
+        ->toThrow(InvalidArgumentException::class, 'does not match the selected release and runtimes');
+});
+
+it('retains the installation identity and rejects a foreign journal before a backup or migration', function (): void {
+    $path = $this->workspace.'/foreign-journal';
+    mkdir($path, 0700);
+    $other = Journal::open($path);
+    try {
+        expect(fn () => $other->deploymentIdentity($this->state))->toThrow(RuntimeException::class, 'private installation identity');
+        $foreign = $other->initializeDeployment($this->state);
+        expect($foreign)->not->toBe($this->deployment)
+            ->and(fileperms($path.'/installation-id') & 0777)->toBe(0600);
+        $unreachable = fn () => $this->fail('A foreign signed approval must not reach migration.');
+        expect(fn () => SelfHostUpgradeExecution::migrate($other, $this->admission, $this->state, $this->backup, $unreachable))
+            ->toThrow(InvalidArgumentException::class, 'does not match the signed admission')
+            ->and($other->state())->toBeNull()
+            ->and(file_exists($this->backup))->toBeFalse();
+    } finally {
+        $other->close();
+    }
+    $other = Journal::open($path);
+    try {
+        $unreachable = fn () => $this->fail('The journal must not accept a different state path.');
+        expect(fn () => SelfHostUpgradeExecution::migrate($other, $this->admission, $this->workspace.'/wrong-data',
+            $this->backup, $unreachable))
+            ->toThrow(InvalidArgumentException::class, 'another persistent state path')
+            ->and($other->state())->toBeNull()
+            ->and(file_exists($this->backup))->toBeFalse();
+        expect($other->deploymentIdentity($this->state))->toBe($foreign)
+            ->and($other->initializeDeployment($this->state))->toBe($foreign);
+        $other->begin($this->plan);
+        unlink($path.'/installation-id');
+        expect(fn () => $other->initializeDeployment($this->state))->toThrow(RuntimeException::class, 'Restore the installation identity');
+    } finally {
+        $other->close();
+    }
+});
+
 it('refuses a signed transition for another runtime or a changed SQLite origin before migrations', function (): void {
-    expect(fn () => selfHostExecutionAdmission($this->databasePath, str_repeat('a', 64)))
+    expect(fn () => selfHostExecutionAdmission($this->databasePath, $this->deployment, str_repeat('a', 64)))
         ->toThrow(InvalidArgumentException::class, 'does not match the selected release and runtimes');
     $database = new SQLite3($this->databasePath);
     $database->exec('UPDATE migrations SET batch = 2');
@@ -228,6 +296,92 @@ it('refuses a signed transition for another runtime or a changed SQLite origin b
             $unreachable, $unreachable, $unreachable, $unreachable, $unreachable))
             ->toThrow(InvalidArgumentException::class, 'differs from the admitted schema');
         expect($journal->state()['phase'])->toBe(Journal::ABORTED);
+    } finally {
+        $journal->close();
+    }
+});
+
+it('rejects reused Docker custody even when the replacement volume has the same mount path', function (): void {
+    $volumeJournal = $this->workspace.'/volume-journal';
+    mkdir($volumeJournal, 0700);
+    $first = Journal::open($volumeJournal, str_repeat('a', 64));
+    $identity = $first->initializeDeployment($this->state);
+    expect($first->deploymentIdentity($this->state))->toBe($identity);
+    $first->close();
+
+    $second = Journal::open($volumeJournal, str_repeat('b', 64));
+    try {
+        expect(fn () => $second->deploymentIdentity($this->state))
+            ->toThrow(InvalidArgumentException::class, 'another persistent state path or Docker volume');
+    } finally {
+        $second->close();
+    }
+});
+
+it('restores a Docker backup into a fresh volume and leaves the original upgrade fenced', function (): void {
+    $origin = $this->admission->origin->source."\n";
+    $target = $this->admission->target;
+    $receipt = implode("\n", ['kitsune-docker-installed-v2', $target->version, $target->source,
+        $target->artifacts[0]['sha256'], hash('sha256', $target->bytes()), '']);
+    file_put_contents($this->state.'/.installed', $origin);
+    touch($this->state.'/.lock');
+    $destination = $this->workspace.'/restored';
+    mkdir($destination, 0700);
+    file_put_contents($destination.'/unrelated', 'retain');
+    $journal = Journal::open($this->journalPath);
+    try {
+        SelfHostDockerUpgrade::migrate($journal, $this->admission, $this->state, $this->backup, $origin, $receipt,
+            function (): void {
+                $database = new SQLite3($this->databasePath);
+                $database->exec('ALTER TABLE articles ADD COLUMN slug TEXT');
+                $database->close();
+            });
+
+        expect(fn () => SelfHostDockerUpgrade::recover($journal, $this->admission, $this->state, $this->backup, $destination, $origin))
+            ->toThrow(InvalidArgumentException::class, 'new empty Docker volume');
+        expect(file_get_contents($destination.'/unrelated'))->toBe('retain')
+            ->and($journal->state()['phase'])->toBe(Journal::MIGRATED);
+
+        unlink($destination.'/unrelated');
+        SelfHostDockerUpgrade::recover($journal, $this->admission, $this->state, $this->backup, $destination, $origin);
+        expect($journal->state()['phase'])->toBe(Journal::RESTORED)
+            ->and(file_get_contents($destination.'/.installed'))->toBe($origin)
+            ->and(file_get_contents($destination.'/.env'))->toBe(file_get_contents($this->state.'/.env'))
+            ->and(file_get_contents($this->state.'/.installed'))->toBe("kitsune-docker-upgrade-v1\n{$this->plan}\n");
+
+        $restored = new SQLite3($destination.'/database.sqlite', SQLITE3_OPEN_READONLY);
+        try {
+            expect($restored->querySingle("SELECT COUNT(*) FROM pragma_table_info('articles') WHERE name = 'slug'"))->toBe(0);
+        } finally {
+            $restored->close();
+        }
+    } finally {
+        $journal->close();
+    }
+});
+
+it('can recover if Docker stops after fencing the verified backup and before journaling schema activity', function (): void {
+    $origin = $this->admission->origin->source."\n";
+    file_put_contents($this->state.'/.installed', $origin);
+    touch($this->state.'/.lock');
+    $destination = $this->workspace.'/recovered-before-schema';
+    mkdir($destination, 0700);
+    $journal = Journal::open($this->journalPath);
+    try {
+        expect(fn () => SelfHostUpgradeExecution::migrate($journal, $this->admission, $this->state, $this->backup,
+            fn () => $this->fail('No schema command should have run.'),
+            fenceBeforeSchema: function () use ($origin): void {
+                SelfHostDockerVolume::locked($this->state,
+                    fn (SelfHostDockerVolume $volume) => $volume->fence($this->plan, $origin));
+                throw new RuntimeException('Fixture stopped after the durable fence.');
+            }))
+            ->toThrow(RuntimeException::class, 'stopped after the durable fence')
+            ->and($journal->state()['phase'])->toBe(Journal::BACKUP_VERIFIED);
+
+        SelfHostDockerUpgrade::recover($journal, $this->admission, $this->state, $this->backup, $destination, $origin);
+        expect($journal->state()['phase'])->toBe(Journal::RESTORED)
+            ->and(file_get_contents($this->state.'/.installed'))->toBe("kitsune-docker-upgrade-v1\n{$this->plan}\n")
+            ->and(file_get_contents($destination.'/.installed'))->toBe($origin);
     } finally {
         $journal->close();
     }
@@ -316,7 +470,7 @@ it('admits native migration under the installer lock and retains the old tree du
             symlink($this->state.'/'.$target, $root.'/app/'.$link);
         }
     }
-    $admission = selfHostExecutionAdmission($nativeDatabase, mode: 'native',
+    $admission = selfHostExecutionAdmission($nativeDatabase, $this->deployment, mode: 'native',
         originDigest: SelfHostNativeRuntime::fingerprint($installation.'/app', $this->state),
         targetDigest: SelfHostNativeRuntime::fingerprint($staged.'/app', $this->state));
     foreach ([$installation => $admission->origin, $staged => $admission->target] as $root => $manifest) {
@@ -356,8 +510,39 @@ it('admits native migration under the installer lock and retains the old tree du
             ->toThrow(RuntimeException::class, 'destinations are already occupied or inconsistent')
             ->and($journal->state())->toBeNull();
         unlink($staged.'/.installed');
+        file_put_contents($staged.'/unexpected', 'unreviewed target file');
+        expect(fn () => SelfHostNativeUpgrade::migrate($journal, $admission, $lock, $installation, $staged,
+            $this->state, $this->backup, $offline, $unexpected))
+            ->toThrow(InvalidArgumentException::class, 'contains unexpected files')
+            ->and($journal->state())->toBeNull()
+            ->and(file_exists($this->backup))->toBeFalse();
+        unlink($staged.'/unexpected');
+
         $cache = $staged.'/app/bootstrap/cache/config.php';
         file_put_contents($cache, 'fixture generated config');
+        $otherDirectory = $this->workspace.'/native-foreign-journal';
+        mkdir($otherDirectory, 0700);
+        $other = Journal::open($otherDirectory);
+        try {
+            $otherInstallation = $other->initializeDeployment($this->state);
+            expect(fn () => SelfHostNativeUpgrade::migrate($other, $admission, $lock, $installation, $staged,
+                $this->state, $this->backup, $unexpected, $unexpected))
+                ->toThrow(InvalidArgumentException::class, 'does not match the signed admission')
+                ->and(file_get_contents($cache))->toBe('fixture generated config')
+                ->and($other->state())->toBeNull();
+            $otherApproval = selfHostExecutionAdmission($nativeDatabase, $otherInstallation, mode: 'native',
+                originDigest: SelfHostNativeRuntime::fingerprint($installation.'/app', $this->state),
+                targetDigest: SelfHostNativeRuntime::fingerprint($staged.'/app', $this->state));
+            $other->begin($otherApproval->plan);
+            $originalDatabase = hash_file('sha256', $nativeDatabase);
+            SelfHostNativeUpgrade::recover($other, $otherApproval, $lock, $installation, $this->state,
+                $this->backup, fileowner($this->state), filegroup($this->state), $offline);
+            expect($other->state()['phase'])->toBe(Journal::ABORTED)
+                ->and(file_exists($this->backup))->toBeFalse()
+                ->and(hash_file('sha256', $nativeDatabase))->toBe($originalDatabase);
+        } finally {
+            $other->close();
+        }
         SelfHostNativeUpgrade::migrate($journal, $admission, $lock, $installation, $staged, $this->state, $this->backup,
             $offline, function () use ($nativeDatabase, $journal, $lock, $cache): void {
                 expect(file_exists($cache))->toBeFalse();
@@ -395,6 +580,19 @@ it('admits native migration under the installer lock and retains the old tree du
             ->and($journal->state()['phase'])->toBe(Journal::STAGING_SERVICE);
         SelfHostNativeUpgrade::confirmPrivateService($journal, $admission, $installation, $this->state, $offline);
         expect($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+        $probeRetried = false;
+        SelfHostNativeUpgrade::confirmPrivateService($journal, $admission, $installation, $this->state,
+            function () use ($lock, &$probeRetried): void {
+                $check = fopen($lock, 'r+b');
+                try {
+                    expect(flock($check, LOCK_EX | LOCK_NB))->toBeFalse();
+                    $probeRetried = true;
+                } finally {
+                    fclose($check);
+                }
+            }, $lock);
+        expect($probeRetried)->toBeTrue()
+            ->and($journal->state()['phase'])->toBe(Journal::ACTIVATED);
 
         if ($recover) {
             $stateUser = fileowner($this->state);
@@ -455,15 +653,23 @@ it('admits native migration under the installer lock and retains the old tree du
                 fclose($other);
             }
         };
-        SelfHostNativeUpgrade::beginTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
-        expect($journal->state()['phase'])->toBe(Journal::OPENING_TRAFFIC);
-        expect(fn () => SelfHostNativeUpgrade::confirmTraffic($journal, $admission, $lock, $installation, $this->state, $readinessFailure))
-            ->toThrow(RuntimeException::class, 'check failed')
+        expect(fn () => SelfHostNativeUpgrade::publishTraffic($journal, $admission, $lock, $installation, $this->state,
+            $requireLock, function () use ($journal, $requireLock): void {
+                $requireLock();
+                expect($journal->state()['phase'])->toBe(Journal::OPENING_TRAFFIC);
+                throw new RuntimeException('Publication stopped partway.');
+            }, $unexpected))->toThrow(RuntimeException::class, 'Publication stopped partway')
             ->and($journal->state()['phase'])->toBe(Journal::OPENING_TRAFFIC);
         expect(fn () => SelfHostUpgradeExecution::recover($journal, $admission->plan, 'native', $this->backup, $unexpected))
             ->toThrow(RuntimeException::class, 'Recover only the recorded interrupted upgrade');
-        SelfHostNativeUpgrade::beginTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
-        SelfHostNativeUpgrade::confirmTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
+        expect(fn () => SelfHostNativeUpgrade::recover($journal, $admission, $lock, $installation, $this->state,
+            $this->backup, fileowner($this->state), filegroup($this->state), $unexpected))
+            ->toThrow(RuntimeException::class, 'Finish forward with publish-native');
+        SelfHostNativeUpgrade::publishTraffic($journal, $admission, $lock, $installation, $this->state,
+            $requireLock, $requireLock, $requireLock);
+        expect($journal->state()['phase'])->toBe(Journal::COMPLETE);
+        SelfHostNativeUpgrade::publishTraffic($journal, $admission, $lock, $installation, $this->state,
+            $unexpected, $unexpected, $requireLock);
         expect($journal->state()['phase'])->toBe(Journal::COMPLETE);
     } finally {
         $journal->close();

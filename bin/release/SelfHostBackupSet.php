@@ -206,6 +206,18 @@ final class SelfHostBackupSet
     /** @return array{size:int, sha256:string} */
     public static function verifyRestored(string $mode, string $directory, string $expectedInventory): array
     {
+        return self::verifyRestoredData($mode, $directory, $expectedInventory, false);
+    }
+
+    /** @return array{size:int, sha256:string} */
+    public static function verifyRestoredDockerVolume(string $directory, string $expectedInventory): array
+    {
+        return self::verifyRestoredData('docker', $directory, $expectedInventory, true);
+    }
+
+    /** @return array{size:int, sha256:string} */
+    private static function verifyRestoredData(string $mode, string $directory, string $expectedInventory, bool $hasVolumeControls): array
+    {
         if (realpath($directory) !== $directory || ! is_dir($directory)
             || preg_match('/\A[a-f0-9]{64}\z/D', $expectedInventory) !== 1) {
             throw new InvalidArgumentException('Use a canonical restore path and its recorded inventory digest.');
@@ -216,6 +228,9 @@ final class SelfHostBackupSet
             default => throw new InvalidArgumentException('Choose native or Docker data layout.'),
         };
         $expectedChildren = $mode === 'native' ? ['.env', 'database', 'storage'] : ['.env', 'database.sqlite', 'storage'];
+        if ($hasVolumeControls) {
+            $expectedChildren = ['.env', '.installed', '.lock', 'database.sqlite', 'storage'];
+        }
         if (self::children($directory) !== $expectedChildren
             || ($mode === 'native' && (realpath($directory.'/database') !== $directory.'/database'
                 || ! is_dir($directory.'/database') || self::children($directory.'/database') !== ['database.sqlite']))

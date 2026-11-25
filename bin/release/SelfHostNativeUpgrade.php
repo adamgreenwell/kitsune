@@ -20,6 +20,8 @@ final class SelfHostNativeUpgrade
     /**
      * @param  Closure():void  $assertWritersStopped  proves the host has stopped and fenced ingress and all writers
      * @param  Closure():void  $migrateTarget
+     * @param  (Closure():void)|null  $prepareTarget
+     * @param  (Closure(): (Closure():void))|null  $prepareMigration
      */
     public static function migrate(
         SelfHostUpgradeJournal $journal,
@@ -31,10 +33,13 @@ final class SelfHostNativeUpgrade
         string $backup,
         Closure $assertWritersStopped,
         Closure $migrateTarget,
+        ?Closure $prepareTarget = null,
+        ?Closure $prepareMigration = null,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
         self::requireSwitchPaths($admission, $installation, $staging);
         self::withInstallerLock($lockPath, static function () use (
-            $journal, $admission, $installation, $staging, $state, $backup, $assertWritersStopped, $migrateTarget,
+            $journal, $admission, $installation, $staging, $state, $backup, $assertWritersStopped, $migrateTarget, $prepareTarget, $prepareMigration,
         ): void {
             $assertWritersStopped();
             self::verifyRoots($admission, $installation, $staging, $state);
@@ -44,7 +49,9 @@ final class SelfHostNativeUpgrade
                 throw new RuntimeException('The native cutover destinations are already occupied or inconsistent.');
             }
             self::clearBootCache($staging.'/app');
-            SelfHostUpgradeExecution::migrate($journal, $admission, $state, $backup, $migrateTarget);
+            $prepareTarget?->__invoke();
+            SelfHostUpgradeExecution::migrate($journal, $admission, $state, $backup, $migrateTarget,
+                $assertWritersStopped, $prepareMigration);
         });
     }
 
@@ -62,6 +69,7 @@ final class SelfHostNativeUpgrade
         string $state,
         Closure $assertWritersStopped,
     ): string {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
         $parent = self::requireSwitchPaths($admission, $installation, $staging);
         $retained = $installation.'.before-'.$admission->plan;
         $current = $journal->state();
@@ -83,10 +91,10 @@ final class SelfHostNativeUpgrade
             }
             self::verifyRoots($admission, $origin, $target, $state);
 
+            self::clearBootCache($target.'/app');
             if ($current['phase'] === SelfHostUpgradeJournal::MIGRATED) {
                 $journal->record($admission->plan, SelfHostUpgradeJournal::STAGING_SERVICE);
             }
-            self::clearBootCache($target.'/app');
             self::completeReceipt($target);
             if (! $originalAlreadyRetained) {
                 if (! rename($installation, $retained)) {
@@ -112,15 +120,26 @@ final class SelfHostNativeUpgrade
         string $installation,
         string $state,
         Closure $verifyPrivateService,
+        ?string $lockPath = null,
     ): void {
-        $phase = $journal->state();
-        if ($admission->mode !== 'native' || $phase === null || $phase['plan'] !== $admission->plan
-            || $phase['phase'] !== SelfHostUpgradeJournal::STAGING_SERVICE) {
-            throw new RuntimeException('Only the recorded staged native service can be confirmed.');
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
+        $check = static function () use ($journal, $admission, $installation, $state, $verifyPrivateService): void {
+            $phase = $journal->state();
+            if ($admission->mode !== 'native' || $phase === null || $phase['plan'] !== $admission->plan
+                || ! in_array($phase['phase'], [SelfHostUpgradeJournal::STAGING_SERVICE, SelfHostUpgradeJournal::ACTIVATED], true)) {
+                throw new RuntimeException('Only the recorded staged native service can be confirmed.');
+            }
+            self::requireCurrentTarget($admission, $installation, $state);
+            $verifyPrivateService();
+            if ($phase['phase'] === SelfHostUpgradeJournal::STAGING_SERVICE) {
+                $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
+            }
+        };
+        if ($lockPath === null) {
+            $check();
+        } else {
+            self::withInstallerLock($lockPath, $check);
         }
-        self::requireCurrentTarget($admission, $installation, $state);
-        $verifyPrivateService();
-        $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
     }
 
     /** @param Closure():void $verifyCurrentTarget */
@@ -132,6 +151,7 @@ final class SelfHostNativeUpgrade
         string $state,
         Closure $verifyCurrentTarget,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
         self::withInstallerLock($lockPath, static function () use ($journal, $admission, $installation, $state, $verifyCurrentTarget): void {
             self::requireCurrentTarget($admission, $installation, $state);
             SelfHostUpgradeExecution::beginTraffic($journal, $admission->plan, $verifyCurrentTarget);
@@ -147,9 +167,41 @@ final class SelfHostNativeUpgrade
         string $state,
         Closure $verifyPublishedTarget,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
         self::withInstallerLock($lockPath, static function () use ($journal, $admission, $installation, $state, $verifyPublishedTarget): void {
             self::requireCurrentTarget($admission, $installation, $state);
             SelfHostUpgradeExecution::confirmTraffic($journal, $admission->plan, $verifyPublishedTarget);
+        });
+    }
+
+    /**
+     * @param  Closure():void  $verifyFence
+     * @param  Closure():void  $publish
+     * @param  Closure():void  $verifyPublished
+     */
+    public static function publishTraffic(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $lockPath,
+        string $installation,
+        string $state,
+        Closure $verifyFence,
+        Closure $publish,
+        Closure $verifyPublished,
+    ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
+        self::withInstallerLock($lockPath, static function () use (
+            $journal, $admission, $installation, $state, $verifyFence, $publish, $verifyPublished,
+        ): void {
+            self::requireCurrentTarget($admission, $installation, $state);
+            $recorded = $journal->state();
+            if ($recorded !== null && $recorded['plan'] === $admission->plan && $recorded['phase'] === SelfHostUpgradeJournal::COMPLETE) {
+                $verifyPublished();
+
+                return;
+            }
+
+            SelfHostUpgradeExecution::finish($journal, $admission->plan, $verifyFence, $publish, $verifyPublished);
         });
     }
 
@@ -165,9 +217,7 @@ final class SelfHostNativeUpgrade
         int $runtimeGroup,
         Closure $assertWritersStopped,
     ): void {
-        if ($runtimeUser <= 0 || $runtimeGroup <= 0) {
-            throw new InvalidArgumentException('Native recovery requires the dedicated unprivileged runtime user and group.');
-        }
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $state);
         $pendingState = $state.'.restore-'.$admission->plan;
         $failedState = $state.'.failed-'.$admission->plan;
         $previous = $installation.'.before-'.$admission->plan;
@@ -186,7 +236,20 @@ final class SelfHostNativeUpgrade
             $journal, $admission, $installation, $state, $backup, $assertWritersStopped, $pendingState,
             $failedState, $previous, $failedCode, $stateParent, $codeParent, $runtimeUser, $runtimeGroup,
         ): void {
+            $current = $journal->state();
+            if ($current !== null && $current['plan'] === $admission->plan
+                && in_array($current['phase'], [SelfHostUpgradeJournal::OPENING_TRAFFIC, SelfHostUpgradeJournal::COMPLETE], true)) {
+                throw new RuntimeException('Native traffic handoff has begun. Finish forward with publish-native.');
+            }
             $assertWritersStopped();
+            if (in_array($journal->state()['phase'] ?? null, [SelfHostUpgradeJournal::PREPARED, SelfHostUpgradeJournal::BACKUP_VERIFIED], true)) {
+                SelfHostUpgradeExecution::abortBeforeMigration($journal, $admission->plan);
+
+                return;
+            }
+            if ($runtimeUser <= 0 || $runtimeGroup <= 0) {
+                throw new InvalidArgumentException('Native recovery requires the dedicated unprivileged runtime user and group.');
+            }
             SelfHostUpgradeExecution::recover($journal, $admission->plan, 'native', $backup,
                 static function (string $backup, string $inventory, string $database) use (
                     $admission, $installation, $state, $pendingState, $failedState, $previous, $failedCode,
@@ -367,8 +430,9 @@ final class SelfHostNativeUpgrade
         if ($admission->mode !== 'native') {
             throw new InvalidArgumentException('The admission does not authorize a native upgrade.');
         }
+        self::requireTargetLayout($installation);
         $receipt = Files::control($installation.'/.release', 256);
-        self::requireReceipt($receipt, $admission->target, $admission->platform);
+        self::requireReceipt($receipt, $admission->target, $admission->platform, $admission->targetArchive);
         if ($receipt !== Files::control($installation.'/.installed', 256)
             || ! hash_equals($admission->targetRuntime, SelfHostNativeRuntime::fingerprint($installation.'/app', $state))) {
             throw new RuntimeException('The running native service does not match the staged upgrade.');
@@ -465,8 +529,10 @@ final class SelfHostNativeUpgrade
 
             return;
         }
-        $pending = tempnam($installation, '.pending-upgrade-');
-        if ($pending === false || dirname($pending) !== $installation) {
+        // A hard stop can leave the temporary receipt. Keep it outside the release tree so retry can verify that tree.
+        $parent = dirname($installation);
+        $pending = tempnam($parent, '.kitsune-native-receipt-');
+        if ($pending === false || dirname($pending) !== $parent) {
             if ($pending !== false) {
                 unlink($pending);
             }
@@ -481,6 +547,7 @@ final class SelfHostNativeUpgrade
                 throw new RuntimeException('The native completion receipt could not be published.');
             }
             self::sync($installation);
+            self::sync($parent);
         } finally {
             if (is_file($pending)) {
                 unlink($pending);
@@ -515,12 +582,13 @@ final class SelfHostNativeUpgrade
         if (realpath($installation) !== $installation || realpath($staging) !== $staging) {
             throw new InvalidArgumentException('The native cutover requires canonical application roots.');
         }
+        self::requireTargetLayout($staging);
         $origin = Files::control($installation.'/.release', 256);
         if ($origin !== Files::control($installation.'/.installed', 256)) {
             throw new InvalidArgumentException('The native completion and release receipts disagree.');
         }
         self::requireReceipt($origin, $admission->origin, $admission->platform);
-        self::requireReceipt(Files::control($staging.'/.release', 256), $admission->target, $admission->platform);
+        self::requireReceipt(Files::control($staging.'/.release', 256), $admission->target, $admission->platform, $admission->targetArchive);
 
         if (! hash_equals($admission->originRuntime, SelfHostNativeRuntime::fingerprint($installation.'/app', $state))
             || ! hash_equals($admission->targetRuntime, SelfHostNativeRuntime::fingerprint($staging.'/app', $state))) {
@@ -528,11 +596,20 @@ final class SelfHostNativeUpgrade
         }
     }
 
-    private static function requireReceipt(string $receipt, Manifest $manifest, string $platform): void
+    private static function requireTargetLayout(string $root): void
+    {
+        $contents = @scandir($root);
+        if (! in_array($contents, [['.', '..', '.release', 'app'], ['.', '..', '.installed', '.release', 'app']], true)) {
+            throw new InvalidArgumentException('The native target directory contains unexpected files.');
+        }
+    }
+
+    private static function requireReceipt(string $receipt, Manifest $manifest, string $platform, ?string $digest = null): void
     {
         foreach ($manifest->artifacts as $archive) {
             if ($archive['role'] === 'native' && str_ends_with($archive['name'], '.tar.gz')
                 && in_array($archive['platform'], ['any', $platform], true)
+                && ($digest === null || hash_equals($archive['sha256'], $digest))
                 && $receipt === $manifest->version."\n".$manifest->source."\n".$archive['sha256']."\n") {
                 return;
             }

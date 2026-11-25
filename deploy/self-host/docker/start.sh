@@ -16,19 +16,42 @@ config=$state/.env
 database=$state/database.sqlite
 storage=$state/storage
 installed=$state/.installed
-source_commit=$(cat /usr/local/share/kitsune-source-commit)
+image_release=/usr/local/share/kitsune-release
+image_source=/usr/local/share/kitsune-source-commit
+
+publish_record() {
+    local source=$1 destination=$2 pending
+    pending=$(mktemp "$state/.pending-receipt.XXXXXXXX")
+    if ! cat "$source" > "$pending" || ! sync "$pending" || ! mv -T -- "$pending" "$destination" || ! sync -f "$state"; then
+        rm -f -- "$pending"
+        refuse 'could not persist an installation receipt'
+    fi
+}
 
 mountpoint -q "$state" || refuse "mount a persistent data volume at $state"
 [ ! -L "$state/.lock" ] || refuse 'data volume contains a linked lock file'
 # Keep the descriptor open until both services stop.
 exec 9>>"$state/.lock"
 flock -n 9 || refuse 'another container holds this data volume'
-[ ! -L "$config" ] && [ ! -L "$database" ] && [ ! -L "$storage" ] \
-    || refuse 'data volume contains linked application state'
+for path in "$config" "$database" "$storage" "$installed"; do
+    [ ! -L "$path" ] || refuse 'data volume contains linked application state'
+done
+
+install_pending=false
 if [ -e "$installed" ]; then
-    [ -s "$database" ] || refuse 'restore the database for this existing installation'
-    [ "$(cat "$installed")" = "$source_commit" ] \
-        || refuse 'this volume belongs to a different release; follow the upgrade procedure'
+    [ -f "$installed" ] || refuse 'data volume contains an unreadable installation receipt'
+    if cmp -s "$installed" "$image_release/installing"; then
+        install_pending=true
+    elif cmp -s "$installed" "$image_release/installed" || cmp -s "$installed" "$image_source"; then
+        # The source-only comparison supports completed legacy installs, without granting them archive provenance.
+        [ -f "$database" ] && [ -s "$database" ] || refuse 'restore the database for this existing installation'
+    else
+        refuse 'this volume belongs to a different release or its receipt is invalid; inspect it before proceeding'
+    fi
+else
+    [ ! -e "$config" ] && [ ! -e "$database" ] && [ ! -e "$storage" ] \
+        || refuse 'existing state has no installation receipt; inspect the volume before proceeding'
+    install_pending=true
 fi
 
 if [ ! -e "$config" ]; then
@@ -41,6 +64,10 @@ if [ ! -e "$config" ]; then
         https://*) secure=true ;;
         http://*) secure=false ;;
     esac
+    if [ ! -e "$installed" ]; then
+        # The versioned interim receipt also fences older images, which require a lone source commit.
+        publish_record "$image_release/installing" "$installed"
+    fi
     key=$(php -r 'echo base64_encode(random_bytes(32));')
     pending=$(mktemp "$state/.pending-env.XXXXXXXX")
     trap '[[ ! -e "$pending" ]] || unlink "$pending"' EXIT
@@ -49,7 +76,10 @@ if [ ! -e "$config" ]; then
         'DB_CONNECTION=sqlite' "DB_DATABASE=$database" 'SESSION_DRIVER=file' "SESSION_SECURE_COOKIE=$secure" \
         'CACHE_STORE=file' 'QUEUE_CONNECTION=sync' 'MAIL_MAILER=log' 'LOG_CHANNEL=stderr' > "$pending"
     unset key
+    # The key must be durable before an installer creates or migrates its database.
+    sync "$pending"
     mv -T -- "$pending" "$config"
+    sync -f "$state"
     trap - EXIT
 fi
 
@@ -97,12 +127,8 @@ mkdir -p "$storage/app/private" "$storage/app/public" "$storage/framework/cache/
     "$storage/framework/sessions" "$storage/framework/views" "$storage/logs"
 [ -e "$database" ] || touch "$database"
 env -i PATH="$PATH" php artisan migrate --force --no-interaction
-if [ ! -e "$installed" ]; then
-    pending=$(mktemp "$state/.pending-install.XXXXXXXX")
-    trap '[[ ! -e "$pending" ]] || unlink "$pending"' EXIT
-    printf '%s\n' "$source_commit" > "$pending"
-    mv -T -- "$pending" "$installed"
-    trap - EXIT
+if [ "$install_pending" = true ]; then
+    publish_record "$image_release/installed" "$installed"
 fi
 
 # Both processes serve the same application. Exit if either one stops so

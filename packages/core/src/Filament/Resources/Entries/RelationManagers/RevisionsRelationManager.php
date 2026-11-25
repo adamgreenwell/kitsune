@@ -87,14 +87,14 @@ class RevisionsRelationManager extends RelationManager
         return $table
             ->recordTitleAttribute('title')
             ->columns([
-                SiteTime::column('created_at')->label('Saved')->sortable(),
+                SiteTime::column('created_at')->label(__('kitsune::admin.saved'))->sortable(),
                 // Same reasoning as the related-records table: a revision list shows
                 // titles as they were, and those carry whatever script they were written
                 // in. Found by enumerating every `TextColumn::make('title')` rather than
                 // by fixing the one that was reported.
                 TextColumn::make('title')->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('status')->badge(),
-                TextColumn::make('note')->label('Note')->placeholder('—'),
+                TextColumn::make('note')->label(__('kitsune::admin.note'))->placeholder('—'),
             ])
             ->defaultSort('id', 'desc')
             ->recordActions([
@@ -133,7 +133,7 @@ class RevisionsRelationManager extends RelationManager
                         $entry->restoreRevision($record);
 
                         Notification::make()
-                            ->title('Restored')
+                            ->title(__('kitsune::admin.restored'))
                             ->body('The entry now matches that version, and the versions after it are still here.')
                             ->success()
                             ->send();

@@ -22,6 +22,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
+use Kitsune\Core\Localization\CountMessage;
 use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Media\MediaVisibility;
@@ -256,7 +257,7 @@ final class MediaVisibilityActions
      */
     public static function selectionHeading(string $to, int $selected): string
     {
-        return trans_choice($to === 'public' ? 'kitsune::media.visibility.bulk.make_public_heading' : 'kitsune::media.visibility.bulk.make_private_heading', $selected, ['count' => $selected]);
+        return CountMessage::format($to === 'public' ? 'kitsune::media.visibility.bulk.make_public_heading' : 'kitsune::media.visibility.bulk.make_private_heading', $selected, ['count' => $selected]);
     }
 
     /**
@@ -274,7 +275,7 @@ final class MediaVisibilityActions
             $sentences[] = match (true) {
                 $selected === 1 => __($public ? 'kitsune::media.visibility.shared_public' : 'kitsune::media.visibility.shared_private'),
                 $shared === $selected => __($public ? 'kitsune::media.visibility.bulk.shared_public_all' : 'kitsune::media.visibility.bulk.shared_private_all'),
-                default => trans_choice($public ? 'kitsune::media.visibility.bulk.shared_public_some' : 'kitsune::media.visibility.bulk.shared_private_some', $shared, ['count' => $shared]),
+                default => CountMessage::format($public ? 'kitsune::media.visibility.bulk.shared_public_some' : 'kitsune::media.visibility.bulk.shared_private_some', $shared, ['count' => $shared]),
             };
         }
 
@@ -624,10 +625,10 @@ final class MediaVisibilityActions
 
         $title = match ($says) {
             'none' => __('kitsune::media.visibility.bulk.none'),
-            'refused', 'not_tried' => trans_choice($key('not_made'), $notDone, ['count' => $notDone]),
-            'awaiting' => trans_choice('kitsune::media.visibility.bulk.made_public_awaiting', count($awaiting), ['count' => count($awaiting)]),
-            'made' => trans_choice($key('made'), $made, ['count' => $made]),
-            default => trans_choice($key('already'), $already, ['count' => $already]),
+            'refused', 'not_tried' => CountMessage::format($key('not_made'), $notDone, ['count' => $notDone]),
+            'awaiting' => CountMessage::format('kitsune::media.visibility.bulk.made_public_awaiting', count($awaiting), ['count' => count($awaiting)]),
+            'made' => CountMessage::format($key('made'), $made, ['count' => $made]),
+            default => CountMessage::format($key('already'), $already, ['count' => $already]),
         };
 
         match (true) {
@@ -641,15 +642,15 @@ final class MediaVisibilityActions
         $lines = $refused;
 
         if ($failed !== []) {
-            $lines[] = e(trans_choice($key('failed').'_line', count($failed), ['titles' => BulkSelection::titles($failed)]));
+            $lines[] = e(CountMessage::format($key('failed').'_line', count($failed), ['titles' => BulkSelection::titles($failed)]));
         }
 
         if ($notTried > 0) {
-            $lines[] = e(trans_choice('kitsune::media.visibility.bulk.not_tried', $notTried, ['count' => $notTried]));
+            $lines[] = e(CountMessage::format('kitsune::media.visibility.bulk.not_tried', $notTried, ['count' => $notTried]));
         }
 
         if ($awaiting !== []) {
-            $lines[] = e(trans_choice('kitsune::media.selection.awaiting_line', count($awaiting), [
+            $lines[] = e(CountMessage::format('kitsune::media.selection.awaiting_line', count($awaiting), [
                 'titles' => BulkSelection::titles(array_values($awaiting)),
                 'entries' => implode(' ', array_map(static fn (int $id): string => "--entry={$id}", array_keys($awaiting))),
             ]));
@@ -657,19 +658,19 @@ final class MediaVisibilityActions
 
         // Counted in the body wherever the title does not already say so.
         if ($made > 0 && $says !== 'made') {
-            $lines[] = e(trans_choice($key('made').'_count', $made, ['count' => $made]));
+            $lines[] = e(CountMessage::format($key('made').'_count', $made, ['count' => $made]));
         }
 
         if ($to === 'private' && $made > 0) {
-            $lines[] = e(trans_choice('kitsune::media.visibility.bulk.made_private_body', $made));
+            $lines[] = e(CountMessage::format('kitsune::media.visibility.bulk.made_private_body', $made));
         }
 
         if ($already > 0 && $says !== 'already') {
-            $lines[] = e(trans_choice($key('already').'_count', $already, ['count' => $already]));
+            $lines[] = e(CountMessage::format($key('already').'_count', $already, ['count' => $already]));
         }
 
         if ($gone > 0 && $says !== 'none') {
-            $lines[] = e(trans_choice('kitsune::media.visibility.bulk.gone_line', $gone, ['count' => $gone]));
+            $lines[] = e(CountMessage::format('kitsune::media.visibility.bulk.gone_line', $gone, ['count' => $gone]));
         }
 
         $notification->title(e($title));

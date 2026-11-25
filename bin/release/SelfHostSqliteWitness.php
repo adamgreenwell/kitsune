@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Release;
 
+use Exception;
 use RuntimeException;
 use SQLite3;
 
@@ -39,6 +40,8 @@ final class SelfHostSqliteWitness
                 SELECT handle, version, is_enabled, installed_at FROM main.modules ORDER BY handle COLLATE BINARY
             ');
             $database->exec('COMMIT');
+        } catch (Exception) {
+            throw new RuntimeException('The SQLite origin lacks the required schema, migration or module records.');
         } finally {
             $database->close();
         }

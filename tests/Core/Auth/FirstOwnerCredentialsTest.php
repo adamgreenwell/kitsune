@@ -211,7 +211,7 @@ it('prompts on its own standard input when that is a terminal', function (): voi
 it('refuses to ask where the terminal cannot hide what is typed', function (): void {
     $out = ownerUnderPty(
         'try { Kitsune\Core\Auth\FirstOwnerCredentials::ask(new Symfony\Component\Console\Style\SymfonyStyle('
-        .'new Symfony\Component\Console\Input\ArrayInput([]), new Symfony\Component\Console\Output\StreamOutput(STDERR)), "x@y.test"); echo "ASKED"; } '
+        .'new Symfony\Component\Console\Input\ArrayInput([]), new Symfony\Component\Console\Output\StreamOutput(STDERR)), "x@y.test", STDIN); echo "ASKED"; } '
         .'catch (Throwable $e) { echo $e->getMessage(); }',
         /* No `stty` on the path, so the input cannot be hidden. */
         ['PATH' => '/nonexistent'],
@@ -220,3 +220,39 @@ it('refuses to ask where the terminal cannot hide what is typed', function (): v
     expect($out)->toContain('Refusing to ask for the password: this terminal cannot hide what is typed')
         ->not->toContain('ASKED');
 })->skip(! Process::isPtySupported(), 'no pseudo-terminal on this host');
+
+it('turns off terminal echo before the password prompt and restores it when the prompt fails', function (): void {
+    $out = ownerUnderPty(<<<'PHP'
+        $echoDisabled = static fn (): bool => preg_match('/(?:^|[\s;])-echo(?:[\s;]|$)/', shell_exec('stty -a') ?? '') === 1;
+        if ($echoDisabled()) {
+            throw new LogicException('The test needs terminal echo on initially.');
+        }
+
+        $output = new class (STDERR, $echoDisabled) extends Symfony\Component\Console\Output\StreamOutput {
+            public function __construct($stream, private Closure $echoDisabled)
+            {
+                parent::__construct($stream);
+            }
+
+            protected function doWrite(string $message, bool $newline): void
+            {
+                if (str_contains($message, 'Choose a password')) {
+                    echo ($this->echoDisabled)() ? 'ECHO OFF AT PROMPT' : 'ECHO ON AT PROMPT';
+                    throw new LogicException('Interrupted at the prompt');
+                }
+
+                parent::doWrite($message, $newline);
+            }
+        };
+
+        try {
+            Kitsune\Core\Auth\FirstOwnerCredentials::ask(new Symfony\Component\Console\Style\SymfonyStyle(
+                new Symfony\Component\Console\Input\ArrayInput([]), $output,
+            ), 'x@y.test', STDIN);
+        } catch (LogicException) {
+            echo $echoDisabled() ? ' ECHO STILL OFF' : ' ECHO RESTORED';
+        }
+        PHP);
+
+    expect($out)->toContain('ECHO OFF AT PROMPT ECHO RESTORED');
+})->skip(! Process::isPtySupported() || DIRECTORY_SEPARATOR !== '/' || trim(shell_exec('command -v stty') ?? '') === '', 'requires a POSIX terminal with stty');

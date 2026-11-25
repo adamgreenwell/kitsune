@@ -531,13 +531,13 @@ a product can have one. The **DAM** starter is Phase 5's, and
       admission for retained pre-v1.0 data, chosen by Adam in #211. Support dates/transition terms, reviewer-approved
       publication and actual origin/path upgrade evidence remain separate open gates; no v1.0 release is implied.
 - [ ] Staffed security disclosure process
-- [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
+- [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, finish first-owner setup in the terminal, then sign in through the browser:
   - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, with the distribution's own PHP where it meets `^8.4` (26.04 ships 8.5) and packages.sury.org where it does not (ADR-026 amendment)
   - [ ] **Docker path**, fully supported and equal in quality, reusing the Phase 0 CI image — for scale, reproducibility, or anyone preferring a container to a system PHP
   - [ ] Defaults to **SQLite** — no database server, user, password or tuning
   - [ ] Versioned + **checksum-pinned** over HTTPS, signed releases, never served from a redirect
   - [ ] Docs lead with **download-inspect-run**; the `curl | bash` one-liner is offered alongside, not instead
-  - [ ] **Never creates a default admin account** — onboarding creates the first user interactively *(amended 2026-10-02 by ADR-026's amendment: `kitsune:blueprint apply --owner` may create the first owner with a password the operator types or pipes; the installer itself still creates none, and a web onboarding screen must defend the first-visitor window)*
+  - [ ] **Never creates a default admin account** — hand the operator to `kitsune:blueprint apply --owner` on an empty installation. Without a terminal, report owner setup as pending and give the command to resume from an operator shell (ADR-026, #214).
   - [ ] **Reports nothing**, including install-succeeded pings (GOVERNANCE commitment #7)
   - [ ] **Idempotent** — re-running upgrades rather than clobbers, and detects an existing install
 - [ ] Upgrade tooling

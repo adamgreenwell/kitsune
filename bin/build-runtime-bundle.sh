@@ -14,10 +14,20 @@ refuse() {
   exit 1
 }
 
+package_plan=
+if (( $# > 3 )) && [[ ${!#} == --package-plan=* ]]; then
+  package_plan=${!#}
+  package_plan=${package_plan#--package-plan=}
+  [[ -n "$package_plan" ]] || refuse 'the package plan path is empty'
+  package_plan=$(realpath -- "$package_plan") || refuse 'the package plan is unavailable'
+  [[ -f "$package_plan" ]] || refuse 'the package plan is unavailable'
+  set -- "${@:1:$#-1}"
+fi
 if (( $# < 3 || $# > 4 )); then
-  refuse 'usage: bin/build-runtime-bundle.sh SOURCE EXACT_COMMIT OUTPUT.tar.gz [COMPOSER_LOCK]'
+  refuse 'usage: bin/build-runtime-bundle.sh SOURCE EXACT_COMMIT OUTPUT.tar.gz [COMPOSER_LOCK] [--package-plan=RELEASE_PLAN_JSON]'
 fi
 
+builder_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source_root=$1
 commit=$2
 output=$3
@@ -60,8 +70,29 @@ unset COMPOSER COMPOSER_VENDOR_DIR COMPOSER_IGNORE_PLATFORM_REQ COMPOSER_IGNORE_
 cd "$app"
 composer --no-plugins config platform.php 8.4.0
 composer --no-plugins config platform-check true
-composer --no-plugins config repositories.kitsune-packages \
-  '{"type":"path","url":"../packages/*","options":{"symlink":false}}'
+# Composer otherwise assigns the same dev-main version to snapshots from different commits.
+path_repository=$(php -r '
+    require $argv[3]."/release/Manifest.php";
+    $plan = $argv[2] === "" ? null : json_decode(file_get_contents($argv[2]), true, 32, JSON_THROW_ON_ERROR);
+    if ($argv[2] !== "" && !is_array($plan["packages"] ?? null)) {
+        fwrite(STDERR, "The release plan must include package versions.\n");
+        exit(1);
+    }
+    $versions = [];
+    foreach (glob("../packages/*/composer.json", GLOB_ERR) as $manifest) {
+        $package = json_decode(file_get_contents($manifest), true, 32, JSON_THROW_ON_ERROR);
+        $name = $package["name"];
+        $version = $plan === null ? "dev-".$argv[1] : ($plan["packages"][$name]["version"] ?? null);
+        if (!is_string($version) || ($version !== "dev-".$argv[1] && !Kitsune\Release\Manifest::validVersion("v".$version))) {
+            fwrite(STDERR, "No valid release version was supplied for ".$name.".\n");
+            exit(1);
+        }
+        $versions[$name] = $version;
+    }
+    echo json_encode(["type" => "path", "url" => "../packages/*",
+        "options" => ["symlink" => false, "versions" => $versions]], JSON_THROW_ON_ERROR);
+' "$commit" "$package_plan" "$builder_root")
+composer --no-plugins config repositories.kitsune-packages "$path_repository"
 if [[ -z "$lock" ]]; then
   composer --no-plugins update --no-install --no-dev --no-scripts --no-interaction --prefer-dist
 fi
@@ -72,6 +103,7 @@ lock_digest=${lock_digest%% *}
 # A runtime lock must resolve Kitsune packages from this commit, even on replay.
 php -r '
     $lock = json_decode(file_get_contents("composer.lock"), true, 512, JSON_THROW_ON_ERROR);
+    $versions = json_decode($argv[1], true, 32, JSON_THROW_ON_ERROR)["options"]["versions"];
     if (($lock["platform-overrides"]["php"] ?? null) !== "8.4.0") {
         fwrite(STDERR, "Runtime lock does not target PHP 8.4.0.\n");
         exit(1);
@@ -90,13 +122,14 @@ php -r '
         if (!preg_match("/\A[a-z0-9-]+\z/", $name)
             || $type !== "path"
             || ($package["dist"]["url"] ?? null) !== $path
+            || ($package["version"] ?? null) !== ($versions[$package["name"]] ?? null)
             || !is_file($path."/composer.json")) {
-            fwrite(STDERR, "Runtime lock contains a Kitsune package outside the source tree.\n");
+            fwrite(STDERR, "Runtime lock contains a Kitsune package outside the source or with an unexpected version.\n");
             exit(1);
         }
         echo $name, "\n";
     }
-' > "$work/packages"
+' "$path_repository" > "$work/packages"
 [[ -s "$work/packages" ]] || refuse 'the runtime lock contains no Kitsune packages'
 composer --no-plugins install --no-dev --no-scripts --no-interaction --prefer-dist --optimize-autoloader
 [[ "$(sha256sum composer.lock)" == "$lock_digest  composer.lock" ]] || refuse 'Composer changed the runtime lock'

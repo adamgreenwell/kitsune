@@ -64,7 +64,93 @@ final class SelfHostDockerVolume
         }
     }
 
-    /** Install the fence before any schema write, after journaling the verified backup and intent. */
+    public static function installationIdentity(string $directory, ?string $originReceipt = null): string
+    {
+        $path = $directory.'/.upgrade-id';
+        if ($originReceipt !== null) {
+            self::locked($directory, static function (self $volume) use ($path, $directory, $originReceipt): void {
+                $volume->requireReceipt($originReceipt);
+                if (@lstat($path) !== false) {
+                    return;
+                }
+                $pending = tempnam($directory, '.pending-identity-');
+                if ($pending === false || dirname($pending) !== $directory) {
+                    throw new RuntimeException('The Docker volume identity could not be staged.');
+                }
+                try {
+                    $identity = bin2hex(random_bytes(32))."\n";
+                    if (! chmod($pending, 0600) || file_put_contents($pending, $identity) !== 65) {
+                        throw new RuntimeException('The Docker volume identity could not be persisted.');
+                    }
+                    self::sync($pending);
+                    if (! rename($pending, $path)) {
+                        throw new RuntimeException('The Docker volume identity could not be published.');
+                    }
+                    self::sync($directory);
+                } finally {
+                    if (is_file($pending)) {
+                        unlink($pending);
+                    }
+                }
+            });
+        }
+
+        $record = Files::control($path, 65);
+        if (preg_match('/\A([a-f0-9]{64})\n\z/D', $record, $parts) !== 1) {
+            throw new InvalidArgumentException('The Docker volume identity is invalid.');
+        }
+
+        return $parts[1];
+    }
+
+    /** A partial restore cannot boot. Publish the origin receipt only after the promoted data verifies. */
+    public static function restore(string $directory, string $plan, string $receipt, string $backup, string $inventory): void
+    {
+        self::completedReceipt($receipt);
+        $fence = self::fenceFor($plan);
+        if (realpath($directory) !== $directory || ! is_dir($directory) || scandir($directory) !== ['.', '..']) {
+            throw new InvalidArgumentException('Recovery requires a new empty Docker volume.');
+        }
+        $lock = @fopen($directory.'/.lock', 'xb');
+        if ($lock === false) {
+            throw new RuntimeException('The new Docker volume could not be initialized for recovery.');
+        }
+        chmod($directory.'/.lock', 0600);
+        fclose($lock);
+
+        self::locked($directory, static function (self $volume) use ($directory, $plan, $receipt, $backup, $inventory, $fence): void {
+            $mount = $directory.'/.installed';
+            $written = @file_put_contents($mount, $fence);
+            if ($written !== strlen($fence) || ! chmod($mount, 0600)) {
+                throw new RuntimeException('The new Docker volume could not be fenced.');
+            }
+            self::sync($mount);
+            self::sync($directory);
+
+            $staged = $directory.'/.restore';
+            $expected = SelfHostBackupSet::stageRestore('docker', $backup, $inventory, $staged);
+            foreach (['.env', 'database.sqlite', 'storage'] as $entry) {
+                if (! rename($staged.'/'.$entry, $directory.'/'.$entry)) {
+                    throw new RuntimeException('The Docker restore could not promote the verified files.');
+                }
+            }
+            if (! rmdir($staged)) {
+                throw new RuntimeException('The Docker restore could not finish staging.');
+            }
+            self::sync($directory);
+            if (SelfHostBackupSet::verifyRestoredDockerVolume($directory, $inventory) !== $expected) {
+                throw new RuntimeException('The promoted Docker volume differs from the verified backup.');
+            }
+            $volume->publish($plan, $receipt);
+        });
+    }
+
+    public function requireFence(string $plan): void
+    {
+        $this->requireReceipt(self::fenceFor($plan));
+    }
+
+    /** Install the fence after the verified backup, before journaling schema writes. */
     public function fence(string $plan, string $expectedOrigin): void
     {
         self::completedReceipt($expectedOrigin);

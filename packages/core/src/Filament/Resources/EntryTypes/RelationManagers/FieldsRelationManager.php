@@ -129,18 +129,18 @@ class FieldsRelationManager extends RelationManager
     {
         return $schema->components([
             Section::make('Shape')
-                ->description('Locked once entries hold data: converting a field in place is how content gets destroyed quietly.')
+                ->description(__('kitsune::admin.locked_field_description'))
                 ->schema([
                     TextInput::make('storage_handle')
-                        ->label('Handle')
+                        ->label(__('kitsune::admin.handle'))
                         ->required()
                         ->maxLength(FieldStorage::MAX_HANDLE_LENGTH)
                         ->rules(['regex:'.FieldStorage::HANDLE_PATTERN])
-                        ->helperText('Lowercase snake_case. Becomes the JSON key and, if indexed, part of a column name.')
+                        ->helperText(__('kitsune::admin.field_handle_help'))
                         ->disabled(fn (?Field $record): bool => $record !== null)
                         ->dehydrated(),
                     Select::make('storage_type')
-                        ->label('Field type')
+                        ->label(__('kitsune::admin.field_type'))
                         ->required()
                         ->options(fn (): array => app(FieldTypeRegistry::class)->options())
                         ->live()
@@ -164,9 +164,9 @@ class FieldsRelationManager extends RelationManager
                         })
                         ->disabled(fn (?Field $record): bool => $record !== null)
                         ->dehydrated()
-                        ->helperText('Cannot change once the field exists — create a new field, convert, verify, then drop the old one.'),
+                        ->helperText(__('kitsune::admin.immutable_type_help')),
                     Select::make('storage_cardinality')
-                        ->label('Values')
+                        ->label(__('kitsune::admin.values'))
                         // ⚠️ Three options, not two. The stored column is an
                         // integer and every layer below already honours a finite
                         // bound — `max:{n}` in validation, `maxItems` in the
@@ -189,7 +189,7 @@ class FieldsRelationManager extends RelationManager
                             || self::type($get)?->supportsCardinality() !== true)
                         ->dehydrated(),
                     TextInput::make('storage_cardinality_max')
-                        ->label('Maximum values')
+                        ->label(__('kitsune::admin.maximum_values'))
                         ->numeric()
                         // Two, because a maximum of one IS cardinality one and a
                         // second way to say it would store a different integer
@@ -199,16 +199,16 @@ class FieldsRelationManager extends RelationManager
                         ->required(fn (Get $get): bool => $get('storage_cardinality') === self::LIMITED)
                         ->visible(fn (Get $get): bool => $get('storage_cardinality') === self::LIMITED)
                         ->disabled(fn (?Field $record): bool => $record !== null)
-                        ->helperText('Stored as the cardinality, so it is part of the locked shape.')
+                        ->helperText(__('kitsune::admin.cardinality_help'))
                         ->dehydrated(),
                 ])
                 ->columns(3),
 
             Section::make('Privacy')
-                ->description('ADR-020: an unclassified field does not save. Only you know whether "Customer notes" holds personal data.')
+                ->description(__('kitsune::admin.pii_description'))
                 ->schema([
                     Select::make('storage_pii_class')
-                        ->label('Personal data')
+                        ->label(__('kitsune::admin.personal_data'))
                         ->required()
                         ->options([
                             'none' => 'None — holds no personal data',
@@ -222,8 +222,8 @@ class FieldsRelationManager extends RelationManager
                         ->disabled(fn (?Field $record): bool => $this->editsSharedStorage($record))
                         ->dehydrated()
                         ->helperText(fn (?Field $record): string => $this->editsSharedStorage($record)
-                            ? 'Shared with every entity type using this storage, so it is not editable here.'
-                            : 'Suggested by the field type; confirm it, because the platform cannot know.'),
+                            ? __('kitsune::admin.shared_pii_help')
+                            : __('kitsune::admin.suggested_pii_help')),
                 ]),
 
             Section::make('Presentation')
@@ -231,16 +231,16 @@ class FieldsRelationManager extends RelationManager
                     TextInput::make('label')->required()->maxLength(255),
                     TextInput::make('help_text')->maxLength(255),
                     Toggle::make('is_required'),
-                    TextInput::make('group')->maxLength(255)->helperText('Optional grouping in the entry form.'),
+                    TextInput::make('group')->maxLength(255)->helperText(__('kitsune::admin.fieldset_help')),
                 ])
                 ->columns(2),
 
             Section::make('Querying')
-                ->description('Every indexed field costs write throughput on every entry save.')
+                ->description(__('kitsune::admin.index_description'))
                 ->schema([
                     Toggle::make('storage_is_indexed')
-                        ->label('Index this field')
-                        ->helperText('Adds a generated column and an index so this field can be filtered and sorted efficiently.')
+                        ->label(__('kitsune::admin.index_field'))
+                        ->helperText(__('kitsune::admin.index_help'))
                         ->disabled(fn (Get $get, ?Field $record): bool => self::type($get)?->isIndexable() !== true
                             || $this->editsSharedStorage($record))
                         ->dehydrated(),
@@ -270,10 +270,10 @@ class FieldsRelationManager extends RelationManager
             ->recordTitleAttribute('label')
             ->columns([
                 TextColumn::make('label')->searchable(),
-                TextColumn::make('fieldStorage.handle')->label('Handle')->badge(),
-                TextColumn::make('fieldStorage.type')->label('Type')->badge(),
+                TextColumn::make('fieldStorage.handle')->label(__('kitsune::admin.handle'))->badge(),
+                TextColumn::make('fieldStorage.type')->label(__('kitsune::admin.type'))->badge(),
                 TextColumn::make('fieldStorage.pii_class')
-                    ->label('Personal data')
+                    ->label(__('kitsune::admin.personal_data'))
                     ->badge()
                     ->color(fn (?string $state): string => match ($state) {
                         'sensitive' => 'danger',
@@ -281,10 +281,10 @@ class FieldsRelationManager extends RelationManager
                         default => 'gray',
                     }),
                 IconColumn::make('is_required')->boolean(),
-                IconColumn::make('fieldStorage.is_indexed')->boolean()->label('Indexed'),
+                IconColumn::make('fieldStorage.is_indexed')->boolean()->label(__('kitsune::admin.indexed')),
                 IconColumn::make('fieldStorage.is_locked')
                     ->boolean()
-                    ->label('Locked')
+                    ->label(__('kitsune::admin.locked'))
                     ->tooltip('Entries hold data for this field, so its shape can no longer change.'),
             ])
             ->reorderable('ordering')
@@ -651,7 +651,7 @@ class FieldsRelationManager extends RelationManager
             return $work();
         } catch (RuntimeException $e) {
             Notification::make()
-                ->title('That field could not be saved')
+                ->title(__('kitsune::admin.field_save_failed'))
                 ->body($e->getMessage())
                 ->danger()
                 ->persistent()
@@ -716,7 +716,7 @@ class FieldsRelationManager extends RelationManager
             $this->pendingStorage->update(['is_indexed' => false]);
 
             Notification::make()
-                ->title('The field was saved, but it could not be indexed')
+                ->title(__('kitsune::admin.field_index_failed'))
                 ->body($e->getMessage())
                 ->warning()
                 ->persistent()

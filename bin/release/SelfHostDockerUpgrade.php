@@ -20,7 +20,11 @@ use RuntimeException;
  */
 final class SelfHostDockerUpgrade
 {
-    /** @param Closure():void $runTargetMigrations */
+    /**
+     * @param  Closure():void  $runTargetMigrations
+     * @param  (Closure(): (Closure():void))|null  $prepareMigration
+     * @param  (Closure():void)|null  $beforeBackup
+     */
     public static function migrate(
         SelfHostUpgradeJournal $journal,
         SelfHostUpgradeAdmission $admission,
@@ -29,25 +33,61 @@ final class SelfHostDockerUpgrade
         string $originReceipt,
         string $targetReceipt,
         Closure $runTargetMigrations,
+        ?Closure $prepareMigration = null,
+        ?Closure $beforeBackup = null,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
         if ($admission->mode !== 'docker') {
             throw new InvalidArgumentException('The admission does not authorize a Docker upgrade.');
         }
         self::requireRelease($originReceipt, $admission->origin, $admission->platform, legacy: true);
-        self::requireRelease($targetReceipt, $admission->target, $admission->platform);
+        self::requireRelease($targetReceipt, $admission->target, $admission->platform, archiveDigest: $admission->targetArchive);
 
         // Keep the exact entrypoint lock from the origin check all the way through the last migration.
         SelfHostDockerVolume::locked($directory, static function (SelfHostDockerVolume $volume) use (
-            $directory, $backup, $admission, $journal, $originReceipt, $runTargetMigrations,
+            $directory, $backup, $admission, $journal, $originReceipt, $runTargetMigrations, $prepareMigration, $beforeBackup,
         ): void {
             $volume->requireReceipt($originReceipt);
-            SelfHostUpgradeExecution::migrate($journal, $admission, $directory, $backup, static function () use (
-                $volume, $admission, $originReceipt, $runTargetMigrations,
-            ): void {
-                // A new or legacy Docker runtime still refuses the volume if this helper exits mid-migration.
-                $volume->fence($admission->plan, $originReceipt);
-                $runTargetMigrations();
-            });
+            $beforeBackup?->__invoke();
+            SelfHostUpgradeExecution::migrate($journal, $admission, $directory, $backup, $runTargetMigrations,
+                prepareMigration: $prepareMigration,
+                // Make the volume unavailable before recording that database writes may begin.
+                fenceBeforeSchema: static fn () => $volume->fence($admission->plan, $originReceipt),
+            );
+        });
+    }
+
+    /** Restore into a fresh volume, leaving the fenced or migrated volume available for inspection. */
+    public static function recover(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $directory,
+        string $backup,
+        string $destination,
+        string $originReceipt,
+    ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
+        if ($admission->mode !== 'docker') {
+            throw new InvalidArgumentException('The admission does not authorize Docker recovery.');
+        }
+        self::requireRelease($originReceipt, $admission->origin, $admission->platform, legacy: true);
+        $journal->requireSeparateFrom($directory, $destination, $backup);
+        if ($backup === $destination || str_starts_with($backup, $destination.'/') || str_starts_with($destination, $backup.'/')
+            || $directory === $destination || str_starts_with($directory, $destination.'/') || str_starts_with($destination, $directory.'/')) {
+            throw new InvalidArgumentException('Use a separate, unused Docker volume for recovery.');
+        }
+
+        SelfHostDockerVolume::locked($directory, static function (SelfHostDockerVolume $volume) use ($journal, $admission, $backup, $destination, $originReceipt): void {
+            $fencedBeforeMigration = ($journal->state()['phase'] ?? null) === SelfHostUpgradeJournal::BACKUP_VERIFIED;
+            if ($fencedBeforeMigration) {
+                $volume->requireFence($admission->plan);
+            }
+            SelfHostUpgradeExecution::recover($journal, $admission->plan, 'docker', $backup,
+                static fn (string $path, string $inventory) => SelfHostDockerVolume::restore(
+                    $destination, $admission->plan, $originReceipt, $path, $inventory,
+                ),
+                fencedBeforeMigration: $fencedBeforeMigration,
+            );
         });
     }
 
@@ -61,6 +101,7 @@ final class SelfHostDockerUpgrade
         string $directory,
         string $receipt,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
         self::requireTarget($admission, $receipt);
         $state = $journal->state();
         if ($state === null || $state['plan'] !== $admission->plan
@@ -84,15 +125,18 @@ final class SelfHostDockerUpgrade
         string $receipt,
         Closure $verifyPrivateService,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
         self::requireTarget($admission, $receipt);
         $state = $journal->state();
-        if ($state === null || $state['plan'] !== $admission->plan || $state['phase'] !== SelfHostUpgradeJournal::STAGING_SERVICE
+        if ($state === null || $state['plan'] !== $admission->plan || ! in_array($state['phase'], [SelfHostUpgradeJournal::STAGING_SERVICE, SelfHostUpgradeJournal::ACTIVATED], true)
             || ! hash_equals($receipt, Files::control($directory.'/.installed', 512))) {
             throw new RuntimeException('The running Docker service does not match the staged upgrade.');
         }
 
         $verifyPrivateService();
-        $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
+        if ($state['phase'] === SelfHostUpgradeJournal::STAGING_SERVICE) {
+            $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
+        }
     }
 
     /** @param Closure():void $verifyCurrentTarget */
@@ -103,6 +147,7 @@ final class SelfHostDockerUpgrade
         string $receipt,
         Closure $verifyCurrentTarget,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
         self::requireCurrentTarget($admission, $directory, $receipt);
         SelfHostUpgradeExecution::beginTraffic($journal, $admission->plan, $verifyCurrentTarget);
     }
@@ -115,6 +160,7 @@ final class SelfHostDockerUpgrade
         string $receipt,
         Closure $verifyPublishedTarget,
     ): void {
+        SelfHostUpgradeExecution::requireDeployment($journal, $admission, $directory);
         self::requireCurrentTarget($admission, $directory, $receipt);
         SelfHostUpgradeExecution::confirmTraffic($journal, $admission->plan, $verifyPublishedTarget);
     }
@@ -132,10 +178,10 @@ final class SelfHostDockerUpgrade
         if ($admission->mode !== 'docker') {
             throw new InvalidArgumentException('The admission does not authorize a Docker upgrade.');
         }
-        self::requireRelease($receipt, $admission->target, $admission->platform);
+        self::requireRelease($receipt, $admission->target, $admission->platform, archiveDigest: $admission->targetArchive);
     }
 
-    private static function requireRelease(string $receipt, Manifest $manifest, string $platform, bool $legacy = false): void
+    public static function requireRelease(string $receipt, Manifest $manifest, string $platform, bool $legacy = false, ?string $archiveDigest = null): void
     {
         if ($legacy && $receipt === $manifest->source."\n") {
             return;
@@ -143,7 +189,8 @@ final class SelfHostDockerUpgrade
 
         $digest = hash('sha256', $manifest->bytes());
         foreach ($manifest->artifacts as $archive) {
-            if ($archive['role'] !== 'native' || ! str_ends_with($archive['name'], '.tar.gz') || ! in_array($archive['platform'], ['any', $platform], true)) {
+            if ($archive['role'] !== 'native' || ! str_ends_with($archive['name'], '.tar.gz') || ! in_array($archive['platform'], ['any', $platform], true)
+                || ($archiveDigest !== null && ! hash_equals($archive['sha256'], $archiveDigest))) {
                 continue;
             }
             $expected = implode("\n", [

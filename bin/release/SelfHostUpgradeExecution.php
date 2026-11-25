@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Release;
 
 use Closure;
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -47,33 +48,54 @@ final class SelfHostUpgradeExecution
         self::finish($journal, $admission->plan, $verifyService, $openTraffic, $verifyPublished);
     }
 
-    /** @param Closure():void $migrate */
+    public static function requireDeployment(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $persistentDirectory,
+    ): void {
+        if (! hash_equals($admission->deployment, $journal->deploymentIdentity($persistentDirectory))) {
+            throw new InvalidArgumentException('The recorded installation does not match the signed admission.');
+        }
+    }
+
+    /**
+     * @param  Closure():void  $migrate
+     * @param  (Closure():void)|null  $beforeMigration
+     * @param  (Closure(): (Closure():void))|null  $prepareMigration
+     * @param  (Closure():void)|null  $fenceBeforeSchema
+     */
     public static function migrate(
         SelfHostUpgradeJournal $journal,
         SelfHostUpgradeAdmission $admission,
         string $persistentDirectory,
         string $backupDirectory,
         Closure $migrate,
+        ?Closure $beforeMigration = null,
+        ?Closure $prepareMigration = null,
+        ?Closure $fenceBeforeSchema = null,
     ): void {
         $plan = $admission->plan;
         $journal->requireSeparateFrom($persistentDirectory, $backupDirectory);
+        self::requireDeployment($journal, $admission, $persistentDirectory);
         $journal->begin($plan);
 
         try {
             $backup = SelfHostBackupSet::create($admission->mode, $persistentDirectory, $backupDirectory);
             SelfHostBackupSet::verify($admission->mode, $backupDirectory, $backup['inventory_sha256']);
             $admission->requireMatchingBackup($backupDirectory.'/database.sqlite');
+            $journal->record($plan, SelfHostUpgradeJournal::BACKUP_VERIFIED, $backup['inventory_sha256']);
+            $beforeMigration?->__invoke();
+            $migrate = $prepareMigration === null ? $migrate : $prepareMigration();
         } catch (Throwable $failure) {
             try {
                 self::abortBeforeMigration($journal, $plan);
             } catch (Throwable) {
-                throw new RuntimeException('Backup failed and the journal could not record the pre-migration abort.', previous: $failure);
+                throw new RuntimeException('A pre-migration check failed and the journal could not record the abort.', previous: $failure);
             }
 
             throw $failure;
         }
-        $journal->record($plan, SelfHostUpgradeJournal::BACKUP_VERIFIED, $backup['inventory_sha256']);
-
+        $fenceBeforeSchema?->__invoke();
         // This write precedes the first schema operation. After this point, failures need inspected recovery.
         $journal->record($plan, SelfHostUpgradeJournal::MIGRATION_STARTED);
         $migrate();
@@ -143,11 +165,15 @@ final class SelfHostUpgradeExecution
         string $mode,
         string $backupDirectory,
         Closure $restoreAndVerify,
+        bool $fencedBeforeMigration = false,
     ): void {
         $state = $journal->state();
-        if ($state === null || $state['plan'] !== $plan || $state['backup'] === null
-            || ! in_array($state['phase'], [SelfHostUpgradeJournal::MIGRATION_STARTED, SelfHostUpgradeJournal::MIGRATED,
-                SelfHostUpgradeJournal::STAGING_SERVICE, SelfHostUpgradeJournal::ACTIVATED], true)) {
+        $recoverable = [SelfHostUpgradeJournal::MIGRATION_STARTED, SelfHostUpgradeJournal::MIGRATED,
+            SelfHostUpgradeJournal::STAGING_SERVICE, SelfHostUpgradeJournal::ACTIVATED];
+        if ($mode === 'docker' && $fencedBeforeMigration) {
+            $recoverable[] = SelfHostUpgradeJournal::BACKUP_VERIFIED;
+        }
+        if ($state === null || $state['plan'] !== $plan || $state['backup'] === null || ! in_array($state['phase'], $recoverable, true)) {
             throw new RuntimeException('Recover only the recorded interrupted upgrade with a verified backup.');
         }
 
