@@ -15,16 +15,18 @@ function php(code) {
 
 // Dedicated orgs in global-setup's disposable SQLite database; reuse already authenticated test accounts.
 function seedBlueprintAdmin() {
-    const previous = JSON.parse(php("$ids=Kitsune\\Core\\Models\\Org::query()->whereIn('slug',['blueprint-admin','blueprint-blocked','blueprint-stale','blueprint-rtl'])->pluck('id');"
+    const orgSlugs = "['blueprint-admin','blueprint-blocked','blueprint-stale','blueprint-rtl','blueprint-seeded']";
+    const seedFixture = literal(path.join(__dirname, '..', 'tests', 'Core', 'Fixtures', 'SeedBlueprint.php'));
+    const previous = JSON.parse(php(`$ids=Kitsune\\Core\\Models\\Org::query()->whereIn('slug',${orgSlugs})->pluck('id');`
         + "$roles=DB::table('roles')->whereIn('org_id',$ids)->where('is_owner',true)->pluck('id');"
         + "echo json_encode(['orgs'=>$ids->count(),'sites'=>DB::table('sites')->whereIn('org_id',$ids)->count(),'owners'=>DB::table('role_user')->whereIn('role_id',$roles)->count(),'members'=>DB::table('org_user')->whereIn('org_id',$ids)->count()]);"));
     if (previous.orgs !== 0) {
         // Playwright replaces a failed worker. Reuse a complete fixture; never repair a partial seed silently.
-        if (previous.orgs === 4 && previous.sites === 4 && previous.owners === 8 && previous.members === 12) return;
+        if (previous.orgs === 5 && previous.sites === 5 && previous.owners === 10 && previous.members === 15) return;
         throw new Error(`Blueprint fixture is incomplete: ${JSON.stringify(previous)}`);
     }
     php("if(!app()->environment(['local','testing'])||DB::connection()->getDriverName()!=='sqlite'){throw new RuntimeException('Blueprint browser fixture requires the local SQLite test app.');}"
-        + "foreach(['blueprint-admin','blueprint-blocked','blueprint-stale','blueprint-rtl'] as $slug){"
+        + `foreach(${orgSlugs} as $slug){`
         + "$org=Kitsune\\Core\\Models\\Org::create(['slug'=>$slug,'name'=>'Blueprint review '.$slug]);"
         + '$ctx=app(Kitsune\\Core\\Tenancy\\Context::class);$ctx->setOrg($org);'
         + "$role=Kitsune\\Core\\Models\\Role::create(['handle'=>'owner','name'=>'Owner','is_owner'=>true]);"
@@ -36,6 +38,11 @@ function seedBlueprintAdmin() {
         + "if(in_array($slug,['blueprint-blocked','blueprint-stale'],true)){Kitsune\\Core\\Blueprints\\BlueprintApplier::apply(new Kitsune\\Core\\Blueprints\\FirstParty\\BlogBlueprint);}"
         + "if($slug==='blueprint-blocked'){$ctx->setSite($site);$type=Kitsune\\Core\\Models\\EntryType::query()->where('org_id',$org->id)->where('handle','post')->firstOrFail();"
         + "Kitsune\\Core\\Models\\Entry::create(['entry_type_id'=>$type->id,'title'=>'Retained blueprint browser post']);}"
+        + `if($slug==='blueprint-seeded'){require_once ${seedFixture};`
+        + "$definition=new Kitsune\\Core\\Tests\\Fixtures\\SeedBlueprint([new Kitsune\\Core\\Blueprints\\Declarations\\SeedEntryDeclaration('welcome','seed_article','Welcome','welcome')]);"
+        + 'Kitsune\\Core\\Blueprints\\BlueprintApplier::apply($definition);$ctx->setSite($site);'
+        + "Kitsune\\Core\\Blueprints\\BlueprintSeeder::seed($definition,$site,'en');"
+        + 'Kitsune\\Core\\Models\\Entry::query()->sole()->delete();}'
         + '}');
 }
 
@@ -46,7 +53,7 @@ function atOrg(slug) {
 
 function state(slug) {
     return JSON.parse(php(atOrg(slug)
-        + "$facts=[];foreach(['blueprints','entry_types','field_storage','roles','entries','entry_revisions','audit_log'] as $table){"
+        + "$facts=[];foreach(['blueprints','blueprint_seeds','entry_types','field_storage','roles','entries','entry_revisions','audit_log'] as $table){"
         + "$rows=DB::table($table)->where('org_id',$org->id)->orderBy('id')->get();$facts[$table]=['count'=>$rows->count(),'hash'=>hash('sha256',serialize($rows->all()))];}"
         + "echo json_encode($facts,JSON_THROW_ON_ERROR);"));
 }

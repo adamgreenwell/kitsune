@@ -39,6 +39,7 @@ use Kitsune\Core\Schema\DesiredStorage;
 use Kitsune\Core\Schema\SchemaManager;
 use Kitsune\Core\Schema\StorageAdoption;
 use Kitsune\Core\Tenancy\Context;
+use PDOException;
 use RuntimeException;
 use Throwable;
 
@@ -128,7 +129,7 @@ final class BlueprintApplier
      * @throws InvalidArgumentException for a malformed definition, before anything is read or written
      * @throws RuntimeException
      */
-    public static function apply(BlueprintDefinition $definition, ?string $expectedReceipt = null): array
+    public static function apply(BlueprintDefinition $definition, ?string $expectedReceipt = null, ?string $expectedAvailability = null): array
     {
         $orgId = app(Context::class)->orgId();
 
@@ -150,6 +151,7 @@ final class BlueprintApplier
          * receipt, so a definition wrong in those ways leaves no receipt and no rows, and asks the database nothing.
          */
         self::refuseMalformed($definition);
+        $availability = BlueprintAvailability::declarations($definition);
 
         $receipt = Blueprint::receiptFor($definition->handle());
 
@@ -165,7 +167,7 @@ final class BlueprintApplier
              * the manifest and then refused, under the default policy, the very types that version had created; the
              * merge reads the manifest instead, and adds only what this version declares and it does not record.
              */
-            return self::merge($definition, $receipt, $orgId);
+            return self::merge($definition, $receipt, $orgId, $expectedAvailability);
         }
 
         /*
@@ -176,6 +178,10 @@ final class BlueprintApplier
         if ($receipt !== null && $receipt->manifest !== null) {
             return self::finishInterrupted($definition, $receipt, $orgId);
         }
+
+        /* Resolve new availability targets before intent; foreign or missing handles leave no receipt. */
+        $preparedAvailability = BlueprintAvailability::prepare($availability, [], $orgId);
+        self::refuseChangedAvailability($preparedAvailability, $expectedAvailability);
 
         /* With no manifest, no row of any version committed: this run applies afresh, and the receipt takes its version. */
 
@@ -212,7 +218,7 @@ final class BlueprintApplier
          * `Site::save()` and `SettingsWriter` were both corrected from that, and `ModuleLifecycle` after them.
          */
         try {
-            $receipt->getConnection()->transaction(function () use ($definition, $orgId, $receipt, &$outcome, &$indexable, &$rows): void {
+            $receipt->getConnection()->transaction(function () use ($definition, $orgId, $receipt, $preparedAvailability, &$outcome, &$indexable, &$rows): void {
                 /*
                  * ⚠️ THE INTENT RECORD AGAIN, FOR UPDATE, BEFORE ANY ROW. It committed on its own, so a reverse could
                  * delete it before this transaction opened — and the rows then committed with no receipt naming them,
@@ -227,6 +233,11 @@ final class BlueprintApplier
 
                 if ($fresh->manifest !== null || $fresh->applied_at !== null || $fresh->version !== $receipt->version) {
                     throw new RuntimeException(self::concurrent($definition));
+                }
+
+                BlueprintAvailability::lockOrg($orgId);
+                if (in_array(false, BlueprintAvailability::lockTargets($preparedAvailability, $orgId), true)) {
+                    throw new RuntimeException('Cannot apply availability: a captured target moved or was removed before the rows transaction.');
                 }
 
                 /* Written with the manifest, last: an intent record that rolls back keeps the version it had. */
@@ -248,6 +259,8 @@ final class BlueprintApplier
                 foreach ($definition->roles() as $declaration) {
                     self::applyRole($declaration, $grantable, $outcome, $rows);
                 }
+
+                $rows['availability'] = BlueprintAvailability::write($preparedAvailability, $rows['entry_types'], [], $orgId);
 
                 /*
                  * ⚠️ LAST, AND INSIDE. The manifest commits with the rows or not at all, so "manifest set, applied_at
@@ -578,7 +591,7 @@ final class BlueprintApplier
      *
      * @throws RuntimeException
      */
-    private static function merge(BlueprintDefinition $definition, Blueprint $receipt, int $orgId): array
+    private static function merge(BlueprintDefinition $definition, Blueprint $receipt, int $orgId, ?string $expectedAvailability): array
     {
         $from = (string) $receipt->version;
         $to = $definition->version();
@@ -587,6 +600,10 @@ final class BlueprintApplier
         /* The plan: both refusals are thrown before the transaction opens, and neither writes. */
         $recorded = self::recordedOf($definition->handle(), $receipt);
         self::refuseChanges($definition, $recorded, $from, $orgId);
+        $availability = BlueprintAvailability::declarations($definition);
+        BlueprintAvailability::refuseChanges($availability, $recorded['availability']);
+        $preparedAvailability = BlueprintAvailability::prepare($availability, $recorded['availability'], $orgId);
+        self::refuseChangedAvailability($preparedAvailability, $expectedAvailability);
 
         $outcome = ['created' => [], 'adopted' => [], 'skipped' => []];
         $indexable = [];
@@ -595,7 +612,7 @@ final class BlueprintApplier
         $createdRoles = [];
 
         try {
-            $receipt->getConnection()->transaction(function () use ($definition, $receipt, $orgId, $from, $to, $planned, $recorded, &$outcome, &$indexable, &$notes, &$rows, &$createdRoles): void {
+            $receipt->getConnection()->transaction(function () use ($definition, $receipt, $orgId, $from, $to, $planned, $recorded, $preparedAvailability, &$outcome, &$indexable, &$notes, &$rows, &$createdRoles): void {
                 /*
                  * ⚠️ 1. THE RECEIPT AGAIN, FOR UPDATE, BEFORE ANYTHING. Two merges both planned from `$from`; without
                  * this the second would write its manifest over the first's — a version-only or grant-free merge
@@ -607,6 +624,8 @@ final class BlueprintApplier
                 if (self::receiptMoved($fresh, $from, $planned)) {
                     throw new RuntimeException(self::concurrent($definition));
                 }
+
+                BlueprintAvailability::lockOrg($orgId);
 
                 /* 2. What each row the manifest records as created is now. Recorded types are locked, in id order. */
                 $types = $recorded['entry_types'];
@@ -622,6 +641,10 @@ final class BlueprintApplier
                             $held[$handle] = $live;
                         }
                     }
+                }
+
+                if (in_array(false, BlueprintAvailability::lockTargets($preparedAvailability, $orgId), true)) {
+                    throw new RuntimeException('Cannot apply availability: a captured target moved or was removed before the merge transaction.');
                 }
 
                 $roleState = [];
@@ -804,6 +827,8 @@ final class BlueprintApplier
                     }
                 }
 
+                $rows['availability'] = BlueprintAvailability::write($preparedAvailability, $rows['entry_types'], $recorded['availability'], $orgId);
+
                 /*
                  * ⚠️ 8. LAST, AND INSIDE. The manifest is seeded from the recorded ids and outcomes, so it keeps every
                  * earlier row — the ones the operator removed included, which is what stops a later version re-adding
@@ -881,7 +906,7 @@ final class BlueprintApplier
      *
      * @return array{
      *     entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>,
-     *     roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>
+     *     availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>
      * }
      *
      * @throws RuntimeException
@@ -912,7 +937,7 @@ final class BlueprintApplier
      * @return array{
      *     0: array{
      *         entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>,
-     *         roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>
+     *         availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>
      *     },
      *     1: list<string>
      * }
@@ -921,7 +946,7 @@ final class BlueprintApplier
     {
         $manifest = $receipt->manifest;
         $problems = [];
-        $recorded = ['entry_types' => [], 'roles' => []];
+        $recorded = ['entry_types' => [], 'roles' => [], 'availability' => []];
 
         if (! is_array($manifest) || $manifest === []) {
             $problems[] = 'it records nothing';
@@ -983,8 +1008,45 @@ final class BlueprintApplier
             }
         }
 
-        /** @var array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>} $recorded */
+        $recorded['availability'] = BlueprintAvailability::read($manifest, $recorded['entry_types'], (int) $receipt->getAttribute('org_id'), $problems);
+
+        /** @var array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>} $recorded */
         return [$recorded, $problems];
+    }
+
+    /**
+     * The seed kernel holds this schema receipt's writer lock before calling. Reuse the
+     * schema reader and additive comparison rather than a second, weaker manifest parser.
+     * No schema application, DDL, or repair is performed here. @internal
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public static function schemaForSeed(BlueprintDefinition $definition, Blueprint $receipt): array
+    {
+        self::refuseMalformed($definition);
+        if ($receipt->applied_at === null || $receipt->version !== $definition->version()) {
+            throw new RuntimeException('Seed content requires this exact schema version to have completed first.');
+        }
+        [$recorded, $problems] = self::readManifest($receipt);
+        if ($problems !== []) {
+            throw new RuntimeException('Cannot seed from a malformed schema receipt: '.implode('; ', $problems));
+        }
+        self::refuseChanges($definition, $recorded, $receipt->version, (int) $receipt->org_id);
+        $availability = BlueprintAvailability::declarations($definition);
+        BlueprintAvailability::refuseChanges($availability, $recorded['availability']);
+        // Additions to PHP under an unchanged version are not applied schema authority either.
+        if (count($definition->entryTypes()) !== count($recorded['entry_types'])
+            || count($definition->roles()) !== count($recorded['roles'])
+            || count($availability) !== count($recorded['availability'])) {
+            throw new RuntimeException('Seed schema declarations differ from the applied schema receipt.');
+        }
+        foreach ($definition->entryTypes() as $type) {
+            if (count($type->fields) !== count($recorded['entry_types'][$type->handle]['fields'])) {
+                throw new RuntimeException('Seed fields differ from the applied schema receipt.');
+            }
+        }
+
+        return $recorded['entry_types'];
     }
 
     /**
@@ -1066,7 +1128,7 @@ final class BlueprintApplier
      * ⚠️ IT READS TWO THINGS: whether the storage a reshaped field names is locked, for the refusal's wording alone; and
      * whether a new role declared `Skip` meets one the org already has, which it would leave exactly as it is.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
      *
      * @throws RuntimeException
      */
@@ -1275,8 +1337,8 @@ final class BlueprintApplier
      * The manifest's ids and outcomes as `$rows`, so the manifest a merge writes keeps every row an earlier version
      * wrote — under its id, removed or not.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
-     * @return array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @return array{entry_types: array<string, array<string, mixed>>, availability?: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}
      */
     private static function seededRows(array $recorded): array
     {
@@ -1454,6 +1516,19 @@ final class BlueprintApplier
         $untrusted = false;
         $removed = [];
         $indexedHandles = [];
+        [$availabilityReceipt, $manifestProblems] = self::readManifest($receipt);
+        if (array_key_exists('availability', $manifest) && $manifestProblems !== []) {
+            throw new RuntimeException('The availability manifest cannot be finished: '.implode('; ', $manifestProblems));
+        }
+        $availabilityNotes = $receipt->getConnection()->transaction(function () use ($receipt, $orgId, $availabilityReceipt, $definition): array {
+            $fresh = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
+            if (self::receiptMoved($fresh, (string) $receipt->version, $receipt->manifest, false)) {
+                throw new RuntimeException(self::concurrent($definition));
+            }
+            BlueprintAvailability::lockOrg($orgId);
+
+            return BlueprintAvailability::finishNotes($availabilityReceipt['availability'], $orgId);
+        });
 
         foreach (['entry type' => 'entry_types', 'role' => 'roles'] as $kind => $key) {
             $recorded = [];
@@ -1554,7 +1629,7 @@ final class BlueprintApplier
 
         self::finishReceipt($receipt, $definition->handle());
 
-        $notes = ['rows: written by an earlier run that stopped before it finished; finished now', ...$removed];
+        $notes = ['rows: written by an earlier run that stopped before it finished; finished now', ...$removed, ...$availabilityNotes];
 
         if (! $sameVersion) {
             $notes[] = sprintf(
@@ -1606,7 +1681,7 @@ final class BlueprintApplier
      * @throws RuntimeException no org, no receipt, the refusal naming every obstacle, a receipt that moved, a write that
      *                          contended, or a model guard's own refusal wrapped — in every case with nothing written
      */
-    public static function reverse(string $handle, ?string $expectedReceipt = null): array
+    public static function reverse(string $handle, ?string $expectedReceipt = null, ?string $expectedPlan = null): array
     {
         $orgId = app(Context::class)->orgId();
 
@@ -1629,7 +1704,7 @@ final class BlueprintApplier
 
         /* ⚠️ On the MODEL's connection, as the apply's: the facade's is always the default one. */
         try {
-            $result = $receipt->getConnection()->transaction(function () use ($handle, $orgId, $receipt, $expectedReceipt, &$locked, &$own): array {
+            $result = $receipt->getConnection()->transaction(function () use ($handle, $orgId, $receipt, $expectedReceipt, $expectedPlan, &$locked, &$own): array {
                 /* ⚠️ 1. THE RECEIPT, FOR UPDATE, AND EVERY DECISION FROM WHAT THAT READ — not from the read before it. */
                 $locked = Blueprint::query()->whereKey($receipt->getKey())->lockForUpdate()->first();
 
@@ -1643,11 +1718,18 @@ final class BlueprintApplier
 
                 $version = (string) $locked->version;
 
+                $seedReceipts = BlueprintSeeder::lockForReverse($locked);
+
                 /* 2. No row of any version committed: none can be this blueprint's, so the receipt goes alone. */
                 if ($locked->manifest === null && $locked->applied_at === null) {
+                    if ($seedReceipts !== []) {
+                        throw new RuntimeException('Seed facts exist without a completed schema; reverse wrote nothing.');
+                    }
+                    $result = self::reverseOutcome('abandoned', $version);
+                    self::refuseChangedReverse($result, $expectedPlan);
                     self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
-                    return self::reverseOutcome('abandoned', $version);
+                    return $result;
                 }
 
                 /*
@@ -1662,9 +1744,14 @@ final class BlueprintApplier
                 }
 
                 if ($problems !== [] || $held === null) {
+                    if ($seedReceipts !== []) {
+                        throw new RuntimeException('A malformed schema with seed facts requires investigation; reverse wrote nothing.');
+                    }
+                    $result = self::reverseOutcome('receipt-only', $version, problems: $problems);
+                    self::refuseChangedReverse($result, $expectedPlan);
                     self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
-                    return self::reverseOutcome('receipt-only', $version, problems: $problems);
+                    return $result;
                 }
 
                 /* 4. Under every lock, the plan — plain reads only — and the refusal, before the first write. */
@@ -1675,6 +1762,8 @@ final class BlueprintApplier
 
                     throw $own;
                 }
+
+                self::refuseChangedReverse(self::reverseOutcome('reversed', $version, $plan), $expectedPlan);
 
                 /*
                  * 5. The rows, through the models' own guards — a second, independent check of the same rules — and the
@@ -1722,6 +1811,9 @@ final class BlueprintApplier
                     self::refuseVetoed($role->delete(), "role {$role->handle}");
                 }
 
+                foreach ($seedReceipts as $seedReceipt) {
+                    self::refuseVetoed($seedReceipt->delete(), 'the data-free seed receipt');
+                }
                 self::refuseVetoed($locked->delete(), "the receipt for {$handle}");
 
                 return self::reverseOutcome('reversed', $version, $plan);
@@ -1780,7 +1872,7 @@ final class BlueprintApplier
      * end with this read transaction. A later submission MUST still call reverse(), which obtains its own locks and
      * rechecks everything: a clear preview is not a promise that the organisation will remain unchanged.
      *
-     * @return array{handle: string, version: string, outcome: 'reversed'|'abandoned'|'receipt-only', removed: list<string>, kept: list<string>, gone: list<string>, notes: list<string>, problems: list<string>, refusals: list<string>}
+     * @return array{handle: string, version: string, outcome: 'reversed'|'abandoned'|'receipt-only'|'blocked', removed: list<string>, kept: list<string>, gone: list<string>, notes: list<string>, problems: list<string>, refusals: list<string>}
      */
     public static function previewReverse(string $handle): array
     {
@@ -1800,7 +1892,18 @@ final class BlueprintApplier
             $version = (string) $receipt->version;
             $refusals = [];
 
+            try {
+                $seedReceipts = BlueprintSeeder::lockForReverse($receipt);
+            } catch (PDOException $failure) {
+                throw $failure;
+            } catch (RuntimeException $refusal) {
+                return self::blockedReversePreview($handle, $version, $refusal->getMessage());
+            }
+
             if ($receipt->manifest === null && $receipt->applied_at === null) {
+                if ($seedReceipts !== []) {
+                    return self::blockedReversePreview($handle, $version, __('kitsune::blueprints.seed_unfinished'));
+                }
                 $result = self::reverseOutcome('abandoned', $version);
             } else {
                 [$recorded, $problems] = self::readManifest($receipt);
@@ -1811,6 +1914,9 @@ final class BlueprintApplier
                 }
 
                 if ($problems !== [] || $held === null) {
+                    if ($seedReceipts !== []) {
+                        return self::blockedReversePreview($handle, $version, __('kitsune::blueprints.seed_malformed'), $problems);
+                    }
                     $result = self::reverseOutcome('receipt-only', $version, problems: $problems);
                 } else {
                     $plan = self::reversePlan($handle, $recorded, $orgId, $held);
@@ -1826,10 +1932,67 @@ final class BlueprintApplier
         });
     }
 
+    /**
+     * @param  list<string>  $problems
+     * @return array{handle: string, version: string, outcome: 'blocked', removed: list<string>, kept: list<string>, gone: list<string>, notes: list<string>, problems: list<string>, refusals: list<string>}
+     */
+    private static function blockedReversePreview(string $handle, string $version, string $refusal, array $problems = []): array
+    {
+        $result = self::reverseOutcome('reversed', $version, problems: $problems);
+        unset($result['indexed']);
+
+        return ['handle' => $handle, ...$result, 'outcome' => 'blocked', 'refusals' => [$refusal]];
+    }
+
     /** A review names receipt facts, never an Eloquent instance or plaintext manifest in the browser. @internal */
     public static function receiptIdentity(?Blueprint $receipt): string
     {
         return hash('sha256', serialize($receipt?->getRawOriginal()));
+    }
+
+    /** Bind new availability declarations to the exact org-local targets the operator reviewed. @internal */
+    public static function availabilityReview(BlueprintDefinition $definition, ?Blueprint $receipt, int $orgId): ?string
+    {
+        $availability = BlueprintAvailability::declarations($definition);
+        $recorded = [];
+
+        if ($receipt?->manifest !== null) {
+            if ($receipt->applied_at === null || $receipt->version === $definition->version()) {
+                // Finishing or repeating an applied version does not bind a new target.
+                return null;
+            }
+
+            $recorded = self::recordedOf($definition->handle(), $receipt)['availability'];
+            BlueprintAvailability::refuseChanges($availability, $recorded);
+        }
+
+        return hash('sha256', serialize(BlueprintAvailability::prepare($availability, $recorded, $orgId)));
+    }
+
+    /** @param array<string, array<string, mixed>> $prepared */
+    private static function refuseChangedAvailability(array $prepared, ?string $expected): void
+    {
+        if ($expected !== null && ! hash_equals($expected, hash('sha256', serialize($prepared)))) {
+            throw new RuntimeException('The blueprint availability targets changed after review. Review it again; nothing was written.');
+        }
+    }
+
+    /**
+     * Compare the reviewed output with the locked plan. Internal models and DDL work never enter the digest.
+     *
+     * @param  array<string, mixed>  $result
+     */
+    public static function reverseReviewIdentity(array $result): string
+    {
+        return hash('sha256', serialize(array_diff_key($result, array_fill_keys(['handle', 'indexed', 'refusals'], true))));
+    }
+
+    /** @param array<string, mixed> $result */
+    private static function refuseChangedReverse(array $result, ?string $expected): void
+    {
+        if ($expected !== null && ! hash_equals($expected, self::reverseReviewIdentity($result))) {
+            throw new RuntimeException('The blueprint reverse plan changed after review. Review it again; nothing was written.');
+        }
     }
 
     private static function refuseChangedReview(?Blueprint $receipt, ?string $expected): void
@@ -1891,8 +2054,8 @@ final class BlueprintApplier
      * `pluck`, because PostgreSQL refuses `FOR UPDATE` with an aggregate. SQLite compiles every one of these away and
      * serialises writers instead.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
-     * @return array{0: array{types: array<string, array{0: 'holds'|'gone', 1: ?EntryType}>, storage: array<string, FieldStorage>, roles: array<string, array{0: 'holds'|'gone'|'renamed', 1: ?Role, 2: int}>}|null, 1: list<string>}
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @return array{0: array{types: array<string, array{0: 'holds'|'gone', 1: ?EntryType}>, storage: array<string, FieldStorage>, availability_obstructions: list<string>, roles: array<string, array{0: 'holds'|'gone'|'renamed', 1: ?Role, 2: int}>}|null, 1: list<string>}
      */
     private static function lockRecorded(array $recorded, int $orgId): array
     {
@@ -1926,6 +2089,8 @@ final class BlueprintApplier
         if ($problems !== []) {
             return [null, $problems];
         }
+
+        $held['availability_obstructions'] = BlueprintAvailability::reverseObstructions($recorded['availability'], $recorded['entry_types'], $orgId);
 
         [$candidates] = self::storageHandles($recorded);
 
@@ -1983,7 +2148,7 @@ final class BlueprintApplier
      * The storage handles a manifest names: those any field record says this blueprint created — the candidates a
      * reverse may remove — and those every record says it adopted, each in manifest order.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
      * @return array{0: list<string>, 1: list<string>}
      */
     private static function storageHandles(array $recorded): array
@@ -2012,13 +2177,13 @@ final class BlueprintApplier
      * can (`BlueprintReverseTest` pins the six counts) — and an entry planted in another org's site still blocks:
      * it fails closed.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
-     * @param  array{types: array<string, array{0: 'holds'|'gone', 1: ?EntryType}>, storage: array<string, FieldStorage>, roles: array<string, array{0: 'holds'|'gone'|'renamed', 1: ?Role, 2: int}>}  $held
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @param  array{types: array<string, array{0: 'holds'|'gone', 1: ?EntryType}>, storage: array<string, FieldStorage>, availability_obstructions: list<string>, roles: array<string, array{0: 'holds'|'gone'|'renamed', 1: ?Role, 2: int}>}  $held
      * @return array{refusals: list<string>, types: list<EntryType>, storage: list<FieldStorage>, roles: list<array{0: Role, 1: list<string>}>, indexed: list<FieldStorage>, removed: list<string>, kept: list<string>, gone: list<string>, notes: list<string>}
      */
     private static function reversePlan(string $blueprint, array $recorded, int $orgId, array $held): array
     {
-        $refusals = ['created' => [], 'skipped' => [], 'roles' => []];
+        $refusals = ['created' => $held['availability_obstructions'], 'skipped' => [], 'roles' => []];
         $plan = ['types' => [], 'storage' => [], 'roles' => [], 'indexed' => []];
         $lines = ['types' => ['removed' => [], 'kept' => [], 'gone' => []], 'storage' => ['removed' => [], 'kept' => [], 'gone' => []], 'roles' => ['removed' => [], 'kept' => [], 'gone' => []]];
         $removingTypes = [];
@@ -2306,7 +2471,7 @@ final class BlueprintApplier
      * What of a kept storage row no longer matches the field this manifest records the blueprint creating it with — in
      * `StorageAdoption::refuseDivergentDefinition()`'s words and by its comparisons, settings loosely.
      *
-     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
+     * @param  array{entry_types: array<string, array{id: int|string, outcome: string, record: array<string, mixed>, fields: array<string, array{outcome: string, record: array<string, mixed>}>}>, availability: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string, record: array<string, mixed>}>}  $recorded
      * @return list<string>
      */
     private static function storageDrift(FieldStorage $storage, array $recorded, string $handle): array
@@ -2588,7 +2753,7 @@ final class BlueprintApplier
      * @param  list<string>  $grantable  the entry type handles a grant may name: those this apply created — and, for a
      *                                   role a merge creates, those an earlier version created that this org still has
      * @param  array{created: list<string>, adopted: list<string>, skipped: list<string>}  $outcome
-     * @param  array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
+     * @param  array{entry_types: array<string, array<string, mixed>>, availability?: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
      */
     private static function applyRole(RoleDeclaration $declaration, array $grantable, array &$outcome, array &$rows): void
     {
@@ -2645,7 +2810,7 @@ final class BlueprintApplier
     /**
      * @param  array{created: list<string>, adopted: list<string>, skipped: list<string>}  $outcome
      * @param  list<FieldStorage>  $indexable
-     * @param  array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
+     * @param  array{entry_types: array<string, array<string, mixed>>, availability?: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
      */
     private static function applyEntryType(
         EntryTypeDeclaration $declaration,
@@ -2815,7 +2980,7 @@ final class BlueprintApplier
      * comparison, so a key added to one cannot be missing from the other.
      *
      * @param  array{created: list<string>, adopted: list<string>, skipped: list<string>}  $outcome
-     * @param  array{entry_types: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
+     * @param  array{entry_types: array<string, array<string, mixed>>, availability?: array<string, array<string, mixed>>, roles: array<string, array{id: int|string|null, outcome: string}>}  $rows
      * @return array<string, mixed>
      */
     private static function manifestOf(BlueprintDefinition $definition, array $outcome, array $rows): array
@@ -2848,6 +3013,7 @@ final class BlueprintApplier
                 ],
                 $definition->roles(),
             ),
+            'availability' => array_values($rows['availability'] ?? []),
             'outcome' => $outcome,
         ];
     }

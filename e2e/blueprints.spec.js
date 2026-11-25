@@ -89,6 +89,24 @@ test('refuses a stale review, a non-owner and another org owner at the actual UR
     }
 });
 
+test('shows retained seed content as a reverse refusal and preserves its receipt', async ({ browser }) => {
+    const { context, page } = await ownerPage(browser);
+    try {
+        const before = state('blueprint-seeded');
+        expect(before.blueprint_seeds.count).toBe(1);
+        await page.goto('/admin/blueprint-seeded/blueprints');
+        await section(page, 'seed_test').getByRole('button', { name: 'Review reverse', exact: true }).click();
+        const dialog = page.locator('.fi-modal-window').filter({ visible: true });
+        await expect(dialog).toContainText('Blocks this reverse');
+        await expect(dialog).toContainText('seed [welcome]');
+        await expect(dialog).not.toContainText('This would clear the receipt alone');
+        await dialog.getByRole('textbox', { name: 'Confirm blueprint and organisation' }).fill('seed_test @ blueprint-seeded');
+        await dialog.getByRole('button', { name: 'Confirm reverse', exact: true }).click();
+        await expect(page.getByRole('heading', { name: 'Blueprint action did not complete', exact: true })).toBeVisible();
+        expect(state('blueprint-seeded')).toEqual(before);
+    } finally { await context.close(); }
+});
+
 test('RTL owner can use the review by keyboard with focus return, mobile layout and accessible labels', async ({ browser }, testInfo) => {
     const { context, page } = await ownerPage(browser, '.playwright/admin-rtl-auth.json');
     try {

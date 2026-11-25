@@ -19,9 +19,13 @@ use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\BlueprintSeeder;
+use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
+use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
 use Kitsune\Core\Filament\Pages\Blueprints;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Blueprint;
+use Kitsune\Core\Models\BlueprintSeed;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -35,6 +39,7 @@ use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\PanelUser;
 use Kitsune\Core\Tests\Fixtures\Released\MarketingSite100;
 use Kitsune\Core\Tests\Fixtures\SchemaManagerStandIn;
+use Kitsune\Core\Tests\Fixtures\SeedBlueprint;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function (): void {
@@ -136,6 +141,30 @@ it('requires exact concrete confirmation and an authentic current review token b
         ->and(EntryType::query()->where('handle', 'dispatch')->exists())->toBeFalse();
 });
 
+it('requires renewed review when an availability decision or site identity changes', function (bool $upgrade): void {
+    if ($upgrade) {
+        BlueprintApplier::apply(new FixtureBlueprint);
+        FixtureBlueprint::$version = '1.1.0';
+    }
+    $target = Site::create(['handle' => 'release', 'slug' => 'admin-release', 'name' => 'Release']);
+    FixtureBlueprint::$availability = [new AvailabilityDeclaration('dispatch', 'site', 'release', false)];
+    $review = Blueprints::review('fixture', 'apply');
+    expect($review['summary'])->toContain('dispatch declares disabled availability for site release.');
+
+    FixtureBlueprint::$availability = [new AvailabilityDeclaration('dispatch', 'site', 'release', true)];
+    expect(fn () => Blueprints::perform('fixture', 'apply', $review['confirmation'], $review['token']))->toThrow(ValidationException::class);
+
+    $review = Blueprints::review('fixture', 'apply');
+    $expected = BlueprintApplier::availabilityReview(new FixtureBlueprint, Blueprint::receiptFor('fixture'), (int) $this->org->id);
+    DB::table('sites')->where('id', $target->id)->update(['handle' => 'former-release']);
+    Site::create(['handle' => 'release', 'slug' => 'admin-new-release', 'name' => 'Replacement']);
+    expect(fn () => Blueprints::perform('fixture', 'apply', $review['confirmation'], $review['token']))->toThrow(ValidationException::class)
+        ->and(fn () => BlueprintApplier::apply(new FixtureBlueprint, expectedAvailability: $expected))
+        ->toThrow(RuntimeException::class, 'availability targets changed after review')
+        ->and(Blueprint::receiptFor('fixture')?->version)->toBe($upgrade ? '1.0.0' : null)
+        ->and(EntryType::count())->toBe($upgrade ? 1 : 0);
+})->with(['fresh apply' => false, 'upgrade' => true]);
+
 it('refuses review without a signing key and rejects a token after key rotation', function (): void {
     $review = Blueprints::review('fixture', 'apply');
     config(['app.key' => 'base64:'.base64_encode(random_bytes(32))]);
@@ -145,6 +174,45 @@ it('refuses review without a signing key and rejects a token after key rotation'
     expect(fn () => Blueprints::review('fixture', 'apply'))->toThrow(RuntimeException::class, 'signing key')
         ->and(Blueprint::receiptFor('fixture'))->toBeNull();
 });
+
+it('reports the same seed obstacle in reverse preview and confirmation without changing content', function (): void {
+    $definition = new SeedBlueprint([new SeedEntryDeclaration('welcome', 'seed_article', 'Welcome', 'welcome')]);
+    BlueprintApplier::apply($definition);
+    BlueprintSeeder::seed($definition, $this->site, 'en');
+    Entry::query()->sole()->delete();
+    $before = BlueprintSeed::query()->sole()->manifest;
+    $review = Blueprints::review('seed_test', 'reverse');
+
+    expect($review['preview']['outcome'])->toBe('blocked')
+        ->and($review['preview']['removed'])->toBe([])
+        ->and($review['preview']['refusals'][0])->toContain('seed [welcome]', 'trashed content')
+        ->and(fn () => Blueprints::perform('seed_test', 'reverse', $review['confirmation'], $review['token']))
+        ->toThrow(RuntimeException::class, $review['preview']['refusals'][0])
+        ->and(Entry::query()->onlyTrashed()->count())->toBe(1)
+        ->and(BlueprintSeed::query()->sole()->manifest)->toBe($before)
+        ->and(Blueprint::count())->toBe(1);
+});
+
+it('blocks a receipt-only preview when data-free seed facts still require a valid schema', function (bool $abandoned): void {
+    $definition = new SeedBlueprint([new SeedEntryDeclaration('welcome', 'seed_article', 'Welcome', 'welcome')]);
+    BlueprintApplier::apply($definition);
+    BlueprintSeeder::seed($definition, $this->site, 'en');
+    Entry::query()->sole()->forceDelete();
+    DB::table('blueprints')->where('handle', 'seed_test')->update(
+        $abandoned ? ['manifest' => null, 'applied_at' => null] : ['manifest' => json_encode(['format' => 999])],
+    );
+
+    $review = Blueprints::review('seed_test', 'reverse');
+    expect($review['preview']['outcome'])->toBe('blocked')
+        ->and($review['preview']['refusals'][0])->toContain(
+            $abandoned ? 'Seed facts exist without a completed schema' : 'The schema has problems and records seed facts',
+            'removing the receipt',
+        )
+        ->and(fn () => Blueprints::perform('seed_test', 'reverse', $review['confirmation'], $review['token']))
+        ->toThrow(RuntimeException::class, $abandoned ? 'Seed facts exist without a completed schema' : 'A malformed schema with seed facts')
+        ->and(BlueprintSeed::count())->toBe(1)
+        ->and(Blueprint::count())->toBe(1);
+})->with([true, false]);
 
 it('does not accept a review for another operation or another same-org site', function (): void {
     BlueprintApplier::apply(new FixtureBlueprint);
@@ -174,8 +242,12 @@ it('refuses a receipt changed after the page recheck but before the kernel reads
     $changed = null;
     $types = DB::table('entry_types')->get()->all();
     $audit = DB::table('audit_log')->get()->all();
-    DB::listen(static function (QueryExecuted $query) use (&$staged, &$changed): void {
-        if (! $staged && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'blueprints')) {
+    // Reverse loads the receipt again for its preview. Change it after that read so the kernel must refuse.
+    $beforeKernel = $operation === 'reverse' ? 2 : 1;
+    $reads = 0;
+    DB::listen(static function (QueryExecuted $query) use (&$staged, &$changed, &$reads, $beforeKernel): void {
+        if (! $staged && str_starts_with($query->sql, 'select') && str_contains($query->sql, 'blueprints')
+            && ++$reads === $beforeKernel) {
             $staged = true;
             DB::table('blueprints')->where('handle', 'fixture')->update(['version' => '9.0.0']);
             $changed = (array) DB::table('blueprints')->where('handle', 'fixture')->first();
@@ -197,6 +269,23 @@ it('rechecks owner authority on direct submits even when an earlier check was me
     DB::table('role_user')->where('user_id', $this->owner->getKey())->delete();
     expect(fn () => Blueprints::perform('fixture', 'apply', $review['confirmation'], $review['token']))->toThrow(HttpException::class)
         ->and(Blueprint::receiptFor('fixture'))->toBeNull();
+});
+
+it('refuses a changed reverse plan even when the blueprint receipt is unchanged', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $review = Blueprints::review('fixture', 'reverse');
+    $receipt = Blueprint::receiptFor('fixture');
+    DB::table('entry_types')->where('handle', 'dispatch')->update(['handle' => 'renamed-dispatch']);
+
+    expect($review['preview']['outcome'])->toBe('reversed')
+        ->and(fn () => Blueprints::perform('fixture', 'reverse', $review['confirmation'], $review['token']))
+        ->toThrow(ValidationException::class)
+        ->and(fn () => BlueprintApplier::reverse('fixture',
+            expectedReceipt: BlueprintApplier::receiptIdentity($receipt),
+            expectedPlan: BlueprintApplier::reverseReviewIdentity($review['preview']),
+        ))->toThrow(RuntimeException::class, 'reverse plan changed after review')
+        ->and(Blueprint::receiptFor('fixture')?->id)->toBe($receipt?->id)
+        ->and(EntryType::query()->sole()->handle)->toBe('renamed-dispatch');
 });
 
 it('shows reverse obstacles and preserves content on an actual refused submission', function (): void {

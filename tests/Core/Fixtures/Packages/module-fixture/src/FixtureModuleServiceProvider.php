@@ -57,6 +57,9 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
      */
     public static bool $withoutMigrations = false;
 
+    /** An owned migration directory lets an installed development fixture acquire another migration. */
+    public static ?string $migrationDirectory = null;
+
     /**
      * Makes `install()` issue DDL from the hook — the thing its contract forbids.
      *
@@ -117,7 +120,7 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
 
     public function migrationPath(): ?string
     {
-        return self::$withoutMigrations ? null : __DIR__.'/../database/migrations';
+        return self::$withoutMigrations ? null : (self::$migrationDirectory ?? __DIR__.'/../database/migrations');
     }
 
     public function install(): void

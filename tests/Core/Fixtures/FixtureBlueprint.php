@@ -10,10 +10,11 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tests\Fixtures;
 
-use Kitsune\Core\Blueprints\BlueprintDefinition;
+use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Blueprints\DeclaresAvailability;
 use Kitsune\Core\Blueprints\OnCollision;
 
 /**
@@ -22,7 +23,7 @@ use Kitsune\Core\Blueprints\OnCollision;
  * Mutable statics rather than constructor arguments because a test wants to change ONE thing about a
  * definition and apply it again, which is what an upgrade and a collision both look like.
  */
-final class FixtureBlueprint implements BlueprintDefinition
+final class FixtureBlueprint implements DeclaresAvailability
 {
     public static string $version = '1.0.0';
 
@@ -38,6 +39,9 @@ final class FixtureBlueprint implements BlueprintDefinition
     /** @var list<RoleDeclaration> */
     public static array $roles = [];
 
+    /** @var list<AvailabilityDeclaration> */
+    public static array $availability = [];
+
     public static function reset(): void
     {
         self::$version = '1.0.0';
@@ -46,6 +50,7 @@ final class FixtureBlueprint implements BlueprintDefinition
         self::$indexed = false;
         self::$override = null;
         self::$roles = [];
+        self::$availability = [];
     }
 
     public function handle(): string
@@ -86,5 +91,10 @@ final class FixtureBlueprint implements BlueprintDefinition
     public function roles(): array
     {
         return self::$roles;
+    }
+
+    public function availability(): array
+    {
+        return self::$availability;
     }
 }

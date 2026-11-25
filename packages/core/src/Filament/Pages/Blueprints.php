@@ -28,6 +28,7 @@ use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
+use Kitsune\Core\Blueprints\BlueprintAvailability;
 use Kitsune\Core\Blueprints\BlueprintDefinition;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Models\Blueprint;
@@ -124,6 +125,18 @@ final class Blueprints extends Page
             }
         }
 
+        foreach (BlueprintAvailability::declarations($definition) as $availability) {
+            $lines[] = __('kitsune::blueprints.availability', [
+                'type' => $availability->entryType,
+                'target' => match ($availability->scope) {
+                    'org' => __('kitsune::blueprints.availability_org'),
+                    'site' => __('kitsune::blueprints.availability_site', ['handle' => $availability->target]),
+                    'site_group' => __('kitsune::blueprints.availability_group', ['handle' => $availability->target]),
+                },
+                'decision' => __($availability->isEnabled ? 'kitsune::blueprints.availability_enabled' : 'kitsune::blueprints.availability_disabled'),
+            ]);
+        }
+
         return $lines;
     }
 
@@ -139,7 +152,7 @@ final class Blueprints extends Page
             'confirmation' => $handle.' @ '.(string) $org?->slug,
             'token' => self::reviewToken($facts),
             'summary' => $operation === 'apply' ? self::summary(self::definition($handle)) : [],
-            'preview' => $operation === 'reverse' ? BlueprintApplier::previewReverse($handle) : null,
+            'preview' => $facts['preview'],
         ];
     }
 
@@ -166,8 +179,11 @@ final class Blueprints extends Page
             'handle' => $handle,
             'operation' => $operation,
             'receipt' => BlueprintApplier::receiptIdentity($receipt),
+            'preview' => $operation === 'reverse' ? BlueprintApplier::previewReverse($handle) : null,
+            'availability' => $definition === null ? null : BlueprintApplier::availabilityReview($definition, $receipt, (int) app(Context::class)->orgId()),
             'definition' => $definition === null ? null : hash('sha256', serialize([
                 $definition::class, $definition->version(), $definition->entryTypes(), $definition->roles(),
+                BlueprintAvailability::declarations($definition),
             ])),
         ];
     }
@@ -214,8 +230,8 @@ final class Blueprints extends Page
 
         // No outer transaction: apply/reverse own their row transactions and their separate DDL phase.
         return $operation === 'apply'
-            ? BlueprintApplier::apply(self::definition($handle), expectedReceipt: $facts['receipt'])
-            : BlueprintApplier::reverse($handle, expectedReceipt: $facts['receipt']);
+            ? BlueprintApplier::apply(self::definition($handle), expectedReceipt: $facts['receipt'], expectedAvailability: $facts['availability'])
+            : BlueprintApplier::reverse($handle, expectedReceipt: $facts['receipt'], expectedPlan: BlueprintApplier::reverseReviewIdentity($facts['preview']));
     }
 
     public function content(Schema $schema): Schema
@@ -268,7 +284,11 @@ final class Blueprints extends Page
             ->modalDescription(__('kitsune::blueprints.review_description'))
             ->modalSubmitActionLabel(__('kitsune::blueprints.confirm_action.'.$operation))
             ->fillForm(static function () use ($handle, $operation): array {
-                $review = self::review($handle, $operation);
+                try {
+                    $review = self::review($handle, $operation);
+                } catch (RuntimeException|InvalidArgumentException) {
+                    return [];
+                }
 
                 return ['review_token' => $review['token']];
             })
@@ -294,7 +314,7 @@ final class Blueprints extends Page
                         ));
                     }
 
-                    if ($review['preview']['outcome'] !== 'reversed') {
+                    if (in_array($review['preview']['outcome'], ['abandoned', 'receipt-only'], true)) {
                         $parts[] = Text::make(__('kitsune::blueprints.receipt_only'));
                     }
                 } else {
