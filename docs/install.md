@@ -24,6 +24,7 @@ Native PHP-FPM and SQLite are the recommended default. The PHP requirement is `^
 actually meets it, checking the selected distribution and release instructions rather than assuming an old
 package source still covers your OS.
 
+[The Docker install profile](../deploy/self-host/docker/README.md) describes verified image builds and a persistent SQLite deployment.
 Docker is an equally supported design path for reproducibility, scale or operator preference. It is optional;
 a separate database server, Redis, search daemon, Node runtime and always-on worker are not requirements for a
 default small installation. The [resource-floor decision](decision-log.md#adr-027--the-resource-floor-is-a-designed-constraint-with-a-number)

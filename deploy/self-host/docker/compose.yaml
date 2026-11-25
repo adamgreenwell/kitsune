@@ -1,0 +1,17 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+name: kitsune
+services:
+  app:
+    image: ${KITSUNE_IMAGE:?Set KITSUNE_IMAGE to the verified local Kitsune image}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${KITSUNE_PORT:-8080}:8080"
+    environment:
+      KITSUNE_APP_URL: ${KITSUNE_APP_URL:-http://localhost:${KITSUNE_PORT:-8080}}
+    volumes:
+      - data:/var/lib/kitsune
+volumes:
+  data:

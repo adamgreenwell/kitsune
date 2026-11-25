@@ -307,6 +307,8 @@ class AppendOnlyBuilder extends Builder
      */
     private function guardScopeKeys(array $values): void
     {
+        $this->guardIdentityTypes($values);
+
         if (ScopeWrites::suspended()) {
             return;
         }
@@ -335,6 +337,31 @@ class AppendOnlyBuilder extends Builder
                     "Refusing to append an audit row with [{$column}] outside the current scope. "
                     .'A trail an outsider can write to is worse than no trail, because it is '
                     .'believed (ADR-020).'
+                );
+            }
+        }
+    }
+
+    /**
+     * Refuse identities the supported engines cannot store unchanged (ADR-020).
+     * Scope suspension permits maintenance across scopes, not a partial identity.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function guardIdentityTypes(array $values): void
+    {
+        foreach ($values as $written => $value) {
+            $column = $this->bareColumn((string) $written);
+
+            if (! in_array($column, ['actor_type', 'target_type'], true) || $value === null) {
+                continue;
+            }
+
+            // Integer keys are legitimate Laravel morph aliases. The column stores their decimal text.
+            if ((! is_string($value) && ! is_int($value)) || preg_match('/\A[^\x00]{1,255}\z/u', (string) $value) !== 1) {
+                throw new RuntimeException(
+                    "[{$column}] must be nonempty valid UTF-8 text without NUL, at most 255 characters, "
+                    .'or NULL. Use a bounded morph alias for an Eloquent identity (ADR-020).'
                 );
             }
         }

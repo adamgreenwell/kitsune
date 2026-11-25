@@ -11,6 +11,7 @@ use Dotenv\Parser\Parser;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Release\SchemaBaseline;
 
 $mode = $argv[1] ?? '';
 $root = (string) getcwd();
@@ -30,7 +31,7 @@ function release_finish(): never
     exit($GLOBALS['refusals'] === [] ? 0 : 1);
 }
 
-if (! in_array($mode, ['packages', 'syntax', 'environment', 'serving'], true)) {
+if (! in_array($mode, ['packages', 'syntax', 'environment', 'serving', 'schema-baseline'], true)) {
     release_refuse("there is no check named [{$mode}]");
     release_finish();
 }
@@ -195,6 +196,30 @@ try {
         $e->getLine(),
         $root.'/skeleton',
     ));
+    release_finish();
+}
+
+if ($mode === 'schema-baseline') {
+    require $root.'/bin/release/SchemaBaseline.php';
+
+    try {
+        $migrator = $app->make('migrator');
+        $repository = $migrator->getRepository();
+        $recorded = $repository->repositoryExists() ? $repository->getRan() : [];
+
+        foreach (SchemaBaseline::refusals($migrator->resolveConnection(null), $recorded) as $reason) {
+            release_refuse($reason);
+        }
+    } catch (Throwable) {
+        release_refuse('the schema or migration records could not be inspected; connection and query details are withheld');
+    }
+
+    if ($GLOBALS['refusals'] === []) {
+        echo "The schema baseline check passed.\n";
+    } else {
+        release_refuse('preserve the database and follow docs/upgrades.md before attempting this retained upgrade');
+    }
+
     release_finish();
 }
 

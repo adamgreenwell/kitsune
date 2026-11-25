@@ -48,7 +48,7 @@
 #  15. Proves the release serves before the schema changes: the caches exist, no provider registers an optimize task
 #      this script does not know, the environment still holds against the cached config, and GET /up through the
 #      HTTP kernel answers 200.
-#  16. Migrates. Only the two steps after it need the new schema, so only they can fail after it has changed.
+#  16. Checks the historical schema baseline, then migrates.
 #  17. Runs kitsune:audit-patterns --strict, Kitsune's deploy gate.
 #  18. Runs kitsune:schema-sync as a report. Without --force it never changes anything.
 #
@@ -273,7 +273,9 @@ export VIEW_COMPILED_PATH="$release/skeleton/bootstrap/cache/views"
 # 15. The release serves, proven before the schema changes, so a refusal here leaves the live release untouched.
 check_the_app serving
 
-# 16. The schema, with exactly the cached config that will serve. --force because APP_ENV is production.
+# 16. Check old in-place migration edits before Laravel skips the recorded originals.
+check_the_app schema-baseline
+# Migrate with exactly the cached config that will serve. --force because APP_ENV is production.
 "$PHP_BIN" skeleton/artisan migrate --force --no-interaction
 
 # Refuse promotion when retained credentials need an APP_KEY absent from APP_KEY / APP_PREVIOUS_KEYS.

@@ -187,6 +187,23 @@ When a newer core ships a newer version of a blueprint, the same `apply` command
 version declares, never changes or removes anything the organisation already has — its owner's edits included — and
 refuses, saying why, a version that would ([ADR-039](docs/decision-log.md)).
 
+Schema `apply` creates no sample entries. A blueprint can separately opt into `DeclaresSeedContent`, returning
+`SeedEntryDeclaration` values with stable author keys and ordered relations to those keys. To request its content,
+first apply that exact schema version, then select one existing site's **handle** and its current locale explicitly:
+
+```bash
+php skeleton/artisan kitsune:blueprint seed your-blueprint --org=mysite --site=main --locale=en
+php skeleton/artisan kitsune:blueprint status
+```
+
+The shipped Blog, Marketing Site and DAM definitions remain schema-only. Seed never creates an org, site or owner,
+and it refuses bootstrap options. Its separate receipt commits with all entries, relations, revisions, audit and
+first-value storage locks. Retrying does not duplicate history or overwrite operator edits, trash or deleted entries.
+Later definitions may add keys, but cannot change or remove recorded declarations. A slug collision fails by default;
+`OnCollision::Skip` leaves that entry alone and does not make it a seed relation target. Media uploads require their
+own file-custody workflow. The first nonempty field value permanently locks that storage, even if the entry is later
+deleted. See [ADR-039](docs/decision-log.md) for the seed contract and recovery boundaries.
+
 To take a blueprint back out of an organisation:
 
 ```bash
@@ -194,7 +211,9 @@ php skeleton/artisan kitsune:blueprint reverse blog --org=mysite
 ```
 
 It removes what the blueprint created while nothing holds data for it — and otherwise refuses, saying what is in the
-way and writing nothing ([ADR-039](docs/decision-log.md)).
+way and writing nothing ([ADR-039](docs/decision-log.md)). Seed receipts also report created content that has moved,
+changed type or entered trash. Reverse never deletes that content or unlocks its fields; data-free seed bookkeeping
+goes only with a successful ordinary schema reverse.
 
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
@@ -244,15 +263,17 @@ npx playwright install chromium
 npx playwright test
 ```
 
-The four-engine matrix CI runs is reproducible locally with the containers in `compose.yaml`:
+The four-engine CI matrix can run locally with the optional containers in `compose.yaml`. They bind to
+`127.0.0.1` with development-fixture credentials. If you need remote access for a shared test environment,
+use a separate Compose configuration with an explicit bind address and environment-specific credentials.
 
 ```bash
 docker compose up -d
 
 vendor/bin/pest                                                    # SQLite, the default — no container
-DB_CONNECTION=pgsql   DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mysql   DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mariadb DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=pgsql DB_HOST=127.0.0.1 DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mariadb DB_HOST=127.0.0.1 DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
 ```
 
 ⚠️ **`DB_PORT` is not optional and its absence looks like a code regression.** The containers publish on
