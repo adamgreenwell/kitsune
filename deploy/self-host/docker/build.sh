@@ -51,6 +51,13 @@ archive_sha=$(awk -F '\t' -v name="$artifact" -v platform="$release_platform" \
     '$1 == "artifact" && $2 == name && $3 == "native" && ($4 == "any" || $4 == platform) {print $6}' "$work/manifest")
 [[ "$archive_sha" =~ ^[a-f0-9]{64}$ ]] || refuse 'application archive role or platform does not match'
 source_sha=$(awk -F '\t' '$1 == "source" {print $2}' "$work/manifest")
+manifest_sha=$(openssl dgst -sha256 -r < "$work/manifest" | awk '{print $1}')
+mkdir "$work/context/release"
+cp -- "$work/manifest" "$work/context/release/release.manifest"
+cp -- "$work/signature" "$work/context/release/release.manifest.sig"
+printf '%s\n' "$fingerprint" > "$work/context/release/key-fingerprint"
+printf '%s\n' kitsune-docker-installing-v2 "$version" "$source_sha" "$archive_sha" "$manifest_sha" > "$work/context/release/installing"
+printf '%s\n' kitsune-docker-installed-v2 "$version" "$source_sha" "$archive_sha" "$manifest_sha" > "$work/context/release/installed"
 mv -- "$work/verified/$artifact" "$work/context/application.tar.gz"
 cp -- "$profile/Dockerfile" "$profile/start.sh" "$profile/nginx.conf" "$profile/php-fpm.conf" "$work/context/"
 

@@ -45,10 +45,12 @@ COPY --from=extensions /usr/local/lib/php/extensions/ /usr/local/lib/php/extensi
 COPY --from=extensions /usr/local/etc/php/conf.d/docker-php-ext-intl.ini /usr/local/etc/php/conf.d/
 COPY --from=extensions /usr/local/etc/php/conf.d/docker-php-ext-zip.ini /usr/local/etc/php/conf.d/
 COPY --from=application /srv/kitsune /srv/kitsune
+COPY --chmod=0444 release/ /usr/local/share/kitsune-release/
 COPY --chmod=0755 start.sh /usr/local/bin/kitsune-start
 COPY --chmod=0644 nginx.conf /etc/kitsune/
 COPY --chmod=0644 php-fpm.conf /usr/local/etc/php-fpm.d/zz-kitsune.conf
-RUN test "${#KITSUNE_SOURCE_SHA}" -eq 40 \
+RUN chmod 0755 /usr/local/share/kitsune-release \
+    && test "${#KITSUNE_SOURCE_SHA}" -eq 40 \
     && printf '%s' "$KITSUNE_SOURCE_SHA" | grep -Eq '^[a-f0-9]{40}$' \
     && printf '%s\n' "$KITSUNE_SOURCE_SHA" > /usr/local/share/kitsune-source-commit \
     && chown www-data:www-data /srv/kitsune/bootstrap/cache \

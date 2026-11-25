@@ -16,8 +16,10 @@ deploy/self-host/docker/build.sh "$manifest" "$signature" "$public_key" "$finger
 ```
 
 Use `linux/amd64` on AMD64. The command verifies a private copy of the archive before Docker receives it.
-The resulting image records the application source commit and archive SHA-256. It uses the PHP 8.4
-official FPM image family and carries the built app, SQLite, nginx and the libraries needed at runtime.
+The resulting image records the application source commit and archive SHA-256. It retains the
+verified manifest and signature at `/usr/local/share/kitsune-release/` for later inspection. Use the
+independently trusted key and fingerprint when verifying those retained copies. The image uses the
+PHP 8.4 official FPM image family and includes the built app, SQLite, nginx and runtime libraries.
 The versioned artifact and production trust-root publication are tracked in [#213](https://github.com/adamgreenwell/kitsune/issues/213).
 
 ## Start and create the first owner
@@ -43,10 +45,15 @@ Check the public certificate separately when setting up the public address.
 ## Restart, recover and upgrade
 
 The named volume at `/var/lib/kitsune` holds the SQLite file, the private `.env` with `APP_KEY`, and
-application storage including media. Back up this whole volume with the app stopped. Keep an encrypted
+application storage including media. Back up the whole volume, including its hidden receipt and configuration files, with the app stopped. Keep an encrypted
 copy of `APP_KEY` alongside the [backup and restore](../../../docs/backup-restore.md) instructions.
 
-Restart or recreate the container with the same image revision and volume. An interrupted first run can
-resume with its original configuration and key. An established volume with a missing database, missing
-configuration, or different image revision is refused. Follow the [upgrade guidance](../../../docs/upgrades.md)
-before planning a revision change. `docker compose down` keeps the volume. `docker compose down -v` deletes it.
+Restart or recreate the container with the same image and volume. New installs record the precise archive
+and manifest before writing configuration or running migrations. An interrupted first run can resume using
+the same release archive and manifest, with its original configuration and key. A volume that contains application state without a
+completion or matching interruption receipt needs inspection. Preserve the volume while investigating the
+failure. Volumes from earlier builds can still restart when their completed source receipt matches.
+
+An established volume with a missing database, missing configuration or different release is refused.
+Follow the [upgrade guidance](../../../docs/upgrades.md) before planning a release change.
+`docker compose down` keeps the volume. `docker compose down -v` deletes it.
