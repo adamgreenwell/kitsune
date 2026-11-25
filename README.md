@@ -244,15 +244,17 @@ npx playwright install chromium
 npx playwright test
 ```
 
-The four-engine matrix CI runs is reproducible locally with the containers in `compose.yaml`:
+The four-engine CI matrix can run locally with the optional containers in `compose.yaml`. They bind to
+`127.0.0.1` with development-fixture credentials. If you need remote access for a shared test environment,
+use a separate Compose configuration with an explicit bind address and environment-specific credentials.
 
 ```bash
 docker compose up -d
 
 vendor/bin/pest                                                    # SQLite, the default — no container
-DB_CONNECTION=pgsql   DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mysql   DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mariadb DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=pgsql DB_HOST=127.0.0.1 DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mariadb DB_HOST=127.0.0.1 DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
 ```
 
 ⚠️ **`DB_PORT` is not optional and its absence looks like a code regression.** The containers publish on
