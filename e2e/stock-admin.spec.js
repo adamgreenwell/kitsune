@@ -210,7 +210,10 @@ test.describe('shared stock administration', () => {
         await expect(table).not.toContainText('Historical page fixture');
         await page.getByRole('button', { name: 'Next »', exact: true }).click();
         await expect(table.locator('tbody tr')).toHaveCount(2);
+        const clearing = page.waitForResponse(response => response.url().includes('/livewire')
+            && (response.request().postData() ?? '').includes('"method":"clearFilters"'));
         await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+        expect((await clearing).ok()).toBe(true);
         await expect(table.locator('tbody tr')).toHaveCount(25);
         expect(movements(id)).toEqual(before);
     });
