@@ -1,7 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
-const { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode } = require('./reader-download-list-fixture');
+const { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode, restoreDownloadListFixture } = require('./reader-download-list-fixture');
 
 // No staff storageState: these are the actual reader forms, in a fixture Org/Site separate from other browser lanes.
 test.describe.configure({ mode: 'serial' });
@@ -100,10 +100,10 @@ test('Arabic document retains readable fallback copy and isolated filenames', as
 
 test('warns at the real settings door before closing offered links and keeps a sibling site usable', async ({ page, browser, baseURL }, testInfo) => {
     const siblingContext = await browser.newContext({ baseURL });
-    const sibling = await siblingContext.newPage();
     let primaryFailure = false;
 
     try {
+        const sibling = await siblingContext.newPage();
         await signIn(page, PREFIX);
         await page.goto(`${PREFIX}/account/downloads`);
         const href = await page.getByRole('link', { name: 'Fixture file 01', exact: true }).getAttribute('href');
@@ -155,14 +155,41 @@ test('warns at the real settings door before closing offered links and keeps a s
         primaryFailure = true;
         throw error;
     } finally {
-        const restored = downloadListMode('sign-in');
-        await siblingContext.close();
-        if (restored.status !== 0) {
-            await testInfo.attach('reader-mode-fixture-restoration', {
-                body: Buffer.from(JSON.stringify({ restored: false, status: restored.status })),
+        await restoreDownloadListFixture(
+            () => downloadListMode('sign-in'),
+            () => siblingContext.close(),
+            (receipt) => testInfo.attach('reader-mode-fixture-restoration', {
+                body: Buffer.from(JSON.stringify(receipt)),
                 contentType: 'application/json',
-            });
-            if (!primaryFailure) throw new Error('Reader mode fixture restoration failed.');
-        }
+            }),
+            primaryFailure,
+        );
     }
+});
+
+test('reports cleanup failure without replacing the reader mode scenario error', async () => {
+    const original = new Error('original scenario failure');
+    const steps = [];
+    const run = async () => {
+        try {
+            throw original;
+        } finally {
+            await restoreDownloadListFixture(
+                () => { steps.push('restore'); throw new Error('internal command details'); },
+                async () => { steps.push('close'); throw new Error('internal browser details'); },
+                async (receipt) => { steps.push(receipt); throw new Error('attachment failed'); },
+                true,
+            );
+        }
+    };
+    await expect(run()).rejects.toBe(original);
+    expect(steps).toEqual(['restore', 'close', { mode: 'command-error', status: null, contextClosed: false }]);
+
+    const diagnostics = [];
+    await expect(restoreDownloadListFixture(
+        () => ({ status: 7 }),
+        async () => {},
+        async (receipt) => { diagnostics.push(receipt); },
+    )).rejects.toThrow('Reader mode fixture cleanup failed.');
+    expect(diagnostics).toEqual([{ mode: 'unsuccessful', status: 7, contextClosed: true }]);
 });

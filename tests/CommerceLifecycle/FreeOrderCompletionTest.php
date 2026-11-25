@@ -23,6 +23,7 @@ use Kitsune\Commerce\Checkout\CommerceSetupWriter;
 use Kitsune\Commerce\Exports\OrderHistoryExport;
 use Kitsune\Commerce\Orders\FreeAccessCorrections;
 use Kitsune\Commerce\Orders\FreeOrders;
+use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
 use Kitsune\Commerce\Orders\OrderQuotes;
 use Kitsune\Commerce\Orders\OrderReaderData;
@@ -34,6 +35,7 @@ use Kitsune\Commerce\Payments\CheckoutReview;
 use Kitsune\Commerce\Payments\PaidOrders;
 use Kitsune\Commerce\Privacy\OrderPrivacy;
 use Kitsune\Commerce\Privacy\RetentionPolicies;
+use Kitsune\Commerce\Privacy\RetentionRefused;
 use Kitsune\Commerce\Shipping\ShippoRates;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintApplier;
@@ -253,17 +255,129 @@ it('removes and restores exact original units without refunding restocking or re
     expect(app(OrderReaderData::class)->record(DB::connection(), DB::table('commerce_orders')->sole())['free_access_corrections']['selected_units'])->toBe([$line => [1, 3]]);
 });
 
-it('minimizes a completed free guest order with negative claim evidence and original retention custody', function (): void {
+it('minimizes a completed free guest order with negative claim evidence and original retention custody', function (string $proof): void {
     $s = freeOrderSeed(guest: true, retentionDays: 10);
     app(FreeOrders::class)->complete($s['request'], $s['order']->reference, $s['review']['token']);
-    expect(app(OrderReaderData::class)->eraseGuest($s['request'], $s['order']->reference))->toBe(0);
+    $completion = (array) DB::table(FreeOrders::TABLE)->sole();
+    $privacy = DB::table('commerce_order_privacy')->sole();
+    if ($proof === 'email') {
+        $s['request'] = OrderFixture::request();
+        OrderFixture::token(DB::table('commerce_orders')->sole(), str_repeat('e', 64));
+        $access = app(OrderAccess::class);
+        expect($access->capture($s['request'], $s['order']->reference, str_repeat('e', 64)))->toBeTrue()
+            ->and($access->consume($s['request'], $s['order']->reference))->toBeTrue();
+    }
+    Auth::guard('web')->forgetUser();
+    Permissions::forget();
+    // The old console exemption masked the actual anonymous HTTP failure even after staff was removed.
+    $console = new ReflectionProperty(app(), 'isRunningInConsole');
+    $wasConsole = $console->getValue(app());
+    $console->setValue(app(), false);
+    try {
+        expect(Permissions::currentUser())->toBeNull()
+            ->and(app(OrderReaderData::class)->eraseGuest($s['request'], $s['order']->reference))->toBe(0);
+    } finally {
+        $console->setValue(app(), $wasConsole);
+    }
     $order = DB::table('commerce_orders')->sole();
     $record = app(OrderReaderData::class)->record(DB::connection(), $order);
     expect($order->contact_email)->toBeNull()->and(json_decode($order->billing, true, flags: JSON_THROW_ON_ERROR))->toBe(['name' => 'Historical Buyer'])
         ->and($record['privacy']['subject_erased'])->toBeTrue()->and($record['state'])->toBe('completed_free')
+        ->and((array) DB::table(FreeOrders::TABLE)->sole())->toBe($completion)
+        ->and(DB::table('commerce_order_privacy')->value('policy_hash'))->toBe($privacy->policy_hash)
+        ->and(DB::table('commerce_order_privacy')->value('retained_until'))->toBe($privacy->retained_until)
+        ->and(DB::table('audit_log')->where('action', 'commerce.order_privacy_subject_erased')->sole()->actor_id)->toBeNull()
+        ->and(DB::table('audit_log')->where('action', 'commerce.order_privacy_subject_erased')->sole()->actor_type)->toBeNull()
         ->and(DB::table('commerce_privacy_tombstones')->count())->toBeGreaterThan(0)
         ->and(fn () => app(FreeOrders::class)->complete($s['request'], $s['order']->reference, $s['review']['token']))->toThrow(OrderRefused::class);
-});
+})->with(['browser', 'email']);
+
+it('refuses guest minimization without exact current unclaimed order proof', function (string $boundary): void {
+    $s = freeOrderSeed(guest: true, retentionDays: 10);
+    app(FreeOrders::class)->complete($s['request'], $s['order']->reference, $s['review']['token']);
+    $order = DB::table('commerce_orders')->sole();
+    $request = $s['request'];
+    if ($boundary === 'browser') {
+        $request = OrderFixture::request();
+    } elseif ($boundary === 'site') {
+        app(Context::class)->setSite(Site::create(['handle' => 'sibling', 'slug' => 'erasure-sibling', 'name' => 'Sibling']));
+    } elseif ($boundary === 'org') {
+        app(Context::class)->setOrg(Org::create(['slug' => 'erasure-rival', 'name' => 'Rival']));
+    } elseif ($boundary === 'none') {
+        app(Context::class)->forget();
+    } elseif ($boundary === 'stale') {
+        $order->owner_key = str_repeat('f', 64);
+    } elseif ($boundary === 'expired email') {
+        $request = OrderFixture::request();
+        OrderFixture::token($order, str_repeat('e', 64));
+        $access = app(OrderAccess::class);
+        expect($access->capture($request, $order->reference, str_repeat('e', 64)))->toBeTrue()
+            ->and($access->consume($request, $order->reference))->toBeTrue()
+            ->and($access->guestProof($request, $order))->toBe('email');
+        CarbonImmutable::setTestNow(CarbonImmutable::now('UTC')->addMinutes(OrderAccess::GRANT_MINUTES + 1));
+    } else {
+        $claims = app(OrderClaims::class);
+        $claims->remember($request, $order->reference);
+        $reader = ReaderFixture::reader($s['org'], 'claimed-erasure@example.test');
+        app(Context::class)->setSite($s['site']);
+        Auth::guard(ReaderFixture::GUARD)->login($reader);
+        $claims->claim($request, $order->reference);
+    }
+    Auth::guard('web')->forgetUser();
+    Permissions::forget();
+    $before = (array) DB::table('commerce_orders')->sole();
+    $transitions = DB::table('commerce_privacy_transitions')->count();
+    expect(fn () => DB::transaction(fn () => app(OrderPrivacy::class)->eraseFreeGuest(DB::connection(), $request, $order)))
+        ->toThrow(RetentionRefused::class)
+        ->and((array) DB::table('commerce_orders')->sole())->toBe($before)
+        ->and(DB::table('commerce_privacy_transitions')->count())->toBe($transitions)
+        ->and(DB::table('commerce_order_privacy')->value('subject_erased_at'))->toBeNull();
+})->with(['browser', 'site', 'org', 'none', 'stale', 'claimed', 'expired email']);
+
+it('rolls back guest minimization when an audit callback changes proof custody or its audit', function (string $corruption): void {
+    $s = freeOrderSeed(guest: true, retentionDays: 10);
+    app(FreeOrders::class)->complete($s['request'], $s['order']->reference, $s['review']['token']);
+    $order = DB::table('commerce_orders')->sole();
+    OrderFixture::token($order, str_repeat('t', 64));
+    $before = (array) $order;
+    $transitions = DB::table('commerce_privacy_transitions')->count();
+    Auth::guard('web')->forgetUser();
+    Permissions::forget();
+    $event = 'eloquent.created: '.AuditLog::class;
+    $events = AuditLog::getEventDispatcher();
+    $prior = $events->getRawListeners()[$event] ?? [];
+    $observed = (object) ['mutated' => false];
+    AuditLog::created(static function (AuditLog $audit) use ($s, $order, $corruption, $observed): void {
+        if ($audit->action !== 'commerce.order_privacy_subject_erased') {
+            return;
+        }
+        match ($corruption) {
+            'proof' => $s['request']->session()->flush(),
+            'context' => app(Context::class)->forget(),
+            'parent' => DB::table('commerce_orders')->where('id', $order->id)->update(['contact_email' => 'restored@example.test']),
+            'claim' => DB::table('commerce_order_claims')->insert(['org_id' => $order->org_id, 'site_id' => $order->site_id,
+                'order_id' => $order->id, 'reader_id' => '999', 'owner_key' => $order->owner_key, 'order_reference' => $order->reference,
+                'snapshot_hash' => $order->snapshot_hash, 'proof_kind' => 'browser', 'claimed_at' => OrderFixture::now()]),
+            'audit' => DB::table('audit_log')->where('id', $audit->id)->update(['actor_id' => 'forged']),
+        };
+        $observed->mutated = true;
+    });
+    try {
+        expect(fn () => app(OrderReaderData::class)->eraseGuest($s['request'], $order->reference))->toThrow(RetentionRefused::class)
+            ->and($observed->mutated)->toBeTrue()
+            ->and((array) DB::table('commerce_orders')->sole())->toBe($before)
+            ->and(DB::table('commerce_privacy_transitions')->count())->toBe($transitions)
+            ->and(DB::table('commerce_order_privacy')->value('subject_erased_at'))->toBeNull()
+            ->and(DB::table('commerce_order_access_tokens')->count())->toBe(1)
+            ->and(DB::table('commerce_order_claims')->count())->toBe(0)
+            ->and(DB::table('audit_log')->where('action', 'commerce.order_privacy_subject_erased')->count())->toBe(0);
+    } finally {
+        $events->forget($event);
+        foreach ($prior as $listener) {
+            $events->listen($event, $listener);
+        }
+    }
+})->with(['proof', 'context', 'parent', 'claim', 'audit']);
 
 it('fails closed when free completion evidence or its correction marker is removed', function (string $table): void {
     $s = freeOrderSeed();

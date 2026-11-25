@@ -46,4 +46,33 @@ function downloadListMode(value, force = false) {
     return { status: result.status, output: result.stdout.trim() };
 }
 
-module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode };
+/**
+ * @param {() => {status: number|null}} restore
+ * @param {() => Promise<void>} close
+ * @param {(receipt: {mode: string, status: number|null, contextClosed: boolean}) => Promise<void>} report
+ */
+async function restoreDownloadListFixture(restore, close, report, primaryFailure = false) {
+    const receipt = { mode: 'command-error', status: /** @type {number|null} */ (null), contextClosed: false };
+    try {
+        receipt.status = restore().status;
+        receipt.mode = receipt.status === 0 ? 'restored' : 'unsuccessful';
+    } catch {
+        // An unstarted command has no exit status.
+    }
+    try {
+        await close();
+        receipt.contextClosed = true;
+    } catch {
+        // The diagnostic records only whether the context closed.
+    }
+    if (receipt.mode === 'restored' && receipt.contextClosed) return;
+
+    try {
+        await report(receipt);
+    } catch {
+        // An attachment failure must leave the scenario's original error available.
+    }
+    if (!primaryFailure) throw new Error('Reader mode fixture cleanup failed.');
+}
+
+module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode, restoreDownloadListFixture };
