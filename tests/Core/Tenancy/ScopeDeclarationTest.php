@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Models\BlueprintSeed;
 use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Entry;
@@ -116,6 +117,7 @@ it('resolves the declared scope for each core model', function (string $model, s
 })->with([
     'Org is unscoped by necessity' => [Org::class, Unscoped::class],
     'Site belongs to an org' => [Site::class, OrgScoped::class],
+    'BlueprintSeed belongs to an org' => [BlueprintSeed::class, OrgScoped::class],
     'SiteGroup belongs to an org' => [SiteGroup::class, OrgScoped::class],
     'Entry belongs to a site' => [Entry::class, SiteScoped::class],
     'EntryType is global or org-owned' => [EntryType::class, Unscoped::class],

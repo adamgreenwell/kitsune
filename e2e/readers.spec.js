@@ -5,6 +5,7 @@ const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const { READERS } = require('./accounts');
 const { waitForAdminPassword } = require('./admin-sign-in');
+const { callsMethod } = require('./select-control');
 
 /*
  * A reader signs in — ADR-037, as built: the skeleton's own readers, at core's pages under each site's prefix. The PHP
@@ -205,23 +206,51 @@ test('cannot drive a panel\'s component as a reader, even with a snapshot the pa
     await readerContext.close();
 });
 
-test('cannot reach a panel as a reader, from the reader\'s side', async ({ page }) => {
-    await signIn(page, '/golfdom', GOLFDOM);
-    await expect(page).toHaveURL(/\/golfdom\/account$/);
+for (const delayed of [false, true]) {
+    test(`cannot reach a panel as a reader, from the reader's side${delayed ? ' with delayed password initialization' : ''}`, async ({ page }, testInfo) => {
+        // No error text, credential values, URLs with query strings or request bodies enter this attachment.
+        const diagnostic = { stage: 'navigation', variant: delayed ? 'delayed-password' : 'normal', panel_redirects: [], component_ready: false, update_statuses: [], rejection_visible: false, reader_account_accessible: false };
+        page.on('response', (response) => {
+            if (diagnostic.update_statuses.length < 16 && callsMethod(response, 'authenticate')) diagnostic.update_statuses.push(response.status());
+        });
+        try {
+            await signIn(page, '/golfdom', GOLFDOM);
+            await expect(page).toHaveURL(/\/golfdom\/account$/);
 
-    for (const panelPath of ['/admin', '/admin/golfdom', '/admin/golfdom/entitlements']) {
-        await page.goto(panelPath);
-        await expect(page).toHaveURL(/\/admin\/login$/);
-    }
+            if (delayed) await page.route('**/js/filament/forms/components/text-input/password-reveal.js*', async (route) => {
+                // Controlled network latency exposes a visible input whose binding has not initialized (#278).
+                await new Promise((resolve) => setTimeout(resolve, 250));
+                await route.continue();
+            });
+            for (const panelPath of ['/admin', '/admin/golfdom', '/admin/golfdom/entitlements']) {
+                await page.goto(panelPath, { waitUntil: 'domcontentloaded' });
+                await expect(page).toHaveURL(/\/admin\/login$/);
+                diagnostic.panel_redirects.push(true);
+            }
 
-    // A reader's address and password are not staff credentials.
-    await page.locator('input[type="email"]').fill(GOLFDOM.email);
-    await page.locator('input[type="password"]').fill(GOLFDOM.password);
-    await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByText('These credentials do not match our records.')).toBeVisible();
-    await expect(page).toHaveURL(/\/admin\/login$/);
+            // A reader's address and password are not staff credentials. Visibility precedes Livewire binding.
+            diagnostic.stage = 'readiness';
+            await waitForAdminPassword(page);
+            diagnostic.component_ready = true;
+            diagnostic.stage = 'credentials';
+            await page.locator('input[type="email"]').fill(GOLFDOM.email);
+            await page.locator('input[type="password"]').fill(GOLFDOM.password);
+            await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
+            diagnostic.stage = 'rejection';
+            await expect(page.getByText('These credentials do not match our records.')).toBeVisible();
+            diagnostic.rejection_visible = true;
+            await expect(page).toHaveURL(/\/admin\/login$/);
 
-    // And the reader is still signed in where readers are.
-    await page.goto('/golfdom/account');
-    await expect(page.getByText(`Signed in as ${GOLFDOM.email}.`, { exact: true })).toBeVisible();
-});
+            // And the reader is still signed in where readers are.
+            diagnostic.stage = 'reader-account';
+            await page.goto('/golfdom/account');
+            await expect(page.getByText(`Signed in as ${GOLFDOM.email}.`, { exact: true })).toBeVisible();
+            diagnostic.reader_account_accessible = true;
+            diagnostic.stage = 'complete';
+        } finally {
+            const pathname = new URL(page.url()).pathname;
+            diagnostic.page = pathname === '/admin/login' ? 'staff-login' : pathname === '/golfdom/account' ? 'reader-account' : 'other';
+            await testInfo.attach('reader-staff-boundary', { body: JSON.stringify(diagnostic), contentType: 'application/json' });
+        }
+    });
+}

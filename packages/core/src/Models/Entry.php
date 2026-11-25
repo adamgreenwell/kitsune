@@ -130,8 +130,9 @@ class Entry extends Model implements RequiresModelSave
             }
         });
 
-        // ⚠️ Recorded BEFORE any guard reads a promoted column, and recorded rather
-        // than derived. See `recordPromotedProvenance()`.
+        // ⚠️ Recorded BEFORE any guard reads a promoted column. The builder also
+        // records the fields it actually converts, including when events are suppressed.
+        // See `recordPromotedProvenance()`.
         static::saving(fn (self $entry) => $entry->recordPromotedProvenance());
 
         // type_handle is denormalised for routing lookups, so it must never
@@ -321,7 +322,7 @@ class Entry extends Model implements RequiresModelSave
      */
     public static function columnsRequiringModelSave(): array
     {
-        return [
+        $columns = [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
 
             /*
@@ -378,6 +379,15 @@ class Entry extends Model implements RequiresModelSave
             'site_id' => 'moving an entry into a site has to recheck every relation pointing at it, '
                 .'including ones invisible from where it is now — and a bulk write has no row to check.',
         ];
+
+        // The registry knows the physical columns without a schema read. A prototype has neither
+        // per-entry conversion config nor promoted provenance, even if a caller gives it a loaded model.
+        foreach (self::promotableColumns(app(FieldTypeRegistry::class)) as $column) {
+            $columns[$column] ??= 'a promoted field needs its entry\'s conversion and provenance; '
+                .'write it through a model save under its canonical column name (ADR-021, issue #131).';
+        }
+
+        return $columns;
     }
 
     /**
@@ -2482,10 +2492,10 @@ class Entry extends Model implements RequiresModelSave
         // moved only `title`. Two queries against the 1 vCPU / SQLite floor in ADR-027,
         // for a column no field storage can write.
         //
-        // `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
-        // they are not user-definable, so nothing projects into them and there is no
-        // provenance to record. Only a column some registered type promotes can have any,
-        // and the registry knows that list without a query.
+        // A platform column has provenance only when a registered field type
+        // promotes into it; the default types do not claim title or published_at.
+        // The registry knows that list without a query, including custom types
+        // that do claim those columns.
         if (! $this->touchesPromotedColumn($registry)) {
             return;
         }
@@ -3112,6 +3122,8 @@ class Entry extends Model implements RequiresModelSave
             $encoded = true;
         }
 
+        $writtenPromotedBy = [];
+
         foreach ($lockedFields ?? EntryWriteReads::query($type->fields()->getQuery())->with(['fieldStorage' => static fn (Relation $query) => EntryWriteReads::query($query->getQuery()->getQuery())])->get() as $field) {
             $storage = $field->fieldStorage;
 
@@ -3185,6 +3197,22 @@ class Entry extends Model implements RequiresModelSave
                 $fieldType,
                 $fieldType->toStorage($values[$column], $config),
             );
+            $writtenPromotedBy[$column] = $storage->getKey();
+        }
+
+        // The builder already holds this row's write lock. Merge into its current
+        // provenance, not a stale model's map: a writer of one promoted column
+        // must not discard another column's owner. The locking read uses the
+        // write connection and original save key, and costs nothing on inserts
+        // or writes carrying no promoted column.
+        if ($writtenPromotedBy !== []) {
+            $stored = $this->exists
+                ? EntryWriteReads::query($this->newQueryWithoutScopes())->useWritePdo()
+                    ->whereKey($this->getKeyForSaveQuery())->lockForUpdate()->first(['promoted_by'])
+                : null;
+            $promotedBy = $this->exists ? ($stored->promoted_by ?? []) : ($this->promoted_by ?? []);
+            $this->promoted_by = array_replace($promotedBy, $writtenPromotedBy);
+            $values['promoted_by'] = $this->getAttributes()['promoted_by'];
         }
 
         if ($inline !== null) {

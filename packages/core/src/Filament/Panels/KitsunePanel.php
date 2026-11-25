@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Avatars\InitialsAvatarProvider;
 use Kitsune\Core\Filament\Icons;
+use Kitsune\Core\Filament\Pages\Blueprints;
 use Kitsune\Core\Filament\Pages\Credentials;
 use Kitsune\Core\Filament\Pages\Entitlements;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -142,7 +143,7 @@ final class KitsunePanel
                 RoleResource::class,
                 ...app(AdminSurface::class)->resources(),
             ])
-            ->pages([Dashboard::class, Credentials::class, Entitlements::class])
+            ->pages([Dashboard::class, Blueprints::class, Credentials::class, Entitlements::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...))
             // Drawn here rather than fetched. Filament's default sends every signed-in user's initials and the site's
@@ -259,6 +260,14 @@ final class KitsunePanel
                     ->icon('heroicon-o-key')
                     ->url(fn (): string => RoleResource::getUrl('index'))
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.roles.*')),
+            ] : []),
+
+            ...(Blueprints::canAccess() ? [
+                NavigationItem::make(__('kitsune::blueprints.title'))
+                    ->group('Structure')
+                    ->icon('heroicon-o-square-3-stack-3d')
+                    ->url(fn (): string => Blueprints::getUrl())
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.blueprints')),
             ] : []),
 
             // Credentials sit with the owner's other screens, hidden by the rule that gates the URL — and until a
