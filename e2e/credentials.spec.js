@@ -275,6 +275,7 @@ test.describe('the credentials page', () => {
         try {
             await page.getByRole('button', { name: 'Switch to live mode', exact: true }).click();
             const confirm = page.locator('.fi-modal-window').filter({ hasText: 'Switch' });
+            await expect(confirm).toContainText('Payment operations can move real money. A module may require additional approval.');
             await expect(confirm).toContainText('These have no usable live value yet');
             await expect(confirm).toContainText(HOOK);
             await confirm.locator('input[name="current_password"]').fill('password');
