@@ -66,6 +66,28 @@ final class ReaderLinks
     }
 
     /**
+     * An incoming reader path with only this site's prefix canonicalized, or null if it is not this site's path.
+     *
+     * ADR-041's prefix amendment keeps existing mixed-case addresses working. Resolution and ReaderArea already
+     * accept those spellings; a guest's return path must use the lower-case claim before `isOwn()` accepts it.
+     * Do not lowercase the whole path or decode it: only the declared ASCII prefix is case-insensitive. The existing
+     * exact fence still refuses queries, fragments, encoded separators, other sites and differently spelled leaves.
+     * Stored return paths are checked by `isOwn()` again at sign-in, so that fence stays strict.
+     */
+    public static function canonicalPath(Site $site, string $path): ?string
+    {
+        $prefix = $site->path_prefix ?? '';
+
+        if ($prefix !== '' && strncasecmp($path, $prefix, strlen($prefix)) !== 0) {
+            return null;
+        }
+
+        $canonical = $prefix.substr($path, strlen($prefix));
+
+        return self::isOwn($site, $canonical) ? $canonical : null;
+    }
+
+    /**
      * Where this site's pages are served from — `https://acme.example`, with a port only when its address names one —
      * or null when no mailed link can be made for it.
      *
