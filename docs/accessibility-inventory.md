@@ -85,7 +85,8 @@ since an address reads left to right and core's words are English: in an RTL par
 last under the Arabic admin (measured in Chromium, `rtl.spec.js`, which fails without it). The intro says in one whole sentence whether addresses are shown, hidden by the operator, or cannot be
 named here, and every cell that holds no address says why in words, never by colour or emptiness alone. A 255-byte
 address is a 2,119.75 px cell, which Filament's table container scrolls inside the page at 320, 390 and 1,280 px; the
-page itself never scrolls sideways. Scanned by axe with the new column and its words, LTR and RTL. Inherited and
+page itself never scrolls sideways. The current browser fixture uses a 254-byte address because Laravel's
+email validator now refuses longer input. Scanned by axe with the new column and its words, LTR and RTL. Inherited and
 recorded: `.fi-layout` is `overflow-x: clip`, so the RTL scan's "does not overflow horizontally" checks cannot fail on
 any Filament page (measured) — the new check asserts the table container scrolls instead; the intro's full stop is
 drawn at the start of the line under RTL, as the media tiles' line was before its `dir="auto"`, on this page and every
