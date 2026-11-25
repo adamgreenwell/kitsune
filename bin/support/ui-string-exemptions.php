@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 // Exact call-site/value exceptions only; stale entries fail the guard.
 return [
+    'packages/core/src/Filament/Schemas/FieldValueRenderer.php|helperText|' => 'An absent field help message contributes no visible text.',
+    'packages/core/src/Filament/Schemas/FieldValueRenderer.php|helperText| ' => 'Spacing between configured field help and the translated reselection message.',
     'packages/core/src/Filament/Resources/Entries/RelationManagers/RevisionsRelationManager.php|placeholder|—' => 'A nonverbal empty-note marker, with no language to translate.',
     'packages/core/src/Filament/Widgets/EntryCountsWidget.php|description| · ' => 'A visual separator between two independently complete translated descriptions.',
     'packages/core/src/Filament/Widgets/EntryCountsWidget.php|description|' => 'The absence of the optional media description, not displayed copy.',

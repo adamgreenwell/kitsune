@@ -183,7 +183,7 @@ module.exports = defineConfig({
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,
-            dependencies: ['setup-rtl'],
+            dependencies: ['setup', 'setup-rtl'],
             use: {
                 ...devices['Desktop Chrome'],
                 storageState: '.playwright/admin-rtl-auth.json',

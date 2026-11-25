@@ -368,8 +368,9 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
      */
     test('a reader\'s address reads left to right in its own cell under RTL, and the longest one can be read whole at any width', async ({ page }) => {
         const digits = '12345@kitsune.test';
-        const longest = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(62)}.${'d'.repeat(61)}.e`;
-        expect(Buffer.byteLength(longest)).toBe(255);
+        // Recent Laravel rejects addresses beyond 254 bytes even when storage allows 255.
+        const longest = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(62)}.${'d'.repeat(60)}.e`;
+        expect(Buffer.byteLength(longest)).toBe(254);
 
         plantAddresses([[digits, 'e2e.rtl-digits'], [longest, 'e2e.rtl-longest']]);
 
