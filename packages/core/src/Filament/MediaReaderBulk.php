@@ -37,6 +37,8 @@ final class MediaReaderBulk
 {
     public const CONFIRMATION = 'confirmation';
 
+    public const RESULTS_VIEW = 'kitsune::filament.media-reader-offer-results';
+
     /** @return list<BulkAction> */
     public static function bulk(): array
     {
@@ -202,10 +204,8 @@ final class MediaReaderBulk
         $complete ? $action->success() : $action->failure();
         $summary = __('kitsune::media.readers.bulk.summary', ['offered' => $offered, 'unchanged' => $unchanged, 'refused' => $refused + $gone, 'failed' => $failed, 'not_tried' => $notTried]);
         $notice = Notification::make()->persistent()->title(__('kitsune::media.readers.bulk.results'))
-            // Keep every result reachable without letting a fifty-file notice exceed a narrow viewport.
-            // Filament sanitizes notification HTML; title supplies the region's accessible name after that pass.
-            ->body('<p>'.e($summary).'</p><div role="region" tabindex="0" title="'.e(__('kitsune::media.readers.bulk.per_file_results')).'" style="max-height:40vh;overflow:auto;overscroll-behavior:contain"><ul><li>'
-                .implode('</li><li>', array_map(e(...), $lines)).'</li></ul></div>');
+            ->body($summary)
+            ->view(self::RESULTS_VIEW, ['offerResults' => $lines]);
         $complete ? $notice->success() : $notice->warning();
         $notice->send();
     }

@@ -105,6 +105,8 @@ test('confirms retags, keeps partial successes and refusals selected, and leaves
 });
 
 test('measures fifty audited offers and makes every result reachable at 320 pixels', async ({ page }, testInfo) => {
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
     const fixture = owned = seed(50);
     const before = state(fixture);
     await choose(page, fixture, 50);
@@ -130,11 +132,22 @@ test('measures fifty audited offers and makes every result reachable at 320 pixe
     expect(bounds.y).toBeGreaterThanOrEqual(0);
     expect(bounds.height).toBeLessThanOrEqual(700);
     const results = notice(page).getByRole('region', { name: 'Per-file reader offer results' });
-    await results.focus();
+    const close = notice(page).locator('.fi-no-notification-close-btn');
+    await close.focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect(results).toBeFocused();
     await page.keyboard.press('End');
-    await expect(notice(page).locator('li').last()).toBeInViewport();
+    const scrollRemaining = () => results.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
+    await expect.poll(scrollRemaining).toBeLessThanOrEqual(1);
+    await expect(results.locator('li').last()).toBeInViewport();
     await page.keyboard.press('Home');
-    await expect(notice(page).locator('li').first()).toBeInViewport();
+    await expect.poll(() => results.evaluate(el => el.scrollTop)).toBe(0);
+    await expect(results.locator('li').first()).toBeInViewport();
+    await page.keyboard.press('Tab');
+    await expect(close).toBeFocused();
     await axe(page);
     await notice(page).screenshot({ path: testInfo.outputPath('owned-bulk-reader-results-320.png') });
+    await page.keyboard.press('Escape');
+    await expect(notice(page)).toBeHidden();
+    expect(pageErrors).toEqual([]);
 });

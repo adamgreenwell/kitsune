@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core;
 
+use Filament\Notifications\Notification;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Console\Scheduling\Schedule;
@@ -54,6 +55,7 @@ use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\MediaReaderBulk;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Http\MiddlewarePriority;
@@ -75,6 +77,9 @@ final class KitsuneServiceProvider extends ServiceProvider
     {
         // Beneath the host's own `config/kitsune.php`, so a host overrides a key by declaring it there.
         $this->mergeConfigFrom(__DIR__.'/../config/kitsune.php', 'kitsune');
+
+        // Filament strips tabindex from notification body HTML. Allow this one Blade view when it rebuilds a notice.
+        $this->app->resolving(Notification::class, static fn (Notification $notification): Notification => $notification->safeViews(MediaReaderBulk::RESULTS_VIEW));
 
         // Core's never-served disks, for private media and the upload intake (ADR-042 decisions 4 and 4a). Here,
         // before any provider boots, because `FilesystemServiceProvider::boot()` reads each disk's `serve` flag to
@@ -361,6 +366,7 @@ final class KitsuneServiceProvider extends ServiceProvider
              */
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
                 ->loadedOnRequest(),
+            Js::make('kitsune-select-value-direction', __DIR__.'/../resources/js/select-value-direction.js'),
         ], BlockDirectionPlugin::PACKAGE);
 
     }

@@ -12,6 +12,7 @@ use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\Enums\ActionStatus;
 use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
 use Illuminate\Support\Facades\DB;
@@ -139,7 +140,7 @@ it('keeps successes and reports each refusal without claiming the selection all 
         ->and($action->getStatus())->toBe(ActionStatus::Failure)
         ->and($action->shouldDeselectRecordsAfterCompletion())->toBeFalse()
         ->and($notices)->toHaveCount(1)
-        ->and((string) $notices[0]['body'])->toContain('&lt;b&gt;Alpha&lt;/b&gt;', 'Bravo', 'Public')
+        ->and(Notification::fromArray($notices[0])->toHtml())->toContain('&lt;b&gt;Alpha&lt;/b&gt;', 'Bravo', 'Public')
         ->not->toContain('<b>Alpha</b>');
 });
 
@@ -351,7 +352,7 @@ it('keeps unavailable keys visible as a generic refusal and preserves the select
     $notice = array_values((array) session('filament.notifications', []))[0];
     expect(bulkReaderName($one))->toBe('course.selected')
         ->and($action->getStatus())->toBe(ActionStatus::Failure)
-        ->and((string) $notice['body'])->toContain('Unavailable selections: 1');
+        ->and(Notification::fromArray($notice)->toHtml())->toContain('Unavailable selections: 1');
 });
 
 it('stops starting files at the deadline and can continue idempotently on another run', function (): void {

@@ -2,7 +2,7 @@
 
 Thanks for looking. Read the short version first, because it will save you time:
 
-> **Kitsune is pre-alpha: nothing is released and nothing is stable.** There *is* code — a working admin, a runtime schema engine and a tenancy kernel — and [`docs/roadmap.md`](docs/roadmap.md) tracks what exists item by item. What is not open is feature pull requests, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk.
+> **Kitsune is pre-alpha: 0.x development packages exist, and v1.0 is not released.** They carry no stable compatibility or security-support promise. There *is* code — a working admin, a runtime schema engine and a tenancy kernel — and [`docs/roadmap.md`](docs/roadmap.md) tracks what exists item by item. What is not open is feature pull requests, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk. The [versioning and upgrade policy](docs/versioning-and-upgrades.md) separates package promises, host-owned code and retained-data upgrade admission.
 
 What *is* wanted right now is further down under [What's useful today](#whats-useful-today).
 
@@ -49,6 +49,10 @@ The [GitHub wiki](https://github.com/adamgreenwell/kitsune/wiki) holds two kinds
 **Hand-written pages** cover ground `docs/` does not: orientation, FAQs, how-tos. Those are edited in the wiki directly.
 
 `docs/` is the source of truth either way. It is versioned with the code and gated by the amendment rule above; nothing gates a wiki page. **If a wiki page contradicts `docs/`, the document wins.**
+
+The [versioned reading artifact](docs/documentation-site.md) is generated from that same source by
+`php bin/docs-build.php`. Edit Markdown, not generated HTML. Its immutable snapshots, local search and source
+copies are development documentation, with publication and release/support commitments kept separate.
 
 **Issues and discussions are open. Feature PRs are not.**
 
@@ -162,11 +166,12 @@ Laravel's `unique` and `exists` rules don't use Eloquent, so they ignore global 
 
 Use `scopedUnique()` and `scopedExists()`. They're the defaults in Kitsune's form layer; you have to go out of your way to get this wrong, so don't.
 
-### Every composite index leads with its scope key
+### Composite lookup indexes lead with their scope key
 
-`site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` ones, and the pivot's `(foreign_key, org_id)` for `#[OrgScopedThroughPivot]`. No exceptions.
+Use `site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` models, and the pivot's `(foreign_key, org_id)` for `#[OrgScopedThroughPivot]`. A Site belongs to exactly one Org, so a Site-leading index also serves that Org boundary.
 
-Leading with `site_id` is sufficient for org isolation too: a site is globally unique and belongs to exactly one org, so the guarantee holds transitively on a narrower index (ADR-021).
+- A **globally scarce name** can have a global unique index when a documented bootstrap query claims or resolves it before scope exists through `withoutScopeBecause()`. Explain both conditions beside the index in the migration. The Site address index enforces exact uniqueness on `(canonical_host, path_prefix)`. `Site::refuseOverlappingClaim()` guards overlapping claims. [ADR-021](docs/decision-log.md#adr-021--sites-a-third-structural-level-and-filaments-tenant-is-the-site)
+- An **Org-shared row** in a Site-scoped table can use an Org-leading lookup index when the row can have `site_id IS NULL` and every query the index serves explicitly fences the current Org with `org_id = ?`. Keep the Site-leading indexes for Site-only reads and explain the choice beside the new index in the migration. [ADR-042, decision 2](docs/decision-log.md#adr-042--the-media-admin-shared-by-default-uploaded-through-one-path-and-withdrawn-from-the-web-when-deleted)
 
 ### Anything reachable from a URL is untrusted
 
@@ -208,6 +213,11 @@ The lesson generalises: the load-bearing risk in this architecture is **URL gene
 ---
 
 ## Commits and pull requests
+
+Before committing, run `bin/ci-local.sh` after installing the development dependencies. It runs the complete
+SQLite `composer ci` gate and the separate skeleton Pint check, with isolated test-process memory and timeout
+settings; see [Running the tests](README.md#running-the-tests). It changes no host PHP configuration and
+requires no Docker, Node or external services.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 

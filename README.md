@@ -3,7 +3,8 @@
 > A multi-purpose content and application platform for Laravel.
 > **Status: pre-alpha, under active development.**
 > The [roadmap](docs/roadmap.md) tracks what exists today, item by item.
-> Nothing is released and nothing is stable.
+> 0.x development packages exist; v1.0 is not released. They carry no stable compatibility or security-support
+> promise. Read the [versioning and upgrade policy](docs/versioning-and-upgrades.md) before retaining data.
 >
 > **[kitsunecms.org](https://kitsunecms.org)**
 
@@ -34,16 +35,18 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 
 | Doc | What it answers |
 |---|---|
+| [`docs/index.md`](docs/index.md) | **Start a task.** Install, upgrade, restore and find the matching source; [build the versioned reading site locally](docs/documentation-site.md#build-and-verify-locally) |
 | [`docs/decision-log.md`](docs/decision-log.md) | **Why.** Every decision, every rejected alternative, and the reason it lost |
 | [`docs/roadmap.md`](docs/roadmap.md) | **What and when.** Phased plan to v1.0 and beyond, with honest timelines |
 | [`docs/architecture.md`](docs/architecture.md) | **How.** Data model, admin routing, tenancy security model, module and migration contracts |
 | [`docs/field-types.md`](docs/field-types.md) | **The field contract.** Storage strategies, the four faces every field type must answer, and the twelve types shipping in v1.0 |
 | [`docs/accessibility-inventory.md`](docs/accessibility-inventory.md) | **What is inherited.** Measured WCAG and RTL conformance, what Filament supplies, and the gaps that are Kitsune's to build |
+| [`docs/versioning-and-upgrades.md`](docs/versioning-and-upgrades.md) | **What a version promises.** Package and host-code boundaries, security maintenance, upgrade admission and recovery limits |
 
 ## Shape of the thing
 
 - **A thin module kernel** — registry, hooks, lifecycle, RBAC, audit
-- **A runtime schema engine** as the flagship first-party module: define entity types and fields in the admin, no PHP required
+- **A runtime schema engine built into core**: define entity types and fields in the admin, no PHP required ([ADR-001 amendment](docs/decision-log.md#amendment--the-schema-engine-stays-in-core-2026-10-23-257))
 - **Multi-tenant from the kernel up**, enforced fail-closed rather than left to plugin authors
 - **Blueprints** — installable bundles of entry types with their fields, roles with their grants, and entry type availability, applied into an org so a fresh install isn't a blank canvas. Seed content is a separate, opt-in phase, because seeding a value locks that field's shape ([ADR-039](docs/decision-log.md))
 - **Headless-capable core** with an optional Blade theming layer
@@ -57,7 +60,7 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 |---|---|
 | PHP | `^8.4` |
 | Laravel | 13.x |
-| Admin | Filament `^5.4` — Livewire + Alpine, server-rendered |
+| Admin | Filament `^5.6` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
 ## Running it locally
@@ -184,6 +187,23 @@ When a newer core ships a newer version of a blueprint, the same `apply` command
 version declares, never changes or removes anything the organisation already has — its owner's edits included — and
 refuses, saying why, a version that would ([ADR-039](docs/decision-log.md)).
 
+Schema `apply` creates no sample entries. A blueprint can separately opt into `DeclaresSeedContent`, returning
+`SeedEntryDeclaration` values with stable author keys and ordered relations to those keys. To request its content,
+first apply that exact schema version, then select one existing site's **handle** and its current locale explicitly:
+
+```bash
+php skeleton/artisan kitsune:blueprint seed your-blueprint --org=mysite --site=main --locale=en
+php skeleton/artisan kitsune:blueprint status
+```
+
+The shipped Blog, Marketing Site and DAM definitions remain schema-only. Seed never creates an org, site or owner,
+and it refuses bootstrap options. Its separate receipt commits with all entries, relations, revisions, audit and
+first-value storage locks. Retrying does not duplicate history or overwrite operator edits, trash or deleted entries.
+Later definitions may add keys, but cannot change or remove recorded declarations. A slug collision fails by default;
+`OnCollision::Skip` leaves that entry alone and does not make it a seed relation target. Media uploads require their
+own file-custody workflow. The first nonempty field value permanently locks that storage, even if the entry is later
+deleted. See [ADR-039](docs/decision-log.md) for the seed contract and recovery boundaries.
+
 To take a blueprint back out of an organisation:
 
 ```bash
@@ -191,7 +211,9 @@ php skeleton/artisan kitsune:blueprint reverse blog --org=mysite
 ```
 
 It removes what the blueprint created while nothing holds data for it — and otherwise refuses, saying what is in the
-way and writing nothing ([ADR-039](docs/decision-log.md)).
+way and writing nothing ([ADR-039](docs/decision-log.md)). Seed receipts also report created content that has moved,
+changed type or entered trash. Reverse never deletes that content or unlocks its fields; data-free seed bookkeeping
+goes only with a successful ordinary schema reverse.
 
 ⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
 site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
@@ -206,6 +228,20 @@ the bare install, and the error you would otherwise get is *"kitsune/core could 
 version"*.
 
 ### Running the tests
+
+After `composer install`, with PHP 8.4 or newer and Composer on `PATH`, run the full local gate:
+
+```bash
+bin/ci-local.sh
+```
+
+It runs `composer ci` (root Pint, configured PHPStan and the complete SQLite suite), then the separate
+skeleton Pint check. It needs no Docker, Node or external services. Test PHP processes receive a private
+512 MiB memory setting, Composer's five-minute process timeout is disabled, and a short temporary directory
+is removed when the command exits. The host's INI files and existing temporary directory are untouched.
+These settings belong to the development suite; Kitsune's application resource floor is unchanged.
+
+Individual checks remain available:
 
 ```bash
 vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
@@ -259,7 +295,7 @@ In plain terms:
 
 The project lives at **[kitsunecms.org](https://kitsunecms.org)**. `kitsune.org` is held by someone else and is being pursued; if it lands, this becomes a redirect rather than a rename, and nothing that references the project has to move.
 
-The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy — `TRADEMARK.md` — will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
+The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. The trademark policy is [`TRADEMARK.md`](TRADEMARK.md). Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
 
 ## Contributing
 
