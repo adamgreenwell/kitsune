@@ -1,6 +1,6 @@
 // @ts-check
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 // Throwaway fixtures in Playwright's fresh database only. No real application or provider is contacted.
 const HOLDER = { email: 'download-list@kitsune.test', password: 'correct-horse-battery-staple' };
@@ -37,4 +37,42 @@ function seedDownloadList() {
     if (result !== 'download-list fixture ready') throw new Error(`Download list fixture failed: ${result}`);
 }
 
-module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList };
+// The actual operator door. No reader address, password or file metadata goes in argv or diagnostics.
+function downloadListMode(value, force = false) {
+    const args = ['artisan', 'kitsune:readers', 'mode', value, '--org=reader-download-list', '--site=downloads-list', '--no-interaction'];
+    if (force) args.push('--force');
+    const result = spawnSync('php', args, { cwd: path.join(__dirname, '..', 'skeleton'), encoding: 'utf8' });
+    if (result.error) throw new Error('Reader mode fixture command could not start.');
+    return { status: result.status, output: result.stdout.trim() };
+}
+
+/**
+ * @param {() => {status: number|null}} restore
+ * @param {() => Promise<void>} close
+ * @param {(receipt: {mode: string, status: number|null, contextClosed: boolean}) => Promise<void>} report
+ */
+async function restoreDownloadListFixture(restore, close, report, primaryFailure = false) {
+    const receipt = { mode: 'command-error', status: /** @type {number|null} */ (null), contextClosed: false };
+    try {
+        receipt.status = restore().status;
+        receipt.mode = receipt.status === 0 ? 'restored' : 'unsuccessful';
+    } catch {
+        // An unstarted command has no exit status.
+    }
+    try {
+        await close();
+        receipt.contextClosed = true;
+    } catch {
+        // The diagnostic records only whether the context closed.
+    }
+    if (receipt.mode === 'restored' && receipt.contextClosed) return;
+
+    try {
+        await report(receipt);
+    } catch {
+        // An attachment failure must leave the scenario's original error available.
+    }
+    if (!primaryFailure) throw new Error('Reader mode fixture cleanup failed.');
+}
+
+module.exports = { HOLDER, EMPTY, PREFIX, NESTED, RTL, PDF, artisan, seedDownloadList, downloadListMode, restoreDownloadListFixture };

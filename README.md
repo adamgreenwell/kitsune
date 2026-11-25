@@ -101,6 +101,13 @@ php skeleton/artisan kitsune:readers status --org=myblog          # is the guard
 php skeleton/artisan kitsune:readers mode sign-in --org=myblog    # off, sign-in or open; --site=<handle> for one site
 ```
 
+Before a mode change closes reader access on a site with offered private files, the command counts the affected
+file offers and sites, explains that reader pages and download links will return 404, and refuses until the same
+command is run with `--force`. This also applies to `inherit` when reverting a setting switches accounts off.
+An organisation-level change respects each site's and site group's overrides. Files, offers and entitlements stay
+stored; switching reader accounts back on restores the access they allow. Sites with no affected offers need no
+acknowledgement. These are counts of recorded offers, without checking every file's disk or every reader's grants.
+
 An address is `https://` or `http://` and a host, with an optional path (`https://example.com/fr`). Moving a site that
 already answers somewhere needs `--force`, because every link to the old address breaks, and another organisation may
 then claim it, unless another of your sites still overlaps it.
