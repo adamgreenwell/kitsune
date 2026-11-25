@@ -9,20 +9,23 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Blueprints\BlueprintDefinition;
+use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Blueprints\DeclaresAvailability;
 use Kitsune\Core\Blueprints\OnCollision;
 
 /*
  * What a blueprint author may build on — ADR-039's public surface, and nothing past it.
  *
- * ⚠️ FIVE SYMBOLS, AND A SIXTH IS A DECISION. Everything else under `Blueprints/` is `@internal` on ADR-038's
+ * ⚠️ SEVEN SYMBOLS: ADR-039's availability amendment explicitly adds the optional capability and its declaration.
+ * Everything else under `Blueprints/` is `@internal` on ADR-038's
  * precedent, Blog's own class included: its handle and what it creates are the contract, the class is not. A
  * symbol that loses the tag, or a new one that arrives without it, is a promise made without anybody deciding to.
  */
 
-it('makes exactly five symbols public', function (): void {
+it('makes exactly the seven decided author symbols public', function (): void {
     $root = dirname(__DIR__, 3).'/packages/core/src/Blueprints';
     $public = [];
 
@@ -47,11 +50,29 @@ it('makes exactly five symbols public', function (): void {
 
     expect($public)->toBe([
         BlueprintDefinition::class,
+        AvailabilityDeclaration::class,
         EntryTypeDeclaration::class,
         FieldDeclaration::class,
         RoleDeclaration::class,
+        DeclaresAvailability::class,
         OnCollision::class,
     ]);
+});
+
+it('keeps the legacy definition required methods and types the optional availability capability', function (): void {
+    expect(array_map(fn (ReflectionMethod $method): string => $method->getName(), (new ReflectionClass(BlueprintDefinition::class))->getMethods()))
+        ->toBe(['handle', 'version', 'entryTypes', 'roles'])
+        ->and(is_subclass_of(DeclaresAvailability::class, BlueprintDefinition::class))->toBeTrue();
+    $own = array_values(array_filter((new ReflectionClass(DeclaresAvailability::class))->getMethods(), fn (ReflectionMethod $method): bool => $method->getDeclaringClass()->getName() === DeclaresAvailability::class));
+    expect(array_map(fn (ReflectionMethod $method): string => $method->getName(), $own))->toBe(['availability']);
+});
+
+it('declares availability by type handle, sparse scope, org-local target, value and collision policy alone', function (): void {
+    $reflection = new ReflectionClass(AvailabilityDeclaration::class);
+    expect(array_map(fn (ReflectionParameter $parameter): string => $parameter->getName(), $reflection->getConstructor()->getParameters()))
+        ->toBe(['entryType', 'scope', 'target', 'isEnabled', 'onCollision'])
+        ->and($reflection->isFinal())->toBeTrue()
+        ->and($reflection->isReadOnly())->toBeTrue();
 });
 
 /** ⚠️ A ROLE DECLARATION CARRIES NO OWNER FLAG, NO ORG AND NO HOLDERS — so none of them can arrive unnoticed. */
