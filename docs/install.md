@@ -29,6 +29,7 @@ see the package plan. On amd64 and arm64 it selects Ubuntu's own PHP 8.5 on 26.0
 Ondřej Surý's repository on 22.04 and 24.04 LTS. The preflight only reads the OS and package architecture.
 Repository configuration, package installation and native-host qualification are separate steps under #215.
 
+[The Docker install profile](../deploy/self-host/docker/README.md) describes verified image builds and a persistent SQLite deployment.
 Docker is an equally supported design path for reproducibility, scale or operator preference. It is optional;
 a separate database server, Redis, search daemon, Node runtime and always-on worker are not requirements for a
 default small installation. The [resource-floor decision](decision-log.md#adr-027--the-resource-floor-is-a-designed-constraint-with-a-number)

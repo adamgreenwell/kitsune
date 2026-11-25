@@ -13,19 +13,21 @@ use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
+use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
 use Kitsune\Core\Blueprints\DeclaresAvailability;
+use Kitsune\Core\Blueprints\DeclaresSeedContent;
 use Kitsune\Core\Blueprints\OnCollision;
 
 /*
  * What a blueprint author may build on — ADR-039's public surface, and nothing past it.
  *
- * ⚠️ SEVEN SYMBOLS: ADR-039's availability amendment explicitly adds the optional capability and its declaration.
+ * Nine symbols cover the original five plus the two optional capabilities and their declarations.
  * Everything else under `Blueprints/` is `@internal` on ADR-038's
  * precedent, Blog's own class included: its handle and what it creates are the contract, the class is not. A
  * symbol that loses the tag, or a new one that arrives without it, is a promise made without anybody deciding to.
  */
 
-it('makes exactly the seven decided author symbols public', function (): void {
+it('makes exactly the nine decided author symbols public', function (): void {
     $root = dirname(__DIR__, 3).'/packages/core/src/Blueprints';
     $public = [];
 
@@ -54,7 +56,9 @@ it('makes exactly the seven decided author symbols public', function (): void {
         EntryTypeDeclaration::class,
         FieldDeclaration::class,
         RoleDeclaration::class,
+        SeedEntryDeclaration::class,
         DeclaresAvailability::class,
+        DeclaresSeedContent::class,
         OnCollision::class,
     ]);
 });

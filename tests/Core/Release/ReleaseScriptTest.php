@@ -300,6 +300,14 @@ function releasePhpStub(): string
         ;;
       --)
         log "php check $2"
+        if [[ "$2" == schema-baseline ]]; then
+          # Real baseline checks run against actual schemas in SchemaBaselineTest.
+          if [[ "${STUB_FAIL:-}" == schema-baseline ]]; then
+            echo 'Refusing to release: the retained schema baseline is incomplete' >&2
+            exit 1
+          fi
+          exit 0
+        fi
         exec "$STUB_REAL_PHP" "$@"
         ;;
       "$STUB_COMPOSER")
@@ -442,6 +450,7 @@ it('runs every step in order, and nothing else', function (): void {
             'artisan view:cache --no-interaction',
             'artisan icons:cache --no-interaction',
             'php check serving',
+            'php check schema-baseline',
             'artisan migrate --force --no-interaction',
             'artisan kitsune:credentials status --strict --no-interaction',
             'artisan kitsune:audit-patterns --strict --no-interaction',
@@ -736,6 +745,15 @@ it('catches a cache command that exits 0 without building its cache', function (
         ->and($run->getErrorOutput())->toContain('the route table was not cached')
         ->and($run->getErrorOutput())->toContain('the event map was not cached')
         ->and(array_slice(releaseLog($this->dir), -1))->toBe(['php check serving'])
+        ->and(releaseCalls($this->dir, 'artisan migrate'))->toBe([]);
+});
+
+it('refuses an incompatible retained schema before running migrations', function (): void {
+    $run = releaseRun($this->dir, ['STUB_FAIL' => 'schema-baseline']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('retained schema baseline is incomplete')
+        ->and(array_slice(releaseLog($this->dir), -1))->toBe(['php check schema-baseline'])
         ->and(releaseCalls($this->dir, 'artisan migrate'))->toBe([]);
 });
 
