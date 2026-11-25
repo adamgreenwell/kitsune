@@ -6,7 +6,7 @@
  */
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
-const { seed, clear, stock, facts, prepare } = require('./free-order-fixture');
+const { seed, clear, stock, facts, privacyFacts, prepare } = require('./free-order-fixture');
 test.beforeEach(seed);
 test.afterEach(clear);
 
@@ -48,4 +48,45 @@ test('records unavailable free units and enforces body-only CSRF', async ({ page
     await page.getByRole('button', { name: 'Complete free order', exact: true }).click();
     await expect(page.locator('[data-free-completion-summary]')).toContainText('Unavailable units: 1');
     expect(facts()).toMatchObject({ completions: 1, payments: 0, allocation: { awarded: 0, unavailable: 1 } });
+});
+
+test('minimizes a completed free order through the anonymous guest HTTP page', async ({ page }) => {
+    expect(await page.context().cookies()).toEqual([]);
+    const offHostRequests = [];
+    await page.route('**/*', async route => {
+        const url = new URL(route.request().url());
+        if (url.hostname === '127.0.0.1' || url.protocol === 'data:') return route.continue();
+        offHostRequests.push(url.origin);
+        return route.abort();
+    });
+    const path = await prepare(page);
+    await page.getByRole('button', { name: 'Complete free order', exact: true }).click();
+    await expect(page.locator('[data-free-completion-summary]')).toBeVisible();
+    await page.goto(path);
+    const before = privacyFacts();
+    expect(before.subject_erased).toBe(false);
+    const beforeStock = facts().stock;
+    expect((await page.request.post(`${path}/erase`, { form: {} })).status()).toBe(419);
+    expect(privacyFacts()).toEqual(before);
+    const stranger = await page.context().browser().newContext();
+    try {
+        const otherPage = await stranger.newPage();
+        expect((await otherPage.goto(page.url())).status()).toBe(404);
+        expect(privacyFacts()).toEqual(before);
+    } finally {
+        await stranger.close();
+    }
+    const response = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === `${path}/erase`);
+    await page.getByRole('button', { name: 'Erase my guest access and non-required order details', exact: true }).click();
+    expect((await response).status()).toBe(303);
+    const after = privacyFacts();
+    expect(after).toMatchObject({
+        state: 'completed_free', contact_removed: true, delivery_removed: true, reader_id: null,
+        billing: { name: 'Free Browser Buyer' }, subject_erased: true, claims: 0, tokens: 0, access_state: 'suppressed',
+        completion_id: before.completion_id, completed_at: before.completed_at,
+        policy_hash: before.policy_hash, retained_until: before.retained_until,
+    });
+    expect(facts()).toMatchObject({ completions: 1, payments: 0, attempts: 0, stock: beforeStock });
+    expect((await page.goto(path)).status()).toBe(404);
+    expect(offHostRequests).toEqual([]);
 });

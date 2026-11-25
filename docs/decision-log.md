@@ -356,6 +356,29 @@ again, by registration, sign-in and recovery for readers, built as Phase 5a's sl
 commerce. The reason is the one above: ADR-040 brought the four scenarios into v1.0 so that v1.0 could serve them,
 and three of the four need a reader who can sign in. The REST API, theming and the privacy tooling stay in v1.1.
 
+### Amendment — Versioning and retained upgrade admission, 2026-10-26 (#211)
+
+The scope cut and the v1.2 extension freeze above remain in force. Phase 6's semantic-versioning commitment
+needed an application/operator boundary distinct from that later extension contract, and the original
+"nothing is released" prose no longer described the 0.x packages already recorded in the roadmap. Those
+packages are development releases, without a retroactive stability or stable-version security-support promise.
+
+Adam selected **the latest stable minor at its latest patch** for security maintenance, and **case-by-case
+origin fingerprinting and rehearsal** for retained pre-v1.0 upgrades. The
+[versioning and upgrade policy](versioning-and-upgrades.md) separates core, first-party modules, blueprint
+receipts and copied host-owned skeleton code; defines the stable version-number meanings; and records the
+required operator sequence, open acceptance matrix and recovery limits. Neither choice supplies missing
+historical schema metadata or turns the #217 source audit into a qualified upgrade. Pre-alpha data is not
+disposable without its operator's explicit confirmation.
+
+No support duration, transition/notice window, EOL date or superseded-major coverage was chosen. Actual stable
+versions and those terms must be recorded at the release gates before an announcement commits to them. v1.0
+remains unreleased; #212's operational security rehearsal and #213–#218's artifacts, installation and upgrade
+proofs remain separate. A code rollback does not reverse destructive DDL or recover historical unknowns.
+The existing resource floor and response targets are unchanged. Standing Principle #2 still requires a
+deliberately narrow v1.2 extension contract, then deprecation without removal within a major; this amendment
+does not open a third-party API early, authorize a tag or authorize deployment.
+
 ---
 
 ## ADR-012 — Admin routing: entity type as a route parameter
@@ -1447,6 +1470,38 @@ settings and `KITSUNE_PASSWORD_MIN_CHARACTERS` — the first owner's minimum too
 never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
+
+### Amendment — Signed artifact verification format, 2026-10-26 (#213)
+
+The requirements above remain: versioned nonredirecting HTTPS on the project domain, independently pinned
+bootstrap bytes, download/inspect/run first, signed fetched artifacts, no default administrator and no telemetry.
+The [artifact verification contract](release-artifacts.md) uses a bounded canonical ASCII manifest, a detached
+RSA PKCS#1 v1.5/SHA-256 signature and SHA-256/size bindings for the actual artifacts. A separately confirmed
+DER SubjectPublicKeyInfo fingerprint pins a 3072–8192-bit RSA public key. A downloaded key is not its own trust
+root, and a valid signature is not platform, upgrade-origin or security-support admission.
+
+The format is deliberately readable before PHP is installed. The earlier Ed25519/JSON spike verified local
+interoperability but did not establish an available pre-PHP parser or OpenSSL3 on all supported targets.
+RSA/SHA-256 can use the existing OpenSSL extension after PHP starts; this amendment adds no application
+extension, dependency, service or resource-floor requirement. The pre-PHP Bash/awk verifier uses the OpenSSL
+CLI; supported native-target capabilities still require measurement, not an assumption from this choice.
+
+The intended signing boundary is offline maintainer-controlled custody, outside CI. Actual custodian, protected
+storage, passphrase entry, backup/continuity responsibility and recovery channels must be recorded before any
+production key is created or used. Rotation requires a reviewed versioned trust update and independent
+fingerprint/readback; compromise requires re-establishing trust out of band, not trusting a replacement key
+from the same potentially compromised host. Historical signatures remain evidence, not automatic downgrade
+permission. Nothing here creates a key, publishes a release, changes account access or authorizes deployment.
+
+The current implementation builds source-bound manifests, signs them through protected input channels and
+verifies manifests/artifact bytes offline. The standalone pre-PHP verifier fetches only literal versioned
+project-domain routes, requires verified TLS/HTTP200 without redirects, authenticates metadata before
+requesting a selected payload and promotes verified bytes exclusively. The instruction generator binds the
+shipped verifier's exact bytes to independently distributed size/hash pins and a local trusted public key;
+download/inspect/run remains primary, with a companion pinned download-and-verify command. Neither executes
+or extracts the fetched payload. Final package resolution/bundle proof, native/Docker integration and separately authorized real
+signing/publication with independent fetched-byte verification remain open under #213–#216. The existing
+core-only split workflow cannot silently stand in for the skeleton's complete first-party dependency graph.
 
 ---
 
@@ -3866,6 +3921,59 @@ The narrow command factory is internal until the v1.2 extension freeze. `ReaderA
 are unchanged. Focused kernel regressions exercise real command invocation with disabled/stale receipts, no
 receipt, invalid declarations and fresh provider boot ordering; full feature qualification remains separate.
 
+### Amendment — Same-version development upgrades, 2026-10-22 (#269)
+
+A version receipt still gates runtime registration, and a version-changing upgrade still verifies the package,
+runs its migrations, clears the checked route cache and writes the new receipt. The original same-version exit
+cleared route cache without inspecting schema. That remains the behavior for stable and prerelease versions:
+the kernel does not redefine a published version as a mutable development branch.
+
+Composer's development versions are different. A `dev-*` branch or `*-dev` version can acquire another migration
+while the recorded version stays identical. The installed fixture package reproduced the old exit with retained
+content and a newly added migration: both enabled and disabled receipts returned without creating the new column.
+Equality is therefore not evidence that a development package's migrations are current.
+
+For an equal development version, the existing upgrade command now verifies the current manifest and model
+declarations before asking a fresh **unregistered** provider for its migration path. Laravel's ordinary migrator
+applies pending files and its ledger makes an already-current repeat idempotent. Afterward the lifecycle reloads
+and locks the receipt, refuses if its version changed meanwhile, and clears the checked route cache. It does not
+save the receipt, alter installation timestamps or enablement, invoke install/uninstall hooks, or register/boot
+the module's runtime provider. The version is still equal; the command reports that the development migrations
+were checked rather than implying another version was installed. This opens no extension API and requires no
+worker or service on the default SQLite floor.
+
+Verification, migration and cache failures leave the receipt unchanged. Migrations remain outside the receipt
+transaction. PostgreSQL's migrator wraps a transactional migration and can roll its failed DDL back. SQLite itself
+supports transactional DDL, but Laravel's SQLite schema grammar does not open a per-file migration transaction;
+SQLite, MySQL and MariaDB can therefore retain DDL from a failed file without recording that file as complete.
+Successful earlier files remain recorded on every engine.
+The kernel does not repair partially applied DDL or make an unsafe migration retryable: inspect that state and
+retry only a migration written or repaired to tolerate it. Never uninstall/reinstall retained data or rewrite a
+receipt to force the command past this boundary. Operators still serialize code updates, lifecycle commands and
+cache generation and restart persistent workers; a development version is not a source-content fingerprint.
+
+The regression contract uses an installed module with retained rows, adds a real migration after installation,
+and checks the resulting schema, ledger, content, receipt and absent runtime hook calls. It also covers branch
+and numeric development spellings, stable/prerelease controls, verification/migration/cache failures and retry.
+Native engine qualification is recorded separately from the default fresh-schema suite.
+
+The first implementation exercised the lifecycle inside an already booted test application. Review exposed a
+missing earlier boundary: on a fresh console process an enabled equal-version provider could register and boot
+before Artisan reached upgrade, and fail while reading its newly introduced column. The real command reproduced
+that failure with retained rows. The lifecycle's unregistered migration provider alone did not make the process cold.
+
+The fully spelled `php artisan kitsune:module` command now declines all module runtime registration and retained-data
+command declarations during application booting, before reading receipts. This covers status and every lifecycle
+action, including malformed actions that must still reach core's argument handling. Core's own command registration
+remains available. Symfony's global-option parser, including Laravel's `--env`, identifies the exact canonical
+command; option values containing that name and unrelated commands do not select this boundary. The command has
+no declared aliases. Symfony abbreviations, host-added aliases, nested calls and `Artisan::call()` in an already
+booted process are not supported cold entry points: use the full command in a new process. The boundary never
+checks pending migrations or fingerprints arbitrary module source on a web request or ordinary console boot.
+An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
+that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
+data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
 **Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Amended 2026-10-04 — the merge, as built**: a later version may only add, and one new pre-flight refusal; see the end of this entry · **Amended 2026-10-04 — Marketing Site 1.1.0, as built**: a meta description, and ADR-030's second condition met; see the end of this entry · **Amended 2026-10-05 — the reverse, as built**: one action on the existing command, removing only what a blueprint created and nothing holds data or authority for; see the end of this entry · **Amended 2026-10-05 — the DAM, as built**: `EntryTypeDeclaration` gains `isMedia` and the manifest one key, the first declaration parameter and manifest key since 2026-10-02; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
@@ -4421,9 +4529,122 @@ This meets Phase 5's stated **constrained-container 60-second apply criterion**.
 
 ---
 
+### Amendment — Receipted availability preserves operator decisions, 2026-10-26 (#204)
+
+**Decision; implementation and qualification are still owed.** The third blueprint key uses the existing
+`EntryTypeAvailability` rows and ADR-022's resolver. A site decision overrides its site group, which overrides
+its org; absent everywhere still means enabled. It adds no settings store, target-creation mechanism, admin
+route, dependency or third-party extension promise. The PHP definition remains first-party and unstable
+before v1.2. Content, the fourth key, remains separate.
+
+**Measured before choosing this contract.** On the current SQLite kernel with foreign keys enabled, two orgs
+with identically named site groups and site handles resolve independently, and a site override leaves its
+sibling's inherited decision alone. The unique availability tuple refuses a second value without overwriting
+the first. A direct availability-model write nevertheless accepts a foreign-org target ID: the model is
+deliberately unscoped and its polymorphic target has no foreign key, so neither that declaration nor the unique
+index supplies the writer's org fence. This is a constraint on the new writer, not a claim that a public write
+door exists today.
+
+The controlled reverse also removed two operator decisions with a blueprint-created type: one the operator
+had changed and one added at a site. Unrelated decisions in both orgs survived. The first probe's reverse
+assertion failed only because a newly created model's array ordered its ID differently from a reloaded row;
+the corrected probe compared stored rows on both sides and reran only that failed case. The two preceding
+successful measurements were not rerun. The original failure remains recorded; this is not an all-green claim
+for that original execution. No application source changed for those measurements.
+
+**Keep frozen PHP definitions loadable.** The five frozen first-party definitions all load against the current
+interface. In isolated PHP processes, adding a required `availability()` method to that interface made all
+five fail to load with a missing-abstract-method error; a separate optional typed capability left all five
+loadable. No frozen source was edited. Those copies are explicitly never edited by `ReleasedBlueprintsTest`,
+and changing them to accommodate a new required method would rewrite the historical inputs that test exists
+to protect.
+
+This amends the earlier preference for further required methods on one interface, whose reasoning remains
+above: four permanent seams would cost more than one. Preserving real older definitions wins over that
+preference here. The existing four-method `BlueprintDefinition` stays unchanged. A first-party definition
+opts in by implementing `DeclaresAvailability`, which extends it with `availability(): array`; an older
+definition means an empty list. The kernel recognizes the typed capability with `instanceof`, not a magic
+method name. This is the explicit decision to grow the first-party blueprint author's surface from five
+symbols to seven: the unchanged original five, `DeclaresAvailability` and `AvailabilityDeclaration`. Everything
+else remains internal. The two additions have the same first-party-only, pre-v1.2 footing as the existing
+definition and declarations, with no third-party or 0.x stability promise. This does not decide the fourth
+key's future surface.
+
+**Address existing targets by org-local handles.** `DeclaresAvailability::availability()` will return a list of
+`AvailabilityDeclaration` values: entry-type handle, scope (`org`, `site_group` or `site`), nullable target
+handle, boolean `isEnabled`, and the existing `OnCollision` policy. Org means the org in context and requires
+a null target. Site groups and sites use their exact existing handles within that org, never a database ID,
+site route slug, URL or another org selector. A numeric string is a handle if such a handle exists, never an ID
+shortcut. Handles are compared exactly after the scoped lookup, so a database's case-folding collation cannot
+quietly substitute another spelling. A site group has no slug; a site's globally unique route slug is a
+different name from its org-unique handle.
+
+Every declaration names an entry type this definition declares and this blueprint creates or previously
+created and still holds. It may not change availability on a global type, another blueprint's type or one
+adopted under `Skip`: adapting the operator's existing type is the operator's decision. Resolve all prospective
+targets and refuse unknown or foreign-org targets, invalid shapes and duplicate resolved tuples before an
+intent or data write. Recheck the resolved identities and org ownership inside the rows' transaction. Taking
+a later version must not bind a recorded decision to a replacement row that happens to reuse an old handle.
+
+**A collision is not ownership, even when the values agree.** Default `Fail` refuses an existing tuple.
+Explicit `Skip` leaves the existing row and value exactly as found and records that it was not created by this
+blueprint. The receipt records the declaration, outcome, row ID and resolved parent/target identities in the
+same transaction as the rows. An additive merge may add new tuples only: it refuses changes to or removal of
+recorded declarations, never rewrites their live values and never recreates a decision the operator removed.
+The existing finished same-version no-op remains a no-op. An interrupted finish uses the manifest's committed
+facts rather than replaying current declarations or recreating rows; absent or taken-over rows are named and
+left alone. Row writes and receipt state still commit together, before the existing index finish.
+
+A legacy manifest without the availability key means an empty declaration list: every older writer lacked
+that key entirely. This compatibility is exactly that historical absence, not a default for a malformed
+present key or record. The existing unreadable-manifest rules remain: merge and finish refuse, while reverse
+may clear only the receipt and guesses no row ownership.
+
+**Reverse cannot use the parent cascade to evade ownership.** A reverse may remove a decision only while its
+recorded row, tuple, boolean value, current-org type and target still match a `created` record. A skipped,
+changed, replaced or unrecorded decision is the operator's. A missing decision stays missing. If deleting a
+created type would cascade any decision the reverse does not own, refuse the whole reverse before writes,
+name the obstruction, and leave the receipt and all rows intact. The operator must explicitly remove that
+decision before reversing; there is no force, purge or silent adoption option.
+
+This **amends the reverse's accepted loss of edited availability**, stated above and retained as the old
+rationale. That cascade was acceptable while availability had no independent declaration or receipt record.
+Once the third key distinguishes its own decisions from an operator's, continuing to erase the latter through
+the parent would contradict that ownership claim. The strengthened guard also applies to old receipts with
+operator availability; their missing key authorizes no decision deletion. Other existing reverse boundaries,
+including content, history, role holders and the accepted loss of an otherwise removable row's presentation
+edits, remain unchanged.
+
+Receipt, org, current types, targets and availability must be read under a consistent lock order before the
+first mutation; native tests must establish protection against both edits and new decision insertions while
+a reverse waits. Use the existing model connection and transaction boundaries, not a default-connection
+shortcut. SQLite's serialization does not establish the PostgreSQL, MySQL or MariaDB lock contract.
+
+**Initial implementation gate, retained:** this amendment settled the contract before interface expansion.
+At that point #204 still owed the key and its receipt projections, fresh apply/collision/merge/finish/reverse
+coverage, old and malformed receipts, target identity and operator-edit checks, and native concurrency proof.
+The optional definition capability and declaration alone did not deliver or qualify the kernel behavior.
+
+**As implemented, 2026-10-26:** `BlueprintApplier` now validates the optional key, resolves new targets before
+intent, rechecks their captured identities under transaction locks, and commits sparse decisions with their
+ownership records. Merge carries old records verbatim and adds only new tuples. Interrupted finish names
+missing or changed decisions without replaying them. Reverse locks recorded parents, targets and decisions
+before its first plain-read plan and refuses the entire operation before a cascade would erase any decision
+it does not still own unchanged. Old definitions and the five frozen released PHP payloads remain unchanged.
+
+Default SQLite tests include independent-PDO, actual-level-zero receipt/rollback/finish observations. Native
+PostgreSQL, MySQL and MariaDB tests exercise rival decision edits and FK insertions in both winning orders,
+on connections outside the testing wrapper. Isolated PostgreSQL mutations removing the decision lock or
+parent lock respectively break the edit or insert fence test. PostgreSQL's different text collation also
+exposed an old grant-membership assertion: membership is still checked exactly, now sorted consistently in
+PHP; neither permission behavior nor database collation changed. Full CI/browser/exact-head review and
+verified main integration remain separate acceptance gates; this as-built record does not mark #204 Done.
+
+---
+
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below · **Amended 2026-10-31 — timestamp portability beyond credentials**: media file rows and module receipts keep their stored time on MariaDB before 10.10; see *Timestamp portability beyond credentials*
 
 Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
 subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
@@ -6188,6 +6409,52 @@ The complete focused credential and webhook-HTTP suite then passed on that uncha
 359 tests and 4,099 assertions, including the original failing overlap case and existing attacker-side integrity
 checks. Its SQLite run passed 352 tests and 4,052 assertions, with seven explicit engine skips. The disposable
 database was removed afterwards; no user database or server configuration was changed.
+
+**Timestamp portability beyond credentials, 2026-10-31.** Amends the paragraph above, which ~~fixed the class
+for credentials~~ *fixed the class for credentials alone; it was not credential-only*. A docs-only PR's CI run
+(#389, PHP 8.4 / MariaDB 10.6) failed `MediaOfferTest`: an offer moved `media_files.created_at` one second,
+because the second ticked over between the insert and the update. Measured on MariaDB 10.6.28 with its default
+`explicit_defaults_for_timestamp=0`, after migrating core, commerce and the skeleton's own tables (90 tables):
+six columns carry the implicit `ON UPDATE CURRENT_TIMESTAMP` — `audit_log.created_at`, `credentials.changed_at`,
+`erasure_log.erased_at`, `media_files.created_at`, `modules.installed_at` and `org_credential_modes.changed_at`.
+Commerce adds none, and `failed_jobs.failed_at`, declared `useCurrent()`, gets the default without the clause.
+Also measured: an UPDATE that sets the column to itself keeps it, and one that changes no column at all fires
+nothing, so the lock writes that set a column to itself need no change.
+
+What each column needs, decided by Adam on 2026-10-31: explicit writes, as for credentials, rather than a
+MariaDB-only migration that drops the clause; and `modules` fixed here rather than listed.
+
+- `media_files.created_at` — custody's move off a disk, a withdrawal, the visibility switch and the offer each
+  rewrote it. All four write below the model, and each now sets `created_at` to itself through
+  `MediaFile::keepingCreatedAt()`. Model writes already refuse the column, which is fixed at creation.
+- `modules.installed_at` — enable, disable and upgrade rewrote it. Receipt saves now write the raw value, as
+  credentials write `changed_at`.
+- `credentials.changed_at`, `org_credential_modes.changed_at` — fixed on 2026-10-15, above.
+- `audit_log.created_at` — append-only. No code updates it, and `AppendOnlyBuilder` refuses model writes. The one
+  test that writes the table below the model already sets the column to itself (`EntitlementPageTest`).
+- `erasure_log.erased_at` — nothing writes the table yet. Its first writer must only insert, or keep the column
+  as these do.
+
+A new table whose first TIMESTAMP is `NOT NULL` with no default gets the same clause on these servers. Make it
+nullable, give it `useCurrent()`, or write it explicitly on every update.
+
+**Measured — timestamp portability beyond credentials.** Before the fix, all four media cases and both module
+cases in `MediaFileCreatedAtTest` and `ModuleInstalledAtTest` failed on MariaDB 10.6.28: the frozen
+`2001-02-03 04:05:06` became the server's clock on every run. With the fix they pass on SQLite, PostgreSQL 17,
+MySQL 8.4 and MariaDB 10.6.28. On 10.6.28 the media, credential, entitlement and reader suites then passed
+3,154 tests and 21,151 assertions with 32 skips, `MediaOfferTest` among them, and the module suite passed 236
+tests with 23 skips.
+
+**Landed — mutation families, and the test that caught each** (killed on SQLite and MariaDB 10.6.28 alike):
+
+- one of the three media writes leaving the column out — that write's frozen-time case, and the source scan;
+- `keepingCreatedAt()` returning nothing, or `now()` — every media case;
+- a fifth `media_files` update planted without it — the source scan;
+- the module override removed, or writing the clock — both module cases.
+
+One mutant survived and was equivalent: dropping the override's `$dirty !== []` check. `save()` never asks a
+model with no change, so the check was removed from `Module`. `WritesExplicitChangeTime` carries the same check
+and is left as it is.
 
 ---
 
@@ -11701,3 +11968,88 @@ provider I/O. Ownership, Org/Site custody, checked historical presentation, the 
 financial/allocation/access holds remain unchanged. Guest and native reader HTTP fixtures cover both
 allocated and disputed held payments, with unchanged retained rows and zero provider calls; browser
 checks submit stale guest and reader forms after confirmation. No live admission or deployment is implied.
+
+---
+
+## ADR-043 — Documentation is a source snapshot, searchable without a running application
+
+**Status:** Decided · 2026-10-26 · Resolves ADR-030's explicitly open documentation-site question, without changing its marketing-site decision.
+
+The needs were recorded before the delivery choice in [Documentation delivery](documentation-site.md): install,
+upgrade, schema, Org/Site and first-party module tasks, each traced to the existing source. At main
+`4e6f9059d841533b7ff45e18685da2c7022392ab`, the inspected Markdown corpus was 27 documents / 1,834,692 bytes;
+the decision log alone was 1,293,161 bytes / 42 ADRs. The real locked CommonMark parse found 463 headings and
+331 links, with no unresolved local targets or fragments. These are corpus facts, not a usability or latency benchmark.
+
+**Build a static artifact from the repository, using the PHP Markdown parser already in its development lock.**
+No new package, application boot, database, service, Node build or operator runtime dependency is required.
+The current wiki generates two navigation pages and links to main; it does not supply immutable snapshots or
+snapshot-local search. A Kitsune-hosted docs application would couple recovery reading to an application and
+require the public-theme/search work that the roadmap leaves for later. No running-CMS trial is claimed.
+The tradeoff is owning a small build tool and its source, link, search and reading tests.
+
+`docs/` stays authoritative. Each built snapshot retains exact source text and hashes, resolved source commit,
+version label and working-copy status. A label is not a release, compatibility commitment or support duration.
+Read the security policy for support; issue #211 still owns the compatibility-policy decision.
+
+The decision log is split for reading, **after assigning document-wide heading identities**. Duplicate headings
+and links into another ADR therefore retain their original source fragment; a per-page slugger would silently
+send a duplicate heading to the wrong decision. Source links inside the covered documents stay within the
+chosen snapshot. Links to other repository files name the resolved commit, while explicit historical external
+links keep their original target.
+
+Search runs in the reader's browser against that snapshot's index. Navigation and text work without JavaScript;
+no analytics, external search, remote font or third-party image request is added. Older snapshot files are not
+rewritten when another snapshot is built. Their version chooser discovers the catalogue, with an ordinary
+catalogue link as the no-JavaScript fallback.
+
+Operator guides lead with download-inspect-run, the native default and optional Docker path, no default
+administrator and no installer telemetry. They name unfinished installer/signing work rather than fabricating
+a download or key. Backup/key custody, restore/erasure replay, upgrades, export limits and the pre-v1.2
+first-party boundary are part of the reading path, not stable-API promises.
+
+**Local artifact verification and public publication are separate gates.** This decision authorises the build
+and local reading checks only. It does not select a host, deploy documentation, publish a release, authorise a
+provider action or make the marketing site's ADR-030 trigger true. The original reasoning above remains visible.
+
+---
+
+## ADR-044 — The trademark policy is published before the mark is registered
+
+**Status:** Decided · 2026-10-30 · Publishes the policy ADR-005 committed to. Leaves ADR-032's provisional status and its open exit criteria unchanged.
+
+ADR-005 made the trademark, not the licence, the thing that stops a fork being called Kitsune, and the README
+promised `TRADEMARK.md` "alongside the first release". Roadmap [#2](https://github.com/adamgreenwell/kitsune/issues/2)
+bundled three things: the filing, the logo registration and the policy. **Only the first two cost money, and
+the filing is not affordable now.** The policy does not need a registration to say how the project asks the
+name to be used, so it is published now and the filing stays open on #2 behind clearance (#1).
+
+The mark is used unregistered. The policy says so, and writes ™, never ®: ® claims a registration that does not
+exist. Nothing in this ADR says what the unregistered mark is worth in a dispute. That is a question for counsel,
+and the policy states that it has not been reviewed by one.
+
+**Four decisions, each by Adam:**
+
+1. **Hosts may describe; they may not name.** "Managed hosting for Kitsune sites" is allowed without asking;
+   "Kitsune Cloud by Acme" is not. Rejected: permission for every commercial host, because the maintainer runs a
+   competing hosted service (ADR-004) and a permission gate held by a competitor reads as gatekeeping, however
+   it is exercised. Also rejected: anything that is not confusing, which cannot be enforced once a market has
+   formed around it. **This decision benefits the hosted service and the open project differently**, as
+   GOVERNANCE.md requires an ADR to say: the maintainer's service may use the name as a name, and no one else's may.
+   The policy states that in so many words, and reserves no descriptive use for it.
+2. **No registered domain names; subdomains and paths are fine.** `kitsunehosting.com` is out;
+   `kitsune.example.edu` and `example.com/kitsune` are in. Rejected: WordPress's stricter rule, which would stop a
+   university naming its own install's subdomain, and buys nothing a registered-domain rule does not.
+3. **Extensions say "for Kitsune", and package names may carry the word after the vendor.** "SEO Toolkit for
+   Kitsune" and `acme/kitsune-seo` are allowed; "Kitsune SEO" as a product name is not. Rejected: banning the word
+   in package names, which makes extensions harder to find and is not where confusion about origin happens.
+4. **Free community events need no permission; merchandise for sale does.** "Kitsune Meetup Cleveland" with free
+   entry is fine. Selling anything with the marks on it, or an event that charges entry, asks first. Rejected:
+   permission for every event, which turns the maintainer into a bottleneck for the thing the project most wants.
+
+The permission route is a public issue, so an answer serves the next person with the same question. The policy
+joins the documentation site's root documents (ADR-043), and `brand/LICENSE.md` now points to it for the name and
+covers only the copyright in the asset files.
+
+**Not decided here:** whether the filing is made, in which classes and jurisdictions, and by whom; whether
+ADR-032's provisional status ends on filing or on grant; and any review by counsel. Each remains open on #1 and #2.
