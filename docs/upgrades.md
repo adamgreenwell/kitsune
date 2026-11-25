@@ -15,6 +15,45 @@ the target release notes and migration requirements, and rehearse the exact chan
 Record the actual PHP, database and dependency versions. Check separately whether the host skeleton needs edits:
 it is copied at installation, not rewritten by a core Composer update.
 
+## Inspect a self-host installation
+
+Run the inspection from a trusted Kitsune checkout. Use the filesystem paths for the actual installation.
+For Docker, use a read-only view of the persistent volume. The command does not contact Docker or stop services.
+
+```sh
+php bin/self-host-upgrade.php inspect --mode=native --installation=/opt/kitsune --state=/var/lib/kitsune
+php bin/self-host-upgrade.php inspect --mode=docker --state=/path/to/volume
+```
+
+`installed` means the installer receipts and expected layout were found. `incomplete` means there are
+unclassified files, missing persistent state or invalid receipts. Keep those files and investigate before
+running an installer again. Earlier Docker receipts record only the source commit. A versioned Docker
+receipt also identifies the exact release archive and manifest. The local image still needs to be matched
+to the volume and verified release evidence.
+
+To check the proposed release, supply its exact application archive and both the origin and target
+manifests signed by the pinned release key. The key and its fingerprint come from an independent
+trusted source. Pass the target machine's platform explicitly.
+
+```sh
+php bin/self-host-upgrade.php plan --mode=native --installation=/opt/kitsune --state=/var/lib/kitsune \
+    --platform=linux-amd64 --key=/trusted/kitsune-release.pem --fingerprint="$KITSUNE_RELEASE_KEY_SHA256" \
+    --origin-manifest="$ORIGIN_MANIFEST" --origin-signature="$ORIGIN_SIGNATURE" \
+    --origin-version="$ORIGIN_VERSION" --origin-channel=stable \
+    --target-manifest="$TARGET_MANIFEST" --target-signature="$TARGET_SIGNATURE" \
+    --target-version="$TARGET_VERSION" --target-channel=stable --target-archive="$TARGET_ARCHIVE"
+```
+
+The plan verifies the signed release identities and the target archive's platform, size and digest. It
+reports current receipt identity and any missing verification. Exit status 0 means the native receipt
+already identifies the selected release archive. Status 2 means inspection or transition evidence is
+still required. Status 1 means the input or release verification failed.
+
+Admission and execution are separate from this check. The plan reads neither the live SQLite ledger
+nor the contents of the persisted configuration. It grants no permission to migrate or switch the
+installation. Follow the [versioning policy](versioning-and-upgrades.md#which-installations-may-upgrade)
+for the exact path, backup and rehearsal evidence.
+
 ## Check a retained pre-v1.0 database
 
 The Forge and stage release script inspects the original Kitsune migration records and the affected
