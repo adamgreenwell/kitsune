@@ -290,6 +290,8 @@ test('keeps strength feedback local, textual and quiet, without changing keyboar
     const live = page.locator('#password-strength-announcement');
     await expect(page.locator('[data-password-feedback]')).toBeVisible();
     await expect(live).toHaveText('');
+    await page.clock.install({ time: new Date('2026-01-01T12:00:00Z') });
+    await page.clock.pauseAt(new Date('2026-01-01T12:00:10Z'));
     const requests = [];
     page.on('request', () => requests.push('request'));
 
@@ -307,18 +309,23 @@ test('keeps strength feedback local, textual and quiet, without changing keyboar
         await expect(visual).toContainText(message);
         await expect(password).toHaveValue(value);
     }
-    // A real keyboard burst updates the visual words immediately, not the polite live region per character.
-    await password.fill('tiny');
+    // Change categories so reporting the new category before the pause fails the assertion.
+    await page.clock.runFor(1200);
+    await expect(live).toContainText('stronger estimate');
+    await password.fill('');
     await password.focus();
-    const before = await live.textContent();
-    await page.keyboard.type(' choice');
+    await page.keyboard.type('tiny choice');
     await expect(visual).toContainText('too short');
-    await expect(live).toHaveText(before || '');
-    await page.keyboard.press('Tab');
-    await expect(page.getByLabel('Type the same password again', { exact: true })).toBeFocused();
+    await page.clock.runFor(1199);
+    await expect(live).toContainText('stronger estimate');
+    await page.clock.runFor(1);
     await expect(live).toContainText('too short');
     await password.fill(CHOSEN);
+    await expect(live).toContainText('too short');
+    await page.keyboard.press('Tab');
+    await expect(page.getByLabel('Type the same password again', { exact: true })).toBeFocused();
     await expect(live).toContainText('stronger estimate');
+    await page.clock.resume();
     await expect(password).not.toHaveAttribute('value');
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     expect(requests).toEqual([]);
@@ -354,15 +361,17 @@ test('accepts a generated password change event on reset and still leaves refusa
 test('creates and resets passwords with scripts disabled, retaining all server checks', async ({ browser }, testInfo) => {
     const context = await browser.newContext({ javaScriptEnabled: false, baseURL: testInfo.project.use.baseURL });
     const page = await context.newPage();
+    const email = fresh(testInfo, 'noscript');
     try {
         for (const purpose of ['register', 'recover']) {
-            const email = purpose === 'register' ? fresh(testInfo, 'noscript') : GOLFDOM2.email;
+            // The two mail flows share an address cooldown. Start recovery with a fresh fixture budget.
+            if (purpose === 'recover') artisan('cache:clear');
             await page.goto(`/golfdom/account/${purpose}`);
             await page.goto(String(mailLink(await ask(page, email))));
             await expect(page.locator('[data-password-feedback]')).toBeHidden();
             await expect(page.locator('#password-hint')).toContainText('At least 15 characters');
             await expect(page.locator('#password-requirements')).toContainText('72 bytes');
-            for (const value of ['short', CHOSEN]) {
+            for (const value of ['short', purpose === 'register' ? CHOSEN : `${CHOSEN} again`]) {
                 await page.getByLabel('New password', { exact: true }).fill(value);
                 await page.getByLabel('Type the same password again', { exact: true }).fill(value);
                 await page.getByRole('button', { name: purpose === 'register' ? 'Create my account' : 'Change my password', exact: true }).click();
