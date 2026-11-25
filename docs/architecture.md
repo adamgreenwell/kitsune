@@ -254,13 +254,23 @@ Absent at every level = enabled. `IdentifyEntryType` middleware 404s on a type d
 
 ⚠️ **An entry may only be typed by a global type or by its own org's — enforced since 2026-09-21, and independent before that.** Every scope guard asks about a row's own scope keys; none asked whether `entries.entry_type_id` named a type belonging to `entries.org_id`, so an entry could be created in one org's site carrying another org's type and pass. The skeleton seeder did it to itself, which is why nothing caught it: the row is a dead letter rather than a leak — `IdentifyEntryType` 404s it and `EntryType::visibleFor()` hides the type from the other org — so it broke no test while its values landed under another org's field definitions in a shared storage row. `Entry::guardEntryTypeOwnership()` refuses it on create and on retype (ADR-009).
 
+**Amended 2026-10-23 — system identity is not a deletion lock (ADR-038, issue #256).** The earlier row below
+called `is_system` "undeletable". That claim is withdrawn: the flag describes a system type and supplies an
+admin badge; it grants no authority and adds no deletion refusal. In the schema admin, only an owner may
+delete their current org's types, and global or other-org types cannot join a delete selection. Programmatic
+deletion of an unused type remains supported, including a module uninstalling its global type. Model,
+quiet/eventless and builder deletes (including force deletes, projections and scope suspension) refuse any
+live or trashed entries or surviving revisions that reference the type. A mixed admin selection is atomic.
+Permanent org teardown deliberately cascades its owned types and history; soft deletion does not. Direct SQL
+is outside these PHP guards; guarded builders refuse `truncate()`.
+
 ```
 entry_types
   id
   org_id             FK nullable          -- NULL = global
   handle             string               -- machine name, "product"
   name, plural_name, icon, description
-  is_system          bool                 -- undeletable
+  is_system          bool                 -- descriptive system badge; not a deletion lock (ADR-038)
   is_media           bool                 -- media type: set at creation — by the admin's toggle or a blueprint's isMedia (ADR-039) — locked; MediaLibrary::store() refuses any other type (ADR-042)
   ordering
   settings           json                 -- revisions on/off, sluggable, publishable; a media type's `accepts`, the formats it takes (ADR-042 decision 33)
@@ -412,7 +422,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 3. **Reserved type handles.** A type literally named `create` collides with `/{type}/create`. Maintain a reserved word list — at minimum `create`, `edit`, `delete`, plus every Filament page segment — and reject it at type-creation time.
 4. **`scopedUnique()` / `scopedExists()` are the defaults** in Kitsune's form layer. Laravel's `unique` and `exists` do not use Eloquent and therefore ignore global scopes; the failure mode is site B being blocked from a slug site A holds — a cross-site, and potentially cross-org, information leak.
 5. **No query before site identification touches org- or site-scoped data.** The route table is scope-independent by design (§2), so this is now structurally true rather than a rule to remember.
-6. **Every composite index leads with its scope key** — `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively: narrower index, same guarantee.
+6. **Composite lookup indexes lead with the scope key by default.** A globally scarce name may use an exact unique index for a pre-context bootstrap under [ADR-021](decision-log.md#adr-021--sites-a-third-structural-level-and-filaments-tenant-is-the-site). A lookup that admits Org-shared rows without a Site may lead with `org_id` under [ADR-042, decision 2](decision-log.md#adr-042--the-media-admin-shared-by-default-uploaded-through-one-path-and-withdrawn-from-the-web-when-deleted). See the [contributor index rules](../CONTRIBUTING.md#composite-lookup-indexes-lead-with-their-scope-key) for query and migration requirements.
 7. **Two deliberately hostile tests live in core** — cross-**site** isolation within one org, and cross-**org** isolation. The second is the one with no framework safety net. The most valuable tests in the codebase.
 8. **A reader never reaches a panel, and a reader page never takes staff for a reader** (ADR-037, as built). A reader's guard is no panel's and their model no `FilamentUser`; a reader route answers 404 under a panel's path and calls `Auth::shouldUse()` on the reader guard, so `auth()->user()` there is the reader or nobody. Links and redirects on reader pages are paths built from the site, never from the `Host` header.
 

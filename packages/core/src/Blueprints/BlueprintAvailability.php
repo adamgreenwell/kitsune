@@ -100,9 +100,9 @@ final class BlueprintAvailability
                 continue;
             }
             $target = match ($row->scope) {
-                'org' => Org::query()->whereKey($orgId)->first(),
-                'site' => Site::query()->where('org_id', $orgId)->where('handle', $row->target)->first(),
-                'site_group' => SiteGroup::query()->where('org_id', $orgId)->where('handle', $row->target)->first(),
+                'org' => Org::query()->useWritePdo()->whereKey($orgId)->first(),
+                'site' => Site::query()->useWritePdo()->where('org_id', $orgId)->where('handle', $row->target)->first(),
+                'site_group' => SiteGroup::query()->useWritePdo()->where('org_id', $orgId)->where('handle', $row->target)->first(),
             };
             if ($target === null || ($row->scope !== 'org' && $target->getAttribute('handle') !== $row->target)) {
                 throw new RuntimeException("Cannot apply availability: {$row->scope} target is not an exact handle in this organisation.");

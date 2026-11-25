@@ -35,7 +35,9 @@ module.exports = defineConfig({
     workers: 1,
     forbidOnly: !!process.env.CI,
     retries: process.env.CI ? 1 : 0,
-    reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : [['list']],
+    reporter: process.env.CI
+        ? [['github'], ['html', { open: 'never' }], ['./e2e/reporters/safe-diagnostics.cjs']]
+        : [['list'], ['./e2e/reporters/safe-diagnostics.cjs']],
 
     use: {
         baseURL: process.env.KITSUNE_BASE_URL || 'http://127.0.0.1:8125',
@@ -132,6 +134,12 @@ module.exports = defineConfig({
             use: { ...devices['Desktop Chrome'] },
         },
         {
+            name: 'blueprint-admin',
+            testMatch: /blueprints\.spec\.js/,
+            dependencies: ['setup', 'setup-rtl', 'setup-reader'],
+            use: { ...devices['Desktop Chrome'] },
+        },
+        {
             name: 'reader-downloads',
             testMatch: /reader-downloads\.spec\.js/,
             dependencies: ['setup', 'setup-rtl'],
@@ -183,7 +191,7 @@ module.exports = defineConfig({
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,
-            dependencies: ['setup-rtl'],
+            dependencies: ['setup', 'setup-rtl'],
             use: {
                 ...devices['Desktop Chrome'],
                 storageState: '.playwright/admin-rtl-auth.json',

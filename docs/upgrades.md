@@ -15,6 +15,21 @@ the target release notes and migration requirements, and rehearse the exact chan
 Record the actual PHP, database and dependency versions. Check separately whether the host skeleton needs edits:
 it is copied at installation, not rewritten by a core Composer update.
 
+## Check a retained pre-v1.0 database
+
+The Forge and stage release script inspects the original Kitsune migration records and the affected
+live schema before `migrate`. It refuses an incomplete ledger, an unrecorded partial schema and
+historical original-table shapes that are missing required columns or constraints. If it refuses,
+preserve the database and its keys, inspect a restored copy with the matching
+[schema baseline audit](schema-upgrade-baseline-audit.md), and rehearse the case before proceeding.
+
+The check covers the known historical in-place edits. The versioning policy still requires an origin
+fingerprint, a recoverable backup and an isolated rehearsal for each retained installation. In a
+local rehearsal, populated fixtures created from the exact `v0.1.0` and `v0.2.0` migrations kept all
+original values in six tables and their original migration records when upgraded using the current
+runtime. The `v0.1.1` migration trees match `v0.1.0` byte for byte. The SQLite, PostgreSQL, MySQL and
+MariaDB replays also checked site and org isolation.
+
 ## Blueprint changes are bounded
 
 `php artisan kitsune:blueprint status` and the org's recorded blueprint receipt describe what was applied. A

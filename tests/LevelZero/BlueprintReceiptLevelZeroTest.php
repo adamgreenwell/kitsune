@@ -63,6 +63,35 @@ function receiptZeroSeen(string $file): array
     ];
 }
 
+it('previews a committed indexed blueprint without changing its real schema or committed rows', function (): void {
+    BlueprintApplier::apply(new FixtureBlueprint);
+    $before = receiptZeroSeen($this->custodyFile);
+    $columns = Schema::getColumns('entries');
+    $audit = DB::table('audit_log')->get()->all();
+    $writes = [];
+    $watch = true;
+    DB::listen(static function (QueryExecuted $query) use (&$writes, &$watch): void {
+        if ($watch && preg_match('/^\s*(insert|update|delete|replace|alter|create|drop|truncate)\b/i', $query->sql)) {
+            $writes[] = $query->sql;
+        }
+    });
+    $preview = BlueprintApplier::previewReverse('fixture');
+    $watch = false;
+
+    expect($preview['refusals'])->toBe([])
+        ->and($preview['removed'])->not->toBeEmpty()
+        ->and($writes)->toBe([])
+        ->and(DB::connection()->transactionLevel())->toBe(0)
+        ->and(receiptZeroSeen($this->custodyFile))->toBe($before)
+        ->and(Schema::getColumns('entries'))->toBe($columns)
+        ->and(DB::table('audit_log')->get()->all())->toEqual($audit);
+
+    $actual = BlueprintApplier::reverse('fixture');
+    expect($actual['removed'])->toBe($preview['removed'])
+        ->and($actual['undropped'])->toBe([])
+        ->and(receiptZeroSeen($this->custodyFile)['receipt'])->toBeNull();
+});
+
 it('commits the receipt before it writes the rows, so a kill between the two leaves it findable', function (): void {
     $seen = null;
 
