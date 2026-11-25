@@ -566,9 +566,7 @@ final class BlueprintCommand extends Command
                 $password = FirstOwnerCredentials::fromStream($this->ownerPasswordStream(), $email);
             } else {
                 /* The stream the question helper will read, as it chooses one: the input's own, or STDIN. */
-                FirstOwnerCredentials::refuseUnlessPromptable($this->ownerPasswordStream());
-
-                $password = FirstOwnerCredentials::ask($this->output, $email);
+                $password = FirstOwnerCredentials::ask($this->output, $email, $this->ownerPasswordStream());
             }
         } catch (RuntimeException $e) {
             $this->error($e->getMessage());

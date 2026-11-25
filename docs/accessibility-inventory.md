@@ -357,6 +357,10 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    in from the link, hear the page's title and its one link, and download; then the refusal notice. And offer a file
    from its media page: whether the dialog's warning about location is heard, and whether *Copy reader link*'s
    confirmation is announced.
+7. **Set up the first owner and sign in using only the keyboard and a screen reader** (ADR-026, #214).
+   On a qualified native or Docker installer, check that the terminal prompts identify each field, keep the
+   password hidden, and give a usable correction after a mismatch or refusal. In the browser, check the sign-in
+   page's focus, field labels and feedback after an incorrect password, then complete sign-in at the reported URL.
 
 7. **Review and change a blueprint with NVDA and VoiceOver** (*added 2026-10-26, #206 candidate*) — hear the Org-wide
    effect, installed/available versions and unfinished state, then the reverse's remove/keep/block lists. Submit a

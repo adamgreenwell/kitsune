@@ -1626,6 +1626,38 @@ never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
 
+### Amendment — First-owner handoff starts in the operator's terminal, 2026-11-25 (#214)
+
+Both installer paths hand the operator to the existing first-owner command and then to the ordinary admin
+sign-in page. On an empty installation, the operator selects a first-party blueprint (Blog is the default),
+supplies the organisation and owner details, and types the password twice at the command's hidden prompt.
+The command owns the atomic creation of the first organisation, site and account. The installer prepares
+the application and schema without demo data, and uses the configured application URL for sign-in.
+
+The local operator is the only person who can start the claim. Possession of the public URL gives a visitor
+access to the sign-in page only. A piped installer reads interactive answers from the controlling terminal.
+If none exists, installation can leave the schema ready, report that owner setup is pending, and print the
+command to resume from an operator shell. It leaves the organisation and account tables empty. Automation
+may separately opt into the existing password-on-standard-input path. Passwords stay out of arguments,
+environment variables and logs in both cases.
+
+First-owner claims must serialize on the installation's database before rechecking that it is empty. The
+check before the password prompt gives early feedback and the one under the lock decides whether to write.
+On rerun, an existing organisation or account closes the first-owner path. If the account was committed
+before a later blueprint apply step was interrupted, the operator resumes the blueprint without the
+first-owner option, keeping the account and its authority. Native and Docker qualification must demonstrate
+the terminal handoff, empty-installation claim, interrupted and repeated setup, and sign-in at the reported
+URL. The browser check includes keyboard focus and readable sign-in feedback. The manual assistive-technology
+journey remains part of #41.
+
+**Measured on the development skeleton.** On a fresh migrated SQLite database, both password prompts disabled
+PTY echo, and the command printed the configured sign-in URL. With assets published from the skeleton's
+installed Filament version, browser focus began at email, Tab moved to password, Enter submitted the form,
+and the owner reached the new site's dashboard after correcting the password. Two overlapping CLI setup
+commands against a separate empty SQLite database committed one organisation, one site, one account and its
+memberships. These runs exercise the terminal and browser steps of the application. Installer handoff and
+restart still need qualification on the supported hosts.
+
 ### Amendment — Signed artifact verification format, 2026-10-26 (#213)
 
 The requirements above remain: versioned nonredirecting HTTPS on the project domain, independently pinned
