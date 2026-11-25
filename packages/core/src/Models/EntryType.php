@@ -38,7 +38,7 @@ use RuntimeException;
  * @property string $name
  * @property string $plural_name
  * @property string|null $icon
- * @property bool $is_system
+ * @property bool $is_system descriptive system badge, not a deletion lock (ADR-038)
  * @property bool $is_media
  * @property int|null $subject_field_id
  * @property array<string, mixed>|null $settings
@@ -606,9 +606,9 @@ class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadin
         // for entries that still exist, in a system whose revision UI deliberately
         // offers no way to delete a revision.
         //
-        // The foreign key restricts now, so the database would refuse anyway. This
-        // is here to refuse FIRST, with a reason a person can act on — a constraint
-        // violation names a column, not a decision.
+        // The foreign key deliberately CASCADEs so permanent org teardown can
+        // remove its complete history. This PHP guard is the standalone-delete
+        // protection, not a friendlier copy of a database RESTRICT constraint.
         $revisions = EntryRevision::query()->where('entry_type_id', $this->getKey())->count();
 
         if ($revisions === 0) {

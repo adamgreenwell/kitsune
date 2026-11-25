@@ -814,6 +814,28 @@ A field that has not been classified does not save. Same discipline as the tenan
 > half of the same row. Neither column ever carried a foreign key (erasing a user must not destroy the
 > trail), so the type was holding an assumption rather than a constraint.
 
+> **Amended 2026-10-22 — identity types must fit without changing their meaning (#136).**
+> The class-name rule above remains the default, but it did not account for PHP's anonymous class names:
+> they contain a NUL followed by a deployment path. Measured, PostgreSQL stored only the prefix before
+> the NUL, SQLite stored the whole value, and MySQL/MariaDB refused an overlong value. The same action
+> therefore either acquired a misleading identity or rolled back depending on its database.
+>
+> Both `actor_type` and `target_type` retain their nullable `varchar(255)` columns. A supplied type must
+> be nonempty valid UTF-8, contain no NUL, and fit in **255 Unicode characters**, rather than 255 bytes.
+> A Laravel integer morph alias is accepted as its decimal text. Other value shapes, including SQL
+> expressions whose result cannot be inspected before insertion, are refused. NULL still means the
+> system actor or an absent target; an invalid identity must never be converted to NULL.
+>
+> The audit builder checks every row before any insert, including bulk/ignore/returning inserts,
+> suppressed model events and suspended scope checks. A refusal names the column and constraint,
+> without copying the identity or deployment path into the exception. Through audited entry writes,
+> it rolls back the content write and audit together. Direct SQL remains outside this Eloquent guard.
+>
+> An anonymous Eloquent actor or target can use a host-declared bounded morph alias; a non-Eloquent
+> actor needs a named class that fits this contract. Widening the column would not fix the NUL problem.
+> Truncation, a basename or a hash would change what the existing polymorphic type identifies, so none
+> is an automatic fallback. Existing stored rows are not rewritten by this amendment.
+
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
 **6. Encryption at rest for `sensitive`-classified fields**, and retention policies that attach to classified fields.
@@ -3905,6 +3927,8 @@ already states.
 `unique(['org_id', 'handle'])` and NULLs compare distinct on every engine, so a global row's handle is claimed
 install-wide. A module taking `name` or `email` unprefixed blocks every later module and every org that wanted them.
 
+**Historical observation — the claim is withdrawn by the following amendment.**
+
 ⚠️ **`is_system` is published as "undeletable" and is enforced nowhere** — it exists as a cast and a column in the
 admin, and `guardCascade()` counts entries and revisions without consulting it. The proving module's type does not
 rely on it; protection comes from `org_id IS NULL`, which `EntryTypeResource::ownsRecord()` already refuses to edit.
@@ -4082,6 +4106,40 @@ checks pending migrations or fingerprints arbitrary module source on a web reque
 An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
 that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
 data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
+### Amendment — system identity is descriptive; deletion protects references, 2026-10-23
+
+**Status:** Amended · issue #256
+
+The earlier `architecture.md` claim that `is_system` means "undeletable" is **withdrawn**, not made into a new
+lock. The flag remains a descriptive system badge. Global visibility and schema-admin protection come from
+`org_id IS NULL`; schema deletion in that admin requires an owner and current-org ownership, for either flag
+value. The bulk action checks authority before reaching `deleteSelected()`, whose job is whole-selection
+ownership checking and atomic deletion, not independent role authorization.
+
+Measured on the default SQLite floor: an unused type with either flag can be deleted through model, quiet,
+eventless, destroy, model force-delete, builder delete/force-delete, projected queries and scope suspension.
+Every one of those doors refuses live or trashed entries and surviving revisions of retyped entries. A global
+type's references in another org are counted too. A mixed admin selection removes nothing if a later row is
+global, belongs to another org or has referenced data. An owner may delete an unused org-owned type regardless
+of the badge; the badge cannot grant a non-owner permission or make a global type org-owned.
+
+This contract preserves the module lifecycle rather than inventing an immutable flag and a second bypass:
+`kitsune/person` sets `is_system` and its supported uninstall removes its unused global type. Making that flag
+an unconditional lock would break uninstall; adding a way around it would need a separate authority contract
+and would not make "undeletable" true. The reference guard already protects what must survive. The flag is not
+added to blueprint declarations: those declare org-owned schema, not install-wide system identity.
+
+Permanent org teardown remains the deliberate database-cascade exception and removes its types, entries and
+revisions; soft-deleting the org retains them. `entry_revisions.entry_type_id` therefore uses CASCADE, not
+RESTRICT: the PHP reference count protects a standalone type delete. Direct SQL bypasses these PHP guards,
+and guarded builders refuse `truncate()`. No flag values or existing rows are migrated, no authorization or
+deletion behavior is changed, and no public API or resource-floor requirement is added. The historical
+observation above stays visible; this amendment answers its open question.
+
+`SystemTypeDeletionContractTest` pins the two flag values across those doors, reference states, admin
+predicates, atomic selections, cross-org references, teardown and direct-SQL boundary. `PersonModuleTest`
+continues to exercise the actual module uninstall rather than a substitute type deletion.
 
 ### Amendment — The built-in schema engine is outside the module lifecycle, 2026-10-23 (#257)
 
@@ -4857,6 +4915,63 @@ declarations as well as its types, fields and roles. This checks the applied dec
 the live decision the operator may have edited since apply. Seed takes the same organisation lock as schema apply
 and merge, after the schema receipt and before the site or type locks. At the command boundary the stored site
 handle must equal the supplied handle, even when the database collation treats another spelling as equal.
+
+---
+
+### Amendment — Existing-installation admin blueprint flow, 2026-10-26 (#206)
+
+The admin flow belongs with the owner's Structure screens. A blueprint changes **Org-wide** schema and roles even
+when the panel is opened through one Site. The page must say which Org it changes; the current authenticated Owner
+of that Org is the authority, checked at the page, every review and every submission. A client-supplied Org id,
+definition class, handle or stale modal is not authority. This is an existing-installation flow, not the first-owner
+claim or a package marketplace. Only definitions already registered by installed code are available to apply.
+
+Review presents the registered declaration and the current receipt separately: available and installed versions,
+an unfinished apply, types, fields and roles. Apply, additive upgrade and interrupted completion use the existing
+`BlueprintApplier::apply()`; the page must not reproduce its writes or imply that a declaration summary is a
+successful dry run. The kernel's named refusals remain visible, with unexpected storage failures mapped without
+exposing SQL or its bindings.
+
+Reverse needs a read-only obstacle review before concrete confirmation of the blueprint and Org. Its preview uses
+the **same manifest reader, lock order and obstacle planner** as the actual reverse, in a transaction containing
+locking reads only. It must never obtain a preview by performing reverse and rolling it back: reverse includes
+schema work outside its row transaction, and rollback would not make that safe on every engine. The preview
+reports what would be removed, kept or already gone, named obstacles, and receipt-only cleanup of an uncommitted or
+untrusted manifest. It performs no save, delete, audit or DDL and returns no planner model instances.
+
+This review is advisory. Locks end when it returns; another request may create content, assign a holder or change
+the receipt before confirmation. A submit rechecks current ownership and the reviewed identity, and the actual
+reverse takes its own locks and recomputes its plan. A previously clear preview never grants permission to delete
+past new content or authority. No purge option, storage unlock or first-owner shortcut is added.
+
+**Implementation status:** this candidate adds the owner-only Structure page, local declarations and receipt versions,
+concrete signed review identity, and the existing apply/reverse writers. A purpose-prefixed HMAC-SHA256 of current
+facts, keyed by the server's application key, binds the actor, Site, Org,
+operation, definition and exact receipt; the kernel checks the receipt again after the page recheck. The browser gets
+only the digest, not a receipt or a decryptable payload. A missing key refuses review and a rotated key invalidates it.
+The first full candidate used an encrypted token and failed the credential-surface guard: ADR-040 reserves core's
+encryption/decryption for its credential cipher. Signing authenticates these facts without opening another cipher
+door, and that guard remains unchanged. This token is not an
+ownership lease. Revocation before a submission is refused, and lifecycle row locks still govern concurrent writes.
+Wrong or stale confirmation errors belong to the mounted field's full state path so they are visible; a successful
+action performs a fresh page load so the owner sees the committed receipt rather than the pre-action schema cache.
+Focused SQLite and four browser journeys have passed, including dashboard navigation, content refusal, stale review,
+cross-org access refusal, keyboard/focus and RTL axe checks. Full/native and complete canonical browser qualification
+remain owed, as do the accessibility inventory's human checks. No delivery or conformance is claimed here. Earlier CLI and reverse
+reasoning above remains unchanged. Later availability/seed extensions must remain visible to this flow's kernel
+review when independently integrated; pending feature branches do not establish support on current main.
+
+**Availability review integration (2026-11-25).** The owner sees the declared availability decisions in
+the apply summary. The review token binds those declarations and the database identities of newly targeted
+sites or site groups. Confirmation verifies the current targets through the same preparation used by the
+kernel. The row transaction then locks and rechecks those captured targets before changing availability.
+An existing receipt keeps its recorded targets and operator edits.
+
+The reverse preview takes the same seed locks as reverse. If seed facts point to retained entries, revisions
+or relations, the preview names the refusal and offers no structure removal. A malformed or abandoned
+schema with seed facts cannot be advertised as safe to clear. Confirmation takes fresh locks and applies the
+same checks again. The token binds the displayed reverse plan. Under its own locks, reverse refuses if rows
+would be kept or removed differently or if the action has become receipt-only. Apply remains structure-only.
 
 ---
 
@@ -12123,9 +12238,6 @@ When it lands:
 
 ## Open questions
 
-- **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
-  admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
-  to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
 - **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
   wrong everywhere it appears, and repointing it is an amendment rather than a sweep

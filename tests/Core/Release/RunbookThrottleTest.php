@@ -150,6 +150,7 @@ function throttleCase(string $state, array $case): void
 
 /**
  * Seed a bucket that this run did not fill, as an earlier run or a co-tenant of the egress would.
+ * Anchor the remaining lifetimes to the first store observation so process startup cannot spend them.
  *
  * ⚠️ TWO EXPIRIES, BECAUSE THE LIMITER KEEPS TWO KEYS. `RateLimiter::increment()` adds the COUNT with the
  * same decay it adds `:timer` with, so the two normally go together — but the timer can be evicted first
@@ -163,8 +164,8 @@ function throttleBucket(string $state, string $address, int $attempts, ?int $exp
     $buckets = json_decode((string) @file_get_contents($state.'/buckets.json'), true) ?: [];
     $buckets[$address] = [
         'attempts' => $attempts,
-        'timer' => $expiresIn === null ? null : time() + $expiresIn,
-        'counted_until' => time() + ($countedFor ?? $expiresIn ?? 0),
+        'timer_remaining' => $expiresIn,
+        'count_remaining' => $countedFor ?? $expiresIn ?? 0,
     ];
 
     File::put($state.'/buckets.json', (string) json_encode($buckets, JSON_PRETTY_PRINT));
@@ -751,6 +752,23 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
     $buckets = readJson($state.'/buckets.json');
     $reads = (int) (@file_get_contents($state.'/store-reads') ?: 0);
     file_put_contents($state.'/store-reads', (string) ($reads + 1));
+    $now = time();
+
+    if ($reads === 0 && $buckets !== []) {
+        foreach ($buckets as $address => $bucket) {
+            if (! array_key_exists('count_remaining', $bucket)) {
+                continue;
+            }
+
+            $buckets[$address] = [
+                'attempts' => $bucket['attempts'],
+                'timer' => $bucket['timer_remaining'] === null ? null : $now + $bucket['timer_remaining'],
+                'counted_until' => $now + $bucket['count_remaining'],
+            ];
+        }
+
+        file_put_contents($state.'/buckets.json', json_encode($buckets, JSON_THROW_ON_ERROR));
+    }
 
     echo 'STORE '.json_encode([
         'base' => $request['base'] ?? '',
@@ -763,7 +781,7 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
         // the vendored class. A case can take either away, as a release whose package renamed it would.
         'checksum_max' => array_key_exists('checksum_max', $case) ? $case['checksum_max'] : 10,
         'checksum_decay' => array_key_exists('checksum_decay', $case) ? $case['checksum_decay'] : 600,
-        'now' => time(),
+        'now' => $now,
     ], JSON_UNESCAPED_SLASHES)."\n";
 
     // ⚠️ THE KEY HOLDS THE COMPONENT, SO A READ FOR ANOTHER CLASS FINDS NOTHING. A stub that answered by
@@ -784,7 +802,7 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
         // to say when.
         $expires = is_array($held) ? ($held['counted_until'] ?? $held['timer'] ?? null) : null;
 
-        if (is_int($expires) && $expires <= time()) {
+        if (is_int($expires) && $expires <= $now) {
             $held = null;
         }
 
@@ -1333,8 +1351,7 @@ it('voids a bucket somebody else had already filled, rather than measuring throu
 it('waits out a bucket that is about to expire, and then measures', function (): void {
     // The same seam, from the other side: a bucket whose timer falls inside the bound is waited out once,
     // and the run then measures a window it owns. The store is read three times, not two.
-    // Live when the pre-read finds it, and gone within the bound — the wait is measured, not asserted to
-    // the second: how long the run takes to reach the pre-read is the machine's business, not the check's.
+    // The fixture has four seconds left at the pre-read and is gone by the next read.
     throttleBucket($this->state, '203.0.113.50', 5, 4);
 
     $run = throttleRun($this->dir, $this->family);

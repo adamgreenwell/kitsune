@@ -296,7 +296,7 @@ it('runs the admitted Docker migration under the runtime lock and leaves the fen
     }
 });
 
-it('admits native migration under the installer lock and retains the old tree during staging', function (bool $interrupted): void {
+it('admits native migration under the installer lock and retains the old tree during staging', function (bool $interrupted, bool $recover): void {
     mkdir($this->state.'/database', 0700);
     mkdir($this->state.'/storage/app/public', 0700, true);
     $nativeDatabase = $this->state.'/database/database.sqlite';
@@ -395,7 +395,81 @@ it('admits native migration under the installer lock and retains the old tree du
             ->and($journal->state()['phase'])->toBe(Journal::STAGING_SERVICE);
         SelfHostNativeUpgrade::confirmPrivateService($journal, $admission, $installation, $this->state, $offline);
         expect($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+
+        if ($recover) {
+            $stateUser = fileowner($this->state);
+            $stateGroup = filegroup($this->state);
+            if ($stateUser === 0 || $stateGroup === 0) {
+                $this->markTestSkipped('Run this fixture with an unprivileged owner.');
+            }
+            expect(fn () => SelfHostNativeUpgrade::recover($journal, $admission, $lock, $installation, $this->state,
+                $this->backup, $stateUser, $stateGroup, $readinessFailure))
+                ->toThrow(RuntimeException::class, 'check failed')
+                ->and($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+
+            expect(fn () => SelfHostNativeUpgrade::recover($journal, $admission, $lock, $installation, $this->state,
+                $installation.'/nested-backup', $stateUser, $stateGroup, $unexpected))
+                ->toThrow(InvalidArgumentException::class, 'outside native cutover paths')
+                ->and($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+
+            expect(fn () => SelfHostNativeUpgrade::recover($journal, $admission, $lock, $installation, $this->state,
+                $this->backup, $stateUser + 1, $stateGroup, $offline))
+                ->toThrow(RuntimeException::class, 'does not match the installer and runtime ownership')
+                ->and($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+
+            SelfHostNativeUpgrade::recover($journal, $admission, $lock, $installation, $this->state,
+                $this->backup, $stateUser, $stateGroup, $offline);
+            $failedState = $this->state.'.failed-'.$admission->plan;
+            $failedCode = $installation.'.failed-'.$admission->plan;
+            $before = new SQLite3($this->state.'/database/database.sqlite', SQLITE3_OPEN_READONLY);
+            $after = new SQLite3($failedState.'/database/database.sqlite', SQLITE3_OPEN_READONLY);
+            try {
+                expect($journal->state()['phase'])->toBe(Journal::RESTORED)
+                    ->and(file_get_contents($installation.'/app/artisan'))->toBe('installed')
+                    ->and(file_get_contents($failedCode.'/app/artisan'))->toBe('staged')
+                    ->and(fileperms($this->state) & 0777)->toBe(0750)
+                    ->and(fileperms($this->state.'/.env') & 0777)->toBe(0640)
+                    ->and(fileperms($this->state.'/database/database.sqlite') & 0777)->toBe(0600)
+                    ->and($before->querySingle("SELECT count(*) FROM pragma_table_info('articles') WHERE name = 'slug'"))->toBe(0)
+                    ->and($after->querySingle("SELECT count(*) FROM pragma_table_info('articles') WHERE name = 'slug'"))->toBe(1);
+            } finally {
+                $before->close();
+                $after->close();
+            }
+
+            return;
+        }
+
+        $receipt = file_get_contents($installation.'/.installed');
+        file_put_contents($installation.'/.installed', 'wrong receipt');
+        expect(fn () => SelfHostNativeUpgrade::beginTraffic($journal, $admission, $lock, $installation, $this->state, $unexpected))
+            ->toThrow(RuntimeException::class, 'does not match the staged upgrade')
+            ->and($journal->state()['phase'])->toBe(Journal::ACTIVATED);
+        file_put_contents($installation.'/.installed', $receipt);
+
+        $requireLock = function () use ($lock): void {
+            $other = fopen($lock, 'r+b');
+            try {
+                expect(flock($other, LOCK_EX | LOCK_NB))->toBeFalse();
+            } finally {
+                fclose($other);
+            }
+        };
+        SelfHostNativeUpgrade::beginTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
+        expect($journal->state()['phase'])->toBe(Journal::OPENING_TRAFFIC);
+        expect(fn () => SelfHostNativeUpgrade::confirmTraffic($journal, $admission, $lock, $installation, $this->state, $readinessFailure))
+            ->toThrow(RuntimeException::class, 'check failed')
+            ->and($journal->state()['phase'])->toBe(Journal::OPENING_TRAFFIC);
+        expect(fn () => SelfHostUpgradeExecution::recover($journal, $admission->plan, 'native', $this->backup, $unexpected))
+            ->toThrow(RuntimeException::class, 'Recover only the recorded interrupted upgrade');
+        SelfHostNativeUpgrade::beginTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
+        SelfHostNativeUpgrade::confirmTraffic($journal, $admission, $lock, $installation, $this->state, $requireLock);
+        expect($journal->state()['phase'])->toBe(Journal::COMPLETE);
     } finally {
         $journal->close();
     }
-})->with(['normal switch' => [false], 'interrupted after retaining the old tree' => [true]]);
+})->with([
+    'normal switch' => [false, false],
+    'interrupted after retaining the old tree' => [true, false],
+    'pre-traffic recovery' => [false, true],
+]);

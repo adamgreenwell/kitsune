@@ -59,6 +59,17 @@ it('keeps persisted configuration, database and media together in a restorable p
     expect(fn () => SelfHostBackupSet::stageRestore($mode, $backup, $result['inventory_sha256'], $stage))
         ->toThrow(RuntimeException::class, 'new private directory');
 
+    expect(SelfHostBackupSet::verifyRestored($mode, $stage, $result['inventory_sha256'])['sha256'])
+        ->toBe($result['database_sha256']);
+    $extra = dirname($stage.'/'.$sqlitePath).'/sidecar';
+    file_put_contents($extra, 'unexpected');
+    expect(fn () => SelfHostBackupSet::verifyRestored($mode, $stage, $result['inventory_sha256']))
+        ->toThrow(RuntimeException::class, 'differs from the recorded backup inventory');
+    unlink($extra);
+    file_put_contents($stage.'/storage/app/private/media/asset.bin', 'modified');
+    expect(fn () => SelfHostBackupSet::verifyRestored($mode, $stage, $result['inventory_sha256']))
+        ->toThrow(RuntimeException::class, 'differs from the recorded backup inventory');
+
     $restored = $this->testPath.'/restored';
     File::copyDirectory($backup, $restored);
     SelfHostBackupSet::verify($mode, $restored, $result['inventory_sha256']);

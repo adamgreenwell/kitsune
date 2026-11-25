@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Release;
 
+use Closure;
 use Dotenv\Dotenv;
 use InvalidArgumentException;
 use RuntimeException;
@@ -154,9 +155,10 @@ final class SelfHostBackupSet
      * Recreate persistent data in a new private root. The adapter verifies the release and takes ownership
      * of the staged root before switching anything into service.
      *
+     * @param  (Closure(string):void)|null  $prepareOwnership
      * @return array{size:int, sha256:string}
      */
-    public static function stageRestore(string $mode, string $backup, string $inventory, string $destination): array
+    public static function stageRestore(string $mode, string $backup, string $inventory, string $destination, ?Closure $prepareOwnership = null): array
     {
         $verified = self::verify($mode, $backup, $inventory);
         $parent = dirname($destination);
@@ -178,10 +180,8 @@ final class SelfHostBackupSet
             self::copyFile($backup.'/.env', $destination.'/.env');
             self::copyFile($backup.'/database.sqlite', $destination.'/'.$database);
             self::copyStorage($backup.'/storage', $destination.'/storage');
-            if (! hash_equals($inventory, self::inventory($mode, $destination, $database))) {
-                throw new RuntimeException('The copied state differs from the recorded backup inventory.');
-            }
-            $actual = SelfHostSqliteBackup::verify($destination.'/'.$database);
+            $prepareOwnership?->__invoke($destination);
+            $actual = self::verifyRestored($mode, $destination, $inventory);
             if ($actual !== $verified) {
                 throw new RuntimeException('The restored database differs from the recorded backup.');
             }
@@ -201,6 +201,29 @@ final class SelfHostBackupSet
         }
 
         return $actual;
+    }
+
+    /** @return array{size:int, sha256:string} */
+    public static function verifyRestored(string $mode, string $directory, string $expectedInventory): array
+    {
+        if (realpath($directory) !== $directory || ! is_dir($directory)
+            || preg_match('/\A[a-f0-9]{64}\z/D', $expectedInventory) !== 1) {
+            throw new InvalidArgumentException('Use a canonical restore path and its recorded inventory digest.');
+        }
+        $database = match ($mode) {
+            'native' => 'database/database.sqlite',
+            'docker' => 'database.sqlite',
+            default => throw new InvalidArgumentException('Choose native or Docker data layout.'),
+        };
+        $expectedChildren = $mode === 'native' ? ['.env', 'database', 'storage'] : ['.env', 'database.sqlite', 'storage'];
+        if (self::children($directory) !== $expectedChildren
+            || ($mode === 'native' && (realpath($directory.'/database') !== $directory.'/database'
+                || ! is_dir($directory.'/database') || self::children($directory.'/database') !== ['database.sqlite']))
+            || ! hash_equals($expectedInventory, self::inventory($mode, $directory, $database))) {
+            throw new RuntimeException('The copied state differs from the recorded backup inventory.');
+        }
+
+        return SelfHostSqliteBackup::verify($directory.'/'.$database);
     }
 
     private static function copyStorage(string $source, string $destination): void

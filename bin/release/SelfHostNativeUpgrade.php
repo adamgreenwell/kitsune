@@ -118,15 +118,261 @@ final class SelfHostNativeUpgrade
             || $phase['phase'] !== SelfHostUpgradeJournal::STAGING_SERVICE) {
             throw new RuntimeException('Only the recorded staged native service can be confirmed.');
         }
+        self::requireCurrentTarget($admission, $installation, $state);
+        $verifyPrivateService();
+        $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
+    }
+
+    /** @param Closure():void $verifyCurrentTarget */
+    public static function beginTraffic(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $lockPath,
+        string $installation,
+        string $state,
+        Closure $verifyCurrentTarget,
+    ): void {
+        self::withInstallerLock($lockPath, static function () use ($journal, $admission, $installation, $state, $verifyCurrentTarget): void {
+            self::requireCurrentTarget($admission, $installation, $state);
+            SelfHostUpgradeExecution::beginTraffic($journal, $admission->plan, $verifyCurrentTarget);
+        });
+    }
+
+    /** @param Closure():void $verifyPublishedTarget */
+    public static function confirmTraffic(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $lockPath,
+        string $installation,
+        string $state,
+        Closure $verifyPublishedTarget,
+    ): void {
+        self::withInstallerLock($lockPath, static function () use ($journal, $admission, $installation, $state, $verifyPublishedTarget): void {
+            self::requireCurrentTarget($admission, $installation, $state);
+            SelfHostUpgradeExecution::confirmTraffic($journal, $admission->plan, $verifyPublishedTarget);
+        });
+    }
+
+    /** @param Closure():void $assertWritersStopped */
+    public static function recover(
+        SelfHostUpgradeJournal $journal,
+        SelfHostUpgradeAdmission $admission,
+        string $lockPath,
+        string $installation,
+        string $state,
+        string $backup,
+        int $runtimeUser,
+        int $runtimeGroup,
+        Closure $assertWritersStopped,
+    ): void {
+        if ($runtimeUser <= 0 || $runtimeGroup <= 0) {
+            throw new InvalidArgumentException('Native recovery requires the dedicated unprivileged runtime user and group.');
+        }
+        $pendingState = $state.'.restore-'.$admission->plan;
+        $failedState = $state.'.failed-'.$admission->plan;
+        $previous = $installation.'.before-'.$admission->plan;
+        $failedCode = $installation.'.failed-'.$admission->plan;
+        $stateParent = self::requireSwitchPaths($admission, $state, $pendingState);
+        $codeParent = self::requireSwitchPaths($admission, $installation, $previous);
+        $paths = [$state, $installation, $pendingState, $failedState, $previous, $failedCode];
+        $journal->requireSeparateFrom(...$paths);
+        foreach ($paths as $path) {
+            if ($backup === $path || str_starts_with($backup, $path.'/') || str_starts_with($path, $backup.'/')) {
+                throw new InvalidArgumentException('Keep the verified backup outside native cutover paths.');
+            }
+        }
+
+        self::withInstallerLock($lockPath, static function () use (
+            $journal, $admission, $installation, $state, $backup, $assertWritersStopped, $pendingState,
+            $failedState, $previous, $failedCode, $stateParent, $codeParent, $runtimeUser, $runtimeGroup,
+        ): void {
+            $assertWritersStopped();
+            SelfHostUpgradeExecution::recover($journal, $admission->plan, 'native', $backup,
+                static function (string $backup, string $inventory, string $database) use (
+                    $admission, $installation, $state, $pendingState, $failedState, $previous, $failedCode,
+                    $stateParent, $codeParent, $runtimeUser, $runtimeGroup,
+                ): void {
+                    if (self::present($state)) {
+                        self::verifyRecoveryCode($admission, $installation, $previous, $failedCode, $state);
+                    }
+                    self::restoreState($state, $pendingState, $failedState, $stateParent,
+                        $backup, $inventory, $database, $runtimeUser, $runtimeGroup);
+                    self::verifyRecoveryCode($admission, $installation, $previous, $failedCode, $state);
+
+                    if (self::present($previous)) {
+                        self::clearBootCache($previous.'/app');
+                        if (self::present($installation)) {
+                            self::renameAndSync($installation, $failedCode, $codeParent);
+                        }
+                        self::renameAndSync($previous, $installation, $codeParent);
+                    } else {
+                        self::clearBootCache($installation.'/app');
+                    }
+
+                    self::requireRestoredOrigin($admission, $installation, $state);
+                });
+        });
+    }
+
+    private static function restoreState(
+        string $state,
+        string $pending,
+        string $failed,
+        string $parent,
+        string $backup,
+        string $inventory,
+        string $database,
+        int $runtimeUser,
+        int $runtimeGroup,
+    ): void {
+        $hasState = self::present($state);
+        $hasFailed = self::present($failed);
+        $hasPending = self::present($pending);
+        $originState = $hasFailed ? $failed : $state;
+        $controlOwner = self::verifyNativeOwner($originState, $runtimeUser, $runtimeGroup);
+        if ($hasFailed && $hasState) {
+            if ($hasPending) {
+                throw new RuntimeException('Native recovery found both active and pending restored state.');
+            }
+        } else {
+            if (! $hasFailed && (! $hasState || realpath($state) !== $state || ! is_dir($state))) {
+                throw new RuntimeException('Native recovery could not locate the original state to retain.');
+            }
+            if (! $hasPending) {
+                $scratch = $pending.'.'.bin2hex(random_bytes(8));
+                SelfHostBackupSet::stageRestore('native', $backup, $inventory, $scratch,
+                    static fn (string $path) => self::prepareNativeOwnership($path, $runtimeUser, $runtimeGroup));
+                self::renameAndSync($scratch, $pending, $parent);
+            }
+            if (SelfHostBackupSet::verifyRestored('native', $pending, $inventory)['sha256'] !== $database) {
+                throw new RuntimeException('The pending native restore differs from the verified database.');
+            }
+            self::verifyNativeOwner($pending, $runtimeUser, $runtimeGroup, $controlOwner);
+            if ($hasState) {
+                self::renameAndSync($state, $failed, $parent);
+            }
+            self::renameAndSync($pending, $state, $parent);
+        }
+        if (SelfHostBackupSet::verifyRestored('native', $state, $inventory)['sha256'] !== $database) {
+            throw new RuntimeException('The native restore differs from the verified database.');
+        }
+        self::verifyNativeOwner($state, $runtimeUser, $runtimeGroup, $controlOwner);
+    }
+
+    private static function verifyNativeOwner(string $root, int $user, int $group, ?int $expectedControlOwner = null): int
+    {
+        if (realpath($root) !== $root || ! is_dir($root)) {
+            throw new RuntimeException('Native recovery could not locate the original or verified state.');
+        }
+        clearstatcache(true, $root);
+        $owner = @fileowner($root);
+        if ($owner === false || ($expectedControlOwner !== null && $expectedControlOwner !== $owner)) {
+            throw new RuntimeException('The restored native control files have a different owner from the installation.');
+        }
+        $layout = [
+            '' => [$owner, 0040000, 0750],
+            '/.env' => [$owner, 0100000, 0640],
+            '/database' => [$user, 0040000, 0700],
+            '/database/database.sqlite' => [$user, 0100000, 0600],
+            '/storage' => [$user, 0040000, 0700],
+        ];
+        foreach ($layout as $relative => [$expectedUser, $type, $mode]) {
+            $path = $root.$relative;
+            clearstatcache(true, $path);
+            $info = @lstat($path);
+            if ($info === false || ($info['mode'] & 0170000) !== $type
+                || $info['uid'] !== $expectedUser || $info['gid'] !== $group
+                || ($expectedControlOwner !== null && ($info['mode'] & 0777) !== $mode)) {
+                throw new RuntimeException('The native state does not match the installer and runtime ownership.');
+            }
+        }
+
+        return $owner;
+    }
+
+    private static function prepareNativeOwnership(string $root, int $user, int $group): void
+    {
+        foreach (['database', 'storage'] as $area) {
+            $files = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($root.'/'.$area, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST,
+            );
+            foreach ($files as $file) {
+                self::setNativeOwnership($file->getPathname(), $user, $group, $file->isDir() ? 0700 : 0600);
+            }
+            self::setNativeOwnership($root.'/'.$area, $user, $group, 0700);
+        }
+        self::setNativeOwnership($root.'/.env', null, $group, 0640);
+        self::setNativeOwnership($root, null, $group, 0750);
+    }
+
+    private static function setNativeOwnership(string $path, ?int $user, int $group, int $mode): void
+    {
+        clearstatcache(true, $path);
+        $info = @lstat($path);
+        if ($info === false || ! in_array($info['mode'] & 0170000, [0040000, 0100000], true)
+            || ($user !== null && $info['uid'] !== $user && ! @chown($path, $user))
+            || ($info['gid'] !== $group && ! @chgrp($path, $group)) || ! @chmod($path, $mode)) {
+            throw new RuntimeException('The restored native state could not be assigned to the runtime.');
+        }
+        self::sync($path);
+    }
+
+    private static function verifyRecoveryCode(
+        SelfHostUpgradeAdmission $admission,
+        string $installation,
+        string $previous,
+        string $failed,
+        string $state,
+    ): void {
+        if (! self::present($previous)) {
+            self::requireRestoredOrigin($admission, $installation, $state);
+        } else {
+            self::requireRestoredOrigin($admission, $previous, $state);
+            if (self::present($installation)) {
+                if (self::present($failed)) {
+                    throw new RuntimeException('The retained failed native code path is occupied.');
+                }
+                self::requireCurrentTarget($admission, $installation, $state);
+            }
+        }
+        if (self::present($failed)) {
+            self::requireCurrentTarget($admission, $failed, $state);
+        }
+    }
+
+    private static function requireRestoredOrigin(SelfHostUpgradeAdmission $admission, string $installation, string $state): void
+    {
+        if (realpath($installation) !== $installation) {
+            throw new RuntimeException('The original native installation is missing or linked.');
+        }
+        $receipt = Files::control($installation.'/.release', 256);
+        self::requireReceipt($receipt, $admission->origin, $admission->platform);
+        if ($receipt !== Files::control($installation.'/.installed', 256)
+            || ! hash_equals($admission->originRuntime, SelfHostNativeRuntime::fingerprint($installation.'/app', $state))) {
+            throw new RuntimeException('The original native runtime differs from the admitted release.');
+        }
+    }
+
+    private static function renameAndSync(string $source, string $destination, string $parent): void
+    {
+        if (self::present($destination) || ! rename($source, $destination)) {
+            throw new RuntimeException('Native recovery could not move a verified path into place.');
+        }
+        self::sync($parent);
+    }
+
+    private static function requireCurrentTarget(SelfHostUpgradeAdmission $admission, string $installation, string $state): void
+    {
+        if ($admission->mode !== 'native') {
+            throw new InvalidArgumentException('The admission does not authorize a native upgrade.');
+        }
         $receipt = Files::control($installation.'/.release', 256);
         self::requireReceipt($receipt, $admission->target, $admission->platform);
         if ($receipt !== Files::control($installation.'/.installed', 256)
             || ! hash_equals($admission->targetRuntime, SelfHostNativeRuntime::fingerprint($installation.'/app', $state))) {
             throw new RuntimeException('The running native service does not match the staged upgrade.');
         }
-
-        $verifyPrivateService();
-        $journal->record($admission->plan, SelfHostUpgradeJournal::ACTIVATED);
     }
 
     private static function requireSwitchPaths(SelfHostUpgradeAdmission $admission, string $installation, string $staging): string
