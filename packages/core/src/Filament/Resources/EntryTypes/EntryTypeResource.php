@@ -89,12 +89,12 @@ class EntryTypeResource extends Resource
     {
         return $schema->components([
             Section::make('Identity')
-                ->description('The handle appears in URLs and in the API, and cannot be changed once entries exist.')
+                ->description(__('kitsune::admin.type_handle_description'))
                 ->schema([
                     TextInput::make('handle')
                         ->required()
                         ->maxLength(64)
-                        ->helperText('Lowercase, no spaces. Used in /c/{type} and in the API.')
+                        ->helperText(__('kitsune::admin.type_handle_help'))
                         // Reserved handles are enforced at save (ADR-012), but
                         // a form error beats an exception the author cannot act
                         // on — so the same list is surfaced here as validation.
@@ -128,10 +128,10 @@ class EntryTypeResource extends Resource
                         ])
                         ->disabled(fn (?EntryType $record): bool => $record?->exists === true)
                         ->dehydrated(),
-                    TextInput::make('name')->required()->maxLength(255)->label('Singular name'),
+                    TextInput::make('name')->required()->maxLength(255)->label(__('kitsune::admin.singular_name')),
                     TextInput::make('plural_name')->required()->maxLength(255),
                     Select::make('icon')
-                        ->label('Icon')
+                        ->label(__('kitsune::admin.icon'))
                         // ⚠️ A SELECT, not free text. This column is rendered
                         // into the navigation on every admin page, and Blade
                         // Icons throws on a name it cannot resolve — so a typo
@@ -141,7 +141,7 @@ class EntryTypeResource extends Resource
                         ->options(Icons::options())
                         ->searchable()
                         ->native(false)
-                        ->helperText('Shown in the sidebar. Leave empty for the default.'),
+                        ->helperText(__('kitsune::admin.icon_help')),
                     Textarea::make('description')->rows(2)->columnSpanFull(),
                     /*
                      * ⚠️ OFFERED ON CREATE ONLY, AND THE FORM IS NOT THE LOCK. `EntryType::guardMediaFlag()` refuses
@@ -177,10 +177,10 @@ class EntryTypeResource extends Resource
                 ->columns(2),
 
             Section::make('Privacy')
-                ->description('ADR-020: "everything you hold about this person" is unanswerable without knowing which field identifies the person.')
+                ->description(__('kitsune::admin.subject_description'))
                 ->schema([
                     Select::make('subject_field_id')
-                        ->label('Subject identifier')
+                        ->label(__('kitsune::admin.subject_identifier'))
                         ->options(fn (?EntryType $record): array => $record === null ? [] : Field::query()
                             ->where('entry_type_id', $record->getKey())
                             ->with('fieldStorage')
@@ -204,7 +204,7 @@ class EntryTypeResource extends Resource
                             && self::subjectRefusalFor($record, $value) !== null)
                         ->searchable()
                         ->helperText(fn (?EntryType $record): string => match (true) {
-                            $record === null => 'Available once the type has fields.',
+                            $record === null => __('kitsune::admin.subject_unavailable'),
                             default => self::subjectHelperText($record),
                         })
                         ->disabled(fn (?EntryType $record): bool => $record === null),
@@ -220,10 +220,10 @@ class EntryTypeResource extends Resource
             ->columns([
                 TextColumn::make('name')->searchable()->sortable(),
                 TextColumn::make('handle')->badge()->searchable(),
-                TextColumn::make('fields_count')->counts('fields')->label('Fields'),
+                TextColumn::make('fields_count')->counts('fields')->label(__('kitsune::admin.fields')),
                 IconColumn::make('is_system')
                     ->boolean()
-                    ->label('System')
+                    ->label(__('kitsune::admin.system'))
                     ->tooltip('Global types belong to every org and cannot be edited here.'),
                 // The compliance surface, in the list rather than buried:
                 // a type holding personal data with no subject nominated is a
@@ -235,7 +235,7 @@ class EntryTypeResource extends Resource
                 // none needs no subject, and warning about it teaches people to
                 // ignore the warning that matters. See `subjectState()`.
                 IconColumn::make('subject_field_id')
-                    ->label('Subject')
+                    ->label(__('kitsune::admin.subject'))
                     ->getStateUsing(fn (EntryType $record): string => self::subjectState($record))
                     ->icon(fn (string $state): Heroicon => match ($state) {
                         'nominated' => Heroicon::OutlinedCheckCircle,
