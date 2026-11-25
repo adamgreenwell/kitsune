@@ -320,6 +320,23 @@ it('pins the published candidate count to the harness case file', function (): v
     }
 });
 
+it('preserves the escape and case-folding inputs in the parity corpus', function (): void {
+    $cases = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3).'/tools/pattern-parity/cases.json'),
+        true,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+    $byId = array_column($cases, null, 'id');
+
+    expect($byId['class-u-escape-range']['pattern'])->toBe('^[\u0041-\u005A]+$')
+        ->and($byId['class-u-escape-range']['subject'])->toBe('AZ')
+        ->and($byId['bslash-u-four-hex']['pattern'])->toBe('^\u0041$')
+        ->and($byId['bslash-u-four-hex']['subject'])->toBe('A')
+        ->and($byId['scoped-modifier-kelvin']['pattern'])->toBe('^(?i:k)$')
+        ->and($byId['scoped-modifier-kelvin']['subject'])->toBe("\u{212A}");
+});
+
 it('pins the two halves of the refusal accounting to each other', function (): void {
     /*
      * ⚠️ THIS NUMBER HAS ALREADY DRIFTED ONCE, and §4 says so in its own prose: the paragraph read
