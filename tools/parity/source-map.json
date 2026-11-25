@@ -1,0 +1,19 @@
+{
+  "common": [
+    "packages/core/src/Fields/Pattern.php",
+    "tools/parity/provenance.php",
+    "tools/parity/provenance.mjs",
+    "tools/parity/source-map.json"
+  ],
+  "pattern": [
+    "tools/pattern-parity/measure.php",
+    "tools/pattern-parity/measure.mjs",
+    "tools/pattern-parity/compare.php"
+  ],
+  "property": [
+    "tools/property-parity/names.php",
+    "tools/property-parity/measure.php",
+    "tools/property-parity/measure.mjs",
+    "tools/property-parity/compare.php"
+  ]
+}

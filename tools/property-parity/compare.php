@@ -33,15 +33,54 @@ declare(strict_types=1);
  * which is a broken run rather than a finding.
  */
 
-require __DIR__.'/../../vendor/autoload.php';
+require __DIR__.'/names.php';
+require __DIR__.'/../parity/provenance.php';
 
 use Kitsune\Core\Fields\Pattern;
 
-$pcre = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-$ecma = json_decode((string) file_get_contents($argv[2]), true, 512, JSON_THROW_ON_ERROR);
+function propertyResults(string $path, string $corpus, string $engine, array $names): array
+{
+    $results = parityResults($path, 'property', $corpus, $engine, $names);
+    foreach ($results as $name => $row) {
+        if (parityHasKeys((object) $row, ['id', 'error']) && $row['error'] === 'does not compile') {
+            continue;
+        }
+        if (! parityHasKeys((object) $row, ['id', 'count', 'sha', 'ranges']) || ! is_int($row['count'])
+            || ! is_string($row['sha']) || ! is_array($row['ranges'])) {
+            throw new InvalidArgumentException("Malformed {$engine} membership outcome for {$name}.");
+        }
 
-if (array_keys($pcre) !== array_keys($ecma)) {
-    fwrite(STDERR, "The two dumps cover different names — regenerate both from one names file.\n");
+        $count = 0;
+        $previousEnd = -2;
+        foreach ($row['ranges'] as $range) {
+            if (! is_array($range) || count($range) !== 2 || ! is_int($range[0]) || ! is_int($range[1])
+                || $range[0] <= $previousEnd + 1 || $range[1] < $range[0] || $range[1] > 0x10FFFF
+                || ($range[0] <= 0xDFFF && $range[1] >= 0xD800)) {
+                throw new InvalidArgumentException("Invalid {$engine} scalar membership range for {$name}.");
+            }
+
+            $count += $range[1] - $range[0] + 1;
+            $previousEnd = $range[1];
+        }
+
+        if ($row['count'] !== $count || $row['sha'] !== sha1(json_encode($row['ranges'], JSON_THROW_ON_ERROR))) {
+            throw new InvalidArgumentException("Inconsistent {$engine} membership summary for {$name}.");
+        }
+    }
+
+    return $results;
+}
+
+try {
+    if (count($argv) !== 3) {
+        throw new InvalidArgumentException('Usage: compare.php PCRE_DUMP V8_DUMP');
+    }
+    $corpus = parityPropertyCorpus();
+    $names = json_decode($corpus, true, 512, JSON_THROW_ON_ERROR)['names'];
+    $pcre = propertyResults($argv[1], $corpus, 'pcre2', $names);
+    $ecma = propertyResults($argv[2], $corpus, 'v8', $names);
+} catch (InvalidArgumentException|JsonException $error) {
+    fwrite(STDERR, $error->getMessage()."\n");
     exit(2);
 }
 

@@ -21,26 +21,42 @@ declare(strict_types=1);
  * anyway, and they are reported rather than hidden.
  */
 
-require __DIR__.'/../../vendor/autoload.php';
+require_once __DIR__.'/../../vendor/autoload.php';
 
 use Kitsune\Core\Fields\Pattern;
 
-if (! class_exists(IntlChar::class)) {
-    fwrite(STDERR, "This harness needs the intl extension to enumerate script names.\n");
-    exit(2);
+function parityPropertyCorpus(): string
+{
+    if (! class_exists(IntlChar::class)) {
+        throw new InvalidArgumentException('This harness needs the intl extension to enumerate script names.');
+    }
+
+    /** @var list<string> $properties */
+    $properties = (new ReflectionClass(Pattern::class))->getConstant('PORTABLE_PROPERTIES');
+
+    $names = $properties;
+    $max = IntlChar::getIntPropertyMaxValue(IntlChar::PROPERTY_SCRIPT);
+
+    for ($value = 0; $value <= $max; $value++) {
+        $script = IntlChar::getPropertyValueName(IntlChar::PROPERTY_SCRIPT, $value, IntlChar::LONG_PROPERTY_NAME);
+
+        if (is_string($script) && $script !== '') {
+            $names[] = 'Script='.$script;
+        }
+    }
+
+    if ($names === [] || count($names) !== count(array_unique($names))) {
+        throw new InvalidArgumentException('The property corpus must contain unique names.');
+    }
+
+    return json_encode(['icu_version' => INTL_ICU_VERSION, 'names' => $names], JSON_THROW_ON_ERROR)."\n";
 }
 
-/** @var list<string> $properties */
-$properties = (new ReflectionClass(Pattern::class))->getConstant('PORTABLE_PROPERTIES');
-
-$names = $properties;
-
-for ($value = 0; $value < 250; $value++) {
-    $script = IntlChar::getPropertyValueName(IntlChar::PROPERTY_SCRIPT, $value, IntlChar::LONG_PROPERTY_NAME);
-
-    if ($script !== false) {
-        $names[] = 'Script='.$script;
+if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
+    try {
+        echo parityPropertyCorpus();
+    } catch (InvalidArgumentException $error) {
+        fwrite(STDERR, $error->getMessage()."\n");
+        exit(2);
     }
 }
-
-echo json_encode($names, JSON_THROW_ON_ERROR), "\n";
