@@ -3,7 +3,6 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const { menuItem } = require('./menu');
-const { callsMethod } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 
 /*
@@ -513,25 +512,11 @@ test.describe('a private tile, pressed', () => {
             }
         });
 
-        // Filament's notification bootstrap reissues the session cookie. Finish it before clearing
-        // the browser's jar, or that in-flight authenticated response signs the fixture back in.
-        // Earlier views have no bootstrap, so observe the markup rather than assume a version.
-        const initializing = [];
-        const captureBootstrap = (response) => {
-            if (callsMethod(response, 'pullNotificationsFromSession')) {
-                initializing.push(response);
-            }
-        };
-        page.on('response', captureBootstrap);
-        try {
-            await openStates(page);
-            if (await page.locator('[x-init="$wire.pullNotificationsFromSession()"]').count()) {
-                await expect.poll(() => initializing.length).toBeGreaterThan(0);
-            }
-            await Promise.all(initializing.map((response) => response.finished()));
-        } finally {
-            page.off('response', captureBootstrap);
-        }
+        // Drain startup responses before clearing the jar: an authenticated notification response
+        // can otherwise restore the session cookie. Filament 5.10.3 starts that request from its
+        // Alpine component instead of the older x-init markup, so markup is not a completion signal.
+        await openStates(page);
+        await page.waitForLoadState('networkidle');
         const tile = privateTile(page, STATE.a);
         const list = page.url();
         await page.context().clearCookies();
@@ -539,6 +524,7 @@ test.describe('a private tile, pressed', () => {
 
         const [answer] = await Promise.all([page.waitForResponse((r) => toRoute(r.url())), tile.button.click()]);
 
+        expect('cookie' in await answer.request().allHeaders()).toBe(false);
         expect(answer.status()).toBe(401);
         expect(answer.headers()['location']).toBeUndefined();
         await expect(tile.line).toHaveText(`${SAYS.signedout} Sign in again`);

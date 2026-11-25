@@ -42,9 +42,22 @@ Also taken seriously, in roughly descending order: authentication and authorisat
 
 ## Supported versions
 
-Kitsune is **pre-alpha and has no released version**. There is nothing deployed to protect yet, and no security support commitment can honestly be made until there is.
+Kitsune is **pre-alpha**. 0.x development packages exist; v1.0 is not released. Package publication is not a
+stable-version security-maintenance commitment, and this policy makes no claim about where that code is deployed.
 
-A supported-versions table appears here at v1.0, alongside the published upgrade policy.
+| Version | Security-maintenance status |
+|---|---|
+| 0.x development packages, including v0.1.0, v0.1.1 and v0.2.0 | No stable-version support commitment; private reports are welcome. |
+| v1.0 and later stable minors | Not yet released; no currently supported stable version is declared. |
+
+Adam selected **the latest stable minor, at its latest patch**, as the maintenance model. Before the first stable
+release, name its supported minor and current patch here. Before a later release supersedes a supported minor,
+publish upgrade instructions and the maintainer's chosen transition/notice and end-of-support terms. No calendar
+support duration, overlap, EOL date or superseded-major coverage is inferred. These remain release decisions.
+
+The [versioning and upgrade policy](docs/versioning-and-upgrades.md) defines the compatibility boundaries and
+case-by-case admission of retained pre-v1.0 databases. It does not qualify an installation or an upgrade. The
+operational intake and continuity rehearsal remains open in [#212](https://github.com/adamgreenwell/kitsune/issues/212).
 
 ## Disclosure
 
