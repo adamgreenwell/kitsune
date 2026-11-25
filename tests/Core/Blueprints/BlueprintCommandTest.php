@@ -351,7 +351,7 @@ it('refuses a reverse with its arguments wrong, writing nothing', function (stri
 
 it('lists reverse among the actions', function (): void {
     $this->artisan('kitsune:blueprint undo fixture --org=acme')
-        ->expectsOutputToContain('`undo` is not a blueprint action. Use: list, status, apply, reverse.')
+        ->expectsOutputToContain('`undo` is not a blueprint action. Use: list, status, apply, seed, reverse.')
         ->assertExitCode(1);
 });
 
