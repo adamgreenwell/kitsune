@@ -23,12 +23,12 @@ use Kitsune\Commerce\Orders\OrderReaderData;
 use Kitsune\Commerce\Orders\OrderRefused;
 use Kitsune\Commerce\Orders\OrderWriter;
 use Kitsune\Core\Blueprints\BlueprintApplier;
-use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\CommittedModuleReceipt;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
 
 /*
@@ -50,8 +50,9 @@ it('prepares replays and owner-cancels on a current locked site committed after 
     $rival = DB::connection('order-current-rival');
     $orgId = null;
     $ownerId = null;
+    $moduleReceipt = new CommittedModuleReceipt($rival);
     // Register before the first committed fixture, so failure during setup cannot leak rows to the next engine test.
-    $this->afterRollback(function () use ($rival, &$orgId, &$ownerId): void {
+    $this->afterRollback(function () use ($rival, &$orgId, &$ownerId, $moduleReceipt): void {
         if ($orgId !== null) {
             foreach (['commerce_cart_lines', 'commerce_carts', 'commerce_sales_policies', 'commerce_tax_rates', 'commerce_settings', 'commerce_listings', 'commerce_sellables'] as $table) {
                 $rival->table($table)->where('org_id', $orgId)->delete();
@@ -61,7 +62,7 @@ it('prepares replays and owner-cancels on a current locked site committed after 
         if ($ownerId !== null) {
             $rival->table('users')->where('id', $ownerId)->delete();
         }
-        $rival->table('modules')->where('handle', 'kitsune/commerce')->delete();
+        $moduleReceipt->remove();
         DB::purge('order-current-rival');
     });
     $now = now();
@@ -72,10 +73,10 @@ it('prepares replays and owner-cancels on a current locked site committed after 
     try {
         app(Context::class)->setOrg(Org::query()->findOrFail($orgId));
         $owner = Fx::owner('current-order-owner@example.test');
-        Module::create(['handle' => 'kitsune/commerce', 'version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => true, 'installed_at' => now()]);
+        $ownerId = $owner->getKey();
+        $moduleReceipt->create(['handle' => 'kitsune/commerce', 'version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => true, 'installed_at' => now()]);
         ModuleKernel::flush();
         ModuleKernel::boot(app());
-        $ownerId = $owner->getKey();
         $owner->setConnection($default);
     } finally {
         DB::setDefaultConnection($default);
