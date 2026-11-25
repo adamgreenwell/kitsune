@@ -180,15 +180,18 @@ trait DerivesGuardedColumns
 
     /**
      * A date cast is an object on read, but a formatted scalar at the database.
-     * Snapshot that scalar so a populated promoted date does not invalidate every
-     * save, and a mutable date object cannot change the snapshot after derivation.
-     * Other objects remain unverified; arrays retain their order-independent proof.
+     * Read the scalar Eloquent already prepared for that date attribute.
+     * A raw object on another attribute remains subject to the object refusal.
      */
     private function guardedColumnValue(string $column): mixed
     {
         $value = $this->getAttribute($column);
 
-        return $value instanceof DateTimeInterface ? $this->fromDateTime($value) : $value;
+        if ($value instanceof DateTimeInterface && $this->isDateAttribute($column)) {
+            return $this->getAttributes()[$column] ?? null;
+        }
+
+        return $value;
     }
 
     /**

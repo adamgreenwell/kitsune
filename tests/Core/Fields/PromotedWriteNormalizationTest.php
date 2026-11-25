@@ -173,6 +173,15 @@ it('uses registered promoted columns rather than a hardcoded slug list', functio
         ->and($this->entry->fresh()->title)->toBe('Before');
 });
 
+it('keeps a non-date guarded object outside the save proof even with a custom model date format', function (): void {
+    $site = $this->site->setDateFormat('Y-m-d');
+    $site->setAttribute('base_url', CarbonImmutable::parse('2026-02-03 04:05:06', 'UTC'));
+    $snapshot = new ReflectionMethod($site, 'noteGuardedColumnsDerived');
+    $snapshot->invoke($site);
+
+    expect($site->guardedColumnsAreDerived())->toBeFalse();
+});
+
 describe('a promoted column with an Eloquent date cast', function (): void {
     beforeEach(function (): void {
         $this->dateType = new class extends BaseFieldType
@@ -304,6 +313,15 @@ describe('a promoted column with an Eloquent date cast', function (): void {
         expect($entry->published_at)->toBeInstanceOf(CarbonImmutable::class)
             ->and(DB::table('entries')->where('id', $entry->id)->value('published_at'))->toBe('2026-02-03 04:05:06')
             ->and(AuditLog::for($entry)->latest('id')->first()->action)->toBe('entry.updated');
+    })->with([false, true]);
+
+    it('preserves the date accepted by Eloquent with a custom model date format', function (bool $quiet): void {
+        $entry = $this->entry->setDateFormat('Y-m-d')->mergeCasts(['published_at' => 'immutable_datetime']);
+        $entry->published_at = CarbonImmutable::parse('2026-02-03 04:05:06', 'UTC');
+
+        expect($entry->getAttributes()['published_at'])->toBe('2026-02-03');
+        expect($quiet ? $entry->saveQuietly() : $entry->save())->toBeTrue()
+            ->and($entry->fresh()->published_at->format('Y-m-d H:i:s'))->toBe('2026-02-03 00:00:00');
     })->with([false, true]);
 
     it('refuses a date changed after its save proof was recorded', function (): void {
