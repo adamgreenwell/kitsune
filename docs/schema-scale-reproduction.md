@@ -34,3 +34,22 @@ The command starts its own PHP server on a loopback port and signs in with the f
 It alternates the two search spellings after one warmup and measures the 25 results in the browser,
 including the picker debounce. Each response must contain 50 options. It records the observations,
 median and observed p95 as `relation-picker-browser.json` in the fixture and stops its server.
+
+## Compare Linux app resource profiles
+
+Use a local, reviewed Linux image with Bash or POSIX shell, PHP 8.4 or newer, and the built
+application's extensions. Pass the exact image ID from `docker image inspect`. Use a cgroup v2 Docker
+host with memory and swap accounting.
+
+~~~sh
+bin/benchmark-schema-scale-pair.sh --preflight "$image_id" "$unpacked_application" 10000 "$new_output_directory"
+bin/benchmark-schema-scale-pair.sh "$image_id" "$unpacked_application" 10000 "$another_new_output_directory"
+~~~
+
+Preflight checks the mounted PHP runtime and both resource profiles without starting the application.
+The workload uses the same committed source, read-only application and dependency lock for both cases.
+It gives PHP and SQLite one CPU and 1 GiB in the floor case, then two CPUs and 2 GiB in the control.
+Both use zero swap, 128 processes or threads, a 128 MiB PHP heap and no container network. The profile
+logs record the actual cgroup limits and runtime versions. Paired workload output is private and is
+retained for analysis. Each container exits after its work. This command measures the in-process
+workload. The browser command has its own timing and resource boundary.
