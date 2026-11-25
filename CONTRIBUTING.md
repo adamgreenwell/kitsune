@@ -213,6 +213,11 @@ The lesson generalises: the load-bearing risk in this architecture is **URL gene
 
 ## Commits and pull requests
 
+Before committing, run `bin/ci-local.sh` after installing the development dependencies. It runs the complete
+SQLite `composer ci` gate and the separate skeleton Pint check, with isolated test-process memory and timeout
+settings; see [Running the tests](README.md#running-the-tests). It changes no host PHP configuration and
+requires no Docker, Node or external services.
+
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```

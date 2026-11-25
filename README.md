@@ -46,7 +46,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 ## Shape of the thing
 
 - **A thin module kernel** — registry, hooks, lifecycle, RBAC, audit
-- **A runtime schema engine** as the flagship first-party module: define entity types and fields in the admin, no PHP required
+- **A runtime schema engine built into core**: define entity types and fields in the admin, no PHP required ([ADR-001 amendment](docs/decision-log.md#amendment--the-schema-engine-stays-in-core-2026-10-23-257))
 - **Multi-tenant from the kernel up**, enforced fail-closed rather than left to plugin authors
 - **Blueprints** — installable bundles of entry types with their fields, roles with their grants, and entry type availability, applied into an org so a fresh install isn't a blank canvas. Seed content is a separate, opt-in phase, because seeding a value locks that field's shape ([ADR-039](docs/decision-log.md))
 - **Headless-capable core** with an optional Blade theming layer
@@ -228,6 +228,20 @@ the bare install, and the error you would otherwise get is *"kitsune/core could 
 version"*.
 
 ### Running the tests
+
+After `composer install`, with PHP 8.4 or newer and Composer on `PATH`, run the full local gate:
+
+```bash
+bin/ci-local.sh
+```
+
+It runs `composer ci` (root Pint, configured PHPStan and the complete SQLite suite), then the separate
+skeleton Pint check. It needs no Docker, Node or external services. Test PHP processes receive a private
+512 MiB memory setting, Composer's five-minute process timeout is disabled, and a short temporary directory
+is removed when the command exits. The host's INI files and existing temporary directory are untouched.
+These settings belong to the development suite; Kitsune's application resource floor is unchanged.
+
+Individual checks remain available:
 
 ```bash
 vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
