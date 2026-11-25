@@ -24,6 +24,8 @@ use PHPUnit\Framework\TestCase;
 /** Pure transport fixtures. Every request uses Guzzle's in-memory MockHandler, never a provider or database. */
 final class ShippoRatesTest extends TestCase
 {
+    private const PROVIDER_CANARY = 'shippo-z8q2m';
+
     #[DataProvider('modes')]
     public function test_it_creates_only_a_synchronous_shipment_and_projects_exact_whole_shipment_rates(bool $test): void
     {
@@ -284,7 +286,7 @@ final class ShippoRatesTest extends TestCase
         } catch (ShippingUnavailable $failure) {
             self::assertNull($failure->getPrevious());
             self::assertSame('Shipping rates are unavailable. Please try again.', $failure->getMessage());
-            self::assertStringNotContainsString('private', (string) $failure);
+            self::assertStringNotContainsString(self::PROVIDER_CANARY, (string) $failure);
             self::assertCount(0, $mock);
         }
     }
@@ -294,7 +296,8 @@ final class ShippoRatesTest extends TestCase
     {
         $valid = json_encode(self::shipment(), JSON_THROW_ON_ERROR);
         foreach ([200, 301, 302, 307, 400, 401, 429, 500, 503] as $status) {
-            yield 'HTTP '.$status => [new Response($status, ['Content-Type' => 'application/json', 'Location' => 'https://other.test/private'], '{"private":"secret and address"}')];
+            yield 'HTTP '.$status => [new Response($status, ['Content-Type' => 'application/json', 'Location' => 'https://other.test/'.self::PROVIDER_CANARY],
+                json_encode([self::PROVIDER_CANARY => 'secret and address'], JSON_THROW_ON_ERROR))];
         }
         yield 'non JSON media type' => [new Response(201, ['Content-Type' => 'text/html'], $valid)];
         yield 'missing media type' => [new Response(201, [], $valid)];
@@ -328,16 +331,17 @@ final class ShippoRatesTest extends TestCase
         ini_set('zend.exception_ignore_args', '0');
 
         try {
-            foreach ([new ConnectException('private transport failure', new Request('POST', 'https://api.goshippo.com/private')),
-                new ServerException('private request body and token', new Request('POST', 'https://api.goshippo.com/private'), new Response(500, [], 'private address'))] as $transport) {
+            foreach ([new ConnectException(self::PROVIDER_CANARY.' transport failure', new Request('POST', 'https://api.goshippo.com/'.self::PROVIDER_CANARY)),
+                new ServerException(self::PROVIDER_CANARY.' request body and token', new Request('POST', 'https://api.goshippo.com/'.self::PROVIDER_CANARY),
+                    new Response(500, [], self::PROVIDER_CANARY.' address'))] as $transport) {
                 $mock = new MockHandler([$transport]);
                 $client = new ShippoRates(new Client(['handler' => HandlerStack::create($mock)]));
                 try {
-                    $client->quote(new Secret('shippo_test_privatekey'), true, self::address('private origin'), self::address('private buyer'), [self::parcel()], 'USD');
+                    $client->quote(new Secret('shippo_test_'.self::PROVIDER_CANARY), true, self::address(self::PROVIDER_CANARY.' origin'), self::address(self::PROVIDER_CANARY.' buyer'), [self::parcel()], 'USD');
                     self::fail('Transport failure was not mapped.');
                 } catch (ShippingUnavailable $failure) {
                     self::assertNull($failure->getPrevious());
-                    self::assertStringNotContainsString('private', (string) $failure);
+                    self::assertStringNotContainsString(self::PROVIDER_CANARY, (string) $failure);
                     self::assertCount(0, $mock);
                 }
             }
