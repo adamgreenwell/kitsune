@@ -16,6 +16,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use ReflectionClass;
+use Symfony\Component\Console\Application as ConsoleApplication;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Input\InputArgument;
+use Symfony\Component\Console\Input\InputOption;
 use Throwable;
 
 /**
@@ -59,8 +63,16 @@ final class ModuleKernel
 
     public static function boot(Application $app): void
     {
+        // An enabled development provider may already require the schema that upgrade is about to create.
+        // Only the canonical fresh-process lifecycle command is cold; ordinary runtime boot stays unchanged.
+        $console = $app->runningInConsole();
+
+        if ($console && self::isLifecycleCommand()) {
+            return;
+        }
+
         foreach (self::receipts() as $handle => $receipt) {
-            if ($app->runningInConsole()) {
+            if ($console) {
                 self::maintenanceFor($handle, $app);
             }
             if (! $receipt['enabled']) {
@@ -71,6 +83,23 @@ final class ModuleKernel
             if ($manifest !== null) {
                 self::registerFor($manifest, $app);
             }
+        }
+    }
+
+    /** Recognize the actual CLI command, never a package/action/option value containing its name. */
+    private static function isLifecycleCommand(): bool
+    {
+        $definition = (new ConsoleApplication)->getDefinition();
+        $definition->addOption(new InputOption('--env', null, InputOption::VALUE_OPTIONAL));
+        $definition->addArgument(new InputArgument('arguments', InputArgument::IS_ARRAY));
+
+        try {
+            $input = new ArgvInput($_SERVER['argv'] ?? [], $definition);
+
+            return $input->getArgument('command') === 'kitsune:module';
+        } catch (Throwable) {
+            // Malformed global options are not a supported cold entry point. Artisan reports them normally.
+            return false;
         }
     }
 

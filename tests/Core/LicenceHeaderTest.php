@@ -34,9 +34,8 @@ const NOT_OURS = [
 /**
  * @return list<string>
  */
-function everyPhpFileWeShip(): array
+function everyPhpFileWeShip(string $root): array
 {
-    $root = dirname(__DIR__, 2);
     $found = [];
 
     $files = new RecursiveIteratorIterator(
@@ -45,7 +44,7 @@ function everyPhpFileWeShip(): array
     );
 
     foreach ($files as $file) {
-        if (! $file instanceof SplFileInfo || $file->getExtension() !== 'php') {
+        if (! $file instanceof SplFileInfo || ! $file->isFile() || $file->getExtension() !== 'php') {
             continue;
         }
 
@@ -65,18 +64,12 @@ function everyPhpFileWeShip(): array
     return $found;
 }
 
-it('carries the Exhibit A header on every PHP file', function (): void {
-    $root = dirname(__DIR__, 2);
-    $files = everyPhpFileWeShip();
-
-    /*
-     * ⚠️ Not vacuous: the walk has to find the file it is written in, or an exclusion typo would make
-     * this pass over an empty list. The count is asserted loosely — a floor, not a pin — because a test
-     * that fails when someone adds a file teaches them to delete the test.
-     */
-    expect($files)->toContain('tests/Core/LicenceHeaderTest.php')
-        ->and(count($files))->toBeGreaterThan(150);
-
+/**
+ * @param  list<string>  $files
+ * @return list<string>
+ */
+function phpFilesMissingExhibitA(string $root, array $files): array
+{
     $missing = [];
 
     foreach ($files as $file) {
@@ -92,6 +85,23 @@ it('carries the Exhibit A header on every PHP file', function (): void {
             $missing[] = $file;
         }
     }
+
+    return $missing;
+}
+
+it('carries the Exhibit A header on every PHP file', function (): void {
+    $root = dirname(__DIR__, 2);
+    $files = everyPhpFileWeShip($root);
+
+    /*
+     * ⚠️ Not vacuous: the walk has to find the file it is written in, or an exclusion typo would make
+     * this pass over an empty list. The count is asserted loosely — a floor, not a pin — because a test
+     * that fails when someone adds a file teaches them to delete the test.
+     */
+    expect($files)->toContain('tests/Core/LicenceHeaderTest.php')
+        ->and(count($files))->toBeGreaterThan(150);
+
+    $missing = phpFilesMissingExhibitA($root, $files);
 
     expect($missing)->toBe([], 'these PHP files carry no MPL Exhibit A header: '.implode(', ', $missing));
 });
@@ -115,7 +125,7 @@ it('carries Exhibit B nowhere', function (): void {
     $exhibitB = 'Incompatible With'.' Secondary Licenses';
     $itself = 'tests/Core/'.basename(__FILE__);
 
-    foreach (everyPhpFileWeShip() as $file) {
+    foreach (everyPhpFileWeShip($root) as $file) {
         if ($file === $itself) {
             continue;
         }
@@ -126,4 +136,24 @@ it('carries Exhibit B nowhere', function (): void {
     }
 
     expect($carrying)->toBe([], 'these files carry Exhibit B: '.implode(', ', $carrying));
+});
+
+it('scans PHP files beneath PHP-named directories and detects a missing notice', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-licence-'.bin2hex(random_bytes(12));
+    mkdir($root.'/cache.php', 0700, true);
+
+    try {
+        file_put_contents($root.'/cache.php/covered.php', file_get_contents(__FILE__, false, null, 0, 400));
+        file_put_contents($root.'/missing.php', '<?php');
+
+        $files = everyPhpFileWeShip($root);
+
+        expect($files)->toBe(['cache.php/covered.php', 'missing.php'])
+            ->and(phpFilesMissingExhibitA($root, $files))->toBe(['missing.php']);
+    } finally {
+        unlink($root.'/missing.php');
+        unlink($root.'/cache.php/covered.php');
+        rmdir($root.'/cache.php');
+        rmdir($root);
+    }
 });
