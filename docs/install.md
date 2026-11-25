@@ -42,7 +42,9 @@ php artisan kitsune:blueprint apply blog --org=myblog --owner=you@example.test
 It asks for the password twice at a hidden prompt. For automation that already holds a secret,
 `--owner-password-stdin` reads its first line from standard input. Never place the password in an argument,
 environment variable or log. Passwords have a minimum of 15 characters; configuration may raise that floor.
-The Phase 6 choice between terminal and protected web onboarding is still open (#214).
+Phase 6 uses terminal-first setup followed by ordinary browser sign-in on native and Docker installs (#214).
+The installer handoff still needs qualification. If setup is interrupted after the first owner commits,
+resume the blueprint with the same organisation slug and without `--owner`.
 
 The README's `migrate --seed` path creates **development demonstration accounts with known passwords**. It is
 not the operator onboarding path and must not be exposed as a new public installation.

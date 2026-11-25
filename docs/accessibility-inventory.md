@@ -339,5 +339,9 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    in from the link, hear the page's title and its one link, and download; then the refusal notice. And offer a file
    from its media page: whether the dialog's warning about location is heard, and whether *Copy reader link*'s
    confirmation is announced.
+7. **Set up the first owner and sign in using only the keyboard and a screen reader** (ADR-026, #214).
+   On a qualified native or Docker installer, check that the terminal prompts identify each field, keep the
+   password hidden, and give a usable correction after a mismatch or refusal. In the browser, check the sign-in
+   page's focus, field labels and feedback after an incorrect password, then complete sign-in at the reported URL.
 
 Until those happen, the honest claim is the one at the top of this document: no detectable failures, on a surface that is almost entirely inherited. That is a good starting position and it is not a conformance statement, and ADR-018 is explicit that a boilerplate conformance claim is exactly what this project will not make.

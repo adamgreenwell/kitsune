@@ -131,7 +131,7 @@ it('records the ownership once, as the system, and nothing else', function (): v
  * autocommit read and its write simply waits for the first to commit, so both commit. So both counts are recorded
  * with the transaction depth they ran at.
  */
-it('refuses inside the transaction an installation that is no longer empty', function (string $what): void {
+it('refuses inside the transaction an installation that is no longer empty', function (string $what, bool $asksForOwner): void {
     if ($what === 'an org') {
         Org::create(['slug' => 'already', 'name' => 'Already']);
     } else {
@@ -140,28 +140,42 @@ it('refuses inside the transaction an installation that is no longer empty', fun
 
     $before = firstOwnerCounts();
     $outside = DB::transactionLevel();
-    $depths = ['orgs' => [], 'users' => []];
+    $depths = [];
 
     DB::listen(function ($query) use (&$depths): void {
-        foreach (array_keys($depths) as $table) {
-            if (preg_match('/^select count\(\*\) as ["`]?aggregate["`]? from ["`]?'.$table.'["`]?/i', $query->sql) === 1) {
-                $depths[$table][] = $query->connection->transactionLevel();
+        if (preg_match('/^insert into ["`]?first_org_lock["`]? /i', $query->sql) === 1) {
+            $depths['lock'] = $query->connection->transactionLevel();
+        }
+        foreach (['orgs', 'users'] as $table) {
+            if (str_contains($query->sql, 'bootstrap_rows')
+                && preg_match('/\bfrom ["`]?'.$table.'["`]?\b/i', $query->sql) === 1) {
+                $depths[$table] = $query->connection->transactionLevel();
             }
         }
     });
 
-    expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
-        ->toThrow(RuntimeException::class, $what === 'an org'
-            ? 'this installation has 1 organisation(s), deleted ones included, and 0 account(s)'
-            : 'this installation has 0 organisation(s), deleted ones included, and 1 account(s)');
+    if ($asksForOwner) {
+        expect(fn () => FirstOrg::createWithOwner('myblog', null, null, 'en', 'owner@example.test', $this->hash))
+            ->toThrow(RuntimeException::class, $what === 'an org'
+                ? 'this installation has 1 organisation(s), deleted ones included, and 0 account(s)'
+                : 'this installation has 0 organisation(s), deleted ones included, and 1 account(s)');
+    } else {
+        expect(fn () => FirstOrg::create('myblog', null, null, 'en'))
+            ->toThrow(RuntimeException::class, 'this installation already has 1');
+    }
 
     expect(firstOwnerCounts())->toBe($before)
         ->and(app(Context::class)->orgId())->toBeNull()
-        ->and($depths['orgs'])->not->toBeEmpty()
-        ->and($depths['users'])->not->toBeEmpty()
-        ->and(max($depths['orgs']))->toBeGreaterThan($outside)
-        ->and(max($depths['users']))->toBeGreaterThan($outside);
-})->with(['an org', 'an account no scope can see']);
+        ->and($depths)->toBe([
+            'lock' => $outside + 1,
+            'orgs' => $outside + 1,
+            ...($asksForOwner ? ['users' => $outside + 1] : []),
+        ]);
+})->with([
+    'an org when creating an owner' => ['an org', true],
+    'an account no scope can see' => ['an account', true],
+    'an org when skipping owner creation' => ['an org', false],
+]);
 
 it('writes nothing when a step fails part way', function (string $how): void {
     if ($how === 'the host throws letting the owner in') {
