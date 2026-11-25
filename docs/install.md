@@ -35,6 +35,8 @@ default small installation. The [resource-floor decision](decision-log.md#adr-02
 states the constraint and its measurement obligations. This guide does not turn unfinished installer or floor
 qualification into a result.
 
+[The native Ubuntu install profile](../deploy/self-host/native/README.md) describes the signed local install and terminal handoff.
+
 ## Create your own first owner
 
 The installer must never invent a default administrator. The current blueprint command can create the first
