@@ -50,7 +50,7 @@ The early audience is people who currently install CMS plugins by uploading a zi
 
 ## ADR-001 — Extensibility: layered kernel + runtime schema engine
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23** — the schema engine remains in core (#257)
 
 Thin module kernel (registry, hooks, service providers, auth/RBAC, audit) with the runtime schema engine as the flagship first-party module. Developers extend with PHP; non-developers build with the schema engine.
 
@@ -65,6 +65,36 @@ Thin module kernel (registry, hooks, service providers, auth/RBAC, audit) with t
 **Carried risk — query cost.** Drupal core issue #3022864 (open since Dec 2018) documents entity queries with 27+ redundant joins: 1.3s on MySQL 5.7, 13.4s on MariaDB 10.4, one production query at **697 seconds before timeout**. Mitigated by ADR-006 + ADR-010.
 
 **Carried risk — a blank entity builder is not a product.** Drupal spent ~10 years discovering this, then shipped Drupal CMS 1.0 with "Recipes." **Kitsune ships Blueprints in v1.0.**
+
+### Amendment — The schema engine stays in core, 2026-10-23 (#257)
+
+The original "flagship first-party module" description above is retained as the proposal it was. **The runtime
+schema engine stays in `kitsune/core`, available without a module receipt or switch.** PHP modules remain the
+developer extension path; schema configuration and blueprints remain the non-developer path. The two audiences
+do not require two independently optional packages.
+
+This resolves a mismatch with the implementation, rather than extracting code to make the old description true.
+The [dependency and lifecycle assessment](schema-engine-boundary.md) measured two candidate file sets: Fields plus
+Schema has 36 files and 69 incoming explicit imports from 22 files; including the six content models has 42 files
+and 142 incoming imports from 48 files. These are lower bounds, not a complete dependency graph or an effort
+estimate. Permissions and content models depend on each other; core owns the schema migrations, registry binding,
+Entry policy and blueprint mechanism. Moving files does not make those consumers optional.
+
+Fresh local applications resolved all 12 field types and SchemaManager before any module was installed, and with
+disabled, stale or missing module packages. Core was refused by the module install/disable/uninstall doors.
+The real Person lifecycle retained content on disable and refused uninstall while content existed; repeating
+already-applied core migrations preserved every row. These are SQLite observations, not a native-engine DDL
+recovery claim. The measured console boot used development dependencies on the local host, not the resource floor.
+
+A mandatory Composer split would leave the engine required while adding packaging and migration-ownership work;
+no independent release or installation requirement has been established for it. An optional module would also need
+defined admission for every dependent consumer, continued access to retained content and privacy operations while
+disabled or stale, missing-package recovery, and an upgrade path for already-recorded core migrations. Those are
+new behaviors, not the effect of a package move. No extraction prototype, migration transfer, alternative performance
+benchmark or person-day estimate is claimed here. Retaining core changes none of those behaviors and needs no
+data conversion. **Extraction is not selected, so no implementation follow-ups are opened.** Reopening this decision
+requires a concrete consumer need and a measured install/upgrade/disable/retained-data/recovery design, including
+ADR-038's existing partial-DDL limits. Bare-clone SQLite and the 1 vCPU / 1 GB floor remain requirements (ADR-024/027).
 
 ---
 
@@ -1799,7 +1829,7 @@ additive re-apply and cannot be met for a field that already holds data; see the
 ~~condition 2 met for a re-apply at the same version and not for an upgrade, which waits on ADR-039's merge~~
 ~~condition 2's upgrade is built and tested (ADR-039, the merge, as built, 2026-10-04) and is met when a released
 Marketing Site 1.1.0 exists~~ condition 2 met by the released Marketing Site 1.1.0, upgraded from 1.0.0 by a named test
-(ADR-039, Marketing Site 1.1.0, as built, 2026-10-04); condition 3's figures owed. **Not met** — on condition 3 alone. Once met, the public side is the placeholder and the admin until v1.1, said publicly
+(ADR-039, Marketing Site 1.1.0, as built, 2026-10-04); ~~condition 3's figures owed~~ **2026-10-22 (#207): constrained-container apply figures [recorded](benchmarks/blueprint-floor-2026-10-22.md); condition 3's real native-host evidence remains owed**. **Not met** — on condition 3 alone. Once met, the public side is the placeholder and the admin until v1.1, said publicly
 
 Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
 
@@ -4006,6 +4036,22 @@ An upgrade still leaves the enabled switch unchanged; the next ordinary process 
 that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
 data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
 
+### Amendment — The built-in schema engine is outside the module lifecycle, 2026-10-23 (#257)
+
+[ADR-001's amendment](#amendment--the-schema-engine-stays-in-core-2026-10-23-257) withdraws the unimplemented
+first-party-module packaging claim. The engine remains part of core, whose ordinary Laravel provider loads its
+migrations and binds the field registry independently of the kernel's receipts. It is not a module exempted from
+this ADR's manifest or scope checks: it has no module identity to admit. Person and other packages that use it are
+still modules and must satisfy every check here.
+
+No core migration is moved, renamed or replayed, and no engine receipt is synthesized for existing installations.
+Disablement and uninstall keep their existing meanings for actual modules, including retained data and their own
+refusal hooks. The transaction and partial-DDL recovery limitations above remain unchanged. A future optional
+engine would have to specify how dependent modules and retained content behave when its runtime is unavailable;
+the current kernel does not supply that contract merely by discovering a package.
+
+---
+
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
 **Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Amended 2026-10-02** — roles with their grants, and Blog, as built: five symbols, three receipt states, and the *done when* still not met; see the end of this entry · **Amended 2026-10-02 — the first owner, as built**: "working blog" is reached, and one public symbol outside `Blueprints/`; see the end of this entry · **Amended 2026-10-04 — the Marketing Site, as built**: no format change; see the end of this entry · **Amended 2026-10-04 — the merge, as built**: a later version may only add, and one new pre-flight refusal; see the end of this entry · **Amended 2026-10-04 — Marketing Site 1.1.0, as built**: a meta description, and ADR-030's second condition met; see the end of this entry · **Amended 2026-10-05 — the reverse, as built**: one action on the existing command, removing only what a blueprint created and nothing holds data or authority for; see the end of this entry · **Amended 2026-10-05 — the DAM, as built**: `EntryTypeDeclaration` gains `isMedia` and the manifest one key, the first declaration parameter and manifest key since 2026-10-02; see the end of this entry · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
@@ -4550,6 +4596,14 @@ The Storefront payload belongs to the optional commerce package and registers on
 Its two content types remain ordinary org-owned schema. Apply, reapply, merge, reverse, collision and recovery
 behavior use the existing applier. Tests pin the declaration surface, fresh manifests, captured pre-media receipts,
 invalid format refusal before intent, owner-adapted formats and a frozen Storefront 1.0.0 payload.
+
+---
+
+### Measurement update — blueprint applies in constrained containers, 2026-10-22 (#207)
+
+The container measurements owed by the earlier amendments are now [recorded with their graph and platform](benchmarks/blueprint-floor-2026-10-22.md), at application source `4e6f9059d841533b7ff45e18685da2c7022392ab`. Blog's fresh-owner applies took 719/753 ms and its applies into 1,000/100,000 entries took 448/434 ms; Marketing Site's corresponding figures were 785/743 ms and 427/418 ms. All eight full Artisan commands ran under verified 1 vCPU / 1,024 MiB container limits with no swap, completed successfully and left finished receipts. The saved dated Composer lock permits another run on the same graph; the earlier lock and developer-host observations stay visible.
+
+This meets Phase 5's stated **constrained-container 60-second apply criterion**. It leaves ADR-030's **real native-host floor condition** open, together with concurrency and full-system memory evidence. Docker Desktop on a developer laptop does not demonstrate that the native recommended install serves the project site at the floor. No architectural decision, resource floor, deployment or site-move authorization changes.
 
 ---
 
@@ -11932,9 +11986,6 @@ When it lands:
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
   admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
   to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
-- **ADR-001 and the README call the runtime schema engine "the flagship first-party module", and it is not one** — it
-  lives inside `kitsune/core`, booted unconditionally. ADR-038 did not resolve this. Either it is extracted once the
-  kernel can carry it, or ADR-001 is amended to say it stayed in core and why
 - **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
   wrong everywhere it appears, and repointing it is an amendment rather than a sweep
