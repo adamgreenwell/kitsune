@@ -285,6 +285,12 @@ test.describe('a relation field round-trips through entry_relations', () => {
 
         await removeSelections(page);
         await choose(page, 'صيانة', /صيانة الملاعب/);
+        const label = pickerValue(page)
+            .locator('.fi-select-input-value-label, .fi-badge-label')
+            .filter({ hasText: 'صيانة الملاعب' });
+        await expect(label).toHaveAttribute('dir', 'auto');
+        expect(await resolvedDirection(label)).toBe('rtl');
+
         await save(page);
         await page.reload();
         await expect(pickerValue(page)).toContainText('صيانة الملاعب');
@@ -299,7 +305,9 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * strong directional character is Latin however Arabic the options are. Once a value
          * is chosen the placeholder is gone and the Arabic title is all that is left.
          */
-        expect(await resolvedDirection(pickerValue(page))).toBe('rtl');
+        await expect(label).toBeVisible();
+        await expect(label).toHaveAttribute('dir', 'auto');
+        expect(await resolvedDirection(label)).toBe('rtl');
 
         await leaveClean(page);
     });

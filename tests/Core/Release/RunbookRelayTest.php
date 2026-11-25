@@ -106,13 +106,16 @@ function relayFixture(string $dir, string $name, string $contents): void
  */
 function relaySocket(string $path): void
 {
-    $server = stream_socket_server('unix://'.$path, $code, $message);
+    // The child owns the working directory change. The OS sees only the short socket name at bind time.
+    $child = new Process([PHP_BINARY, '-r', <<<'PHP'
+        $server = stream_socket_server('unix://'.$argv[1], $code, $message);
+        if ($server === false) {
+            throw new RuntimeException($message, $code);
+        }
+        fclose($server);
+        PHP, basename($path)], dirname($path));
 
-    if ($server === false) {
-        throw new RuntimeException("could not create a fixture socket at {$path}: {$message} ({$code})");
-    }
-
-    fclose($server);
+    $child->mustRun();
 }
 
 /** The stubs: each answers from a fixture file, so a case rewrites the file rather than the stub. */
@@ -228,6 +231,27 @@ it('passes a host where only the connector dials the web server', function (): v
         ->and(relayVerdict($run, 'RLY-3'))->toContain('PASS')
         ->and(relayVerdict($run, 'RLY-5'))->toContain('PASS')
         ->and($run->getOutput())->toContain('SENTINEL relays 5 RLY-1 RLY-2 RLY-3 RLY-4 RLY-5');
+});
+
+it('checks a real Unix socket beneath a long canonical temporary path', function (): void {
+    $cwd = getcwd();
+    $longDirectory = $this->dir.'/'.str_repeat('long-directory-', 9);
+    File::makeDirectory($longDirectory, 0700);
+    $socket = $longDirectory.'/php-fpm.sock';
+
+    relaySocket($socket);
+
+    expect(strlen($socket))->toBeGreaterThan(108)
+        ->and(filetype($socket))->toBe('socket')
+        ->and(getcwd())->toBe($cwd);
+
+    foreach (['unix', 'nginxconf'] as $name) {
+        relayFixture($this->dir, $name, str_replace($this->socket, $socket, File::get($this->dir.'/'.$name)));
+    }
+
+    $run = relayRun($this->dir, $this->common, $this->family);
+
+    expect(relayVerdict($run, 'RLY-3'))->toContain('PASS');
 });
 
 it('emits every verdict even when a process exits mid-scan', function (): void {

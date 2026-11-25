@@ -412,7 +412,7 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 3. **Reserved type handles.** A type literally named `create` collides with `/{type}/create`. Maintain a reserved word list — at minimum `create`, `edit`, `delete`, plus every Filament page segment — and reject it at type-creation time.
 4. **`scopedUnique()` / `scopedExists()` are the defaults** in Kitsune's form layer. Laravel's `unique` and `exists` do not use Eloquent and therefore ignore global scopes; the failure mode is site B being blocked from a slug site A holds — a cross-site, and potentially cross-org, information leak.
 5. **No query before site identification touches org- or site-scoped data.** The route table is scope-independent by design (§2), so this is now structurally true rather than a rule to remember.
-6. **Every composite index leads with its scope key** — `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively: narrower index, same guarantee.
+6. **Composite lookup indexes lead with the scope key by default.** A globally scarce name may use an exact unique index for a pre-context bootstrap under [ADR-021](decision-log.md#adr-021--sites-a-third-structural-level-and-filaments-tenant-is-the-site). A lookup that admits Org-shared rows without a Site may lead with `org_id` under [ADR-042, decision 2](decision-log.md#adr-042--the-media-admin-shared-by-default-uploaded-through-one-path-and-withdrawn-from-the-web-when-deleted). See the [contributor index rules](../CONTRIBUTING.md#composite-lookup-indexes-lead-with-their-scope-key) for query and migration requirements.
 7. **Two deliberately hostile tests live in core** — cross-**site** isolation within one org, and cross-**org** isolation. The second is the one with no framework safety net. The most valuable tests in the codebase.
 8. **A reader never reaches a panel, and a reader page never takes staff for a reader** (ADR-037, as built). A reader's guard is no panel's and their model no `FilamentUser`; a reader route answers 404 under a panel's path and calls `Auth::shouldUse()` on the reader guard, so `auth()->user()` there is the reader or nobody. Links and redirects on reader pages are paths built from the site, never from the `Host` header.
 
@@ -453,7 +453,7 @@ responsibilities *(amended 2026-10-06 by ADR-040: the credential store joins the
 already on the roadmap; and entitlements, the kernel guard ADR-040 decided, as built in Phase 5a)*:
 
 ```
-Module registry     discovery, enable/disable, dependency resolution, ordering
+Module registry     discovery and registration from checked, enabled receipts
 Lifecycle           install / upgrade / uninstall, with migrations and rollback
 Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
@@ -462,7 +462,16 @@ Entitlements        the fail-closed guard "may this reader reach this?", per sit
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
 Blueprints          a kernel primitive, not a module (ADR-039)
+Schema engine       built into core; no module receipt or enable/disable switch (ADR-001, amended)
 ```
+
+The schema engine remains in `kitsune/core`: fields, schema changes and the shared content models are available
+without installing a module. It has no `extra.kitsune` manifest, separate provider or receipt. The module lifecycle
+does not install, disable or uninstall it. `kitsune/person` is a module that uses this engine, rather than the
+engine's package. [ADR-001 and ADR-038](decision-log.md#amendment--the-schema-engine-stays-in-core-2026-10-23-257)
+record the decision and preserve the earlier first-party-module proposal; [the assessment](schema-engine-boundary.md)
+separates measured current behavior from the work an optional engine would require. This changes documentation,
+not existing migration ownership, stored data or the resource floor.
 
 ⚠️ **"A kernel primitive, not a module" is narrowed by ADR-039, and until then it was asserted here and in the
 roadmap and argued nowhere.** The only definition the log carries is ADR-009's, about tenancy: in core, enforced
@@ -476,6 +485,11 @@ answer that Composer and Packagist do that job. ~~One payload ships inside `kits
 `MarketingSiteBlueprint` and `DamBlueprint`), registered by core's own provider.
 
 ### Module manifest
+
+Composer resolves package dependencies. Kitsune adds no module dependency resolver or provider load-order
+contract ([ADR-038](decision-log.md#adr-038--a-module-is-a-composer-package-core-keeps-a-receipt-for-and-the-kernel-is-a-record-and-a-refusal)).
+An installed package is not automatically an enabled module: ordinary runtime registration requires an enabled
+receipt, a version matching Composer and an accepted manifest. The existing lifecycle owns enable and disable.
 
 ⚠️ **Amended 2026-09-20 by [ADR-038](decision-log.md).** The manifest is an `extra.kitsune` block in the module's own
 `composer.json`, not a `kitsune.yaml` — a YAML parser on the boot path is a floor cost (ADR-027) and a second source of
