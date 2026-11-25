@@ -1537,7 +1537,7 @@ core-only split workflow cannot silently stand in for the skeleton's complete fi
 
 ## ADR-027 — The resource floor is a designed constraint, with a number
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-15** — the admin fetched avatars from a third party; see the note under *What it forbids*
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-15** — the admin fetched avatars from a third party; see the note under *What it forbids* · **Amended 2026-11-25** — measured schema scale results (#261)
 **Amends** ADR-026 — the recommended self-host default flips from Docker to the native path.
 
 **Kitsune must run well on hardware people already have.** The infrastructure bar is a product decision, not an emergent property of whatever the code ends up needing, and it is set deliberately:
@@ -1588,6 +1588,19 @@ ADR-026 offered two install paths and named **Docker** the recommended default, 
 **The native path becomes the documented default** — PHP-FPM, SQLite, no container runtime, at the floor. **Docker remains fully supported and equal in quality**, recommended for people who want reproducibility, who are running at scale, or whose distro PHP sits below the `^8.4` floor and who prefer a container to a PPA. Both paths stay first-class; only the recommendation changes.
 
 **Commercial interest, per ADR-023.** Interests mostly align here — a leaner core means more tenants per box on KaaS. The exception is the same one ADR-026 already discloses: the lower the self-host floor, the more optional the hosted service becomes. Disclosed once there; not re-litigated here.
+
+### Amendment — Schema scale measurements, 2026-11-25 (#261)
+
+The [schema scale report](schema-scale-benchmark.md) records paired Linux SQLite observations at
+10,000, 100,000 and 1,000,000 entries. The same image ran at 1 vCPU / 1 GiB and at 2 vCPUs / 2 GiB.
+On the 1M floor fixture, the site-1 owner dashboard had a 265 ms median and the broad relation picker
+had a 4,412 ms median, including its 1,000 ms debounce. The matched control's picker median was 1,848 ms.
+
+Separate PostgreSQL, MySQL and MariaDB measurements used larger database containers and macOS PHP.
+MySQL's 1M broad relation picker reached 23.03 seconds median, of which the original title SELECT
+accounted for 21.97 seconds. Keep that query an explicit follow-up under #331. Preserve scoped reads,
+case-insensitive substring matching and the default SQLite installation when evaluating it. The
+portable reproduction launcher and production-scale workload evidence remain open.
 
 ## ADR-028 — A generated column is named for its projection, not for its owner
 
@@ -12002,7 +12015,7 @@ When it lands:
   2026-09-24, does any request that draws the sweep's lottery after its response; the scheduled
   command is for an installation that runs one, as decision 4 says. Both are runbook changes with their own
   review, and the upload half of ADR-042's measurement waits on the first
-- Storage benchmark at 10k / 100k / 1M entries
+- [Storage benchmark at 10k / 100k / 1M entries](schema-scale-benchmark.md) has measured results. The portable end-to-end launcher remains open (#261)
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed. — and built: `kitsune:blueprint reverse` (ADR-039, the reverse, as built).
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
