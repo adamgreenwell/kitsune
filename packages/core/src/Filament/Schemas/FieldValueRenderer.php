@@ -280,7 +280,8 @@ final class FieldValueRenderer
         if ($component instanceof Select) {
             return $component
                 ->extraInputAttributes(['dir' => 'auto'])
-                ->extraAttributes(['dir' => 'auto']);
+                ->extraAttributes(['dir' => 'auto'])
+                ->extraAlpineAttributes(['x-kitsune-select-direction' => '']);
         }
 
         if ($component instanceof TextInput

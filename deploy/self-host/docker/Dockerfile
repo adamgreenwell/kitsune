@@ -38,6 +38,8 @@ RUN apt-get update \
     && unlink /usr/local/bin/php-config \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -m 0755 /etc/kitsune \
+    && sed '/^[[:space:]]*fastcgi_param[[:space:]][[:space:]]*HTTP_HOST[[:space:]]/d' \
+        /etc/nginx/fastcgi_params > /etc/kitsune/fastcgi_params \
     && install -d -m 0700 -o www-data -g www-data /var/lib/kitsune /var/cache/kitsune
 COPY --from=extensions /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
 COPY --from=extensions /usr/local/etc/php/conf.d/docker-php-ext-intl.ini /usr/local/etc/php/conf.d/

@@ -462,7 +462,16 @@ Entitlements        the fail-closed guard "may this reader reach this?", per sit
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
 Blueprints          a kernel primitive, not a module (ADR-039)
+Schema engine       built into core; no module receipt or enable/disable switch (ADR-001, amended)
 ```
+
+The schema engine remains in `kitsune/core`: fields, schema changes and the shared content models are available
+without installing a module. It has no `extra.kitsune` manifest, separate provider or receipt. The module lifecycle
+does not install, disable or uninstall it. `kitsune/person` is a module that uses this engine, rather than the
+engine's package. [ADR-001 and ADR-038](decision-log.md#amendment--the-schema-engine-stays-in-core-2026-10-23-257)
+record the decision and preserve the earlier first-party-module proposal; [the assessment](schema-engine-boundary.md)
+separates measured current behavior from the work an optional engine would require. This changes documentation,
+not existing migration ownership, stored data or the resource floor.
 
 ⚠️ **"A kernel primitive, not a module" is narrowed by ADR-039, and until then it was asserted here and in the
 roadmap and argued nowhere.** The only definition the log carries is ADR-009's, about tenancy: in core, enforced

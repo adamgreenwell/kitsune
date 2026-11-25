@@ -35,7 +35,7 @@ if [ ! -e "$config" ]; then
     [ ! -e "$database" ] && [ ! -e "$storage" ] \
         || refuse 'restore the configuration and APP_KEY for the existing data'
     url=${KITSUNE_APP_URL:-http://localhost:8080}
-    php -r 'exit(preg_match("~\Ahttps?://(?:[a-zA-Z0-9.-]+|\\[[a-fA-F0-9:]+\\])(?::[0-9]{1,5})?\z~D", $argv[1]) === 1 ? 0 : 1);' "$url" \
+    php -r '$port = parse_url($argv[1], PHP_URL_PORT); exit($port !== false && $port !== 0 && preg_match("~\Ahttps?://(?:[a-zA-Z0-9.-]+|\\[[a-fA-F0-9:]+\\])(?::[0-9]{1,5})?\z~D", $argv[1]) === 1 ? 0 : 1);' "$url" \
         || refuse 'KITSUNE_APP_URL must be an HTTP or HTTPS origin'
     case "$url" in
         https://*) secure=true ;;
@@ -53,28 +53,34 @@ if [ ! -e "$config" ]; then
     trap - EXIT
 fi
 
-# Read the serving scheme and verify that a persisted key exists without outputting it.
-scheme=$(php -r '
+# Read the serving scheme and port and verify that a persisted key exists without outputting it.
+origin=$(php -r '
     require "vendor/autoload.php";
     try {
         $config = Dotenv\Dotenv::parse(file_get_contents($argv[1]));
         $key = $config["APP_KEY"] ?? "";
-        $scheme = parse_url($config["APP_URL"] ?? "", PHP_URL_SCHEME);
+        $url = parse_url($config["APP_URL"] ?? "");
+        $scheme = $url["scheme"] ?? "";
+        $port = $url["port"] ?? null;
         if (!preg_match("/\Abase64:[A-Za-z0-9+\\/=]+\z/", $key)
             || strlen(base64_decode(substr($key, 7), true) ?: "") !== 32
             || !in_array($scheme, ["http", "https"], true)
+            || $port === 0
+            || !isset($url["host"])
             || ($config["APP_ENV"] ?? null) !== "production"
             || ($config["APP_DEBUG"] ?? null) !== "false"
             || ($config["DB_CONNECTION"] ?? null) !== "sqlite"
             || ($config["DB_DATABASE"] ?? null) !== $argv[2]) {
             exit(1);
         }
-        echo $scheme;
+        echo $scheme, $port === null ? "" : ":".$port;
     } catch (Throwable) {
         exit(1);
     }
 ' "$config" "$database") || refuse 'review the private volume configuration, APP_KEY and SQLite path'
 
+scheme=${origin%%:*}
+port_suffix=${origin#"$scheme"}
 if [ "$scheme" = https ]; then
     [ -r /run/kitsune-tls/fullchain.pem ] && [ -r /run/kitsune-tls/privkey.pem ] \
         || refuse 'HTTPS needs a readable certificate and key mounted at /run/kitsune-tls'
@@ -83,6 +89,7 @@ if [ "$scheme" = https ]; then
 else
     printf '%s\n' 'listen 8080;' > /tmp/kitsune-listen.conf
 fi
+printf 'set $kitsune_origin_port "%s";\n' "$port_suffix" >> /tmp/kitsune-listen.conf
 printf '%s\n' "$scheme" > /tmp/kitsune-scheme
 nginx -t -c /etc/kitsune/nginx.conf
 
