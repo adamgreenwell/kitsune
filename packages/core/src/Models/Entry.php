@@ -3585,7 +3585,13 @@ class Entry extends Model implements RequiresModelSave
             // all, leaving the newest revision not describing the entry. Both
             // halves are one restore, so recording waits for both.
             RevisionWrites::suspend(function () use ($revision, $state): void {
-                $this->fill($revision->snapshot())->save();
+                $snapshot = $revision->snapshot();
+                // A media revision recorded before sharing may still carry its old Site slug.
+                if ($this->site_id === null && ($snapshot['slug'] ?? null) !== null
+                    && $this->getConnection()->table(MediaFile::TABLE)->where('entry_id', $this->getKey())->exists()) {
+                    $snapshot['slug'] = null;
+                }
+                $this->fill($snapshot)->save();
 
                 // `null` means the revision predates the column and says nothing
                 // about relations. `[]` means it says there were none.

@@ -7744,6 +7744,12 @@ holds the name; only the dialog and the audit row stand in the way. A reader-tab
 `ReaderArea` carries Laravel's `userId` (ADR-037's residual). The staff route still uses `fpassthru()`, measured fatal at
 64 MiB under PHP-FPM after its 200 was sent. Pest cannot see the loop stop when a reader leaves; the FPM probe did.
 
+**Amendment — reader offers and sharing (#260, 2026-11-25).** A media file with an active reader offer
+must be withdrawn through **Stop offering** before its sharing can change. The withdrawal keeps its own audit
+record. The sharing writer checks the current offer under the file-custody lock so a newly added offer can
+refuse a stale confirmation. A file that has just become Site-only has no offer. An owner can offer it
+explicitly from that Site. Reader links remain subject to the existing Site and current-offer checks.
+
 **Owed.** The staff route onto `MediaStream`, with `filename*`; a "Your downloads" list, with the batch check; a warning
 when a site with offered files has its reader accounts switched off; offering a selection; a size check against
 `size_bytes` before streaming; a canonical lower-case prefix.
@@ -12053,6 +12059,26 @@ When it lands:
 > it matters only for a tile torn down between its bytes arriving and its image drawn, a window no browser test holds
 > open. The tile switched in place by *Make selected public* while a press was out is the abort's second test.
 
+
+**Amendment — changing media sharing (#260, 2026-11-25).** An Org owner can share a Site-only media file
+from its owning Site, or make an Org-shared file Site-only from the intended recipient Site. This action
+supports these two transitions within one Org. The current Site supplies the destination. The upload selector
+continues to set the initial sharing.
+
+The action keeps the file identity, stored path, visibility and bytes. Public files retain their direct URL.
+Sharing clears the Site slug because Org-shared entries have none. Restoring an older version of a shared
+file restores its content and keeps its slug empty. The confirmation explains the distinction between public delivery and which Sites can use the file in the
+library. Private staff links and media relations resolve through current Site scope. Relations keep their
+stored identities. A relation from a Site that loses access has an unavailable target while the file is
+Site-only, and can resolve again if the file is shared again.
+
+Both transitions require a current Org owner and no active reader offer, checked under the file-custody lock.
+A successful change and its audit record commit together. The audit action names the direction of the change.
+The existing actor, target and Site fields identify its owner, file and affected Site. An already completed
+transition records nothing again. Ordinary saves and bulk writes must
+refuse sharing changes to stored media files outside the custody writer. Other entry types keep their
+existing scope rules.
+
 ---
 
 ## Open questions
@@ -12074,6 +12100,7 @@ When it lands:
   shared file onto a site or share a site-only one today — `EnforcesScope` guards the move, and the slug rule refuses a
   shared row with a slug — but nothing in the admin does it, and nothing decides who may, how it is audited, or what
   happens to links from sites that lose sight of it. ADR-042 records it beside visibility rather than locking it.
+  The #260 amendments to ADR-041 and ADR-042 record the selected policy.
 - **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
   edited in place six times since #19 created it (#30, #35, #43, #45, #82, #102), and `deploy/release.sh` runs
   `migrate --force`, which skips a

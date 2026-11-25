@@ -145,6 +145,18 @@ return [
             'already_private_count' => '{1} One was already private, and was left as it was.|[2,*] :count were already private, and were left as they were.',
         ],
     ],
+    'sharing' => [
+        'share' => 'Share with every site',
+        'keep' => 'Keep to this site',
+        'share_description' => 'Every site in this organisation can use this file. Its site slug is cleared. If the file is public, its direct link stays public.',
+        'keep_description' => 'Only this site can use the file in its library. Other sites keep their relationships to the file, but their private links and related previews stop working. If the file is public, its direct link stays public.',
+        'active_offer' => 'Stop offering this file to readers before changing its sharing.',
+        'unavailable' => 'This file is no longer available for a sharing change here.',
+        'refused' => 'File sharing could not be changed',
+        'unchanged' => 'The file already has this sharing',
+        'shared' => 'File shared with every site',
+        'kept' => 'File kept to this site',
+    ],
     /*
      * *Offer to readers*, *Change offer* and *Stop offering*, and the File section's lines about them — ADR-041
      * decisions 1–4 (Adam, 2026-10-11).
@@ -175,7 +187,7 @@ return [
         'offer_submit' => 'Offer',
         'change_submit' => 'Change',
         'stop_submit' => 'Stop offering',
-        'shared' => 'Only a file kept to this site can be offered to readers, and this one is shared with every site in the organisation. Upload it to this site alone to offer it.',
+        'shared' => 'Only a file kept to this site can be offered to readers, and this one is shared with every site in the organisation. An organisation owner can keep it to this site before offering it.',
         'public' => 'Only a private file can be offered to readers: anyone can already download a public one. Make it private first.',
         'offered_not_public' => 'It is offered to readers, so it stays private: making it public would give it to everyone. Stop offering it first.',
         'offered' => '":title" is offered to readers',
