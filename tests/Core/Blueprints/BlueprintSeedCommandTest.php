@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
@@ -35,6 +36,37 @@ it('seeds an exact numeric-looking site handle with an explicit locale and resto
     expect(Artisan::call('kitsune:blueprint', ['action' => 'seed', 'handle' => 'seed_test', '--org' => 'seed-console', '--site' => '123', '--locale' => 'de']))->toBe(0)
         ->and(Entry::query()->sole()->site_id)->toBe($this->site->id)
         ->and(app(Context::class)->siteId())->toBe($this->site->id);
+});
+
+it('refuses a non-identical site handle matched by a case-insensitive database', function (): void {
+    $target = Site::create([
+        'org_id' => $this->org->id,
+        'name' => 'Seed target',
+        'slug' => 'console-target',
+        'handle' => 'target',
+        'locale' => 'de',
+    ]);
+    $alias = 'TARGET';
+    if (Site::query()->where('handle', $alias)->value('id') !== $target->id) {
+        $this->markTestSkipped('The site handle column uses a case-sensitive collation.');
+    }
+
+    $before = [];
+    foreach (['blueprints', 'blueprint_seeds', 'entries', 'entry_revisions', 'audit_log', 'field_storage'] as $table) {
+        $before[$table] = DB::table($table)->orderBy('id')->get()->all();
+    }
+    $args = ['action' => 'seed', 'handle' => 'seed_test', '--org' => 'seed-console', '--locale' => 'de'];
+    expect(Artisan::call('kitsune:blueprint', [...$args, '--site' => $alias]))->toBe(1)
+        ->and(Artisan::output())->toContain('Nothing was written')
+        ->and(app(Context::class)->siteId())->toBe($this->site->id);
+    foreach ($before as $table => $rows) {
+        expect(DB::table($table)->orderBy('id')->get()->all())->toEqual($rows);
+    }
+
+    expect(Artisan::call('kitsune:blueprint', [...$args, '--site' => $target->handle]))->toBe(0)
+        ->and(app(Context::class)->siteId())->toBe($this->site->id);
+    app(Context::class)->setSite($target);
+    expect(Entry::query()->sole()->site_id)->toBe($target->id);
 });
 
 it('refuses missing explicit selection wrong locale and bootstrap options before writing', function (): void {

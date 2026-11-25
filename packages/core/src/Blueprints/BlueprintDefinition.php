@@ -31,15 +31,10 @@ use Kitsune\Core\Blueprints\Declarations\RoleDeclaration;
  *
  * ⚠️ ~~ONE OF THE FOUR KEYS IS HERE~~ TWO OF THE FOUR KEYS ARE HERE. ADR-039 cut the roadmap's six to four — entry
  * types with their fields, roles with their grants, entry type availability, and content — and this interface
- * carries the first two. The other two arrive as further methods on this interface rather than as further
- * interfaces, because everything still standing at v1.2 is a permanent obligation (Standing Principle #2) and one
- * seam is cheaper to keep than four. A definition that declares no types and no roles is legitimate and applies as
- * a no-op.
- *
- * ⚠️ Amended by ADR-039's #205 seed contract: the required-method plan above predates frozen
- * PHP definitions. The optional `DeclaresSeedContent` capability adds content without making
- * any released class unloadable. These four required methods remain unchanged; schema apply
- * never requests or writes seed content.
+ * carries the first two. The original plan put the other keys on this same interface: one seam is cheaper than four
+ * permanent obligations at v1.2 (Standing Principle #2). ADR-039 preserves that reasoning while keeping frozen
+ * definitions loadable. DeclaresAvailability is the optional typed third key and DeclaresSeedContent the optional
+ * fourth. The four required methods stay unchanged; schema apply never requests or writes seed content.
  */
 interface BlueprintDefinition
 {

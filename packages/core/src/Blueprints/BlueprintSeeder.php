@@ -24,6 +24,7 @@ use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Schema\FieldStorageWrites;
 use Kitsune\Core\Tenancy\Context;
@@ -45,7 +46,7 @@ final class BlueprintSeeder
         // Freeze declarations before opening the transaction: a callback must not supply a different list per pass.
         $declarations = self::declarations($definition);
         $connection = (new Blueprint)->getConnection();
-        foreach ([new BlueprintSeed, new Site, new EntryType, new Field, new FieldStorage, new Entry, new EntryRelation, new EntryRevision, new AuditLog] as $model) {
+        foreach ([new BlueprintSeed, new Org, new Site, new EntryType, new Field, new FieldStorage, new Entry, new EntryRelation, new EntryRevision, new AuditLog] as $model) {
             if ($model->getConnection()->getPdo() !== $connection->getPdo()) {
                 throw new RuntimeException('Seed content and its receipts require the same model writer connection.');
             }
@@ -59,6 +60,8 @@ final class BlueprintSeeder
                 if ($schema === null) {
                     throw new RuntimeException('Apply the schema before requesting seed content.');
                 }
+                // Schema writers on other receipts take the same org lock before locking their targets and types.
+                BlueprintAvailability::lockOrg((int) $org->id);
                 $recordedTypes = BlueprintApplier::schemaForSeed($definition, $schema);
                 $selected = Site::query()->useWritePdo()->where('org_id', $org->id)->whereKey($site->getKey())->lockForUpdate()->first();
                 if ($selected === null || $selected->handle !== $site->handle || $locale === '' || $selected->locale !== $locale) {

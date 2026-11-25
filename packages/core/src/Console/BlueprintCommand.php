@@ -202,8 +202,9 @@ final class BlueprintCommand extends Command
             $context->setOrg($org);
             // A numeric-looking handle is still a name, never a primary-key fallback.
             $site = Site::query()->where('org_id', $org->id)->where('handle', $siteHandle)->first();
-            if ($site === null) {
-                throw new RuntimeException("No current-org site has handle [{$siteHandle}]. Nothing was written.");
+            // A database collation can match a spelling other than the one the operator supplied.
+            if ($site === null || $site->handle !== $siteHandle) {
+                throw new RuntimeException("No current-org site has exact handle [{$siteHandle}]. Nothing was written.");
             }
             $result = BlueprintSeeder::seed($definition, $site, $locale);
         } catch (Throwable $e) {

@@ -11,9 +11,11 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintSeeder;
+use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
 use Kitsune\Core\Blueprints\Declarations\EntryTypeDeclaration;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
+use Kitsune\Core\Blueprints\DeclaresAvailability;
 use Kitsune\Core\Blueprints\DeclaresSeedContent;
 use Kitsune\Core\Blueprints\OnCollision;
 use Kitsune\Core\Models\AuditLog;
@@ -28,12 +30,15 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\SeedBlueprint;
 
-/** @param list<SeedEntryDeclaration> $seeds */
-function seed205Definition(array $seeds, string $version = '1.0.0'): DeclaresSeedContent
+/**
+ * @param  list<SeedEntryDeclaration>  $seeds
+ * @param  list<AvailabilityDeclaration>  $availability
+ */
+function seed205Definition(array $seeds, string $version = '1.0.0', array $availability = []): DeclaresSeedContent
 {
-    return new class($seeds, $version) implements DeclaresSeedContent
+    return new class($seeds, $version, $availability) implements DeclaresAvailability, DeclaresSeedContent
     {
-        public function __construct(private array $seeds, private string $revision) {}
+        public function __construct(private array $seeds, private string $revision, private array $availability) {}
 
         public function handle(): string
         {
@@ -56,6 +61,11 @@ function seed205Definition(array $seeds, string $version = '1.0.0'): DeclaresSee
         public function roles(): array
         {
             return [];
+        }
+
+        public function availability(): array
+        {
+            return $this->availability;
         }
 
         public function seedContent(): array
@@ -87,6 +97,24 @@ it('does not seed content during ordinary schema apply', function (): void {
     $type = DB::table('entry_types')->where('org_id', $this->org->id)->where('handle', 'seed_article')->sole();
     expect($type)->not->toBeNull()
         ->and(DB::table('field_storage')->where('org_id', $this->org->id)->where('is_locked', true)->count())->toBe(0);
+});
+
+it('requires availability declarations to match the applied schema before seeding', function (): void {
+    $seeds = [seed205Welcome()];
+    $availability = new AvailabilityDeclaration('seed_article', 'site', 'main', true);
+    expect(fn () => BlueprintSeeder::seed(seed205Definition($seeds, availability: [$availability]), $this->site, 'en'))
+        ->toThrow(RuntimeException::class, 'Seed schema declarations differ');
+
+    $applied = seed205Definition($seeds, '1.1.0', [$availability]);
+    BlueprintApplier::apply($applied);
+    expect(fn () => BlueprintSeeder::seed(seed205Definition($seeds, '1.1.0'), $this->site, 'en'))
+        ->toThrow(RuntimeException::class, 'a recorded declaration was removed')
+        ->and(BlueprintSeed::count())->toBe(0)
+        ->and(Entry::count())->toBe(0);
+
+    BlueprintSeeder::seed($applied, $this->site, 'en');
+    expect(Entry::query()->sole()->title)->toBe('Welcome')
+        ->and(BlueprintSeed::count())->toBe(1);
 });
 
 it('creates a separate scoped receipt with content and does not duplicate history on retry', function (): void {

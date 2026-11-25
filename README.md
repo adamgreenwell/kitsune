@@ -3,7 +3,8 @@
 > A multi-purpose content and application platform for Laravel.
 > **Status: pre-alpha, under active development.**
 > The [roadmap](docs/roadmap.md) tracks what exists today, item by item.
-> Nothing is released and nothing is stable.
+> 0.x development packages exist; v1.0 is not released. They carry no stable compatibility or security-support
+> promise. Read the [versioning and upgrade policy](docs/versioning-and-upgrades.md) before retaining data.
 >
 > **[kitsunecms.org](https://kitsunecms.org)**
 
@@ -34,11 +35,13 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 
 | Doc | What it answers |
 |---|---|
+| [`docs/index.md`](docs/index.md) | **Start a task.** Install, upgrade, restore and find the matching source; [build the versioned reading site locally](docs/documentation-site.md#build-and-verify-locally) |
 | [`docs/decision-log.md`](docs/decision-log.md) | **Why.** Every decision, every rejected alternative, and the reason it lost |
 | [`docs/roadmap.md`](docs/roadmap.md) | **What and when.** Phased plan to v1.0 and beyond, with honest timelines |
 | [`docs/architecture.md`](docs/architecture.md) | **How.** Data model, admin routing, tenancy security model, module and migration contracts |
 | [`docs/field-types.md`](docs/field-types.md) | **The field contract.** Storage strategies, the four faces every field type must answer, and the twelve types shipping in v1.0 |
 | [`docs/accessibility-inventory.md`](docs/accessibility-inventory.md) | **What is inherited.** Measured WCAG and RTL conformance, what Filament supplies, and the gaps that are Kitsune's to build |
+| [`docs/versioning-and-upgrades.md`](docs/versioning-and-upgrades.md) | **What a version promises.** Package and host-code boundaries, security maintenance, upgrade admission and recovery limits |
 
 ## Shape of the thing
 
@@ -57,7 +60,7 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 |---|---|
 | PHP | `^8.4` |
 | Laravel | 13.x |
-| Admin | Filament `^5.4` — Livewire + Alpine, server-rendered |
+| Admin | Filament `^5.6` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
 ## Running it locally
@@ -278,7 +281,7 @@ In plain terms:
 
 The project lives at **[kitsunecms.org](https://kitsunecms.org)**. `kitsune.org` is held by someone else and is being pursued; if it lands, this becomes a redirect rather than a rename, and nothing that references the project has to move.
 
-The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy — `TRADEMARK.md` — will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
+The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. The trademark policy is [`TRADEMARK.md`](TRADEMARK.md). Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
 
 ## Contributing
 
