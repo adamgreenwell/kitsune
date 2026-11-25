@@ -195,7 +195,10 @@ if [[ -z "$lock" ]]; then
   docker run --rm --network none --entrypoint /bin/cat "$composer_image" /usr/bin/composer > "$work/composer.phar" \
     || refuse "could not export the pinned Composer binary"
   [[ -s "$work/composer.phar" ]] || refuse "the pinned Composer binary was empty"
-  if ! docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -e COMPOSER_HOME=/work/composer-home \
+  # Only the resolved lock crosses back to the host. The image may run as root, so its private
+  # Composer files belong on the container's temporary filesystem, outside the caller's bind mount.
+  if ! docker run --rm --tmpfs /tmp:mode=1777,nosuid,nodev -e COMPOSER_ALLOW_SUPERUSER=1 \
+    -e COMPOSER_HOME=/tmp/kitsune-composer-home -e COMPOSER_CACHE_DIR=/tmp/kitsune-composer-cache \
     -v "$work":/work -w /work/skeleton "$image" php /work/composer.phar update --no-install \
     --no-dev --no-interaction --no-scripts --no-plugins > "$work/resolve.log" 2>&1; then
     tail -20 "$work/resolve.log" >&2

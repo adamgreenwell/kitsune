@@ -744,13 +744,65 @@ final class FieldValueRenderer
     {
         $component = $component->label($config->label())->required($config->isRequired());
 
+        if ($component instanceof Select && in_array(self::controlFor($config), [Control::Choice, Control::Choices], true)) {
+            return $component
+                ->in(array_map(strval(...), array_keys(self::options($config))))
+                // Native selects cannot display an unknown stored option, and their required
+                // constraint stops submission before our explicit reselection error can appear.
+                // The existing JS select displays the unresolved value without offering it as a choice.
+                ->native(static fn (?Model $record): bool => self::unresolvedStoredChoices($record, $config) === [])
+                ->required(static fn (?Model $record): bool => $config->isRequired() || self::unresolvedStoredChoices($record, $config) !== [])
+                ->validationMessages([
+                    'in' => __('kitsune::fields.choice.reselect'),
+                    '*.in' => __('kitsune::fields.choice.reselect'),
+                    'required' => __('kitsune::fields.choice.reselect'),
+                ])
+                ->helperText(static function (?Model $record) use ($config): ?string {
+                    $unresolved = self::unresolvedStoredChoices($record, $config);
+
+                    return $unresolved === [] ? $config->helpText() : trim(($config->helpText() ?? '').' '.__('kitsune::fields.choice.unresolved', [
+                        'values' => json_encode($unresolved, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+                    ]));
+                });
+        }
+
         return ($help = $config->helpText()) !== null ? $component->helperText($help) : $component;
+    }
+
+    /**
+     * Never infer an old label's key: labels may themselves be other configured keys.
+     * Read the original persisted record, so clearing the form cannot erase the warning
+     * or bypass explicit reselection. No query, mutation or automatic data migration.
+     *
+     * @return list<string>
+     */
+    private static function unresolvedStoredChoices(?Model $record, FieldConfig $config): array
+    {
+        $values = $record instanceof Entry ? $record->getOriginal('values') : null;
+        $stored = is_array($values) ? ($values[$config->handle()] ?? null) : null;
+
+        if ($stored === null || $stored === '' || $stored === []) {
+            return [];
+        }
+
+        $options = self::options($config);
+        $unresolved = [];
+
+        foreach (is_array($stored) ? $stored : [$stored] as $value) {
+            if (! is_string($value) && ! is_int($value)) {
+                $unresolved[] = json_encode($value, JSON_THROW_ON_ERROR);
+            } elseif (! array_key_exists((string) $value, $options)) {
+                $unresolved[] = (string) $value;
+            }
+        }
+
+        return $unresolved;
     }
 
     /**
      * Option keys and labels for a choice control.
      *
-     * @return array<string, string>
+     * @return array<array-key, string>
      */
     private static function options(FieldConfig $config): array
     {
@@ -763,10 +815,10 @@ final class FieldValueRenderer
         $resolved = [];
 
         foreach ($options as $key => $label) {
-            // Accepts both `['draft' => 'Draft']` and `['draft', 'published']`, because
-            // an operator typing a bare list is the likelier mistake and refusing it
-            // would leave a select with no options and no explanation.
-            $resolved[is_int($key) ? (string) $label : (string) $key] = (string) $label;
+            // A key-to-label map, including list-shaped PHP arrays: [0 => 'First', 1 => 'Second']
+            // is indistinguishable from ['First', 'Second']. Storage, validation and the API
+            // schema already use the keys; the admin control must submit those same values.
+            $resolved[(string) $key] = (string) $label;
         }
 
         return $resolved;

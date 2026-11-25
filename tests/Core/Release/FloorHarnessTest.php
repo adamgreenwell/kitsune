@@ -521,6 +521,10 @@ it('resolves with the selected image before asking the host to install the recor
     $argv = (string) File::get($this->dir.'/argv.log');
 
     expect($argv)->toContain('floor-php:8.4 php /work/composer.phar update --no-install')
+        ->toContain('--tmpfs /tmp:mode=1777,nosuid,nodev')
+        ->toContain('COMPOSER_HOME=/tmp/kitsune-composer-home')
+        ->toContain('COMPOSER_CACHE_DIR=/tmp/kitsune-composer-cache')
+        ->not->toContain('COMPOSER_HOME=/work')
         ->toContain('--entrypoint /bin/cat composer:2.10.3@sha256:')
         ->toContain('install: from an existing lock')
         ->and(substr_count($argv, 'composer context=1'))->toBe(1)

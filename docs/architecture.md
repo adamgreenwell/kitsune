@@ -453,7 +453,7 @@ responsibilities *(amended 2026-10-06 by ADR-040: the credential store joins the
 already on the roadmap; and entitlements, the kernel guard ADR-040 decided, as built in Phase 5a)*:
 
 ```
-Module registry     discovery, enable/disable, dependency resolution, ordering
+Module registry     discovery and registration from checked, enabled receipts
 Lifecycle           install / upgrade / uninstall, with migrations and rollback
 Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
@@ -462,7 +462,16 @@ Entitlements        the fail-closed guard "may this reader reach this?", per sit
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
 Blueprints          a kernel primitive, not a module (ADR-039)
+Schema engine       built into core; no module receipt or enable/disable switch (ADR-001, amended)
 ```
+
+The schema engine remains in `kitsune/core`: fields, schema changes and the shared content models are available
+without installing a module. It has no `extra.kitsune` manifest, separate provider or receipt. The module lifecycle
+does not install, disable or uninstall it. `kitsune/person` is a module that uses this engine, rather than the
+engine's package. [ADR-001 and ADR-038](decision-log.md#amendment--the-schema-engine-stays-in-core-2026-10-23-257)
+record the decision and preserve the earlier first-party-module proposal; [the assessment](schema-engine-boundary.md)
+separates measured current behavior from the work an optional engine would require. This changes documentation,
+not existing migration ownership, stored data or the resource floor.
 
 ⚠️ **"A kernel primitive, not a module" is narrowed by ADR-039, and until then it was asserted here and in the
 roadmap and argued nowhere.** The only definition the log carries is ADR-009's, about tenancy: in core, enforced
@@ -476,6 +485,11 @@ answer that Composer and Packagist do that job. ~~One payload ships inside `kits
 `MarketingSiteBlueprint` and `DamBlueprint`), registered by core's own provider.
 
 ### Module manifest
+
+Composer resolves package dependencies. Kitsune adds no module dependency resolver or provider load-order
+contract ([ADR-038](decision-log.md#adr-038--a-module-is-a-composer-package-core-keeps-a-receipt-for-and-the-kernel-is-a-record-and-a-refusal)).
+An installed package is not automatically an enabled module: ordinary runtime registration requires an enabled
+receipt, a version matching Composer and an accepted manifest. The existing lifecycle owns enable and disable.
 
 ⚠️ **Amended 2026-09-20 by [ADR-038](decision-log.md).** The manifest is an `extra.kitsune` block in the module's own
 `composer.json`, not a `kitsune.yaml` — a YAML parser on the boot path is a floor cost (ADR-027) and a second source of
