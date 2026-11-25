@@ -26,6 +26,7 @@ use Kitsune\Core\Readers\ReaderModuleData;
 use Kitsune\Core\Readers\ReaderModuleDataUnavailable;
 use Kitsune\Core\Readers\ReaderTokens;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\CommittedModuleReceipt;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Fixture\Module\FixtureModuleServiceProvider;
@@ -432,11 +433,12 @@ it('erases a store whose receipt committed after the callers repeatable-read sna
     $default = (string) config('database.default');
     config(['database.connections.reader-privacy-rival' => config('database.connections.'.$default)]);
     $rival = DB::connection('reader-privacy-rival');
+    $moduleReceipt = new CommittedModuleReceipt($rival);
     $now = now();
     $orgId = (int) $rival->table('orgs')->insertGetId(['slug' => 'privacy-snapshot', 'name' => 'Privacy snapshot', 'created_at' => $now, 'updated_at' => $now]);
-    $this->afterRollback(function () use ($rival, $orgId): void {
+    $this->afterRollback(function () use ($rival, $orgId, $moduleReceipt): void {
         $rival->table('fixture_module_seeds')->where('name', 'like', $orgId.'|%')->delete();
-        $rival->table('modules')->where('handle', 'kitsune/fixture-module')->delete();
+        $moduleReceipt->remove();
         $rival->table('audit_log')->where('org_id', $orgId)->delete();
         $rival->table('readers')->where('org_id', $orgId)->delete();
         $rival->table('sites')->where('org_id', $orgId)->delete();
@@ -449,7 +451,7 @@ it('erases a store whose receipt committed after the callers repeatable-read sna
     $connection->beginTransaction();
     expect($connection->table('modules')->count())->toBe(0);
     app(Context::class)->setOrg(Org::query()->findOrFail($orgId));
-    $rival->table('modules')->insert(readerPrivacyReceipt());
+    $moduleReceipt->create(readerPrivacyReceipt());
     $rival->table('fixture_module_seeds')->insert(['name' => $orgId.'|'.$readerId]);
 
     // This proves a plain primary read is still the stale snapshot before the production erasure starts.
