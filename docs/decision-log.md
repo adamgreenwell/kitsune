@@ -3473,6 +3473,15 @@ backup-critical in the way `APP_KEY` is. The module chooses and records both bef
 authenticated, on the Site that resolved the request, and Wayfindr verifies it before binding the visitor. The reader
 model that makes this possible is ADR-037.
 
+*Amended 2026-11-26, #230.* The core Blade theme response is private and no-store. Themes may
+render the current request or reader state. They may render an inert support placeholder
+without identity or authorization data. The support module will mint visitor authorization
+only on a same-origin POST scoped to the current Site and reader session, after checking
+current consent and the active provider link. Every outcome of that endpoint is private and
+no-store. The browser keeps the authorization in memory for widget bootstrap.
+Provider identity reset, revocation behavior and the privacy API still require qualification
+before the module may enable identified sessions.
+
 **Agents work in Wayfindr's own dashboard, and Kitsune is neither an identity provider nor a host for Wayfindr's UI.**
 The admin links out rather than embedding: `e2e/admin.spec.js` holds the admin pages it visits to requesting nothing
 from another host, and ADR-027's floor names external services as something core does not require. Making Kitsune an

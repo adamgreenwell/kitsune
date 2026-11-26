@@ -28,6 +28,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteEntryRedirect;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 use Kitsune\Core\Themes\PublicEntryRedirects;
 use Kitsune\Core\Themes\PublicThemePage;
 use Kitsune\Core\Themes\SiteMenus;
@@ -76,6 +77,44 @@ beforeEach(function (): void {
 afterEach(function (): void {
     $this->context->forget();
     File::deleteDirectory($this->directory);
+});
+
+it('renders each reader’s theme response afresh and prevents retention on home and entry pages', function (): void {
+    EntitlementFixture::declareReaders();
+    $first = EntitlementFixture::reader($this->org, 'first-theme@example.test');
+    $second = EntitlementFixture::reader($this->org, 'second-theme@example.test');
+    $third = EntitlementFixture::reader($this->otherOrg, 'third-theme@example.test');
+    $view = '<main>{{ $site->name }} · {{ $locale }} · {{ app(\Kitsune\Core\Auth\ReaderGuard::class)->current() ?? "guest" }}</main>';
+    File::put($this->directory.'/journal/home.blade.php', $view);
+    File::put($this->directory.'/stone/home.blade.php', $view);
+    File::put($this->directory.'/journal/entries/article.blade.php', $view);
+
+    $this->context->setSite($this->en);
+    $article = EntryType::create(['handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+    Entry::create(['entry_type_id' => $article->id, 'title' => 'Story', 'slug' => 'story', 'status' => 'published']);
+    $this->context->forget();
+
+    $read = function (string $path, string $expectation): void {
+        $this->get($path)->assertOk()
+            ->assertHeader('Cache-Control', 'no-store, private')
+            ->assertHeaderMissing('ETag')
+            ->assertSee('<main>'.$expectation.'</main>', false);
+    };
+
+    $read('/news', 'English · en · guest');
+    EntitlementFixture::signIn($first);
+    $read('/news', 'English · en · '.$first->getKey());
+    $read('/news/article/story', 'English · en · '.$first->getKey());
+    $read('/magazine', 'Magazine · en · guest');
+
+    EntitlementFixture::signIn($second);
+    $read('/news', 'English · en · '.$second->getKey());
+    $read('/news/article/story', 'English · en · '.$second->getKey());
+    $read('/news/ar', 'Arabic · ar · '.$second->getKey());
+
+    EntitlementFixture::signIn($third);
+    $read('/magazine', 'Magazine · en · '.$third->getKey());
+    $read('/news', 'English · en · guest');
 });
 
 it('renders ordered local menu groups and pins through the selected theme', function (): void {
