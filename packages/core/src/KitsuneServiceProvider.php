@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core;
 
+use Composer\InstalledVersions;
 use Filament\Notifications\Notification;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
@@ -368,6 +369,13 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ->loadedOnRequest(),
             Js::make('kitsune-select-value-direction', __DIR__.'/../resources/js/select-value-direction.js'),
         ], BlockDirectionPlugin::PACKAGE);
+
+        $filamentVersion = InstalledVersions::getVersion('filament/support');
+        if ($filamentVersion !== null && version_compare($filamentVersion, '5.10.2.0', '<')) {
+            FilamentAsset::register([
+                Js::make('kitsune-legacy-select-query', __DIR__.'/../resources/js/legacy-select-query.js'),
+            ], BlockDirectionPlugin::PACKAGE);
+        }
 
     }
 }

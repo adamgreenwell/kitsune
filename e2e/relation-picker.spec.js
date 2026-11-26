@@ -107,6 +107,70 @@ async function resolvedDirection(locator) {
 }
 
 test.describe('a relation field round-trips through entry_relations', () => {
+    for (const change of ['clearing', 'replacing']) {
+        test(`ignores a pending search after ${change} the query`, async ({ page }) => {
+            await page.goto(`/admin/${SITE}/c/article/1/edit`);
+            const input = await openSelect(page, /Related articles/);
+            const field = picker(page);
+
+            const select = field.locator('[x-load-src][x-data]').filter({ has: input }).last();
+            await select.evaluate((node) => {
+                const alpine = /** @type {{ Alpine: { $data: (node: Element) => { select: any } } }} */ (/** @type {unknown} */ (window));
+                const widget = alpine.Alpine.$data(node).select;
+                const search = widget.getSearchResultsUsing;
+                widget.getSearchResultsUsing = async function (query) {
+                    const values = await search.call(this, query);
+                    if (query === 'week 3') {
+                        // Snapshot this response before the next result can replace its options.
+                        requestAnimationFrame(() => {
+                            const stale = widget.options.some(({ label }) => label.includes('week 3'));
+                            node.setAttribute('data-stale-search-visible', String(stale));
+                        });
+                    }
+                    return values;
+                };
+            });
+
+            const endpoint = (url) => /\/livewire(?:-[^/]+)?\/update$/.test(url.pathname);
+            const firstQuery = (request) => (request.postData() ?? '').includes('"search":"week 3"');
+            let release;
+            const firstResponseHeld = new Promise((resolve) => {
+                release = resolve;
+            });
+            const deferFirstSearch = async (route) => {
+                if (!firstQuery(route.request())) {
+                    await route.fallback();
+                    return;
+                }
+
+                await firstResponseHeld;
+                await route.continue();
+            };
+            await page.route(endpoint, deferFirstSearch);
+
+            try {
+                const sent = page.waitForRequest((request) => endpoint(new URL(request.url())) && firstQuery(request));
+                await input.fill('week 3');
+                await sent;
+
+                await input.fill(change === 'clearing' ? '' : 'week 4');
+                const oldResponse = page.waitForResponse((response) =>
+                    endpoint(new URL(response.url())) && firstQuery(response.request()));
+                release();
+                expect((await oldResponse).ok()).toBe(true);
+                await expect(select).toHaveAttribute('data-stale-search-visible', 'false');
+                await expect(field.getByRole('option', { name: /week 3/ })).toBeHidden();
+
+                if (change === 'clearing') await input.fill('week 4');
+                await expect(field.getByRole('option', { name: /week 4/ })).toBeVisible();
+                await expect(pickerValue(page)).not.toContainText(/week [34]/);
+            } finally {
+                release();
+                await page.unroute(endpoint, deferFirstSearch);
+            }
+        });
+    }
+
     test('saves a selection and hydrates it again after a reload', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article/1/edit`);
         await expect(picker(page)).toBeVisible();
