@@ -7,12 +7,19 @@ requires the account's current permission, Org and Site membership, and an enabl
 ## Enable token access
 
 Install Laravel Sanctum 4.5 or later in the 4.x series in the host application. Run the normal schema
-migrations before applying the optional token migration. On the Kitsune skeleton, use:
+migrations before applying the optional token migration. In a Composer-managed Kitsune skeleton, use:
 
 ```sh
 composer require 'laravel/sanctum:^4.5'
 php artisan migrate --path=database/api-migrations
 ```
+
+An unpacked self-host runtime bundle has Composer references to sibling package
+sources. If preparing a bundle with Sanctum, place the `packages/` directory
+from the bundle's exact source commit beside the unpacked application directory
+before running the Composer command. Use a new unpacked candidate so the installed
+release remains reproducible. The [runtime build guide](release-artifacts.md#build-the-self-host-runtime-archive)
+describes the source commit recorded by the builder.
 
 Set `api.staff_provider` in the host's `config/kitsune.php` to the staff provider from
 `config/auth.php`. The skeleton's provider is `users`. Use the provider whose staff table owns both
@@ -20,12 +27,16 @@ membership pivots. The migration supports the skeleton membership layout and hos
 integer, ULID or UUID identifiers with matching membership column types. A host with different
 membership tables must supply the equivalent foreign keys.
 
-The guard is `kitsune-site-api`. Place `ResolveSiteFromRequest` and `auth:kitsune-site-api` on the
-Site API routes before content binding. The API must use the resolved Site's canonical host and path.
-For content operations, check the token ability with `SiteTokens::allows()` and use the usual
-entry policy and scoped record reads. The generated content routes and response contract are separate
-v1.1 work. The guard checks only the bearer header. A host that uses Sanctum only for Kitsune may
-set `sanctum.routes` to `false` to omit Sanctum's separate SPA cookie route.
+The v1.1 skeleton registers the generated content routes when Sanctum and the staff provider
+are configured. On an existing skeleton install, bring the `SiteApiRoutes` import and
+`withRouting(..., then: ...)` registration into the host's `bootstrap/app.php` if its copied
+bootstrap predates the feature. Preserve any other routing callbacks in that file. The content
+routes run outside the session-backed web group and use the `kitsune-site-api` bearer guard. Send
+requests to the Site's canonical host and include its full path prefix. If the host caches its
+routes or configuration, rebuild those caches after changing the API setup.
+
+A host that uses Sanctum only for Kitsune may set `sanctum.routes` to `false` to omit Sanctum's SPA
+cookie route.
 
 ## Issue and revoke
 
@@ -48,8 +59,10 @@ php artisan kitsune:api-token revoke --org=example --site=magazine --id=7
 Revocation applies on the next request. Removing the account's membership in the Site or Org deletes
 its affected credentials permanently. Adding that membership back requires a new credential. A role
 change takes effect on the next request, and disabling an entry type makes its operations unavailable
-for that Site. Missing, expired or revoked credentials return 401. An authenticated credential that
-lacks the required ability or current entry-type permission receives 403.
+for that Site. Missing, expired or revoked credentials return 401. Type and record endpoints
+return 404 when their required entry-type ability or current staff permission is missing. A request
+that passes the initial type check and also needs the publish ability returns 403 if that ability
+or permission is missing.
 
 ## Discover a Site's fields
 
@@ -95,7 +108,8 @@ what is retained even if its eligible entry has changed. A write that fails rela
 leaves the entry and its history unchanged.
 
 Invalid field values return 422. A missing publish ability returns 403. A storage conflict
-returns 409. Entry writes accept only JSON.
+returns 409. Entry writes return 415 for a request without a JSON content type and 400 for
+malformed JSON.
 
 ## Upload media
 
