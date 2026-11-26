@@ -21,6 +21,7 @@ use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\OrgCredentialMode;
+use Kitsune\Core\Models\ReaderConsentEvent;
 use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -130,6 +131,7 @@ it('resolves the declared scope for each core model', function (string $model, s
     'Credential belongs to an org' => [Credential::class, OrgScoped::class],
     'OrgCredentialMode belongs to an org' => [OrgCredentialMode::class, OrgScoped::class],
     'Entitlement belongs to a site' => [Entitlement::class, SiteScoped::class],
+    'ReaderConsentEvent belongs to an org' => [ReaderConsentEvent::class, OrgScoped::class],
     'ReaderToken belongs to an org' => [ReaderToken::class, OrgScoped::class],
 ]);
 

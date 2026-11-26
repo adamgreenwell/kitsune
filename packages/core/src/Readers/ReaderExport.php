@@ -15,6 +15,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Auth\EmailAddress;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefused;
@@ -44,7 +45,7 @@ final class ReaderExport
     ) {}
 
     /**
-     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string, module_data?: array<string, array<string, mixed>>}
+     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string, consents?: list<array{site: int, purpose: string, notice_version: string, granted: bool, recorded_at: string, expires_at: ?string, retain_until: string}>, module_data?: array<string, array<string, mixed>>}
      *
      * @throws EntitlementRefused
      */
@@ -61,6 +62,11 @@ final class ReaderExport
             'pending_links' => app(ReaderTokens::class)->pending($key, $address),
             'generated_at' => CarbonImmutable::now('UTC')->format('Y-m-d\TH:i:s\Z'),
         ];
+        $consents = app(ReaderConsents::class)->export(ReaderGuard::stored($account?->getKey()) ?? $key);
+        if ($consents !== []) {
+            $records['consents'] = $consents;
+        }
+
         $modules = app(ReaderModuleData::class)->export($key);
 
         if ($modules !== []) {
