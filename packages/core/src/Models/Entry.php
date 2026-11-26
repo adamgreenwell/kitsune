@@ -32,6 +32,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Fields\ValueDirection;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RecordedRevisions;
+use Kitsune\Core\Schema\RevisionSubject;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
@@ -1861,6 +1862,7 @@ class Entry extends Model implements RequiresModelSave
             // entry from that list — a stray key there would try to write a
             // column that does not exist.
             'relation_state' => $this->relationState(),
+            'subject_schema' => RevisionSubject::capture($this),
             // ⚠️ The pre-sanitization originals, also OUT of the snapshot list and for
             // a sharper reason than `relation_state`: `restoreRevision()` fills the
             // entry from that list, so an original reachable through it would put

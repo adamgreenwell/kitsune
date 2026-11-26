@@ -59,7 +59,7 @@ it('marks every symbol it adds @internal', function (): void {
     expect($public)->toBe([], 'these are not marked @internal: '.implode(', ', $public));
 });
 
-it('encrypts and decrypts in one file, opens through one caller, and lets nothing in the admin or HTTP near either', function (): void {
+it('keeps each storage decoder behind its designated internal callers', function (): void {
     $everything = credentialSourceFiles('');
     $read = static fn (string $file): string => (string) file_get_contents($file);
     $relative = static fn (string $file): string => substr($file, strlen(dirname(__DIR__, 3).'/packages/core/src/'));
@@ -70,8 +70,11 @@ it('encrypts and decrypts in one file, opens through one caller, and lets nothin
     $decrypting = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => preg_match($crypto, $read($f)) === 1)));
     $opening = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'cipher->open('))));
 
-    expect($decrypting)->toBe(['Credentials/CredentialCipher.php'])
-        ->and($opening)->toBe(['Credentials/CredentialReader.php']);
+    $readerDecoders = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'ReaderColumnCast::read('))));
+
+    expect($decrypting)->toBe(['Credentials/CredentialCipher.php', 'Readers/ReaderColumnCast.php'])
+        ->and($opening)->toBe(['Credentials/CredentialReader.php'])
+        ->and($readerDecoders)->toBe(['Readers/ReaderColumnProjection.php']);
 
     foreach ([...credentialSourceFiles('Filament'), ...credentialSourceFiles('Http')] as $file) {
         foreach (['CredentialReader', 'CredentialCipher', 'reveal('] as $needle) {

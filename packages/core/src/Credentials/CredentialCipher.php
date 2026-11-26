@@ -17,7 +17,7 @@ use Kitsune\Core\Tenancy\Context;
 use LogicException;
 
 /**
- * Seals a credential and opens it again — ADR-040, and the only code in core that encrypts or decrypts anything.
+ * Seals a credential and opens it again — ADR-040, and the only cipher for credential slots.
  *
  * ⚠️ A KEY OF ITS OWN, DERIVED FROM `APP_KEY` (Adam, 2026-10-05): HKDF-SHA256 under a fixed label, with AES-256-GCM.
  * Measured: an encrypter so keyed cannot open an `APP_KEY` payload, and an `APP_KEY` encrypter cannot open this one —
