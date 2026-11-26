@@ -395,7 +395,7 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
   **ADR-030's four conditions, 2026-10-04** — each box ticked only when its artifact exists:
   - [x] Applies to a fresh install in one command: `BlueprintCommandOwnerTest` and `BlueprintCommandTest`, on a bare clone
   - [x] Applies idempotently: at the same version, `MarketingSiteBlueprintTest`; ~~the upgrade half waits on [ADR-039](decision-log.md)'s merge, the next slice~~ the upgrade, `MarketingSiteUpgradeTest` ~~against a test's 1.1.0~~ from the released 1.0.0 to the released 1.1.0, `ReleasedBlueprintsTest`, and `BlueprintCommandTest`'s upgrade in one command ([ADR-039](decision-log.md), Marketing Site 1.1.0, as built), on a bare clone
-  - [ ] At the ADR-027 floor: [constrained-container apply figures recorded 2026-10-22](benchmarks/blueprint-floor-2026-10-22.md), 418–785 ms for Marketing Site; the real native-host condition of ADR-030 remains unmeasured
+  - [x] At the ADR-027 floor, Marketing Site applied on a disposable native Linux guest. Fresh apply took 0.29 seconds at 82,640 KiB peak RSS. [Native measurement](benchmarks/blueprint-floor-2026-10-22.md#native-marketing-site-apply-2026-11-25)
   - [x] Editable by its operator through the admin: `e2e/marketing-site.spec.js`
 - [ ] Blueprints are a **kernel primitive**, not a module — narrowed by [ADR-039](decision-log.md) to the only sense the log defines: the mechanism is core and unreplaceable, the payload may live anywhere
 
