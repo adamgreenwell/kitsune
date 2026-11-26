@@ -28,7 +28,7 @@ final class EntryRelationWriter
     /**
      * New selections name a readable entry. Existing choices can be retained by their field-local link ID.
      *
-     * @param  list<array{entry: int, pin?: bool, follow?: bool}|array{keep: int}>  $choices
+     * @param  list<array{entry: int, pin?: bool, follow?: bool}|array{keep: int}|array{group: string}>  $choices
      * @param  Closure(Entry): bool  $canEdit
      * @param  Closure(Entry): bool  $canRead
      */
@@ -78,8 +78,13 @@ final class EntryRelationWriter
 
             $selected = [];
             foreach ($choices as $choice) {
-                if (isset($choice['keep'])) {
-                    $link = $existing->get($choice['keep']);
+                if (isset($choice['keep']) || isset($choice['group'])) {
+                    $link = isset($choice['keep']) ? $existing->get($choice['keep']) : $existing->firstWhere(
+                        'target_group_id',
+                        (new EntryTranslationGroup)->setConnection($connection)->newQuery()->useWritePdo()
+                            ->where('org_id', $orgId)->where('uuid', $choice['group'])->whereIn('id', $existing->pluck('target_group_id')->filter())
+                            ->value('id') ?? 0,
+                    );
                     if ($link === null) {
                         $this->refuse('A retained relation has changed. Reload the field and try again.');
                     }
