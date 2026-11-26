@@ -139,7 +139,9 @@ recreates the app and database to check data, key and certificate persistence,
 and removes only its own labeled
 containers, volumes and networks. The receipt and final JSON summary distinguish qualification,
 cleanup and archival failures. Cleanup is attempted before copying diagnostics,
-and absence of each labeled resource type is verified independently.
+and absence of each labeled resource type is verified independently. If a teardown
+command is interrupted, the qualifier records it and continues with the remaining
+verification steps.
 
 The local ARM64 qualification on 2026-10-19 passed all 30 transport, custody,
 restart and secret-free Compose parsing checks on PHP 8.5.10, with cleanup verified.

@@ -47,7 +47,8 @@ class QualifierCleanupTest(unittest.TestCase):
 
     def test_preserves_independent_outcomes_after_a_partial_compose_start(self):
         for fault in ("none", "copy", "receipt", "down", "inventory", "missing-docker",
-                      "container-verification", "volume-verification", "network-remains", "interrupt", "restore"):
+                      "container-verification", "volume-verification", "network-remains", "interrupt",
+                      "interrupt-logs", "interrupt-down", "interrupt-verify", "restore"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 receipt = root / "run" / "result.json"
@@ -87,6 +88,8 @@ class QualifierCleanupTest(unittest.TestCase):
                     elif operation == "down":
                         self.assertEqual(command, ["down", "--volumes", "--remove-orphans"])
                         self.assertIn("--project-name", argv)
+                        if fault == "interrupt-down":
+                            raise KeyboardInterrupt
                         removed = fault != "down"
                         code = 0 if removed else 71
                     elif operation == "ps" and argv[:2] == ["docker", "compose"]:
@@ -118,6 +121,8 @@ class QualifierCleanupTest(unittest.TestCase):
                             code = 75 if kwargs["input"] == b"original index" else 70
                             stdout, stderr = b"partial start", b"original qualification diagnostic"
                     elif operation == "logs":
+                        if fault == "interrupt-logs":
+                            raise KeyboardInterrupt
                         stdout = b"Compose diagnostic"
                     elif operation in {"ps", "volume", "network"}:
                         self.assertRegex(argv[-1], r"^label=com\.docker\.compose\.project=kitsune-profile-[0-9a-f]{12}$")
@@ -128,18 +133,22 @@ class QualifierCleanupTest(unittest.TestCase):
                         if started and not removed:
                             stdout = b"owned fixture\n"
                         if started and removed:
+                            if (operation, fault) == ("ps", "interrupt-verify"):
+                                raise KeyboardInterrupt
                             if (operation, fault) in {("ps", "container-verification"), ("volume", "volume-verification")}:
                                 code = 73
                             if operation == "network" and fault == "network-remains":
                                 stdout = b"owned network\n"
                     return subprocess.CompletedProcess(argv, code, stdout, stderr)
 
-                summary = self.run_qualifier(receipt, docker, expected_exit=130 if fault == "interrupt" else 1)
+                summary = self.run_qualifier(receipt, docker, expected_exit=130 if fault.startswith("interrupt") else 1)
 
                 self.assertEqual(events[-4:], ["down", "ps", "volume", "network"])
                 self.assertTrue(summary["cleanup_attempted"])
                 self.assertEqual(summary["cleanup_verified"],
-                                 fault not in {"down", "container-verification", "volume-verification", "network-remains"})
+                                 fault not in {"down", "container-verification", "volume-verification", "network-remains",
+                                               "interrupt-down", "interrupt-verify"})
+                self.assertEqual(bool(summary.get("interrupted")), fault.startswith("interrupt"))
                 self.assertIn("KeyboardInterrupt" if fault == "interrupt" else "Command failed (exit 70)", summary["failure"])
                 if fault == "restore":
                     self.assertIn("exit 75", summary["restore_failure"])
@@ -159,10 +168,15 @@ class QualifierCleanupTest(unittest.TestCase):
                     self.assertEqual(diagnostic.read_bytes(), b"original qualification diagnostic")
                     self.assertEqual((receipt.parent / "failure.stdout").read_bytes(), b"partial start")
                 compose_log = receipt.parent / "compose.log"
-                self.assertEqual(compose_log.read_bytes(), b"Compose diagnostic")
-                self.assertEqual(stat.S_IMODE(compose_log.stat().st_mode), 0o600)
+                if fault == "interrupt-logs":
+                    self.assertFalse(compose_log.exists())
+                    self.assertIn("collect Compose logs: KeyboardInterrupt", summary["archive_errors"])
+                else:
+                    self.assertEqual(compose_log.read_bytes(), b"Compose diagnostic")
+                    self.assertEqual(stat.S_IMODE(compose_log.stat().st_mode), 0o600)
                 self.assertEqual(bool(summary["cleanup_errors"]),
-                                 fault in {"down", "inventory", "missing-docker", "container-verification", "volume-verification"})
+                                 fault in {"down", "inventory", "missing-docker", "container-verification",
+                                           "volume-verification", "interrupt-down", "interrupt-verify"})
 
 
 if __name__ == "__main__":
