@@ -46,6 +46,12 @@ def report():
     ) else 1
 
 
+def failure_detail(failure):
+    if isinstance(failure, KeyboardInterrupt):
+        result["interrupted"] = True
+    return str(failure) or type(failure).__name__
+
+
 def write_private(path, data):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as output:
@@ -55,8 +61,8 @@ def write_private(path, data):
 try:
     # A new directory gives the run exclusive names for the receipt and its diagnostics.
     args.receipt.parent.mkdir(mode=0o700)
-except OSError as failure:
-    result["archive_errors"].append(f"create receipt directory: {failure}")
+except (OSError, KeyboardInterrupt) as failure:
+    result["archive_errors"].append(f"create receipt directory: {failure_detail(failure)}")
     raise SystemExit(report())
 
 
@@ -68,8 +74,8 @@ def command(argv, *, data=None, required=True, env=None):
         for name, data in (("failure.stdout", process.stdout), ("failure.stderr", process.stderr)):
             try:
                 (private / name).write_bytes(data)
-            except OSError as failure:
-                result["archive_errors"].append(f"record {name}: {failure}")
+            except (OSError, KeyboardInterrupt) as failure:
+                result["archive_errors"].append(f"record {name}: {failure_detail(failure)}")
         raise RuntimeError(f"Command failed (exit {process.returncode}); inspect private diagnostic files")
     return process
 
@@ -148,8 +154,8 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
     def cleanup_command(name, run):
         try:
             process = run()
-        except OSError as failure:
-            result["cleanup_errors"].append(f"{name}: {failure}")
+        except (OSError, KeyboardInterrupt) as failure:
+            result["cleanup_errors"].append(f"{name}: {failure_detail(failure)}")
             return None
         if process.returncode:
             result["cleanup_errors"].append(f"{name}: exit {process.returncode}")
@@ -289,8 +295,8 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
                 restored = app("tee", index, data=original, required=False)
                 if restored.returncode:
                     result["restore_failure"] = f"Restore command failed (exit {restored.returncode})"
-            except OSError as failure:
-                result["restore_failure"] = str(failure)
+            except (OSError, KeyboardInterrupt) as failure:
+                result["restore_failure"] = failure_detail(failure)
             if not probe_failed:
                 check("front controller restore command succeeded", "restore_failure" not in result)
         check("original front controller restored exactly", app("cat", index).stdout == original)
@@ -349,8 +355,8 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
                 (private / "compose.log").write_bytes(logs.stdout + logs.stderr)
                 if logs.returncode:
                     result["archive_errors"].append(f"collect Compose logs: exit {logs.returncode}")
-            except OSError as log_failure:
-                result["archive_errors"].append(f"collect Compose logs: {log_failure}")
+            except (OSError, KeyboardInterrupt) as log_failure:
+                result["archive_errors"].append(f"collect Compose logs: {failure_detail(log_failure)}")
     finally:
         if cleanup_required:
             result["cleanup_attempted"] = True
@@ -367,11 +373,11 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
             try:
                 if diagnostic.is_file():
                     write_private(args.receipt.parent / name, diagnostic.read_bytes())
-            except OSError as failure:
-                result["archive_errors"].append(f"copy {name}: {failure}")
+            except (OSError, KeyboardInterrupt) as failure:
+                result["archive_errors"].append(f"copy {name}: {failure_detail(failure)}")
         try:
             write_private(args.receipt, (json.dumps(result, indent=2) + "\n").encode())
-        except OSError as failure:
-            result["archive_errors"].append(f"write receipt: {failure}")
+        except (OSError, KeyboardInterrupt) as failure:
+            result["archive_errors"].append(f"write receipt: {failure_detail(failure)}")
 
 raise SystemExit(report())
