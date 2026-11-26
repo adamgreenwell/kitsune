@@ -48,6 +48,7 @@ use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\ReadersCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
+use Kitsune\Core\Console\SiteApiTokenCommand;
 use Kitsune\Core\Console\SiteCommand;
 use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -61,6 +62,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\MediaReaderBulk;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Http\Api\SiteTokens;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Http\MiddlewarePriority;
 use Kitsune\Core\Media\MediaCustody;
@@ -300,6 +302,8 @@ final class KitsuneServiceProvider extends ServiceProvider
             MiddlewarePriority::placeSiteBeforeAuthentication($kernel, app('router'));
         });
 
+        SiteTokens::register();
+
         if ($this->app->runningInConsole()) {
             /*
              * For an installation that runs a scheduler; none needs one, because the same sweep follows every
@@ -329,6 +333,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ModuleCommand::class,
                 ReadersCommand::class,
                 SchemaSyncCommand::class,
+                SiteApiTokenCommand::class,
                 SiteCommand::class,
             ]);
         }

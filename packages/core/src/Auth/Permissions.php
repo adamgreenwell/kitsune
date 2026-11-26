@@ -645,6 +645,14 @@ final class Permissions
         return once(fn (): bool => self::resolveIsOwner($userId, $orgId, $class));
     }
 
+    /** @internal The product API needs membership before looking up a particular permission. */
+    public static function isCurrentOrgMember(Authenticatable $user): bool
+    {
+        [$userId, $orgId] = self::key($user);
+
+        return $userId !== null && $orgId !== null && self::isMemberOfCurrentOrg($userId, $user::class);
+    }
+
     /** Re-read ownership at a write boundary after the caller has taken its lock. @internal */
     public static function isOwnerNow(Authenticatable $user): bool
     {

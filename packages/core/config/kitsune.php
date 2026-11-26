@@ -15,6 +15,10 @@ use Kitsune\Core\Media\MediaDisks;
  * host overrides any key here by declaring it there.
  */
 return [
+    'api' => [
+        'staff_provider' => null,
+    ],
+
     /*
      * Where uploaded bytes live — ADR-041.
      *

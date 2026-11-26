@@ -25,6 +25,9 @@
         "orchestra/testbench": "^11.2",
         "pestphp/pest": "^5.1"
     },
+    "suggest": {
+        "laravel/sanctum": "Required for the opt-in Site token API (^4.5)."
+    },
     "autoload": {
         "psr-4": {
             "Kitsune\\Core\\": "src/"
