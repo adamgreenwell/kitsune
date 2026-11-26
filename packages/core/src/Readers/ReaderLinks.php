@@ -33,6 +33,8 @@ final class ReaderLinks
 
     public const HOME = '';
 
+    public const PRIVACY = '/privacy';
+
     public const SIGN_IN = '/sign-in';
 
     public const SIGN_OUT = '/sign-out';

@@ -101,11 +101,12 @@ it('marks every reader route a fallback, registered ahead of the skeleton\'s cat
     // account leaf for fallback precedence so an optional route cannot swallow a panel or host route either.
     $readers = array_filter($accounts, static fn (RoutingRoute $route): bool => str_starts_with($route->getActionName(), 'Kitsune\\Core\\Http\\Controllers\\Readers\\'));
 
-    expect($readers)->toHaveCount(32)
+    expect($readers)->toHaveCount(36)
         ->and(array_filter($accounts, static fn (RoutingRoute $route): bool => ! $route->isFallback))->toBe([])
         ->and(end($uris))->toBe('GET|HEAD {fallbackPlaceholder}')
         ->and($uris)->toContain('GET|HEAD account', 'GET|HEAD account/sign-in', 'POST account/sign-in', 'POST account/sign-out')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account', 'POST {readerSite}/account/sign-out')
+        ->and($uris)->toContain('GET|HEAD account/privacy', 'POST account/privacy', 'GET|HEAD {readerSite}/account/privacy', 'POST {readerSite}/account/privacy')
         ->and($uris)->toContain('GET|HEAD account/register', 'POST account/register', 'GET|HEAD account/register/complete', 'POST account/register/complete')
         ->and($uris)->toContain('GET|HEAD {readerSite}/account/recover', 'POST {readerSite}/account/recover', 'GET|HEAD {readerSite}/account/reset', 'POST {readerSite}/account/reset')
         ->and($uris)->toContain('GET|HEAD account/downloads/{id}', 'GET|HEAD account/downloads/{id}/file', 'GET|HEAD {readerSite}/account/downloads/{id}', 'GET|HEAD {readerSite}/account/downloads/{id}/file')

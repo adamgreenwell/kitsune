@@ -414,13 +414,18 @@ final class FieldValueRenderer
             $query = Permissions::constrainToViewable(self::relationScope($targets), $user)
                 ->whereLike('title', '%'.$search.'%', caseSensitive: false);
 
-            // Bounded, because a search for "a" otherwise returns the whole table. The
-            // author narrows; the control does not try to show everything.
+            $optionLimit = 50;
             $options = [];
             $subject = $config->field !== null && $config->field->entryType?->subject_field_id === $config->field->id;
-            foreach ($query->orderBy('title')->orderBy('id')->limit(50)->get(['id', 'title', 'translation_group', 'site_id']) as $entry) {
+            foreach ($query->orderBy('title')->orderBy('id')->limit($optionLimit)->get(['id', 'title', 'translation_group', 'site_id']) as $entry) {
+                $hasTwoChoices = ! $subject && $entry->translation_group !== null && $entry->site_id !== null;
+                // Keep Follow and Pin together when the next row would exceed the option limit.
+                if (count($options) + ($hasTwoChoices ? 2 : 1) > $optionLimit) {
+                    break;
+                }
+
                 $title = (string) $entry->title;
-                if (! $subject && $entry->translation_group !== null && $entry->site_id !== null) {
+                if ($hasTwoChoices) {
                     $options['follow:'.$entry->id] = $title.' · '.__('Follow translations');
                     $options['pin:'.$entry->id] = $title.' · '.__('Pin this entry');
                 } else {

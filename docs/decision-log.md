@@ -3556,6 +3556,37 @@ migration columns, which the mechanism cannot see. So the reader model records i
 erasure and export tooling can read, and whether that becomes an extension of `pii_class` or a second declaration is
 decided when that tooling is built rather than asserted here.
 
+### Per-Site consent records (v1.1, issue #231)
+
+The reader's privacy choices are separate for profiling and support chat. The signed-in reader manages them at
+`/account/privacy` under the site's prefix. Choices are off by default, and the operator sets a notice version and
+retention period for each purpose on each Site. A Site never inherits this setting from its SiteGroup or Org.
+The Site in the request and the signed-in reader's account determine where each decision is recorded. The account
+page names the Site receiving the grant. No combined cross-brand grant is offered.
+
+```bash
+php artisan kitsune:readers consent profiling --org=example --site=magazine --notice=v1 --retention-days=30
+php artisan kitsune:readers consent profiling --org=example --site=magazine --disable
+php artisan kitsune:readers consent-sweep --org=example --force
+```
+
+Use a new notice version when the purpose or notice changes. Disabling the policy stops the processing while
+the policy is absent and preserves the history for subject requests. The ledger exports its retained grants and
+withdrawals with Site IDs, notice versions and times. Erasure verifies that the reader's consent history is gone
+across the Org before committing. Expiry is checked on every decision. Schedule `consent-sweep` for each Org
+according to its retention policy. The command also runs on a bare installation with no scheduler. A later
+choice stays at least until older records can be swept so an older grant cannot take effect again when a newer
+choice is removed.
+
+Hosts with an overridden reader account view can add a link to `/account/privacy` under each Site's prefix.
+The route itself is registered with the other reader pages. Consent writes require the account, Site and event
+ledger to share one database connection so consent and account erasure can serialize.
+
+A current `Sec-GPC` value of `1` declines both purposes without rewriting stored choices. A valid field also prevails
+when another field holds an invalid value. Reader privacy responses use the account area's private, no-store headers.
+Profiling and the Wayfindr integration each need to consult the gate before processing when their features land.
+[W3C Global Privacy Control draft](https://www.w3.org/TR/gpc/#the-sec-gpc-header-field-for-http-requests)
+
 ### Enforced by
 
 ~~**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.~~ *As built
@@ -10931,6 +10962,34 @@ orphan, about 5 ms each.
 **Owed, and why here it could not be:** a real object store's presence check, since no S3, FTP or SFTP adapter is
 installed — the synthetic column stands in and says so; a media disk on a second filesystem; and the numbers on stage,
 which wait on stage.
+
+### Direct Amazon S3 profile under qualification (issue #229)
+
+For a rehearsal, use the optional `league/flysystem-aws-s3-v3` adapter with general-purpose Amazon S3 buckets.
+Keep upload intake local. Use separate buckets when both media disks use S3. Configure the private bucket with
+Block Public Access enabled and leave its disk URL unset. Staff and reader downloads use the existing
+authorization-protected Kitsune routes. Public media uses the bucket origin and an anonymous object-read policy
+limited to the configured media prefix. The public disk URL is the origin before the disk root.
+This profile does not issue presigned media links.
+
+Set Bucket owner enforced on each bucket and set its disk option `ACL` to `bucket-owner-full-control`. Set the
+public disk option `CacheControl` to `no-store` and preserve the header at the origin. Use never-versioned buckets
+without Object Lock or replication. Add an enabled `AbortIncompleteMultipartUpload` lifecycle rule covering the
+entire media key prefix on each S3 bucket. With a disk root of `kitsune`, the prefix is `kitsune/media/`.
+[Amazon S3 object ownership](https://docs.aws.amazon.com/AmazonS3/latest/userguide/about-object-ownership.html) ·
+[Amazon S3 multipart cleanup](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html)
+
+Run `php artisan kitsune:media-s3-diagnose` with the app's configured disk credentials. It reads bucket metadata
+and reports mismatches, denied calls and unknown responses. It requests no changes to buckets or objects. A
+local installation without configured S3 disks skips the check and needs no AWS adapter. Grant the diagnostic
+only the read-only permissions for `HeadBucket`, ownership controls, versioning, Object Lock, replication,
+lifecycle, bucket public access block and bucket policy status. The diagnostic does not fetch policy documents.
+[Amazon S3 operation permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html)
+
+Provider qualification still requires verifying the effective disk permissions, private and public delivery,
+withdrawal and retention with a designated bucket. Bucket metadata alone cannot establish what anonymous
+callers or a CDN receive, when lifecycle cleanup runs, or whether another system retains copies. See
+[issue #229](https://github.com/adamgreenwell/kitsune/issues/229) for the loopback evidence.
 
 ### Measured — decision 5, slice 5b, 2026-09-25
 

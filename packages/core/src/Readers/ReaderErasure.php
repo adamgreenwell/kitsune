@@ -12,6 +12,7 @@ namespace Kitsune\Core\Readers;
 
 use Closure;
 use Kitsune\Core\Auth\EmailAddress;
+use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRefused;
@@ -59,15 +60,19 @@ final class ReaderErasure
      */
     public function erase(#[\SensitiveParameter] int|string $reader): array
     {
-        return TransactionRecovery::run((new Entitlement)->getConnection(), function () use ($reader): array {
+        $connection = (new Entitlement)->getConnection();
+
+        return TransactionRecovery::run($connection, function () use ($reader, $connection): array {
             $org = $this->authority->org(EntitlementRefused::FORGET);
             $site = app(Context::class)->siteId();
             $grantErasure = $this->entitlements->forgetWithWitness($reader);
             $grants = $grantErasure['erased'];
-            $found = $this->readers->find($reader);
+            $found = $this->readers->find($reader, lock: true);
             $address = $found !== null ? EmailAddress::normalise($found->readerEmail()) : null;
 
             $key = $this->authority->filedKey(EntitlementRefused::FORGET, $reader);
+            $consentKey = ReaderGuard::stored($found?->getKey()) ?? $key;
+            $consentProof = app(ReaderConsents::class)->forgetWithWitness($connection, $consentKey, $found?->getConnection());
             $recoveryErasure = $this->tokens->forgetSubjectWithWitness(ReaderTokens::RECOVER, $key);
             $registrationErasure = $address === null ? null : $this->tokens->forgetSubjectWithWitness(ReaderTokens::REGISTER, $address);
             $links = $recoveryErasure['erased'] + ($registrationErasure['erased'] ?? 0);
@@ -100,9 +105,10 @@ final class ReaderErasure
                 ReaderAccounts::mapped(static fn () => $account->eraseAccount());
                 $accountErased = true;
             });
-            EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, static function () use ($grantErasure, $recoveryErasure, $registrationErasure, $accountProof): void {
+            EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, static function () use ($grantErasure, $recoveryErasure, $registrationErasure, $consentProof, $accountProof): void {
                 $accountProof?->__invoke();
                 $grantErasure['verify']();
+                $consentProof();
                 $recoveryErasure['verify']();
                 if ($registrationErasure !== null) {
                     $registrationErasure['verify']();

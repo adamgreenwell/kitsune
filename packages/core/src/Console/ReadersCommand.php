@@ -18,8 +18,10 @@ use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Auth\ReaderGuardFault;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Readers\ConsentPurpose;
 use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderAddresses;
+use Kitsune\Core\Readers\ReaderConsents;
 use Kitsune\Core\Readers\ReaderErasure;
 use Kitsune\Core\Readers\ReaderExport;
 use Kitsune\Core\Readers\ReaderLinks;
@@ -55,15 +57,18 @@ final class ReadersCommand extends Command
 {
     use ReadsWrittenKeys;
 
-    private const ACTIONS = ['status', 'mode', 'addresses', 'find', 'export', 'erase'];
+    private const ACTIONS = ['status', 'mode', 'addresses', 'find', 'export', 'erase', 'consent', 'consent-sweep'];
 
     private const INHERIT = 'inherit';
 
     protected $signature = 'kitsune:readers
-        {action : status, mode, addresses, find, export or erase}
-        {value? : For mode — off, sign-in, open or inherit; for addresses — hidden, shown or inherit}
+        {action : status, mode, addresses, find, export, erase, consent or consent-sweep}
+        {value? : For mode — off, sign-in, open or inherit; for addresses — hidden, shown or inherit; for consent — profiling or support_widget}
         {--org= : The organisation\'s slug}
         {--site= : For mode — the site\'s handle; without it, the organisation\'s own setting. Addresses are the organisation\'s alone}
+        {--notice= : For consent — the version of the notice readers accept}
+        {--retention-days= : For consent — days the choice remains effective}
+        {--disable : For consent — stop offering a purpose on this site}
         {--reader= : For export and erase — the reader\'s identifier, instead of their address on standard input}
         {--force : Confirm erase, or acknowledge closing reader download links when changing mode}';
 
@@ -74,7 +79,7 @@ final class ReadersCommand extends Command
         $action = $this->argument('action');
 
         if (! in_array($action, self::ACTIONS, true)) {
-            return $this->refuse('Refusing: kitsune:readers has six actions — status, mode, addresses, find, export and erase. Nothing was read or written.');
+            return $this->refuse('Refusing: kitsune:readers takes status, mode, addresses, find, export, erase, consent or consent-sweep. Nothing was read or written.');
         }
 
         $slug = $this->option('org');
@@ -101,7 +106,7 @@ final class ReadersCommand extends Command
         }
 
         if ($action === 'erase' && ! $this->option('force')) {
-            return $this->refuse("Refusing: erase deletes the reader's account, every entitlement they hold on every site of [{$slug}], and any link waiting for them. Run it again with --force. Nothing was written.");
+            return $this->refuse("Refusing: erase deletes the reader's account, every entitlement they hold on every site of [{$slug}], their consent choices and any link waiting for them. Run it again with --force. Nothing was written.");
         }
 
         // ⚠️ WITH THE TRASHED: a soft-deleted org keeps its rows for its restore, so its readers' requests stay answerable.
@@ -118,6 +123,8 @@ final class ReadersCommand extends Command
             return match ($action) {
                 'status' => $this->status($guard, $accounts, $org),
                 'mode' => $this->setting($org, SettingsGuard::READER_ACCOUNTS, 'Reader accounts'),
+                'consent' => $this->consent($org),
+                'consent-sweep' => $this->sweepConsents($org),
                 'addresses' => $this->setting($org, SettingsGuard::READER_ADDRESSES, 'Readers\' addresses'),
                 default => $this->forReader($accounts, $org, $action),
             };
@@ -127,6 +134,59 @@ final class ReadersCommand extends Command
         } finally {
             $context->forget();
         }
+    }
+
+    private function consent(Org $org): int
+    {
+        $value = $this->argument('value');
+        $purpose = is_string($value) ? ConsentPurpose::tryFrom($value) : null;
+        $handle = $this->option('site');
+        if ($purpose === null || ! is_string($handle) || $handle === '') {
+            return $this->refuse('Consent needs a purpose (profiling or support_widget) and --site.');
+        }
+
+        $notice = $this->option('notice');
+        $days = $this->option('retention-days');
+        $disable = $this->option('disable');
+        $policy = ReaderConsents::parsePolicy([
+            'notice_version' => $notice,
+            'retention_days' => is_string($days) && preg_match('/\A[1-9][0-9]{0,3}\z/', $days) === 1 ? (int) $days : null,
+        ]);
+        if (($disable && ($notice !== null || $days !== null)) || (! $disable && $policy === null)) {
+            return $this->refuse('Supply --disable by itself, or a valid --notice and --retention-days (1–3650).');
+        }
+
+        if ($org->trashed()) {
+            return $this->refuse('Restore the organisation before changing its consent policy.');
+        }
+
+        $site = Site::query()->where('org_id', $org->id)->where('handle', $handle)->first();
+        if ($site === null) {
+            return $this->refuse('The selected organisation has no site with that handle.');
+        }
+
+        $writer = app(SettingsWriter::class);
+        if ($disable) {
+            $writer->revert($site, $purpose->setting());
+        } else {
+            $writer->set($site, $purpose->setting(), $policy);
+        }
+
+        $this->info($disable ? 'Consent choice disabled.' : 'Consent notice and retention saved.');
+
+        return self::SUCCESS;
+    }
+
+    private function sweepConsents(Org $org): int
+    {
+        if (! $this->option('force')) {
+            return $this->refuse('Run consent-sweep with --force to delete consent records past their retention date.');
+        }
+
+        $count = app(ReaderConsents::class)->sweep($org->id);
+        $this->info(sprintf('Removed %d expired consent records.', $count));
+
+        return self::SUCCESS;
     }
 
     private function status(ReaderGuard $guard, ReaderAccounts $accounts, ?Org $org): int
