@@ -359,6 +359,7 @@ final class KitsuneServiceProvider extends ServiceProvider
          * carries the reasoning.
          */
         FilamentAsset::register([
+            Js::make('kitsune-chart-decimation-cleanup', __DIR__.'/../resources/js/chart-decimation-cleanup.js'),
             /*
              * ⚠️ `loadedOnRequest()`, AND THE FIRST VERSION WITHOUT IT THREW IN THE BROWSER. Filament's
              * editor loads an extension by `import(url)` — the URL comes from the plugin below — so this
