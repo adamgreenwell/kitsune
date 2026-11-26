@@ -70,7 +70,7 @@ class GuardedRelationBuilder extends Builder
      * A bulk update sees one set of values and any number of rows, each with
      * its own source, target, field and lock consequences.
      */
-    private const PER_ROW = ['source_entry_id', 'target_entry_id', 'field_storage_id', 'org_id'];
+    private const PER_ROW = ['source_entry_id', 'target_entry_id', 'target_group_id', 'field_storage_id', 'org_id'];
 
     private const NO_BULK_CREATE =
         'Relation rows cannot be created in bulk: cardinality, target type, endpoint visibility '

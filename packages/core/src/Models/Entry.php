@@ -37,6 +37,7 @@ use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
@@ -51,6 +52,8 @@ use RuntimeException;
  * JSON, per-type indexes need generated columns, and relations need a real
  * table. title/slug/status/published_at are promoted to real columns because
  * every list view, URL resolution and status filter touches them (ADR-015).
+ *
+ * @phpstan-import-type RevisionRelationTarget from EntryRevision
  *
  * @property int $id
  * @property int|null $site_id
@@ -413,7 +416,7 @@ class Entry extends Model implements RequiresModelSave
      * while every link survived. A revision omitting relations was the same
      * omission a third time.
      *
-     * Shaped `{field_storage_id: [target ids, in order]}`. Ordered explicitly,
+     * A row pin is its integer ID and a group target is its tagged UUID. Ordered explicitly,
      * because `ordering` is what the author arranged and restoring a set without
      * it would silently reshuffle a list of authors.
      *
@@ -422,7 +425,7 @@ class Entry extends Model implements RequiresModelSave
      * field left to restore them into, and inventing one would be worse than
      * recording the loss.
      *
-     * @return array<string, list<int>>
+     * @return array<string, list<RevisionRelationTarget>>
      */
     public function relationState(): array
     {
@@ -432,16 +435,24 @@ class Entry extends Model implements RequiresModelSave
 
         $state = [];
 
-        $rows = EntryWriteReads::query(EntryRelation::query())
+        $rows = EntryWriteReads::query((new EntryRelation)->setConnection($this->getConnectionName())->newQuery())
             ->where('source_entry_id', $this->getKey())
             ->whereNotNull('field_storage_id')
             ->orderBy('field_storage_id')
             ->orderBy('ordering')
             ->orderBy('target_entry_id')
-            ->get(['field_storage_id', 'target_entry_id']);
+            ->orderBy('id')
+            ->get(['field_storage_id', 'target_entry_id', 'target_group_id']);
+
+        $groupIds = $rows->pluck('target_group_id')->filter()->unique()->values()->all();
+        $groups = $groupIds === [] ? collect() : $this->getConnection()->table('entry_translation_groups')
+            ->useWritePdo()->where('org_id', $this->org_id)->whereIn('id', $groupIds)->pluck('uuid', 'id');
 
         foreach ($rows as $row) {
-            $state[(string) $row->field_storage_id][] = (int) $row->target_entry_id;
+            $state[(string) $row->field_storage_id][] = $row->target_group_id === null
+                ? (int) $row->target_entry_id
+                : ['group' => $groups[$row->target_group_id]
+                    ?? throw new RuntimeException('A relation refers to a translation group outside its entry’s Org.')];
         }
 
         return $state;
@@ -455,7 +466,7 @@ class Entry extends Model implements RequiresModelSave
      * entry, which makes "restore the latest version" silently revert it. Same
      * shape as the bulk-update gap, one storage strategy along.
      *
-     * @param  array<string, list<int>>  $before
+     * @param  array<string, list<RevisionRelationTarget>>  $before
      */
     public function recordRevisionForRelationChange(array $before): bool
     {
@@ -495,10 +506,10 @@ class Entry extends Model implements RequiresModelSave
      */
     public function writeRelationsAndReconcile(callable $sync): void
     {
-        DB::transaction(function () use ($sync): void {
+        $this->getConnection()->transaction(function () use ($sync): void {
             // withoutGlobalScopes, as in `versioned()`: this is a lock rather than a read that
             // reaches a caller, and a scoped query that matched nothing would take no lock at all.
-            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+            $this->newQueryWithoutScopes()->whereKey($this->getKey())->lockForUpdate()->get();
 
             /*
              * ⚠️ READ INSIDE THE LOCK, and it used to be passed in from outside — which review found.
@@ -545,7 +556,7 @@ class Entry extends Model implements RequiresModelSave
      * already performs on a revision, so mutating one is precedented rather than a new liberty. If
      * it filed none, relations were the only change and one is recorded now.
      *
-     * @param  array<string, list<int>>  $relationsBefore
+     * @param  array<string, list<RevisionRelationTarget>>  $relationsBefore
      */
     public function reconcileRevisionAfterRelationSync(array $relationsBefore): bool
     {
@@ -2793,11 +2804,30 @@ class Entry extends Model implements RequiresModelSave
         return EntryWriteReads::query(EntryRelation::query())
             ->where('source_entry_id', $this->getKey())
             ->where('field_storage_id', $storage->getKey())
+            ->whereNotNull('target_entry_id')
             ->orderBy('ordering')
             ->orderBy('id')
             ->pluck('target_entry_id')
             ->map(fn (int|string $id): int => (int) $id)
             ->all();
+    }
+
+    /** @return list<string> */
+    public function relationPickerValues(FieldStorage $storage): array
+    {
+        return $this->relationPickerLinks($storage)->map(
+            fn (EntryRelation $link): string => ($link->target_group_id === null ? 'pin-link:' : 'group-link:').$link->id,
+        )->all();
+    }
+
+    /** @return \Illuminate\Database\Eloquent\Collection<int, EntryRelation> */
+    public function relationPickerLinks(FieldStorage $storage): \Illuminate\Database\Eloquent\Collection
+    {
+        return (new EntryRelation)->setConnection($this->getConnectionName())->newQuery()
+            ->where('org_id', app(Context::class)->orgId())
+            ->whereIn('source_entry_id', $this->newQuery()->whereKey($this->getKeyForAuthorization())->select('id'))
+            ->where('field_storage_id', $storage->getRawOriginal($storage->getKeyName()))
+            ->orderBy('ordering')->orderBy('id')->get();
     }
 
     /**
@@ -3589,6 +3619,7 @@ class Entry extends Model implements RequiresModelSave
 
             // Validated before anything is written, so the refusal below can say
             // nothing has changed and be telling the truth.
+            $groups = $state === null ? [] : $this->revisionTranslationGroups($state);
             if ($state !== null) {
                 $this->refuseMissingTargets($revision, $state);
             }
@@ -3616,7 +3647,7 @@ class Entry extends Model implements RequiresModelSave
             // OLD relations — and when nothing scalar changed it filed nothing at
             // all, leaving the newest revision not describing the entry. Both
             // halves are one restore, so recording waits for both.
-            RevisionWrites::suspend(function () use ($revision, $state): void {
+            RevisionWrites::suspend(function () use ($revision, $state, $groups): void {
                 $snapshot = $revision->snapshot();
                 // A media revision recorded before sharing may still carry its old Site slug.
                 if ($this->site_id === null && ($snapshot['slug'] ?? null) !== null
@@ -3628,7 +3659,7 @@ class Entry extends Model implements RequiresModelSave
                 // `null` means the revision predates the column and says nothing
                 // about relations. `[]` means it says there were none.
                 if ($state !== null) {
-                    $this->replaceRelations($state);
+                    $this->replaceRelations($state, $groups);
                 }
             });
 
@@ -3680,7 +3711,7 @@ class Entry extends Model implements RequiresModelSave
      * row would fail its foreign key regardless — this says why instead of
      * surfacing a constraint error.
      *
-     * @param  array<string, list<int>|null>  $state
+     * @param  array<string, list<RevisionRelationTarget>|null>  $state
      */
     private function refuseMissingTargets(EntryRevision $revision, array $state): void
     {
@@ -3700,7 +3731,8 @@ class Entry extends Model implements RequiresModelSave
         // Two filters that must agree, so there is one of them.
         $targets = collect(self::withLiveStorageOnly($state))
             ->filter(fn (mixed $ids): bool => $ids !== null)
-            ->flatten()
+            ->collapse()
+            ->reject(fn (mixed $target): bool => is_array($target))
             ->map(fn (mixed $id): int => (int) $id)
             ->unique();
 
@@ -3727,6 +3759,33 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * @param  array<string, list<RevisionRelationTarget>|null>  $state
+     * @return array<string, int>
+     */
+    private function revisionTranslationGroups(array $state): array
+    {
+        $uuids = collect(self::withLiveStorageOnly($state))
+            ->filter(fn (mixed $targets): bool => is_array($targets))
+            ->collapse()
+            ->filter(fn (mixed $target): bool => is_array($target))
+            ->pluck('group')
+            ->unique();
+
+        if ($uuids->isEmpty()) {
+            return [];
+        }
+
+        $groups = EntryTranslationGroup::query()
+            ->useWritePdo()->where('org_id', $this->org_id)->whereIn('uuid', $uuids)->pluck('id', 'uuid');
+
+        if ($uuids->diff($groups->keys())->isNotEmpty()) {
+            throw new RuntimeException('The revision refers to a translation group that is no longer in this Org.');
+        }
+
+        return $groups->all();
+    }
+
+    /**
      * Make this entry's field-backed relations exactly what the snapshot says.
      *
      * ⚠️ REPLACES, and an earlier version patched. It deleted only the storage
@@ -3741,9 +3800,10 @@ class Entry extends Model implements RequiresModelSave
      * was never recorded — so a restore has nothing to say about it and must not
      * remove it.
      *
-     * @param  array<string, list<int>|null>  $state
+     * @param  array<string, list<RevisionRelationTarget>|null>  $state
+     * @param  array<string, int>  $groups
      */
-    private function replaceRelations(array $state): void
+    private function replaceRelations(array $state, array $groups): void
     {
         // ⚠️ A key whose value is NULL is UNKNOWN, not empty. Its history was
         // erased, so the revision says nothing about that field and a restore must
@@ -3782,15 +3842,18 @@ class Entry extends Model implements RequiresModelSave
                 continue;
             }
 
-            foreach (array_values($ids) as $ordering => $targetId) {
+            foreach (array_values($ids) as $ordering => $target) {
+                $targetId = is_array($target) ? null : (int) $target;
+                $groupId = is_array($target) ? $groups[$target['group']] : null;
                 $row = $existing->first(fn (EntryRelation $relation): bool => ! isset($kept[$relation->getKey()])
                     && (int) $relation->field_storage_id === (int) $storageId
-                    && (int) $relation->target_entry_id === (int) $targetId);
+                    && ($relation->target_entry_id === null ? null : (int) $relation->target_entry_id) === $targetId
+                    && ($relation->target_group_id === null ? null : (int) $relation->target_group_id) === $groupId);
 
                 if ($row !== null) {
                     $kept[$row->getKey()] = $ordering;
                 } else {
-                    $missing[] = [(int) $storageId, (int) $targetId, $ordering];
+                    $missing[] = [(int) $storageId, $targetId, $groupId, $ordering];
                 }
             }
         }
@@ -3814,7 +3877,7 @@ class Entry extends Model implements RequiresModelSave
             }
         }
 
-        foreach ($missing as [$storageId, $targetId, $ordering]) {
+        foreach ($missing as [$storageId, $targetId, $groupId, $ordering]) {
             EntryRelation::create([
                 // ⚠️ `org_id` explicitly. The `related()` relation supplies
                 // it through `withPivotValue()`, and writing `EntryRelation`
@@ -3824,6 +3887,7 @@ class Entry extends Model implements RequiresModelSave
                 'org_id' => $this->org_id,
                 'source_entry_id' => $this->getKey(),
                 'target_entry_id' => $targetId,
+                'target_group_id' => $groupId,
                 'field_storage_id' => $storageId,
                 'ordering' => $ordering,
             ]);
@@ -3914,6 +3978,7 @@ class Entry extends Model implements RequiresModelSave
             // near validation, so without this they were metadata nobody
             // checked — see EntryRelation.
             ->using(EntryRelation::class)
+            ->wherePivotNotNull('target_entry_id')
             ->withPivot(['org_id', 'field_storage_id', 'ordering']);
 
         /*

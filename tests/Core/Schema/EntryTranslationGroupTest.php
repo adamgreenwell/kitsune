@@ -11,11 +11,17 @@ declare(strict_types=1);
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryTranslationGroup;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Relations\EntryRelationResolver;
+use Kitsune\Core\Relations\EntryRelationWriter;
 use Kitsune\Core\Tenancy\Context;
 
 const TRANSLATION_GROUP_UUID = '115d5120-ba2f-4bb0-8888-9262df5870ce';
@@ -212,4 +218,212 @@ it('preserves an empty group through ordinary deletes and lets deletion of the o
 
     $this->org->forceDelete();
     expect(DB::table('entry_translation_groups')->where('id', $group->id)->exists())->toBeFalse();
+});
+
+it('restores mixed relations in order after the last translation is deleted', function (): void {
+    $source = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    $pin = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Pin']);
+    $member = translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $group = EntryTranslationGroup::query()->sole();
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+    ]);
+
+    $source->syncFieldRelations($storage, [$pin->id]);
+    $pinsOnly = $source->revisionHistory()->first();
+    $link = EntryRelation::create([
+        'org_id' => $this->org->id, 'source_entry_id' => $source->id, 'field_storage_id' => $storage->id,
+        'target_group_id' => $group->id, 'ordering' => 1,
+    ]);
+    $mixed = $source->revisionHistory()->first();
+    $expected = [$storage->id => [$pin->id, ['group' => TRANSLATION_GROUP_UUID]]];
+
+    expect($pinsOnly->relation_state)->toBe([$storage->id => [$pin->id]])
+        ->and($mixed->relation_state)->toBe($expected);
+
+    $link->update(['ordering' => 0]);
+    $member->forceDelete();
+    $source->restoreRevision($pinsOnly);
+    expect($source->relationState())->toBe([$storage->id => [$pin->id]]);
+
+    $source->restoreRevision($mixed);
+    expect($source->relationState())->toBe($expected)
+        ->and($source->revisionHistory()->first()->relation_state)->toBe($expected)
+        ->and(EntryTranslationGroup::publishedMember($group->id))->toBeNull();
+});
+
+it('refuses a group link in a subject identifier relation and counts mixed links against cardinality', function (): void {
+    $source = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    $pin = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Pin']);
+    translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $group = EntryTranslationGroup::query()->sole();
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    $field = Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Links']);
+    $row = ['org_id' => $this->org->id, 'source_entry_id' => $source->id, 'field_storage_id' => $storage->id];
+
+    expect(fn () => EntryRelation::create($row))->toThrow(RuntimeException::class, 'exactly one')
+        ->and(fn () => EntryRelation::create($row + ['target_entry_id' => $pin->id, 'target_group_id' => $group->id]))
+        ->toThrow(RuntimeException::class, 'exactly one');
+
+    $source->syncFieldRelations($storage, [$pin->id]);
+    expect(fn () => EntryRelation::create($row + ['target_group_id' => $group->id]))
+        ->toThrow(RuntimeException::class, 'already has that many');
+
+    $source->syncFieldRelations($storage, []);
+    $link = EntryRelation::create($row + ['target_group_id' => $group->id]);
+    expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+        ->toThrow(RuntimeException::class, 'requires row pins');
+
+    $link->delete();
+    $this->type->update(['subject_field_id' => $field->id]);
+    expect(fn () => EntryRelation::create($row + ['target_group_id' => $group->id]))
+        ->toThrow(RuntimeException::class, 'requires a row pin');
+});
+
+it('redacts a stored group reference and keeps a restored revision from recreating it', function (): void {
+    $source = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $group = EntryTranslationGroup::query()->sole();
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+    ]);
+    Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Links']);
+    EntryRelation::create([
+        'org_id' => $this->org->id, 'source_entry_id' => $source->id, 'field_storage_id' => $storage->id,
+        'target_group_id' => $group->id,
+    ]);
+    $revision = $source->revisionHistory()->first();
+
+    expect($source->redactField('links'))->toBe(2)
+        ->and($revision->fresh()->relation_state)->toBe([$storage->id => null]);
+
+    $source->restoreRevision($revision);
+    expect($source->relationState())->toBe([])
+        ->and(EntryTranslationGroup::query()->whereKey($group->id)->exists())->toBeTrue();
+});
+
+it('validates a target edit against the stored link when another editor already changed its kind', function (): void {
+    $source = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    $pin = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Pin']);
+    $different = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Different pin']);
+    translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $group = EntryTranslationGroup::query()->sole();
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+    ]);
+    $source->syncFieldRelations($storage, [$pin->id]);
+    $link = EntryRelation::query()->sole();
+    $stale = $link->fresh();
+    $link->update(['target_entry_id' => null, 'target_group_id' => $group->id]);
+
+    expect(fn () => $stale->update(['target_entry_id' => $different->id]))->toThrow(RuntimeException::class, 'exactly one')
+        ->and($source->relationState())->toBe([$storage->id => [['group' => TRANSLATION_GROUP_UUID]]]);
+});
+
+it('resolves mixed targets in public order using current Site, field restrictions and caller access', function (): void {
+    $source = Entry::create([
+        'entry_type_id' => $this->type->id, 'site_id' => null, 'status' => 'published', 'title' => 'Shared source',
+    ]);
+    $fixed = Entry::create([
+        'entry_type_id' => $this->type->id, 'site_id' => null, 'status' => 'published', 'title' => 'Shared pin',
+    ]);
+    $english = translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $group = EntryTranslationGroup::query()->sole();
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none',
+        'cardinality' => -1, 'settings' => ['targetTypes' => ['article']],
+    ]);
+    Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Links']);
+    $source->syncFieldRelations($storage, [$english->id, $fixed->id]);
+    EntryRelation::create([
+        'org_id' => $this->org->id, 'source_entry_id' => $source->id, 'field_storage_id' => $storage->id,
+        'target_group_id' => $group->id, 'ordering' => 2,
+    ]);
+
+    $resolver = new EntryRelationResolver;
+    $allow = fn (Entry $entry): bool => true;
+    $public = fn (): array => array_map(fn (array $link): array => [$link['entry']->id, $link['group']],
+        $resolver->resolve($source, $storage, true, $allow));
+
+    expect($public())->toBe([[$english->id, null], [$fixed->id, null], [$english->id, TRANSLATION_GROUP_UUID]]);
+
+    $second = Entry::create(['entry_type_id' => $this->type->id, 'status' => 'published', 'title' => 'Second source']);
+    $second->syncFieldRelations($storage, [$fixed->id]);
+    DB::enableQueryLog();
+    try {
+        $resolver->resolveMany([$source], [$storage], true, $allow);
+        $singleReadQueries = count(DB::getQueryLog());
+        DB::flushQueryLog();
+        $page = $resolver->resolveMany([$source, $second], [$storage], true, $allow);
+        expect($singleReadQueries)->toBeGreaterThan(0)
+            ->and(count(DB::getQueryLog()))->toBe($singleReadQueries)
+            ->and($page[$second->id][$storage->id][0]['entry']->id)->toBe($fixed->id);
+    } finally {
+        DB::disableQueryLog();
+        DB::flushQueryLog();
+    }
+
+    $this->context->setSite($this->fr);
+    expect($public())->toBe([[$fixed->id, null]]);
+
+    $french = translationMember($this->type, TRANSLATION_GROUP_UUID, 'draft');
+    expect($public())->toBe([[$fixed->id, null]])
+        ->and(array_column($resolver->resolve($source, $storage, false, $allow), 'group'))->toBe([null, TRANSLATION_GROUP_UUID]);
+
+    $french->update(['status' => 'published']);
+    expect($public())->toBe([[$fixed->id, null], [$french->id, TRANSLATION_GROUP_UUID]])
+        ->and(array_column($resolver->resolve($source, $storage, true, fn (Entry $entry): bool => $entry->id !== $french->id), 'group'))
+        ->toBe([null])
+        ->and($resolver->resolve($source, $storage, true, fn (Entry $entry): bool => $entry->id !== $source->id))->toBe([]);
+
+    $otherType = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'category', 'name' => 'Category', 'plural_name' => 'Categories',
+    ]);
+    $french->update(['entry_type_id' => $otherType->id]);
+    expect($public())->toBe([[$fixed->id, null]]);
+
+    $french->delete();
+    expect($public())->toBe([[$fixed->id, null]]);
+
+    $this->context->forget()->setOrg($this->org);
+    expect($public())->toBe([]);
+});
+
+it('authors a group by default, permits a row pin and preserves retained links in one revision', function (): void {
+    $source = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    $otherSource = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other source']);
+    $member = translationMember($this->type, TRANSLATION_GROUP_UUID);
+    $plain = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Ungrouped']);
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+    ]);
+    Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Links']);
+
+    $writer = new EntryRelationWriter;
+    $allow = fn (Entry $entry): bool => true;
+
+    $writer->replace($source, $storage, [['entry' => $member->id], ['entry' => $plain->id], ['entry' => $member->id, 'pin' => true]], $allow, $allow);
+
+    expect($source->revisions()->count())->toBe(2)
+        ->and($source->relationState())->toBe([$storage->id => [['group' => TRANSLATION_GROUP_UUID], $plain->id, $member->id]])
+        ->and($source->linkedIdsForField($storage))->toBe([$plain->id, $member->id]);
+
+    $groupLink = EntryRelation::query()->whereNotNull('target_group_id')->sole()->id;
+    $member->forceDelete();
+    expect(fn () => $writer->replace($otherSource, $storage, [['keep' => $groupLink]], $allow, $allow))
+        ->toThrow(ValidationException::class, 'retained relation');
+
+    $writer->replace($source, $storage, [['entry' => $plain->id], ['keep' => $groupLink]], $allow, $allow);
+    expect($source->relationState())->toBe([$storage->id => [$plain->id, ['group' => TRANSLATION_GROUP_UUID]]])
+        ->and($source->revisions()->count())->toBe(3);
+
+    $deny = fn (Entry $entry): bool => false;
+    expect(fn () => $writer->replace($source, $storage, [['entry' => $plain->id, 'follow' => true]], $allow, $allow))
+        ->toThrow(ValidationException::class, 'can no longer be followed')
+        ->and(fn () => $writer->replace($source, $storage, [], $deny, $allow))->toThrow(ValidationException::class, 'cannot be edited')
+        ->and(fn () => $writer->replace($source, $storage, [['entry' => $plain->id]], $allow, $deny))
+        ->toThrow(ValidationException::class, 'selected entries is unavailable')
+        ->and($source->relationState())->toBe([$storage->id => [$plain->id, ['group' => TRANSLATION_GROUP_UUID]]]);
 });

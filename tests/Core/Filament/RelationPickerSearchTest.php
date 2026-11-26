@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Filament\Forms\Components\Select;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
@@ -115,6 +116,28 @@ it('finds a target by an exactly-matching substring too', function (): void {
     $found = picker($this->org)->getSearchResults('Course maintenance');
 
     expect(array_values($found))->toContain('Course maintenance in week 3');
+});
+
+it('limits returned options without splitting the follow and pin choices for one entry', function (): void {
+    $plain = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Picker budget 00 ordinary']);
+    $translated = [];
+    for ($number = 1; $number <= 27; $number++) {
+        $translated[$number] = Entry::create([
+            'entry_type_id' => $this->article->id,
+            'title' => sprintf('Picker budget %02d translated', $number),
+            'translation_group' => (string) Str::uuid(),
+        ])->id;
+    }
+
+    $picker = picker($this->org);
+    $mixedOptions = array_keys($picker->getSearchResults('picker budget'));
+    $translatedOptions = array_keys($picker->getSearchResults('translated'));
+
+    expect($mixedOptions)->toHaveCount(49)
+        ->and(array_slice($mixedOptions, 0, 3))->toBe([$plain->id, 'follow:'.$translated[1], 'pin:'.$translated[1]])
+        ->and(array_slice($mixedOptions, -2))->toBe(['follow:'.$translated[24], 'pin:'.$translated[24]])
+        ->and($translatedOptions)->toHaveCount(50)
+        ->and(array_slice($translatedOptions, -2))->toBe(['follow:'.$translated[25], 'pin:'.$translated[25]]);
 });
 
 it('offers only the entry types the field targets', function (): void {
