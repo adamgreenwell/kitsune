@@ -381,7 +381,8 @@ final class MediaDisks
         }
 
         // A local disk served with `serve` and public visibility is found below: its own root is one of the web's.
-        if (self::resolved($config, $disk)['url'] !== null) {
+        $resolved = self::resolved($config, $disk);
+        if ($resolved['url'] !== null || self::declaresS3ReadAccess($config, $entry, $disk, $resolved['visibility'])) {
             return true;
         }
 
@@ -420,6 +421,24 @@ final class MediaDisks
         }
 
         return false;
+    }
+
+    private static function declaresS3ReadAccess(Repository $config, mixed $entry, string $disk, ?string $visibility): bool
+    {
+        [$base] = self::unscoped($config, $entry, $disk);
+        if (! is_array($base) || ($base['driver'] ?? null) !== 's3') {
+            return false;
+        }
+
+        $options = is_array($base['options'] ?? null) ? $base['options'] : [];
+
+        // The explicit ACL takes precedence over visibility in Flysystem's S3 adapter.
+        $acl = $options['ACL'] ?? null;
+
+        return ($acl === null
+            ? $visibility === 'public'
+            : in_array($acl, ['public-read', 'public-read-write', 'authenticated-read'], true))
+            || isset($options['GrantRead']) || isset($options['GrantFullControl']);
     }
 
     /**
@@ -513,8 +532,8 @@ final class MediaDisks
 
         if (self::servedBy($config, $private)) {
             throw new RuntimeException(sprintf(
-                'Refusing: kitsune.media.disks.private names [%s], which the web serves — through a url, `serve` with '
-                .'public visibility, a public link or the document root — so a withdrawn file would stay public (ADR-042 '
+                'Refusing: kitsune.media.disks.private names [%s], which the web serves through a URL, S3 ACL, '
+                .'serve option, public link or the document root. A withdrawn file could stay public (ADR-042 '
                 .'decision 5). '
                 .'Nothing was moved.',
                 $private,
