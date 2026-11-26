@@ -71,7 +71,8 @@ final class ModuleKernel
             return;
         }
 
-        foreach (self::receipts() as $handle => $receipt) {
+        $requireAdmission = $console && getenv('KITSUNE_RELEASE_REQUIRE_MODULES') === '1';
+        foreach (self::receipts($requireAdmission) as $handle => $receipt) {
             if ($console) {
                 self::maintenanceFor($handle, $app);
             }
@@ -82,6 +83,8 @@ final class ModuleKernel
 
             if ($manifest !== null) {
                 self::registerFor($manifest, $app);
+            } elseif ($requireAdmission && ModuleDiscovery::version($handle) === $receipt['version']) {
+                throw new \RuntimeException('An enabled module with a matching receipt could not be registered.');
             }
         }
     }
@@ -119,10 +122,10 @@ final class ModuleKernel
      *
      * @return array<string, array{version:string,enabled:bool}>
      */
-    private static function receipts(): array
+    private static function receipts(bool $requireAdmission): array
     {
         try {
-            if (! Schema::hasTable('modules')) {
+            if (! $requireAdmission && ! Schema::hasTable('modules')) {
                 return [];
             }
 
@@ -144,6 +147,11 @@ final class ModuleKernel
 
             return $receipts;
         } catch (Throwable $e) {
+            if ($requireAdmission) {
+                // Release commands can print exception chains. Keep connection and query details private.
+                throw new \RuntimeException('Module admission records could not be read after migration.');
+            }
+
             /*
              * ⚠️ THIS WAS "NOT A TRY/CATCH" UNTIL RUNNING IT PROVED OTHERWISE, and ADR-038 is amended rather
              * than routed around. The reasoning was that a missing table is an answer and a broken connection

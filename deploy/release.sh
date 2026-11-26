@@ -281,14 +281,17 @@ check_the_app schema-baseline
 
 # The first cache build proves the release before a schema write. It cannot be the final cache when a new
 # admission table is missing in the old schema: fail-closed module boot omitted its routes/listeners/config.
-# Keep that preflight, then rebuild every explicit cache on the migrated schema before accepting the release.
-"$PHP_BIN" skeleton/artisan route:clear --no-interaction
-"$PHP_BIN" skeleton/artisan config:cache --no-interaction
-"$PHP_BIN" skeleton/artisan event:cache --no-interaction
-"$PHP_BIN" skeleton/artisan route:cache --no-interaction
-"$PHP_BIN" skeleton/artisan view:cache --no-interaction
-"$PHP_BIN" skeleton/artisan icons:cache --no-interaction
-check_the_app serving
+# Keep that preflight, then require module admission while rebuilding and verifying the final caches.
+(
+    export KITSUNE_RELEASE_REQUIRE_MODULES=1
+    "$PHP_BIN" skeleton/artisan route:clear --no-interaction
+    "$PHP_BIN" skeleton/artisan config:cache --no-interaction
+    "$PHP_BIN" skeleton/artisan event:cache --no-interaction
+    "$PHP_BIN" skeleton/artisan route:cache --no-interaction
+    "$PHP_BIN" skeleton/artisan view:cache --no-interaction
+    "$PHP_BIN" skeleton/artisan icons:cache --no-interaction
+    check_the_app serving
+)
 
 # Refuse promotion when retained credentials need an APP_KEY absent from APP_KEY / APP_PREVIOUS_KEYS.
 # This counts every stored slot, including disabled modules, without exposing or decrypting any value.

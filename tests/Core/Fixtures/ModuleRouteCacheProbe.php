@@ -31,15 +31,21 @@ if (str_starts_with($mode, 'seed-')) {
     $pdo = new PDO('sqlite:'.$temporary.'/modules.sqlite');
     $pdo->exec('CREATE TABLE modules (id INTEGER PRIMARY KEY, handle TEXT, version TEXT, is_enabled INTEGER, installed_at TEXT)');
     if ($mode !== 'seed-legacy-enabled') {
-        $pdo->exec('CREATE TABLE module_uninstalls (handle TEXT PRIMARY KEY, version TEXT, started_at TEXT)');
+        $handleColumn = $mode === 'seed-malformed-enabled' ? 'missing_handle' : 'handle';
+        $pdo->exec("CREATE TABLE module_uninstalls ({$handleColumn} TEXT PRIMARY KEY, version TEXT, started_at TEXT)");
     }
     $insert = $pdo->prepare('INSERT INTO modules (handle, version, is_enabled) VALUES (?, ?, ?)');
-    $insert->execute(['kitsune/commerce', InstalledVersions::getPrettyVersion('kitsune/commerce'), in_array($mode, ['seed-enabled', 'seed-legacy-enabled'], true) ? 1 : 0]);
+    $insert->execute(['kitsune/commerce', InstalledVersions::getPrettyVersion('kitsune/commerce'), $mode !== 'seed-disabled' ? 1 : 0]);
 }
 
 $app = ModuleRouteCacheHost::application($root, $temporary);
 $kernel = $app->make(Kernel::class);
-$kernel->bootstrap();
+try {
+    $kernel->bootstrap();
+} catch (RuntimeException $failure) {
+    fwrite(STDERR, $failure->getMessage()."\n");
+    exit(1);
+}
 $cacheCommand = null;
 
 if (str_starts_with($mode, 'seed-') || $mode === 'cache') {

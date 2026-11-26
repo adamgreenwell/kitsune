@@ -3004,7 +3004,10 @@ job.
 pre-migration cache and serving check: it still refuses a broken release before any schema write. A new
 module-admission table can be absent in an existing installation, however, so fail-closed boot excludes modules
 while that first cache is built. Both the native release script and isolated Coolify startup therefore rebuild
-the five explicit caches and repeat the serving check after migration, before accepting the release. The old
+the five explicit caches and repeat the serving check after migration, before accepting the release. Both
+require a successful module-admission read throughout that final cache and serving pass. A generic health
+response can stay healthy while an enabled module is absent, so it cannot substitute for the admission read.
+The old
 two-post-migration-step claim above no longer describes every possible failure: this extra build can fail after
 the database changed, and rollback still does not undo migrations. No missing admission table is treated as
 permission to register modules. A disposable fresh-application route-cache test measures the omitted enabled
