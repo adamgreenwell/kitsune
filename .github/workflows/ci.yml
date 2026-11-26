@@ -12,20 +12,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# ⚠️ EVERY JOB HAS A CEILING, SET ABOVE ITS SLOW TAIL RATHER THAN ITS MEDIAN.
-# Without one, a job that has truly stopped runs to GitHub's six-hour default
-# and holds up every PR behind it. With one near the median, green runs fail:
-# across 25 successful runs the MySQL lanes took a median of 14-16 minutes and
-# as long as 58.7, and a later one took 73.9 (run 34913818861). Slowest
-# successful run per job, in minutes: lint 0.7, bare clone 1.4, sqlite 2.1,
-# pgsql 9.8, mariadb 27.0, mysql 73.9, Playwright 3.2. Every figure predates
-# migrating the test schema once per process; re-measure before lowering one. Post-#112 bare-clone evidence is
-# recorded in #113: 25 successful workflows, green maxima 9:41 (PHP 8.4) and 9:40 (8.5), plus repeated 10-minute
-# cancellations on #267. #274's larger suite later completed the PHP 8.4 bare job in 12:16 and hit the 15-minute
-# PHP 8.5 ceiling with passing recovery tests near the end. Both bare jobs later exhausted 20 minutes on #201;
-# their bounded allowance below reached 25 minutes. Both versions then exhausted it on #292; the allowance
-# reached 30 minutes. #313 then exhausted it on both PHP versions; the bare jobs below receive
-# five provisional minutes for the complete suite and whole-job overhead. #113 retains tail measurement.
+# Whole-job timing for the latest 25 green PR workflows, from Nov 25–26, 2026 (#113).
+# Slowest observed success by lane: scope 0:13, lint 2:23, bare clone 33:07,
+# SQLite 34:41, PostgreSQL 55:55, MariaDB 55:52, MySQL 79:22, Unicode 1:27,
+# and Playwright 19:57. PR #429's PHP 8.5 browser job logged 429 passes at
+# 19.5 minutes into the test step and was cancelled by the 20-minute job ceiling.
+# Allow setup and cleanup above the slow tail. Keep the tests and service floor.
 jobs:
   # What this run needs, decided once and consumed by every matrix below. The reasoning, the measured
   # cost per run and the fail-closed rule are in .github/scripts/ci-scope.sh, which the test suite drives —
@@ -87,16 +79,7 @@ jobs:
     # ceiling, so #267 allowed five minutes beyond it. #274's 8,261-test Linux suite has now hit that 15m limit
     # with passing tests near completion; allow another bounded five minutes. Credential fixtures also use real
     # bcrypt at test cost 4 rather than repeatedly paying production cost 12. The service-free contract stays here.
-    # #201 run 38807337780, head 0367460: jobs 116671547049/116671547243 explicitly exceeded 20m0s.
-    # Both were interrupted without final Pest totals; PHP 8.5 passed a case 0.18s before cancellation.
-    # Allow five more minutes provisionally; this is not a measured green tail bound (#113).
-    # #292 run 38994972454, head dffc5f1: jobs 117285453105/117285453078 explicitly exceeded 25m0s,
-    # while still passing late LevelZero recovery cases. Keep the same tests/extensions and no services;
-    # add five bounded minutes provisionally, with the completed tail still to be measured in #113.
-    # #313 head 512f683: both bare jobs exceeded 30m0s. PHP 8.5 emitted 10,594 passed /
-    # 65,171 assertions and 121 skips at 1796.31s, but the whole job was cancelled. This
-    # bounded allowance is provisional, not a measured green tail; keep all tests and no services (#113).
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -120,9 +103,8 @@ jobs:
     name: PHP ${{ matrix.php }} / ${{ matrix.engine }}
     runs-on: ubuntu-latest
     needs: scope
-    # The widest ceiling, for the slowest lane (see the top of this file). Some runner VMs slow MySQL 3-8x, and one
-    # run was cancelled here while still passing tests. Raising this hides that; see "Describe the runner".
-    timeout-minutes: 90
+    # A separate ceiling for each measured engine tail.
+    timeout-minutes: ${{ fromJSON('{"sqlite":45,"pgsql":70,"mysql":90,"mariadb":70}')[matrix.engine] }}
     strategy:
       fail-fast: false
       matrix:
@@ -263,7 +245,7 @@ jobs:
     # The full skeleton lane still skips prose-only pull requests. Documentation source/link checks run
     # in Pest; this eligible browser lane also exercises the independent static reading artifact.
     if: needs.scope.outputs.docs_only != 'true'
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
