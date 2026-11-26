@@ -70,7 +70,11 @@ Send a GET request to `/api/v1/schema` under the Site's canonical URL, including
 when it has one. Include the bearer header and request JSON. The response's `data` list contains the
 entry types for which the token and account allow viewing or editing. Each type includes its handle
 and a JSON Schema object for configured field values. The response includes required fields, choice
-keys, and configured item and length bounds. It is private and must stay out of shared caches.
+keys, and configured item and length bounds. The response is private and varies by authorization.
+A private client can retain it and send its `ETag` with `If-None-Match` on a later GET or HEAD.
+Kitsune authenticates the request and regenerates the schema with current Site settings, permissions
+and field definitions. It returns 304 when that authorized representation and token are unchanged.
+Keep schema responses out of shared caches. Entry responses keep their existing no-store policy.
 
 ## Read entries
 
