@@ -44,6 +44,7 @@ use Kitsune\Core\Console\EntitlementsCommand;
 use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\MediaReconcileCommand;
+use Kitsune\Core\Console\MediaS3DiagnoseCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\ReadersCommand;
@@ -327,6 +328,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,
                 MediaReconcileCommand::class,
+                MediaS3DiagnoseCommand::class,
                 MediaTypesCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,

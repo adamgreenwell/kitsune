@@ -531,6 +531,12 @@ describe('unsafe and coinciding media disks', function (): void {
         'two names for one root' => [fn (): array => ['twin' => ['driver' => 'local', 'root' => storage_path('app/public')]], 'twin', 'share their media/ directory'],
         'private inside public\'s media/' => [fn (): array => ['twin' => ['driver' => 'local', 'root' => storage_path('app/public/media/x')]], 'twin', 'share their media/ directory'],
         'a private disk with a url' => [fn (): array => ['cdn' => ['driver' => 'local', 'root' => storage_path('app/cdn'), 'url' => 'https://cdn.example.test']], 'cdn', 'kitsune.media.disks.private'],
+        'a private S3 disk with public visibility' => [['s3-open' => ['driver' => 's3', 'bucket' => 'separate', 'visibility' => 'public']], 's3-open', 'S3 ACL'],
+        'a private S3 disk with a public-read option' => [['s3-open' => ['driver' => 's3', 'bucket' => 'separate', 'options' => ['ACL' => 'public-read']]], 's3-open', 'S3 ACL'],
+        'a scoped private S3 disk with a base grant' => [[
+            's3-open' => ['driver' => 's3', 'bucket' => 'separate', 'options' => ['GrantRead' => 'fixture']],
+            'scoped-open' => ['driver' => 'scoped', 'disk' => 's3-open', 'prefix' => 'media', 'visibility' => 'private'],
+        ], 'scoped-open', 'S3 ACL'],
         'a private disk a link exposes' => [fn (): array => ['linked' => ['driver' => 'local', 'root' => storage_path('app/linked')]], 'linked', 'kitsune.media.disks.private'],
         'a private disk served publicly' => [fn (): array => ['open' => ['driver' => 'local', 'root' => storage_path('app/open'), 'serve' => true, 'visibility' => 'public']], 'open', 'kitsune.media.disks.private'],
         // Under the document root, with nothing in the configuration saying the web serves it — review.
@@ -540,6 +546,15 @@ describe('unsafe and coinciding media disks', function (): void {
     /** The control: a disk rooted above both media directories is not either of them. */
     it('allows a disk rooted above both media directories', function (): void {
         config(['filesystems.disks.local' => ['driver' => 'local', 'root' => storage_path('app')]]);
+
+        expect(fn () => MediaDisks::refuseUnsafeMediaDisks(config()))->not->toThrow(RuntimeException::class);
+    });
+
+    it('honours a bucket-owner ACL override on a private S3 disk', function (): void {
+        config(['kitsune.media.disks.private' => 's3-private-option', 'filesystems.disks.s3-private-option' => [
+            'driver' => 's3', 'bucket' => 'separate', 'visibility' => 'public',
+            'options' => ['ACL' => 'bucket-owner-full-control'],
+        ]]);
 
         expect(fn () => MediaDisks::refuseUnsafeMediaDisks(config()))->not->toThrow(RuntimeException::class);
     });
