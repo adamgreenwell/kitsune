@@ -101,7 +101,7 @@ class AuditedBuilder extends ScopedBuilder
      * `type_handle` the same way. `type_handle`, `values` and `site_id` are `columnsRequiringModelSave()`, which
      * `ScopedBuilder` already holds to their own names; this is the one column those checks read that is not.
      */
-    private const READ_BY_NAME = ['entry_type_id'];
+    private const READ_BY_NAME = ['entry_type_id', 'translation_group'];
 
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
@@ -130,6 +130,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseMisnamedEntryColumns($values);
         $this->refuseNoncanonicalEntryType($values);
+        $this->refuseInvalidTranslationGroup($values);
 
         $model = $this->getModel();
 
@@ -142,6 +143,9 @@ class AuditedBuilder extends ScopedBuilder
             $this->refuseSlugOnSharedInsert($values);
 
             $id = parent::insertGetId($values, $sequence);
+            if (isset($values['translation_group'])) {
+                $this->registerTranslationMembership([$id]);
+            }
             FieldStorageWrites::armEntries($this->auditedConnection(), [$id], $fields);
 
             $target = $model->newInstance([], true);
@@ -153,6 +157,44 @@ class AuditedBuilder extends ScopedBuilder
 
             return $id;
         });
+    }
+
+    /** @param array<string, mixed> $values */
+    private function refuseInvalidTranslationGroup(array $values): void
+    {
+        if (isset($values['translation_group']) && ! Str::isUuid($values['translation_group'])) {
+            throw new RuntimeException('A translation group requires a valid group UUID.');
+        }
+    }
+
+    /**
+     * Register membership on the entry's own connection and inside the save.
+     * Another Site can enroll in the same group while this entry is being saved.
+     *
+     * @param  list<int|string>  $keys
+     */
+    private function registerTranslationMembership(array $keys): void
+    {
+        $connection = $this->auditedConnection();
+
+        $members = $connection->table('entries')->useWritePdo()
+            ->whereIn('id', $keys)
+            ->whereNotNull('translation_group')
+            ->orderBy('org_id')
+            ->orderBy('translation_group')
+            ->get(['org_id', 'site_id', 'translation_group']);
+
+        foreach ($members as $member) {
+            if ($member->site_id === null || ! Str::isUuid($member->translation_group)) {
+                throw new RuntimeException('A translation group requires a Site member with a valid group UUID.');
+            }
+
+            $connection->table('entry_translation_groups')->upsert(
+                [['org_id' => $member->org_id, 'uuid' => $member->translation_group]],
+                ['org_id', 'uuid'],
+                ['org_id'],
+            );
+        }
     }
 
     /**
@@ -354,6 +396,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseForeignFrom('update');
         $this->refuseMisnamedEntryColumns($values);
         $this->refuseNoncanonicalEntryType($values);
+        $this->refuseInvalidTranslationGroup($values);
 
         $this->guardScopeKeys($values);
         $this->refuseNoncanonicalStatus($values);
@@ -393,6 +436,10 @@ class AuditedBuilder extends ScopedBuilder
                 $this->refuseUnpermittedPublication($values);
 
                 $result = parent::update($values);
+                if ($result > 0 && ($this->writtenColumn($values, 'translation_group')[0]
+                    || $this->writtenColumn($values, 'org_id')[0] || $this->writtenColumn($values, 'site_id')[0])) {
+                    $this->registerTranslationMembership($keys);
+                }
 
                 $custody?->afterSoftWrite($keys);
 
@@ -997,6 +1044,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refuseTranslationGroupArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
         $this->refuseTypeArithmetic([(string) $column => $amount]);
@@ -1027,6 +1075,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refuseTranslationGroupArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
         $this->refuseTypeArithmetic([(string) $column => $amount]);
@@ -1062,6 +1111,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refuseTranslationGroupArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
         $this->refuseTypeArithmetic($columns);
@@ -1092,6 +1142,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refuseTranslationGroupArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
         $this->refuseTypeArithmetic($columns);
@@ -1110,6 +1161,16 @@ class AuditedBuilder extends ScopedBuilder
             [...$columns, ...$extra],
             arithmetic: true,
         );
+    }
+
+    /** @param array<string, mixed> $values */
+    private function refuseTranslationGroupArithmetic(array $values): void
+    {
+        foreach (array_keys($values) as $column) {
+            if ($this->bareColumn($column) === 'translation_group') {
+                throw new RuntimeException('Use an entry save to change its translation group.');
+            }
+        }
     }
 
     /**

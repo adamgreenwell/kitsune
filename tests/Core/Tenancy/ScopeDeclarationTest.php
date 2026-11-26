@@ -14,6 +14,7 @@ use Kitsune\Core\Models\Credential;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
+use Kitsune\Core\Models\EntryTranslationGroup;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
@@ -120,6 +121,7 @@ it('resolves the declared scope for each core model', function (string $model, s
     'BlueprintSeed belongs to an org' => [BlueprintSeed::class, OrgScoped::class],
     'SiteGroup belongs to an org' => [SiteGroup::class, OrgScoped::class],
     'Entry belongs to a site' => [Entry::class, SiteScoped::class],
+    'Translation group belongs to an org' => [EntryTranslationGroup::class, OrgScoped::class],
     'EntryType is global or org-owned' => [EntryType::class, Unscoped::class],
     'FieldStorage is reached through its type' => [FieldStorage::class, Unscoped::class],
     'Field is per-type presentation' => [Field::class, Unscoped::class],

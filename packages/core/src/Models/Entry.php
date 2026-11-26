@@ -56,6 +56,7 @@ use RuntimeException;
  * @property int $org_id
  * @property int $entry_type_id
  * @property string $type_handle
+ * @property string|null $translation_group
  * @property int|null $author_id
  * @property string|null $slug
  * @property string|null $title
