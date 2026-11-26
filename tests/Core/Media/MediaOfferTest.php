@@ -40,6 +40,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -191,7 +192,7 @@ function offerActingWith(string ...$actions): TestUser
 /** @return list<array<string, mixed>> */
 function offerNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** A media entry's form, built as its edit page builds it, keyed by name — a note, which has none, by its key. @return array<string, Component> */
@@ -604,7 +605,7 @@ describe('what else writes an entry', function (): void {
 describe('the actions', function (): void {
     beforeEach(function (): void {
         PanelTenancy::enter($this->site);
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
     });
 
     /* P1. A media type's pages carry the three, after Make public and Make private; any other type's carry none. */
@@ -813,7 +814,7 @@ describe('the actions', function (): void {
 describe('what each outcome says', function (): void {
     beforeEach(function (): void {
         PanelTenancy::enter($this->site);
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         offerActingWith('view', 'publish');
     });
 
@@ -829,7 +830,7 @@ describe('what each outcome says', function (): void {
             ->and(offerNotices()[0]['title'])->toBe('&quot;&lt;i&gt;Report&lt;/i&gt;&quot; is offered to readers')
             ->and(offerNotices()[0]['body'])->toBe(e(__('kitsune::media.readers.offered_body', ['name' => OFFER_NAME])));
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaReaderActions::offerOne($entry, [MediaReaderActions::FIELD => OFFER_NAME]);
 
         expect(offerNotices()[0]['status'])->toBe('info')
@@ -847,7 +848,7 @@ describe('what each outcome says', function (): void {
             ->and(offerNotices()[0]['status'])->toBe('success')
             ->and(offerNotices()[0]['title'])->toBe('The offer of &quot;Report&quot; was changed');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaReaderActions::stopOne($entry);
 
         expect(offerRow($entry)['reader_entitlement'])->toBeNull()
@@ -855,7 +856,7 @@ describe('what each outcome says', function (): void {
             ->and(offerNotices()[0]['title'])->toBe('&quot;Report&quot; is no longer offered to readers')
             ->and(offerNotices()[0]['body'])->toBe(e(__('kitsune::media.readers.stopped_body')));
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaReaderActions::stopOne($entry);
 
         expect(offerNotices()[0]['status'])->toBe('info')

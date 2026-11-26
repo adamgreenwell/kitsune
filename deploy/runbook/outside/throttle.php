@@ -437,7 +437,10 @@ function classify(array $page, array $row, string $bodyPath): array
     }
 
     $errors = $memo['errors'] ?? null;
-    $notified = false;
+    // A mailbox catch-up signal alone can refer to a previous response.
+    $batch = $decoded['filamentNotificationBatch'] ?? null;
+    $notified = ($decoded['filamentNotifications'] ?? null) === true
+        && is_string($batch) && preg_match('/\A[a-f0-9]{40}\z/', $batch) === 1;
 
     foreach ((array) ($components[0]['effects']['dispatches'] ?? []) as $dispatch) {
         if (is_array($dispatch) && ($dispatch['name'] ?? '') === 'notificationsSent') {

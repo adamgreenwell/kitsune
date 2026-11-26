@@ -38,6 +38,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -89,7 +90,7 @@ beforeEach(function (): void {
     Route::get('/admin/{tenant:slug}/c/{type}/{record}/edit', static fn (): string => '')->name('filament.admin.resources.c.edit');
     app('router')->getRoutes()->refreshNameLookups();
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -122,7 +123,7 @@ function bulkVisStored(string $title, string $bytes = '', string $visibility = '
 /** @return list<array<string, mixed>> */
 function bulkVisNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 function bulkVisRow(Entry $entry): string
@@ -380,7 +381,7 @@ describe('the actions, as the list builds them', function (): void {
             ->and(bulkVisNotices()[0]['title'])->toBe('Too many files are selected');
 
         // Fifty is not too many (review of decision 34: two would pass for any bound above one).
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $to === 'public'
             ? MediaVisibilityActions::publicSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 50)), BULK_VIS_TICKED)
             : MediaVisibilityActions::privateSelected($action, Entry::query()->whereKey(array_slice($ids, 0, 50)));
@@ -648,7 +649,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['body'])->toBe('One of the selected files is no longer on this list, and was left as it was.')
             ->and($action->getStatus()->name)->toBe('Success');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaVisibilityActions::publicEach($action, bulkVisListed($a, $b), BULK_VIS_TICKED, keys: 4);
 
         expect(bulkVisNotices()[0]['status'])->toBe('warning')
@@ -676,7 +677,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['body'])->toBe('One of the selected files is no longer on this list, and was left as it was.');
 
         // Every record selected but those deselected: the selection is the list's own query, which nothing has left.
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $page->isTrackingDeselectedTableRecords = true;
         $page->deselectedTableRecords = [];
         $action->call();
@@ -685,7 +686,7 @@ describe('making a selection public', function (): void {
             ->and(bulkVisNotices()[0]['body'] ?? null)->toBeNull();
 
         // And made private the same way, the page's keys counted too.
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $page->isTrackingDeselectedTableRecords = false;
         $private = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'makeSelectedPrivate');
         $private->call();

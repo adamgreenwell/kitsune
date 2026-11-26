@@ -122,7 +122,7 @@ it('strips a javascript href however it is cased', function (): void {
 /** Entity attacks land on the parse failure rather than expanding — measured, not assumed. */
 it('refuses an entity attack rather than expanding it', function (string $payload): void {
     expect(fn () => (new EnshrinedSvgSanitiser)->sanitise($payload))
-        ->toThrow(RuntimeException::class, 'could not be parsed as XML');
+        ->toThrow(RuntimeException::class, 'could not be parsed as a supported SVG document');
 })->with([
     'xxe' => ['<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
         .'<svg '.SVG_NS.'><text>&xxe;</text></svg>'],
@@ -147,18 +147,12 @@ it('refuses an empty file and input that is not XML at all', function (): void {
 
     expect(fn () => $sanitiser->sanitise('   '))->toThrow(RuntimeException::class, 'nothing to sanitise')
         ->and(fn () => $sanitiser->sanitise('honestly just text'))
-        ->toThrow(RuntimeException::class, 'could not be parsed as XML');
+        ->toThrow(RuntimeException::class, 'could not be parsed as a supported SVG document');
 });
 
-/**
- * ⚠️ THE LIBRARY THROWS `LogicException`, WHICH THE CONTRACT DOES NOT NAME. Measured: `<a/>` raises
- * `LogicException("Got 0 svg elements, expected exactly one")`. `SanitisesSvg` documents `@throws
- * RuntimeException`, so a caller catching what the contract names would let this past as an unhandled 500
- * rather than a refusal.
- */
-it('wraps an exception type the contract does not name', function (): void {
+it('refuses well-formed XML without an SVG root', function (): void {
     expect(fn () => (new EnshrinedSvgSanitiser)->sanitise('<a/>'))
-        ->toThrow(RuntimeException::class, 'could not process it');
+        ->toThrow(RuntimeException::class, 'could not be parsed as a supported SVG document');
 });
 
 /** A legitimate logo survives intact — the case that makes every refusal above worth having. */

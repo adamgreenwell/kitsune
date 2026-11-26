@@ -188,11 +188,8 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
         $sanitizer->setUseNestingLimit(self::USE_NESTING_LIMIT);
 
         /*
-         * ⚠️ THE LIBRARY THROWS, AND NOT ONLY `RuntimeException` — measured: `<a/>` raises a bare
-         * `LogicException("Got 0 svg elements, expected exactly one")`. `SanitisesSvg` documents
-         * `@throws RuntimeException`, and a caller that catches what the contract names would let a
-         * `LogicException` past as an unhandled 500 rather than a refusal. Wrapping is what makes the seam's
-         * promise true rather than aspirational.
+         * The upstream library may throw exceptions outside the RuntimeException
+         * contract promised by SanitisesSvg. Report a refusal in that contract.
          */
         try {
             $clean = $sanitizer->sanitize($svg);
@@ -205,13 +202,13 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
 
         /*
          * ⚠️ `false` MEANS THE PARSE FAILED, AND IT IS A REFUSAL RATHER THAN AN EMPTY FILE. The library
-         * returns `false` when libxml cannot make a document of the input at all — which is what a renamed
-         * archive, a truncated upload, or an entity bomb looks like from here. Measured: an XXE payload and a
+         * returns `false` for unusable XML or a document without an SVG root. A renamed
+         * archive or a truncated upload is also refused. Measured: an XXE payload and a
          * billion-laughs payload both land on this branch rather than expanding.
          */
         if ($clean === false) {
             throw new RuntimeException(
-                'Refusing this SVG: it could not be parsed as XML, so nothing can vouch for what a browser '
+                'Refusing this SVG: it could not be parsed as a supported SVG document, so nothing can vouch for what a browser '
                 .'would make of it. Nothing was stored.'
             );
         }

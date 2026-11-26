@@ -12,6 +12,7 @@ namespace Kitsune\Core\Tests;
 
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
+use Filament\Notifications\NotificationMailbox;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\KitsuneServiceProvider;
@@ -76,6 +77,9 @@ abstract class LevelZeroTestCase extends Orchestra
 
     protected function defineEnvironment($app): void
     {
+        // Testbench deliberately omits Filament's HTTP providers. Keep the same mailbox lifecycle.
+        $app->scoped(NotificationMailbox::class);
+
         $this->custodyFile = (string) tempnam(sys_get_temp_dir(), 'kitsune-level0-a-');
         $this->secondaryFile = (string) tempnam(sys_get_temp_dir(), 'kitsune-level0-b-');
 

@@ -140,7 +140,7 @@ final class BenchmarkFloorCommand extends Command
             // A single PHP-FPM worker is what has to fit; the floor must also
             // hold several concurrently alongside the OS and the database.
             $peakMb = $peak / 1_048_576;
-            $workers = $peakMb > 0 ? (int) floor(($budgetMb * 0.5) / $peakMb) : 0;
+            $workers = (int) floor(($budgetMb * 0.5) / $peakMb);
 
             $this->newLine();
             $this->line("  workers that fit in half the floor: <info>{$workers}</info>");

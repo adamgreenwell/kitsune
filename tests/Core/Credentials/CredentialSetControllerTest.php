@@ -27,6 +27,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 
 /*
@@ -101,7 +102,7 @@ function credentialClean(TestResponse $response, string $value): void
 /** @return list<array<string, mixed>> */
 function credentialSetNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 function credentialRows(): int
