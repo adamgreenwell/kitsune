@@ -33,7 +33,13 @@ node bin/benchmark-schema-relations.cjs "$(command -v php)" "$unpacked_applicati
 The command starts its own PHP server on a loopback port and signs in with the fixture's generated owner.
 It alternates the two search spellings after one warmup and measures the 25 results in the browser,
 including the picker debounce. Each response must contain 50 options. It records the observations,
-median and observed p95 as `relation-picker-browser.json` in the fixture and stops its server.
+median and observed p95 as `relation-picker-browser.json` in the fixture and stops its server. The
+report includes the seed result and Composer lock digests plus the browser workload's PHP and Node versions.
+
+For a fixture under a completed Linux pair, add `--paired` and pass the pair's `floor` or `control`
+directory. The command verifies the checkout revision, profile receipt, seed result and application dependency
+lock before starting PHP. The profile identifies where the fixture was prepared. The browser command
+launches its own server, so its timing does not inherit the seed container's cgroup limits.
 
 ## Compare Linux app resource profiles
 
@@ -50,6 +56,14 @@ Preflight checks the mounted PHP runtime and both resource profiles without star
 The workload uses the same committed source, read-only application and dependency lock for both cases.
 It gives PHP and SQLite one CPU and 1 GiB in the floor case, then two CPUs and 2 GiB in the control.
 Both use zero swap, 128 processes or threads, a 128 MiB PHP heap and no container network. The profile
-logs record the actual cgroup limits and runtime versions. Paired workload output is private and is
-retained for analysis. Each container exits after its work. This command measures the in-process
-workload. The browser command has its own timing and resource boundary.
+logs record the actual cgroup limits and runtime versions. The launcher writes `floor.receipt.json`
+and `control.receipt.json` after each profile succeeds. They record the archived runner's commit,
+exact image ID, observed cgroup limits, runtime and dependency lock. In workload mode each receipt
+includes the SHA-256 of its profile's `result.json`. A preflight receipt has a null result.
+`pair.receipt.json` binds both profile receipts after confirming that their source, image, runtime,
+dependency lock and workload size agree. Its absence means the pair is incomplete, even when one
+profile finished. The application report itself leaves CPU and host-memory limits unattested.
+
+Paired workload output is private and is retained for analysis. Each container exits after its work.
+This command measures the in-process workload. The browser command has its own timing and resource
+boundary.
