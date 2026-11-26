@@ -121,7 +121,7 @@ async function bulkAction(page, label) {
 /** Show the list's trash, as Filament's filter shows it: '' not in the trash, '1' everything, '0' only the trash. */
 async function showTrash(page, value) {
     // Exactly: a search shows its own *Remove filter* beside it.
-    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await page.getByRole('button', { name: /^Filter(?: \d+)?$/ }).click();
     await page.locator('select[wire\\:model="tableDeferredFilters.trashed.value"]').selectOption(value);
     await page.getByRole('button', { name: 'Apply filters' }).click();
     // Filament keeps its filter panel open once applied, over the cards.
