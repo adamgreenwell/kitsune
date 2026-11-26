@@ -5,7 +5,8 @@
  */
 
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
@@ -17,6 +18,53 @@ function fixtureFile(fixture, name) {
     const stat = fs.lstatSync(file);
     assert(stat.isFile() && (stat.mode & 0o077) === 0 && stat.uid === process.getuid(), 'Expected an owned private file in the fixture');
     return file;
+}
+
+function sha256(bytes) {
+    return createHash('sha256').update(bytes).digest('hex');
+}
+
+function preparedFixture(application, fixture, rows, requirePair) {
+    const bytes = fs.readFileSync(fixtureFile(fixture, 'result.json'));
+    const result = JSON.parse(bytes);
+    assert.equal(result.rows, rows);
+    assert.equal(result.engine, 'sqlite');
+    assert(Number.isSafeInteger(result.checks_passed) && result.checks_passed > 0, 'Expected a completed seed workload');
+    const provenance = {
+        seed_result_sha256: sha256(bytes),
+        composer_lock_sha256: sha256(fs.readFileSync(path.join(application, 'composer.lock'))),
+        paired_profile: null,
+    };
+
+    if (requirePair) {
+        const profile = path.basename(fixture);
+        assert(['floor', 'control'].includes(profile), 'Expected a floor or control fixture from the pair launcher');
+        const parent = path.dirname(fixture);
+        const pair = JSON.parse(fs.readFileSync(fixtureFile(parent, 'pair.receipt.json')));
+        const reference = pair.profiles?.[profile];
+        assert.equal(pair.version, 1);
+        assert.equal(pair.mode, 'run');
+        assert.equal(pair.rows, rows);
+        const source = execFileSync('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], {
+            cwd: path.dirname(__dirname), encoding: 'utf8', env: { PATH: process.env.PATH },
+        }).trim();
+        assert.equal(pair.source_commit, source, 'The checkout revision differs from the seed workload');
+        assert.equal(reference?.file, profile + '.receipt.json');
+
+        const receiptBytes = fs.readFileSync(fixtureFile(parent, reference.file));
+        assert.equal(sha256(receiptBytes), reference.sha256, 'The profile receipt has changed');
+        const receipt = JSON.parse(receiptBytes);
+        assert.equal(receipt.profile, profile);
+        for (const key of ['version', 'mode', 'source_commit', 'image_id', 'rows', 'runtime']) {
+            assert.deepEqual(receipt[key], pair[key]);
+        }
+        assert.equal(receipt.result?.file, profile + '/result.json');
+        assert.equal(receipt.result.sha256, provenance.seed_result_sha256, 'The seed result has changed');
+        assert.equal(receipt.runtime.composer_lock_sha256, provenance.composer_lock_sha256, 'The application lockfile differs from the seed workload');
+        provenance.paired_profile = profile;
+    }
+
+    return provenance;
 }
 
 function listen(server) {
@@ -81,12 +129,16 @@ async function measure(origin, credentials) {
 }
 
 async function main() {
-    assert.equal(process.argv.length, 5, 'Use: node bin/benchmark-schema-relations.cjs PHP APPLICATION FIXTURE');
-    const [php, application, fixture] = process.argv.slice(2).map((name) => fs.realpathSync(name));
+    const args = process.argv.slice(2);
+    const requirePair = args[0] === '--paired';
+    if (requirePair) args.shift();
+    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired] PHP APPLICATION FIXTURE');
+    const [php, application, fixture] = args.map((name) => fs.realpathSync(name));
     const marker = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'owned-experiment.json'), 'utf8'));
     assert.equal(marker.purpose, 'kitsune-schema-scale');
     assert.equal(marker.root, path.dirname(__dirname));
     assert([10_000, 100_000, 1_000_000].includes(marker.rows));
+    const provenance = preparedFixture(application, fixture, marker.rows, requirePair);
     fixtureFile(fixture, '.env');
     for (const directory of ['storage', 'storage/framework', 'storage/framework/sessions']) {
         assert(fs.lstatSync(path.join(fixture, directory)).isDirectory(), 'Expected private fixture storage');
@@ -97,6 +149,7 @@ async function main() {
     const output = path.join(fixture, 'relation-picker-browser.json');
     assert(! fs.existsSync(output), 'The fixture already has a relation-picker report');
 
+    const measuredPhp = execFileSync(php, ['-r', 'echo PHP_VERSION;'], { encoding: 'utf8', env: {} });
     const server = spawn(php, [
         '-d', 'memory_limit=128M', '-S', '127.0.0.1:0', '-t', path.join(application, 'public'),
         path.join(__dirname, 'benchmarks/SchemaScaleBrowser.php'),
@@ -136,6 +189,13 @@ async function main() {
         observations: samples.length,
         options_each: 50,
         includes_debounce: true,
+        fixture: provenance,
+        measurement: {
+            php: measuredPhp,
+            node: process.version,
+            server: 'loopback PHP server launched by the browser command',
+            resource_limits_applied: null,
+        },
         median_ms: ordered[12],
         observed_p95_ms: ordered[23],
     };
