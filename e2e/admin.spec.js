@@ -1,6 +1,10 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
-const { selectTrigger } = require('./select-control');
+const { execFileSync } = require('node:child_process');
+const { randomBytes } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { selectTrigger, openSelect } = require('./select-control');
 
 /*
  * The admin loop, and the isolation boundary underneath it.
@@ -73,6 +77,155 @@ test.describe('admin', () => {
         const title = page.locator('input[wire\\:model="data.title"]');
         await expect(title).toHaveCount(1);
         await expect(title).not.toBeEmpty();
+    });
+
+    test('opens Site menus from the dashboard and edits a named menu', async ({ page }) => {
+        await page.goto('/admin/golfdom');
+        await page.getByRole('link', { name: 'Menus', exact: true }).click();
+        await expect(page).toHaveURL(/\/admin\/golfdom\/navigation-menus$/);
+        await expect(page.getByRole('heading', { name: 'Menus', exact: true })).toBeVisible();
+
+        const handle = 'menu-spec-' + randomBytes(5).toString('hex');
+        const name = 'Local navigation ' + handle;
+        await page.getByRole('button', { name: 'Create menu' }).click();
+        const modal = page.getByRole('dialog');
+        await modal.getByRole('textbox', { name: /^Name/ }).fill(name);
+        await modal.getByLabel('Theme handle').fill(handle);
+        await modal.getByRole('button', { name: /Add to links/i }).click();
+        await modal.getByRole('textbox', { name: /^Label/ }).fill('Home link');
+        await selectTrigger(modal, /^Destination/).click();
+        await modal.getByRole('option', { name: 'Site home' }).click();
+        await modal.getByRole('button', { name: 'Submit' }).click();
+
+        const row = page.getByRole('row', { name: new RegExp(name) });
+        await expect(row).toBeVisible();
+        await row.getByRole('button', { name: 'Edit' }).click();
+        await expect(modal.getByRole('textbox', { name: /^Label/ })).toHaveValue('Home link');
+        await modal.getByRole('textbox', { name: /^Name/ }).fill(name + ' updated');
+        await modal.getByRole('button', { name: 'Submit' }).click();
+        await expect(page.getByText(name + ' updated', { exact: true })).toBeVisible();
+        await row.getByRole('button', { name: 'Remove' }).click();
+        const confirmation = page.getByRole('alertdialog');
+        await expect(confirmation).toContainText(name + ' updated');
+        await confirmation.getByRole('button', { name: 'Confirm' }).click();
+        await expect(row).toHaveCount(0);
+    });
+
+    test('keeps Site navigation tools scoped to authorised editors', async ({ browser, page }) => {
+        await page.goto('/admin/golfdom');
+        const base = page.url();
+        const limited = await browser.newContext({ storageState: '.playwright/admin-reader-auth.json' });
+        try {
+            const restricted = await limited.newPage();
+            await restricted.goto(base);
+            await expect(restricted.getByRole('link', { name: 'Articles', exact: true })).toBeVisible();
+            await expect(restricted.getByRole('link', { name: 'Menus', exact: true })).toHaveCount(0);
+            for (const slug of ['navigation-menus', 'navigation-redirects']) {
+                const response = await restricted.goto(base + '/' + slug);
+                expect(response?.status()).toBe(403);
+            }
+        } finally {
+            await limited.close();
+        }
+
+        const foreign = await page.goto('/admin/rival-golfdom/navigation-menus');
+        expect([403, 404]).toContain(foreign?.status());
+    });
+
+    test('lets an editor retain or release a former public address', async ({ page, request }) => {
+        const skeleton = path.join(__dirname, '..', 'skeleton');
+        const handle = 'redirect-spec-' + randomBytes(5).toString('hex');
+        const directory = path.join(skeleton, 'resources', 'views', 'themes', handle);
+        const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+            cwd: skeleton,
+            encoding: 'utf8',
+        }).trim();
+        const scope = String.raw`
+            $org = \Kitsune\Core\Models\Org::query()->where('slug', 'golfdom-media')->firstOrFail();
+            $context = app(\Kitsune\Core\Tenancy\Context::class);
+            $context->setOrg($org);
+            $site = \Kitsune\Core\Models\Site::query()->where('slug', 'golfdom')->firstOrFail();
+            $context->setSite($site);
+        `;
+        const oldSlug = handle + '-old';
+        const firstSlug = handle + '-new';
+        const finalSlug = handle + '-final';
+
+        fs.mkdirSync(directory, { recursive: true });
+        fs.writeFileSync(path.join(directory, 'theme.json'), '{"entry_types":["article"]}');
+        fs.writeFileSync(path.join(directory, 'home.blade.php'), '<p>Theme fixture</p>');
+        fs.writeFileSync(path.join(directory, 'entry.blade.php'), '<h1>{{ $entry->title }}</h1>');
+
+        let id;
+        let previousTheme;
+        try {
+            const fixture = JSON.parse(tinker(String.raw`${scope}
+                $before = $site->theme;
+                $site->update(['theme' => '${handle}']);
+                $seed = \Kitsune\Core\Models\Entry::query()->findOrFail(1);
+                $entry = \Kitsune\Core\Models\Entry::create([
+                    'entry_type_id' => $seed->entry_type_id, 'title' => 'Redirect browser fixture',
+                    'slug' => '${oldSlug}', 'status' => 'published',
+                ]);
+                echo json_encode(['id' => $entry->id, 'previousTheme' => $before]);
+            `));
+            id = fixture.id;
+            previousTheme = fixture.previousTheme;
+            const url = (slug) => '/golfdom/article/' + slug;
+            const slugInput = page.locator('input[wire\\:model="data.slug"]');
+            const preserve = page.getByRole('switch', { name: 'Redirect the previous address' });
+
+            await page.goto('/admin/golfdom/c/article/' + id + '/edit');
+            await expect(preserve).toBeChecked();
+            await slugInput.fill(firstSlug);
+            await page.getByRole('button', { name: 'Save changes' }).click();
+
+            await expect.poll(async () => (await request.get(url(oldSlug), { maxRedirects: 0 })).status()).toBe(302);
+            const retained = await request.get(url(oldSlug), { maxRedirects: 0 });
+            expect(retained.headers()['location']).toBe(url(firstSlug));
+
+            await page.reload();
+            await expect(slugInput).toHaveValue(firstSlug);
+            await preserve.click();
+            await expect(preserve).not.toBeChecked();
+            await slugInput.fill(finalSlug);
+            await page.getByRole('button', { name: 'Save changes' }).click();
+
+            await expect.poll(async () => (await request.get(url(finalSlug))).status()).toBe(200);
+            const released = await request.get(url(firstSlug), { maxRedirects: 0 });
+            expect(released.status()).toBe(404);
+            const older = await request.get(url(oldSlug), { maxRedirects: 0 });
+            expect(older.headers()['location']).toBe(url(finalSlug));
+
+            await page.getByRole('link', { name: 'Redirects', exact: true }).click();
+            await expect(page.getByRole('heading', { name: 'Redirects', exact: true })).toBeVisible();
+            const redirect = page.getByRole('row', { name: new RegExp(oldSlug) });
+            await expect(redirect).toBeVisible();
+            await redirect.getByRole('button', { name: 'Remove' }).click();
+            const modal = page.getByRole('dialog');
+            await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm' }).click();
+            await expect(redirect).toHaveCount(0);
+            expect((await request.get(url(oldSlug), { maxRedirects: 0 })).status()).toBe(404);
+
+            await page.getByRole('button', { name: 'Create redirect' }).click();
+            await modal.getByLabel('Former type handle').fill('article');
+            await modal.getByLabel('Former slug').fill(oldSlug);
+            const search = await openSelect(modal, /^Destination/);
+            await search.fill('Redirect browser fixture');
+            await modal.getByRole('option', { name: 'Redirect browser fixture' }).click();
+            await modal.getByRole('button', { name: 'Submit' }).click();
+            await expect(redirect).toBeVisible();
+            const restored = await request.get(url(oldSlug), { maxRedirects: 0 });
+            expect(restored.headers()['location']).toBe(url(finalSlug));
+        } finally {
+            if (id) {
+                tinker(String.raw`${scope}
+                    \Kitsune\Core\Models\Entry::query()->findOrFail(${id})->forceDelete();
+                    $site->update(['theme' => ${previousTheme === null ? 'null' : JSON.stringify(previousTheme)}]);
+                `);
+            }
+            fs.rmSync(directory, { recursive: true });
+        }
     });
 
     test('creates an entry, stamping the type the URL identified', async ({ page }) => {

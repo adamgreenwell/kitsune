@@ -12,10 +12,10 @@ namespace App\Http\Controllers;
 
 use Filament\Facades\Filament;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Themes\PublicThemePage;
+use Symfony\Component\HttpFoundation\Response;
 
 /** Dispatches public Site themes and the default welcome page. */
 final class WelcomeController
@@ -24,7 +24,7 @@ final class WelcomeController
     {
         $site = $context->site();
 
-        return ($site === null ? null : $themes->render($request, $site)) ?? $this->render();
+        return ($site === null ? null : $themes->render($request, $site, 'site.home')) ?? $this->render();
     }
 
     public function site(Request $request, Context $context, PublicThemePage $themes): Response
@@ -32,7 +32,7 @@ final class WelcomeController
         $site = $context->site();
         abort_if($site === null, 404);
 
-        return $themes->render($request, $site) ?? $this->render();
+        return $themes->render($request, $site, 'site.home') ?? $this->render();
     }
 
     private function render(): Response

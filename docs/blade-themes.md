@@ -37,9 +37,31 @@ the theme unavailable. An unavailable selection falls back to the welcome page.
 - A missing entry template or an unavailable, draft, or unlisted entry returns 404. Routes
   already owned by the application, reader accounts or commerce take precedence.
 
+When editing a published entry, leave **Redirect the previous address** selected to keep its
+former slug. A former address sends visitors directly to the entry's latest public address.
+The redirect is temporary and uncached so it follows later edits and stops serving when the
+entry is unavailable. A published entry using the old address takes precedence. If its editor
+later renames it and keeps the old address, the redirect follows that newer entry.
+
 All templates receive `$site`, `$locale` and `$direction`. Use `lang="{{ $locale }}"` and
-`dir="{{ $direction }}"` on the document root. Entry templates also receive `$entry` and
-`$related`, which maps relation field handles to their readable entries in authored order.
+`dir="{{ $direction }}"` on the document root. Entry templates also receive `$entry`,
+its public `$entryPath`, and `$related`, which maps relation field handles to their readable
+entries in authored order. Use `$relatedPaths[$entryId]` for a related entry's same-host link.
+Destinations owned by another Site or a host route are omitted.
+
+Use `$menu('main')` on a home or entry template to render the Site's menu named `main`.
+Each link has a `label`, a same-host `path` including the Site prefix, and an ordered `children` list.
+A missing or empty menu returns an empty list. Use Blade's escaped output for both the path and label.
+
+Open **Menus** in the Site's admin to create, reorder or remove a named menu. Its theme handle
+stays stable when you change the display name. Choose the Site home or a local entry. Following
+translations uses the current Site's member of the group. Pinning keeps the chosen entry.
+Unavailable destinations stay in the editor and are omitted from the public menu.
+
+Open **Redirects** in the Site's admin to review, add or remove former addresses. Supply the
+former type handle and slug, then select a reachable public entry on the same Site. Access to
+both screens requires an Org owner or a Site-admitted editor with wildcard view and publish
+grants.
 Group links resolve on the current Site. A missing local translation is omitted. A row pin is
 rendered only while its exact entry remains publicly readable. Media delivery stays behind the
 existing media routes and their visibility rules. Adding a media type to the manifest does not

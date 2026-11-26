@@ -24,7 +24,9 @@ use Kitsune\Core\Models\OrgCredentialMode;
 use Kitsune\Core\Models\ReaderConsentEvent;
 use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Models\SiteEntryRedirect;
 use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Models\SiteMenu;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
@@ -123,6 +125,8 @@ it('resolves the declared scope for each core model', function (string $model, s
     'SiteGroup belongs to an org' => [SiteGroup::class, OrgScoped::class],
     'Entry belongs to a site' => [Entry::class, SiteScoped::class],
     'Translation group belongs to an org' => [EntryTranslationGroup::class, OrgScoped::class],
+    'Former entry address belongs to a Site' => [SiteEntryRedirect::class, SiteScoped::class],
+    'Public menu belongs to a Site' => [SiteMenu::class, SiteScoped::class],
     'EntryType is global or org-owned' => [EntryType::class, Unscoped::class],
     'FieldStorage is reached through its type' => [FieldStorage::class, Unscoped::class],
     'Field is per-type presentation' => [Field::class, Unscoped::class],
