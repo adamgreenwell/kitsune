@@ -230,16 +230,20 @@ it('keeps the skeleton\'s reader files to core\'s public reader surface — they
 it('opens every reader view with the licence, within its first 400 bytes', function (): void {
     $views = glob(dirname(__DIR__, 2).'/packages/core/resources/views/readers/*.blade.php') ?: [];
 
-    expect($views)->toHaveCount(10);
+    expect($views)->toHaveCount(11);
 
     foreach ($views as $view) {
         $source = (string) file_get_contents($view);
 
         expect(substr($source, 0, 400))->toContain('Mozilla Public');
 
-        // ⚠️ RAW OUTPUT ONLY IN THE PLAIN-TEXT MAIL, which is never HTML, and nothing escaped there to double up.
+        // Raw output is confined to the plain-text mail and the password view's exact, static CSP-pinned script.
+        // Translations, addresses and all other view data remain escaped, including the feedback's data attributes.
         if (basename($view) === 'mail.blade.php') {
             expect($source)->not->toContain('{{ ')->and(substr_count($source, '{!!'))->toBe(1);
+        } elseif (basename($view) === 'password.blade.php') {
+            expect($source)->toContain('<script>{!! \\Kitsune\\Core\\Readers\\PasswordStrength::script() !!}</script>')
+                ->and(substr_count($source, '{!!'))->toBe(1);
         } else {
             expect($source)->not->toContain('{!!');
         }
