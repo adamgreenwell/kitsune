@@ -22,6 +22,8 @@ final class ContentSchemaController
     public function __invoke(Request $request, Context $context): JsonResponse
     {
         $site = SiteApiRoutes::site($request, $context);
+        $token = $request->attributes->get(SiteAccessToken::class);
+        abort_unless($token instanceof SiteAccessToken, 401);
 
         $authorized = EntryType::visibleFor($site, $context->orgId())->filter(
             static fn (EntryType $type): bool => SiteTokens::allows($request, $type->handle, 'view')
@@ -52,6 +54,16 @@ final class ContentSchemaController
             return $schema;
         })->all();
 
-        return response()->json(['data' => $schemas], headers: ['Cache-Control' => 'private, no-store']);
+        // Only the private client may retain the schema. Authenticate again and rebuild the authorized
+        // contract on each request before deciding whether that exact representation is unchanged.
+        $response = response()->json(['data' => $schemas], headers: ['Cache-Control' => 'private, no-cache, must-revalidate']);
+        $response->setVary('Authorization', false);
+        $response->setEtag(hash('sha256', json_encode([
+            $site->org_id, $site->id, $token->id, $token->actor_model, $token->actor_id, $token->abilities,
+            $response->getContent(),
+        ], JSON_THROW_ON_ERROR)));
+        $response->isNotModified($request);
+
+        return $response;
     }
 }

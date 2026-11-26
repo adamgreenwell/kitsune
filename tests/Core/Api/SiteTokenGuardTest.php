@@ -114,13 +114,13 @@ beforeEach(function (): void {
     Route::get('/lazy-api/{action}', $handler)->middleware(ResolveSiteFromRequest::class);
     Route::get('/missing-context/{action}', $handler)->middleware('auth:'.SiteTokens::GUARD);
 
-    $this->read = function (string $credential, string $host = 'api', string $path = '/api-test/view') {
+    $this->read = function (string $credential, string $host = 'api', string $path = '/api-test/view', array $headers = [], string $method = 'GET') {
         app()->forgetScopedInstances();
         Permissions::forget();
         Auth::forgetGuards();
         Auth::shouldUse('web');
 
-        return $this->getJson("https://{$host}.example.test{$path}", ['Authorization' => 'Bearer '.$credential]);
+        return $this->json($method, "https://{$host}.example.test{$path}", [], ['Authorization' => 'Bearer '.$credential] + $headers);
     };
     $this->write = function (string $method, string $credential, string $path, array $data, string $host = 'api') {
         app()->forgetScopedInstances();
@@ -254,11 +254,86 @@ it('discovers authorized Site schemas outside the session-backed routes', functi
     ($this->read)($credential, path: '/api/v1/schema')->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.handle', 'article')
-        ->assertHeader('Cache-Control', 'no-store, private')
+        ->assertHeader('Cache-Control', 'must-revalidate, no-cache, private')
+        ->assertHeader('Vary', 'Authorization')
         ->assertHeaderMissing('Set-Cookie');
     ($this->read)($credential, 'sibling', '/api/v1/schema')->assertUnauthorized();
     ($this->read)($credential, 'foreign', '/api/v1/schema')->assertUnauthorized();
     ($this->read)($credential, 'api', '/not-the-site/api/v1/schema')->assertNotFound();
+});
+
+it('revalidates the authorized schema after token, contract and permission changes', function (): void {
+    app(Context::class)->setSite($this->site);
+    $credential = SiteTokens::issue($this->actor, 'schema reader', ['entry.article.view', 'entry.article.update'], now()->addHour());
+    $another = SiteTokens::issue($this->actor, 'another reader', ['entry.article.view', 'entry.article.update'], now()->addHour());
+    $path = '/api/v1/schema';
+
+    $original = ($this->read)($credential, path: $path)->assertOk()->assertJsonPath('data.0.handle', 'article');
+    $tag = $original->headers->get('ETag');
+    expect($tag)->toMatch('/^"[a-f0-9]{64}"$/');
+    $conditional = ['If-None-Match' => $tag];
+    ($this->read)($credential, path: $path, headers: $conditional)->assertStatus(304)
+        ->assertHeader('ETag', $tag)
+        ->assertHeader('Vary', 'Authorization')
+        ->assertHeader('Cache-Control', 'must-revalidate, no-cache, private')
+        ->assertHeaderMissing('Set-Cookie')
+        ->assertNoContent(304);
+    ($this->read)($credential, path: $path, headers: $conditional, method: 'HEAD')
+        ->assertHeader('ETag', $tag)
+        ->assertHeader('Vary', 'Authorization')
+        ->assertHeader('Cache-Control', 'must-revalidate, no-cache, private')
+        ->assertHeaderMissing('Set-Cookie')
+        ->assertNoContent(304);
+    expect(($this->read)($another, path: $path, headers: $conditional)->assertOk()->headers->get('ETag'))->not->toBe($tag);
+    ($this->read)($credential, 'sibling', $path, $conditional)->assertUnauthorized();
+    ($this->read)($credential, 'foreign', $path, $conditional)->assertUnauthorized();
+
+    app(Context::class)->setSite($this->site);
+    $storage = FieldStorage::create(['org_id' => $this->entryType->org_id, 'handle' => 'summary', 'type' => 'text', 'pii_class' => 'none', 'cardinality' => 1]);
+    $this->entryType->fields()->create(['field_storage_id' => $storage->id, 'label' => 'Summary']);
+    $changed = ($this->read)($credential, path: $path, headers: $conditional)->assertOk()
+        ->assertJsonPath('data.0.fields.properties.summary.anyOf.0.type', 'string')
+        ->assertJsonPath('data.0.update.type', 'object');
+    $updated = $changed->headers->get('ETag');
+    expect($updated)->not->toBe($tag);
+    ($this->read)($credential, path: $path, headers: $conditional, method: 'HEAD')
+        ->assertHeader('ETag', $updated)
+        ->assertNoContent(200);
+
+    app(Context::class)->setSite($this->site);
+    $this->role->revoke('entry.article.update');
+    $restricted = ($this->read)($credential, path: $path, headers: ['If-None-Match' => $updated])->assertOk()
+        ->assertJsonMissingPath('data.0.update');
+    $restrictedTag = $restricted->headers->get('ETag');
+    expect($restrictedTag)->not->toBe($updated);
+
+    app(Context::class)->setSite($this->site);
+    $availability = EntryTypeAvailability::create([
+        'entry_type_id' => $this->entryType->getKey(),
+        'scope_type' => 'site',
+        'scope_id' => $this->site->getKey(),
+        'is_enabled' => false,
+    ]);
+    ($this->read)($credential, path: $path, headers: ['If-None-Match' => $restrictedTag])
+        ->assertOk()->assertJsonCount(0, 'data');
+    app(Context::class)->setSite($this->site);
+    $availability->delete();
+    $restrictedConditional = ['If-None-Match' => $restrictedTag];
+    ($this->read)($credential, path: $path, headers: $restrictedConditional)->assertNoContent(304);
+
+    app(Context::class)->setSite($this->site);
+    $this->role->revoke('entry.article.view');
+    $empty = ($this->read)($credential, path: $path, headers: $restrictedConditional)
+        ->assertOk()->assertJsonCount(0, 'data');
+    $emptyTag = $empty->headers->get('ETag');
+    expect($emptyTag)->not->toBe($restrictedTag);
+    $emptyConditional = ['If-None-Match' => $emptyTag];
+    ($this->read)($credential, path: $path, headers: $emptyConditional)->assertNoContent(304);
+
+    app(Context::class)->setSite($this->site);
+    expect(SiteTokens::revoke((int) explode('|', $credential, 2)[0]))->toBeTrue();
+    ($this->read)($credential, path: $path, headers: $emptyConditional)
+        ->assertUnauthorized()->assertHeaderMissing('ETag');
 });
 
 it('requires a prefixed Site schema to use that Site’s complete canonical path', function (): void {
@@ -292,6 +367,7 @@ it('paginates scoped entry reads by ID and returns only the selected type’s de
 
     $credential = SiteTokens::issue($this->actor, 'test client', ['entry.article.view'], now()->addHour());
     ($this->read)($credential, path: '/api/v1/entries/article?limit=1')->assertOk()
+        ->assertHeader('Cache-Control', 'no-store, private')
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $first->getKey())
         ->assertJsonPath('data.0.values.synopsis', 'Visible')
