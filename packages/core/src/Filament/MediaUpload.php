@@ -306,6 +306,10 @@ final class MediaUpload
              */
             MediaFileUpload::make('files')
                 ->label(__('kitsune::media.upload.files'))
+                // FilePond uses this class to make the browse action keyboard reachable. Its Danish label misspells it.
+                ->placeholder(static fn (): ?string => app()->getLocale() === 'da'
+                    ? trim(view('kitsune::filament.media-upload-browse-label')->render())
+                    : null)
                 ->formats($formats)
                 ->helperText($formats === null ? null : __('kitsune::media.upload.accepts', ['formats' => MediaFormats::sentence($formats)]))
                 ->multiple()

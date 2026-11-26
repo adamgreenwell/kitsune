@@ -857,6 +857,19 @@ describe('decision 7\'s refusals', function (): void {
     ]);
 });
 
+it('uses a focusable browse action for the Danish upload label', function (string $locale, ?string $placeholder): void {
+    ($this->grant)('view', 'create', 'publish');
+    app()->setLocale($locale);
+
+    $components = uploadComponents(MediaUpload::action()->getSchema(Schema::make(app(ListEntries::class))));
+
+    expect($components['files'])->toBeInstanceOf(MediaFileUpload::class)
+        ->and($components['files']->getPlaceholder())->toBe($placeholder);
+})->with([
+    'Danish override' => ['da', 'Træk og slip filer her, eller <span class="filepond--label-action">Gennemse</span>'],
+    'English FilePond default' => ['en', null],
+]);
+
 /*
  * Where a photo was made — Adam, ADR-042 decision 30. The confirmation says what becomes of it, in words held to the
  * formats `MediaLocation` strips, and the handler stores a JPEG it confirms public without it.
