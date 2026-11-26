@@ -7773,10 +7773,10 @@ otherwise the operator can adjust it and run again. Repeated matching offers are
 Each attempt reloads its row within the current Org, Site and list type, and rechecks publish permission.
 The only writer remains `MediaVisibility::offer()`: it rechecks the stored row and permission under custody,
 refuses shared/public/trashed/missing files, and audits each new or changed offer in its own transaction.
-A stale or forged model's attributes cannot choose another type, scope or feedback title. If an unexpected
-commit error occurs, a fresh scoped read may establish that the requested offer now stands; otherwise the result
-says it could not be confirmed, rather than claiming that nothing changed. This is a per-file operation and a
-current-state report, not an atomic batch or a promise about a subsequent concurrent change.
+A stale or forged model's attributes cannot choose another type, scope or feedback title. After an
+unexpected error, a fresh scoped read may establish that the requested offer stands. The result counts that
+separately from newly written offers. If the read cannot confirm the offer, the result leaves it unconfirmed.
+The result describes each file's observed state at the time of the attempt.
 
 **Measured locally — selection (#252).** In the isolated SQLite browser fixture on the development Mac, fifty
 private files were offered and individually audited in 357 ms from submission to the visible result; the earlier

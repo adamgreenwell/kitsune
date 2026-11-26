@@ -190,8 +190,10 @@ it('does not expose the form to users who cannot publish', function (array $gran
 
 it('requires the exact repeated name and opts out of a host enclosing transaction', function (): void {
     ($this->grant)('view', 'publish');
-    Action::configureUsing(fn (Action $action) => $action->databaseTransaction()->successNotificationTitle('Host success')->failureNotificationTitle('Host failure'));
-    $action = bulkReaderAction();
+    $action = Action::configureUsing(
+        fn (Action $action) => $action->databaseTransaction()->successNotificationTitle('Host success')->failureNotificationTitle('Host failure'),
+        during: fn () => bulkReaderAction(),
+    );
     $fields = $action->getSchema(Schema::make(app(ListEntries::class)))?->getFlatComponents(withHidden: true) ?? [];
     $inputs = collect($fields)->filter(fn ($field) => $field instanceof TextInput)->keyBy(fn ($field) => $field->getName());
     expect($inputs->keys()->all())->toBe(['entitlement', 'confirmation'])

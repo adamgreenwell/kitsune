@@ -141,7 +141,7 @@ final class MediaReaderBulk
             return;
         }
         $budget = BulkSelection::within($until);
-        $offered = $unchanged = $refused = $failed = 0;
+        $offered = $unchanged = $confirmed = $refused = $failed = 0;
         $lines = [];
         $reported = false;
         foreach ($batch as $index => $record) {
@@ -185,10 +185,10 @@ final class MediaReaderBulk
                     report($failure);
                     $reported = true;
                 }
-                // A commit may have landed before it reported failure. State is confirmed, never guessed from an error.
+                // The requested offer may stand even when this operation's write outcome is unknown.
                 if (self::nowOffered($record, $name)) {
-                    $offered++;
-                    $lines[] = __('kitsune::media.readers.bulk.offered', ['title' => $label]);
+                    $confirmed++;
+                    $lines[] = __('kitsune::media.readers.bulk.confirmed_after_error', ['title' => $label]);
                 } else {
                     $failed++;
                     $lines[] = __('kitsune::media.readers.bulk.unconfirmed', ['title' => $label]);
@@ -202,7 +202,14 @@ final class MediaReaderBulk
         $notTried = $budget->notTried();
         $complete = $refused + $failed + $gone + $notTried === 0;
         $complete ? $action->success() : $action->failure();
-        $summary = __('kitsune::media.readers.bulk.summary', ['offered' => $offered, 'unchanged' => $unchanged, 'refused' => $refused + $gone, 'failed' => $failed, 'not_tried' => $notTried]);
+        $summary = __('kitsune::media.readers.bulk.summary', [
+            'offered' => $offered,
+            'unchanged' => $unchanged,
+            'confirmed' => $confirmed,
+            'refused' => $refused + $gone,
+            'failed' => $failed,
+            'not_tried' => $notTried,
+        ]);
         $notice = Notification::make()->persistent()->title(__('kitsune::media.readers.bulk.results'))
             ->body($summary)
             ->view(self::RESULTS_VIEW, ['offerResults' => $lines]);

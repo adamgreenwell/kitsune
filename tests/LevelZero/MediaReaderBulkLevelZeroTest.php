@@ -122,6 +122,10 @@ it('distinguishes a commit that did not land from one that landed and reported f
         ->and($action->getStatus())->toBe($commit === 'before' ? ActionStatus::Failure : ActionStatus::Success)
         ->and($pdo->inTransaction())->toBeFalse()
         ->and(DB::transactionLevel())->toBe(0);
+    $notice = json_encode(readerBulkZeroNotices(), JSON_THROW_ON_ERROR);
+    expect($notice)
+        ->toContain('Offered now: 2', 'confirmed after an error: '.($commit === 'after' ? 1 : 0))
+        ->toContain($commit === 'after' ? 'the requested offer was confirmed after an error' : 'the offer could not be confirmed');
     Exceptions::assertReportedCount(1);
 })->with(['before', 'after']);
 
