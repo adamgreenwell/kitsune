@@ -795,7 +795,7 @@ sibling's (`/golfdom/account`) would make that sibling's reader pages 404: close
 
 ## ADR-020 — Privacy by design: classification, redactable revisions, payload-free audit
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23 (#262)** · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
 **Not legal advice.** A privacy attorney should review before any compliance claim appears in marketing, a DPA, or a security questionnaire. What is settled here is which obligations are *architectural*.
 
 ### The category distinction that drives this
@@ -971,6 +971,38 @@ were each overridden as they were found, which is precisely how `truncate()`
 survived three rounds and erased the whole table with no event and no
 override. The remaining mutators are refused together rather than one review
 at a time.
+
+---
+
+### Amendment — measured revision growth, 2026-10-23 (#262)
+
+The open question was **“Revision storage growth — full-JSON snapshots get expensive; consider diffs.”**
+That question is now measured against the actual fifty-version cap, rather than assuming a thousand edits
+means a thousand retained snapshots. The original privacy reasoning above remains in force.
+
+The [revision-growth experiment](benchmarks/revision-growth.md) compares nine valid synthetic histories
+(2/32/256 KiB rich text, mostly scalar edits, insertions and replacements), one thousand authored edits each,
+with a disposable checkpoint/object-key diff prototype. It includes media references, personal inline/promoted/
+relation data and retained originals; real guarded restores, erasure and replacement-link preservation;
+persisted corruption/interruption controls; and staged migration/restart/identity and storage observations.
+The [numeric record](benchmarks/revision-growth.json) preserves the historical source fingerprints, sample scopes,
+timings, descriptive intervals and limitations. Invalid earlier short-text pilot figures are excluded.
+
+**Keep full snapshots and the current fifty-version retention.** Mostly scalar histories can save logical
+bytes in this prototype; frequent body edits replace the whole string and provide little benefit. Its
+repeated per-version list/erasure replay is deliberately reported as an implementation cost, not a lower
+bound for every diff design. Neither those timings nor different-scope write/erasure columns establish a
+production speedup. No representative storage pressure or measured need justifies a runtime format change.
+
+Erasure must still reach every checkpoint, operation and original, and erased relation history remains
+`null` (unknown), so restoring it cannot clear a later replacement relation. Logical erasure is separate
+from secure physical media erasure and backup replay. The experiment is warm local SQLite, not server-engine,
+concurrent-writer, power-loss or ADR-027 floor qualification. Its combined large-case harness needed more
+than 128 MiB; isolated current erasure passed at that cap, and no product setting changed.
+
+The old open-question bullet is retired by this bounded finding. A future representation proposal needs its
+own workload/storage evidence and measured writer, replay, erasure, migration/cutover/reversal, concurrency
+and supported-engine/floor behavior. This PR contains development measurement code and findings only.
 
 ---
 
@@ -12582,7 +12614,6 @@ existing scope rules.
   review, and the upload half of ADR-042's measurement waits on the first
 - [Storage benchmark at 10k / 100k / 1M entries](schema-scale-benchmark.md) has measured results. The portable end-to-end launcher remains open (#261)
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed. — and built: `kitsune:blueprint reverse` (ADR-039, the reverse, as built).
-- Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
 
