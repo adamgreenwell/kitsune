@@ -3587,6 +3587,22 @@ when another field holds an invalid value. Reader privacy responses use the acco
 Profiling and the Wayfindr integration each need to consult the gate before processing when their features land.
 [W3C Global Privacy Control draft](https://www.w3.org/TR/gpc/#the-sec-gpc-header-field-for-http-requests)
 
+### Host-owned reader columns in subject export (v1.1, issue #232)
+
+The host owns the reader table and its classification. The existing `ReaderAccount` contract stays frozen.
+Hosts can implement the optional `ClassifiesReaderColumns` contract to declare the purpose of each column
+and its export key, if any. The subject export verifies the declaration against the host's own connection and
+reader table. The export reads each eligible value from its declared storage column. A secret or a column hidden
+by the model has no export key. An ordinary projection key must have exactly one classified source. The skeleton
+implements the optional contract, including separate declarations for the password hash and remember token.
+This coverage is for the reader table. The older reader export retains its host-defined projection.
+
+Run `php artisan kitsune:subject-export --org=example` for an Org-wide reader report, with a JSON object holding
+a `reader` key on standard input. To add content, supply `--type`, `--storage`, and either one or more `--site`
+handles or `--all-sites`, and include a typed `identifier` in the JSON. The reader key and content identifier
+are explicit choices even when their values look alike. The command includes a coverage report. Older hosts
+without a column declaration keep their declared legacy account projection and report that its coverage is limited.
+
 ### Enforced by
 
 ~~**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.~~ *As built
@@ -5460,6 +5476,11 @@ because NULLs compare distinct and a nullable column would let the unique index 
 row, its ciphertext and key id null, so its record always names a target; nothing deletes a row but the org's own hard
 delete. Nothing derived from a value is stored — no hash, length, prefix or last four. `architecture.md` publishes
 both, and says why `orgs` carries no mode.
+
+**Amendment for host reader exports (v1.1, issue #232).** The credential store keeps its own key and reader.
+The host reader export may use Laravel's application decoder for a field with a declared built-in encrypted cast.
+It reads only that field's retained bytes, and one internal reader projection owns the decoder. The architecture
+test pins that caller and the separate credential reader. Host accessors and custom casts remain outside this path.
 
 **Encryption.** `CredentialCipher` — the only code in core that encrypts or decrypts, asserted — seals with AES-256-GCM
 under `hash_hkdf('sha256', APP_KEY, 32, 'kitsune/credentials/v1')`. Measured, under the same cipher: that key cannot

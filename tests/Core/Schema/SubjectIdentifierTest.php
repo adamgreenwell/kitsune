@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryRevision;
@@ -18,8 +19,11 @@ use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
+use Kitsune\Core\Schema\RevisionSubject;
+use Kitsune\Core\Schema\SubjectDiscovery;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopeWrites;
+use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 
 /*
  * ADR-020 primitives 2 and 3, which the compliance tooling in v1.1 is built
@@ -70,6 +74,83 @@ describe('an entry type names the field that identifies the subject', function (
         ]);
 
         expect($entry->fresh()->subjectValue())->toBe('a@example.test');
+    });
+
+    it('keeps each revision with its own subject after the live subject and nomination change', function (): void {
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First', 'values' => ['email' => 'a@example.test'],
+        ]);
+        $entry->update(['title' => 'Second', 'values' => ['email' => 'b@example.test']]);
+        $this->type->refresh()->update(['subject_field_id' => null]);
+        [$first, $second] = $entry->revisions()->orderBy('id')->get()->all();
+
+        expect(RevisionSubject::matches($first, $this->site, $this->emailStorage->id, 'a@example.test'))->toBeTrue()
+            ->and(RevisionSubject::matches($first, $this->site, $this->emailStorage->id, 'b@example.test'))->toBeFalse()
+            ->and(RevisionSubject::matches($second, $this->site, $this->emailStorage->id, 'b@example.test'))->toBeTrue()
+            ->and(RevisionSubject::matches($second, $this->site, $this->emailStorage->id, 'B@example.test'))->toBeFalse()
+            ->and($first->subject_schema)->not->toContain('a@example.test');
+
+        $sibling = Site::create(['org_id' => $this->org->id, 'handle' => 'other', 'slug' => 'clinic-other', 'name' => 'Other']);
+        expect(RevisionSubject::matches($first, $sibling, $this->emailStorage->id, 'a@example.test'))->toBeNull();
+        $first->subject_schema = null;
+        expect(RevisionSubject::matches($first, $this->site, $this->emailStorage->id, 'a@example.test'))->toBeNull();
+    });
+
+    it('discovers earlier subjects under the scoped parent even after a live entry is retyped', function (): void {
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First', 'values' => ['email' => 'a@example.test'],
+        ]);
+        $old = $entry->revisions()->latest('id')->firstOrFail();
+        $otherType = EntryType::create(['org_id' => $this->org->id, 'handle' => 'visit', 'name' => 'Visit', 'plural_name' => 'Visits']);
+        $entry->update(['entry_type_id' => $otherType->id, 'title' => 'Later', 'values' => []]);
+
+        $sibling = Site::create(['org_id' => $this->org->id, 'handle' => 'other', 'slug' => 'clinic-other', 'name' => 'Other']);
+        app(Context::class)->setSite($sibling);
+        $other = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Sibling', 'values' => ['email' => 'a@example.test'],
+        ]);
+        $discovery = app(SubjectDiscovery::class);
+        expect($discovery->forSite($this->type->id, $this->emailStorage->id, 'a@example.test')['entries'])->toBe([$other->id]);
+
+        app(Context::class)->setSite($this->site);
+        expect($discovery->forSite($this->type->id, $this->emailStorage->id, 'a@example.test'))->toBe([
+            'entries' => [],
+            'revisions' => [['id' => $old->id, 'entry' => $entry->id]],
+            'history_indeterminate' => 0,
+            'live_covered' => true,
+        ]);
+    });
+
+    it('counts redacted identification as indeterminate even when other fields remain', function (): void {
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Still exists', 'values' => ['email' => 'a@example.test'],
+        ]);
+        $entry->redactField('email');
+
+        expect(app(SubjectDiscovery::class)->forSite($this->type->id, $this->emailStorage->id, 'a@example.test'))->toBe([
+            'entries' => [],
+            'revisions' => [],
+            'history_indeterminate' => 1,
+            'live_covered' => true,
+        ]);
+    });
+
+    it('refuses a non-owner and scopes type discovery to the requesting Org', function (): void {
+        $discovery = app(SubjectDiscovery::class);
+        $this->actingAs(EntitlementFixture::member());
+        expect(fn () => $discovery->forSite($this->type->id, $this->emailStorage->id, 'a@example.test'))
+            ->toThrow(EntitlementRefused::class);
+
+        auth()->forgetGuards();
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-discovery']);
+        app(Context::class)->setOrg($rival);
+        $theirSite = Site::create(['handle' => 'other', 'slug' => 'rival-discovery', 'name' => 'Other']);
+        app(Context::class)->setSite($theirSite);
+        expect(fn () => $discovery->forSite($this->type->id, $this->emailStorage->id, 'a@example.test'))
+            ->toThrow(InvalidArgumentException::class, 'entry type is unavailable');
     });
 
     it('answers null when the type nominated nothing, meaning unanswerable', function (): void {
@@ -313,6 +394,16 @@ describe('a relational subject lives in entry_relations, not in values', functio
         expect($this->record->fresh()->subjectValue())->toBe([$this->alice->id]);
     });
 
+    it('witnesses the relation stored in this version, then no longer attributes it after redaction', function (): void {
+        $revision = $this->record->revisions()->latest('id')->firstOrFail();
+
+        expect(RevisionSubject::matches($revision, $this->site, $this->personStorage->id, $this->alice->id))->toBeTrue()
+            ->and(RevisionSubject::matches($revision, $this->site, $this->personStorage->id, (string) $this->alice->id))->toBeFalse()
+            ->and(RevisionSubject::matches($revision, $this->site, $this->personStorage->id, $this->bob->id))->toBeFalse();
+        $this->record->redactField('person');
+        expect(RevisionSubject::matches($revision->fresh(), $this->site, $this->personStorage->id, $this->alice->id))->toBeNull();
+    });
+
     it('finds entries by a relational subject', function (): void {
         Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other'])
             ->related()->attach($this->bob->id, ['field_storage_id' => $this->personStorage->id]);
@@ -415,6 +506,15 @@ describe('a promoted subject lives in its own column', function (): void {
 
     it('reads the subject from the real column', function (): void {
         expect($this->entry->fresh()->subjectValue())->toBe('a-patient');
+    });
+
+    it('matches the promoted subject from the revision rather than the current column', function (): void {
+        $old = $this->entry->revisions()->latest('id')->firstOrFail();
+        $this->entry->update(['slug' => 'next']);
+        $current = $this->entry->revisions()->latest('id')->firstOrFail();
+
+        expect(RevisionSubject::matches($old, $this->site, $this->slugStorage->id, 'a-patient'))->toBeTrue()
+            ->and(RevisionSubject::matches($current, $this->site, $this->slugStorage->id, 'a-patient'))->toBeFalse();
     });
 
     it('finds entries by a promoted subject', function (): void {

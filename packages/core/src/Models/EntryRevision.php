@@ -32,6 +32,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $values
  * @property string $status
  * @property array<string, list<RevisionRelationTarget>|null>|null $relation_state
+ * @property array<string, mixed>|null $subject_schema
  * @property int $entry_type_id
  * @property string|null $title
  * @property string|null $slug
@@ -77,9 +78,12 @@ class EntryRevision extends Model
 
     protected $guarded = [];
 
+    protected $hidden = ['subject_schema'];
+
     protected $casts = [
         'values' => 'array',
         'relation_state' => 'array',
+        'subject_schema' => 'array',
         // ⚠️ Deliberately absent from SNAPSHOT_ATTRIBUTES, so `snapshot()` never
         // offers it to `restoreRevision()`. See the column's own note.
         'unsanitized_values' => 'array',
