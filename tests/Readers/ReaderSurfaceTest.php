@@ -230,7 +230,7 @@ it('keeps the skeleton\'s reader files to core\'s public reader surface — they
 it('opens every reader view with the licence, within its first 400 bytes', function (): void {
     $views = glob(dirname(__DIR__, 2).'/packages/core/resources/views/readers/*.blade.php') ?: [];
 
-    expect($views)->toHaveCount(11);
+    expect($views)->toHaveCount(12);
 
     foreach ($views as $view) {
         $source = (string) file_get_contents($view);

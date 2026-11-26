@@ -16,6 +16,7 @@ use Kitsune\Core\Http\Controllers\Readers\DownloadController;
 use Kitsune\Core\Http\Controllers\Readers\DownloadsController;
 use Kitsune\Core\Http\Controllers\Readers\LinkRequestController;
 use Kitsune\Core\Http\Controllers\Readers\LinkUseController;
+use Kitsune\Core\Http\Controllers\Readers\PrivacyController;
 use Kitsune\Core\Http\Controllers\Readers\SignInController;
 use Kitsune\Core\Http\Controllers\Readers\SignOutController;
 use Kitsune\Core\Http\Middleware\IsolateDownload;
@@ -94,6 +95,10 @@ final class ReaderRoutes
                 Route::post($account.ReaderLinks::RESET, [LinkUseController::class, 'storeReset'])
                     ->middleware($area),
                 Route::get($at.ReaderLinks::SEGMENT, AccountController::class)
+                    ->middleware([...$area, RequireReader::class]),
+                Route::get($account.ReaderLinks::PRIVACY, [PrivacyController::class, 'show'])
+                    ->middleware([...$area, RequireReader::class]),
+                Route::post($account.ReaderLinks::PRIVACY, [PrivacyController::class, 'store'])
                     ->middleware([...$area, RequireReader::class]),
                 Route::get($at.ReaderLinks::SEGMENT.ReaderLinks::SIGN_IN, [SignInController::class, 'show'])
                     ->middleware([...$area, RequireGuest::class]),

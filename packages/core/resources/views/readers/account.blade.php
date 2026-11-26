@@ -18,6 +18,8 @@
 
     <p><a href="{{ $downloads }}">{{ $t('downloads.title') }}</a></p>
 
+    <p><a href="{{ $privacy }}">{{ $t('privacy.title') }}</a></p>
+
     <form method="post" action="{{ $signOut }}">
         @csrf
         <button type="submit">{{ $t('sign_out.button') }}</button>

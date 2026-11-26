@@ -37,6 +37,7 @@ final class AccountController
         return ReaderPage::render($site, 'account', 'home.title', [
             'downloads' => ReaderLinks::downloads($site),
             'email' => $reader->readerEmail(),
+            'privacy' => ReaderLinks::path($site, ReaderLinks::PRIVACY),
             'signOut' => ReaderLinks::path($site, ReaderLinks::SIGN_OUT),
             'status' => in_array($status, self::SHOWN, true) ? $status : null,
         ]);

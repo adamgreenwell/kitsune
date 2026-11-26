@@ -161,4 +161,21 @@ return [
     'title' => [
         'error_prefix' => 'Error:',
     ],
+    'privacy' => [
+        'title' => 'Privacy choices',
+        'intro' => 'These choices apply only to :site.',
+        'gpc' => 'Global Privacy Control is on. Optional processing is off for this request.',
+        'profiling' => 'Personalized recommendations',
+        'profiling_description' => 'Allow this site to use your activity here to build a profile for recommendations.',
+        'support_widget' => 'Support chat',
+        'support_widget_description' => 'Allow this site to share your signed-in identity with its support chat provider.',
+        'enabled' => 'Allowed',
+        'declined' => 'Off',
+        'unavailable' => 'This site has not enabled this choice.',
+        'expiry' => 'Permission expires in :days days from the date you allow it.',
+        'grant' => 'Allow',
+        'withdraw' => 'Withdraw permission',
+        'saved' => 'Your privacy choice was saved.',
+        'back' => 'Back to your account',
+    ],
 ];

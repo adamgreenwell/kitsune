@@ -15,7 +15,9 @@ use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Readers\ConsentPurpose;
 use Kitsune\Core\Readers\ReaderAddresses;
+use Kitsune\Core\Readers\ReaderConsents;
 use Kitsune\Core\Readers\ReaderMode;
 use LogicException;
 use RuntimeException;
@@ -120,6 +122,17 @@ final class SettingsGuard
                 throw new RuntimeException(sprintf(
                     'Refusing [%s] on %s: it is set for a whole organisation, whose readers they are — never for a site '
                     .'group or a site, where a sibling would name the same readers. Set it on the organisation instead.',
+                    $key,
+                    $holder,
+                ));
+            }
+        }
+
+        foreach (ConsentPurpose::cases() as $purpose) {
+            $key = $purpose->setting();
+            if (array_key_exists($key, $settings) && ($level !== 'site' || ReaderConsents::parsePolicy($settings[$key]) === null)) {
+                throw new RuntimeException(sprintf(
+                    'Refusing [%s] on %s: set it on the site with a notice version and 1 to 3650 retention days.',
                     $key,
                     $holder,
                 ));

@@ -70,7 +70,7 @@ function readersRun(array $parameters, string $stdin = ''): array
 
 it('refuses an action it does not have', function (): void {
     expect(readersRun(['action' => 'delete']))
-        ->toBe([1, 'Refusing: kitsune:readers has six actions — status, mode, addresses, find, export and erase. Nothing was read or written.']);
+        ->toBe([1, 'Refusing: kitsune:readers takes status, mode, addresses, find, export, erase, consent or consent-sweep. Nothing was read or written.']);
 });
 
 it('needs an organisation for everything but status, and names one it cannot find', function (string $action): void {
@@ -564,7 +564,7 @@ it('refuses to read or write accounts a model cannot hold', function (string $ac
 
 it('refuses to erase without --force, before reading anything', function (): void {
     expect(readersRun(['action' => 'erase', '--org' => 'golfdom', '--reader' => (string) $this->reader->getKey()]))
-        ->toBe([1, 'Refusing: erase deletes the reader\'s account, every entitlement they hold on every site of [golfdom], and any link waiting for them. Run it again with --force. Nothing was written.'])
+        ->toBe([1, 'Refusing: erase deletes the reader\'s account, every entitlement they hold on every site of [golfdom], their consent choices and any link waiting for them. Run it again with --force. Nothing was written.'])
         ->and(Reader::withoutScopeBecause('a test counts', static fn ($query) => $query->count()))->toBe(1);
 });
 
