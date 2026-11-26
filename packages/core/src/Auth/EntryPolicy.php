@@ -76,12 +76,12 @@ class EntryPolicy
      */
     public function restore(Authenticatable $user, Entry $entry): bool
     {
-        return $this->allowsOn($user, $entry, 'delete');
+        return $this->allowsOn($user, $entry, 'restore');
     }
 
     public function forceDelete(Authenticatable $user, Entry $entry): bool
     {
-        return $this->allowsOn($user, $entry, 'delete');
+        return $this->allowsOn($user, $entry, 'forceDelete');
     }
 
     /**
@@ -133,8 +133,13 @@ class EntryPolicy
             : $this->allowsOnCurrentType($user, 'publish');
     }
 
-    private function allowsOn(Authenticatable $user, Entry $entry, string $action): bool
+    private function allowsOn(Authenticatable $user, Entry $entry, string $ability): bool
     {
+        $action = match ($ability) {
+            'restore', 'forceDelete' => 'delete',
+            default => $ability,
+        };
+
         /*
          * ⚠️ THE TYPE COMES FROM THE STORED ROW TOO, AND FIXING ONLY THE SCOPE WAS HALF A FIX — review found
          * the other half. `type_handle` is a public attribute, so a caller holding `entry.product.update` could
@@ -158,7 +163,7 @@ class EntryPolicy
                 && Permissions::allows($user, Permissions::forEntryType($handle, $action));
         }
 
-        $handle = $this->storedTypeInScope($entry);
+        $handle = $this->storedTypeInScope($entry, $ability);
 
         return $handle !== null && $handle !== ''
             && Permissions::allows($user, Permissions::forEntryType($handle, $action));
@@ -185,7 +190,7 @@ class EntryPolicy
      * scope keys are the INSERT's business, and `EnforcesScope` stamps and guards them there. Asking this of
      * a new `Entry` would refuse `$entry->fill(...)`-shaped authorization questions that name nothing yet.
      */
-    private function storedTypeInScope(Entry $entry): ?string
+    private function storedTypeInScope(Entry $entry, string $ability): ?string
     {
         $context = app(Context::class);
 
@@ -205,7 +210,8 @@ class EntryPolicy
          * has been edited in memory is refused rather than reconciled.
          *
          * ⚠️ IT COSTS ONE INDEXED `EXISTS` PER AUTHORIZATION, WHICH WAS MEASURED RATHER THAN ASSUMED. The
-         * admin list asks this per row, so the cost is per page rather than per request; `kitsune:benchmark-admin`
+         * ordinary admin list asks this per row, so the cost is per page rather than per request. Media list controls
+         * use the same comparison with one page-scoped read (ADR-042). `kitsune:benchmark-admin`
          * puts it inside the ADR-027 floor budget, and the numbers are in the PR discussion. Trading a
          * measured fraction of a millisecond for a guard that cannot be talked out of its answer is the trade
          * this project keeps making.
@@ -265,6 +271,11 @@ class EntryPolicy
         $loadedSite = $entry->getRawOriginal('site_id');
         $loadedOrg = $entry->getRawOriginal('org_id');
 
+        $display = app(EntryListAuthorization::class)->storedRecord($entry, $ability);
+        if ($display !== null) {
+            return self::handleForStoredRow($display, $site, $org, $loadedType, $loadedSite, $loadedOrg);
+        }
+
         return self::scopeAllows($stored, $site, $org, $loadedType, $loadedSite, $loadedOrg);
     }
 
@@ -321,10 +332,17 @@ class EntryPolicy
             ->whereKey($key)
             ->first(['site_id', 'org_id', 'type_handle', 'entry_type_id']);
 
-        if ($row === null) {
-            return null;
-        }
+        return $row === null ? null : self::handleForStoredRow($row, $site, $org, $loadedType, $loadedSite, $loadedOrg);
+    }
 
+    private static function handleForStoredRow(
+        Entry $row,
+        ?int $site,
+        ?int $org,
+        mixed $loadedType,
+        mixed $loadedSite,
+        mixed $loadedOrg,
+    ): ?string {
         /*
          * ⚠️ AN INSTANCE WHOSE LOADED TYPE NO LONGER MATCHES THE ROW IS STALE, and the policy says no to a
          * stale instance rather than answering about a row it is not holding. It is the same sentence

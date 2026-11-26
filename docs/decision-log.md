@@ -10075,8 +10075,16 @@ automatically waits for the measurement below.
 >   naming its extension, and is never fetched; a private file with no route to ask, outside a panel, is a badge saying
 >   *Private*; an entry with no file recorded says *No file*; *a public image that does not load says* Did not load
 >   *(decision 42, 2026-10-09)*. The page's files are read in one query —
->   `Entry::mediaFile()`, eager-loaded by the grid — so the list's query count is constant rather than one per row, as
->   the measurement below asks. A card carries no link to its record: Filament wraps a card's whole content in one
+>   `Entry::mediaFile()`, eager-loaded by the grid. ~~Therefore the list's query count is constant.~~
+>   *Amended 2026-11-26, #219.* The file query already stayed constant. Filament's controls still asked
+>   `EntryPolicy` for one stored entry read per visible row. On a local Nginx and PHP-FPM run with SQLite and
+>   the ADR-027 floor, at 50 visible rows, the owner had 142 reads on the list GET and 71 on its Livewire search
+>   or sort. The granted editor had 161 and 75. The media table now reads the displayed rows' stored identity
+>   in one scoped query and supplies it only during authorization of the displayed record controls. The policy
+>   compares the same stored scope and type as before. Direct record, mount and submit requests still take the
+>   ordinary policy path. At 5, 10, 25 and 50 visible rows, the local GET and update queries were 93 and 22
+>   for the owner, and 112 and 26 for the editor. The named stage measurements below remain open.
+>   A card carries no link to its record: Filament wraps a card's whole content in one
 >   `<a>`, which would hold the button, and a click on it would be the link's too.
 > - **Defaults taken, for Adam to overrule.**
 >   - A public disk served from another origin — an object store, a CDN, or this host on another scheme or port — keeps
