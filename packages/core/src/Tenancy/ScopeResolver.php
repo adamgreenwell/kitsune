@@ -25,35 +25,40 @@ use ReflectionClass;
  */
 final class ScopeResolver
 {
-    /** @var array<class-string, class-string|null> */
+    /** @var array<class-string, class-string<SiteScoped|OrgScoped|OrgScopedThroughPivot|Unscoped>> */
     private static array $cache = [];
 
     /**
      * @return class-string<SiteScoped|OrgScoped|OrgScopedThroughPivot|Unscoped>
      *
-     * @throws UndeclaredScopeException when a model declares none
+     * @throws UndeclaredScopeException when a model declares zero or multiple scopes
      */
     public static function for(string $model): string
     {
-        if (array_key_exists($model, self::$cache)) {
-            $resolved = self::$cache[$model];
-
-            return $resolved ?? throw UndeclaredScopeException::for($model);
+        if (isset(self::$cache[$model])) {
+            return self::$cache[$model];
         }
 
         $reflection = new ReflectionClass($model);
         $found = null;
 
         foreach ([SiteScoped::class, OrgScoped::class, OrgScopedThroughPivot::class, Unscoped::class] as $attribute) {
-            if ($reflection->getAttributes($attribute) !== []) {
-                $found = $attribute;
-                break;
+            $matches = count($reflection->getAttributes($attribute));
+            if ($matches === 0) {
+                continue;
             }
+            if ($matches > 1 || $found !== null) {
+                throw UndeclaredScopeException::ambiguous($model);
+            }
+
+            $found = $attribute;
         }
 
-        self::$cache[$model] = $found;
+        if ($found === null) {
+            throw UndeclaredScopeException::for($model);
+        }
 
-        return $found ?? throw UndeclaredScopeException::for($model);
+        return self::$cache[$model] = $found;
     }
 
     /** Test seam. Attributes cannot change at runtime in production. */
