@@ -44,6 +44,7 @@ use RuntimeException;
  * @property string $name
  * @property string $locale
  * @property string $url_strategy
+ * @property string|null $theme
  * @property string|null $base_url
  * @property string|null $canonical_host
  * @property string|null $path_prefix
