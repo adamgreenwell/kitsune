@@ -631,6 +631,45 @@ entries
 
 **Open:** do relations target the translation group or a specific locale row? Group-targeting with an optional locale override is the leading candidate.
 
+### Amendment — target the group unless the author pins a row
+
+**Decision for the translation-aware relation contract.** A new relation to translated content follows the
+target translation group by default. An author may pin a particular entry row when that identity matters.
+The pin uses the row ID, since ADR-021 makes Site the source of locale and more than one Site can use
+the same locale. Ungrouped entries and Org-shared media use their existing row identity.
+
+- A group reference resolves to the eligible member on the reading Site within the same Org. The relation
+  uses the same access and field restrictions as the caller's ordinary entry reads. A missing, draft
+  or deleted translation is unavailable in public rendering. The link remains stored so a later eligible
+  translation can resolve it. Ordinary rendering has no automatic fallback to another Site or the origin Site.
+- A pinned row is available only while that exact row is readable and satisfies the field. Moving a row out
+  of the current scope or deleting it never substitutes a sibling. An explicit link to another Site would
+  require a separate access rule that authorizes that exact row.
+- Resolve group membership at read time. A group reference must have its own Org-bound identity and
+  must survive deletion of one member, including deletion of the row that an editor originally saw.
+  Do not encode this by retaining a required cascading foreign key to an arbitrary member.
+- Preserve existing `entry_relations.target_entry_id` links as pins. Existing integer relation values,
+  revision snapshots, field cardinality and authored order retain their meaning. Upgrade must not infer
+  group intent from existing rows. A future API schema must distinguish a group reference from a row pin
+  explicitly, and a public renderer must omit unavailable targets without substituting siblings for pins.
+
+**Measured on SQLite.** On main `73cb46ad`, an existing row link followed its exact target and hid it
+after it moved out of scope or was soft-deleted. Moving it back restored the visible link, and a hard
+delete removed the existing pivot through its foreign key. A trial query constrained to the reading
+Site, Org and published entries found the eligible translation only while it belonged to that Site.
+A second Org using the same synthetic group UUID did not affect either result. The scope and relation
+checks passed alongside the existing field-relation suite.
+
+Always using a row ID would force editors to maintain equivalent links on every translation and would
+make a localized relation depend on an arbitrary sibling. Always using a group would change the
+meaning of already saved links and remove the ability to pin an exact row. A locale string alone
+cannot select a Site. Keeping both reference kinds gives each its own storage and validation rules.
+
+This amendment settles identity and resolution for [#225](https://github.com/adamgreenwell/kitsune/issues/225).
+Group-reference storage, migration and public API and rendering coverage belong to the translation-aware
+implementation. Today the runtime and relation field schema still use ordered integer row IDs.
+
+
 ---
 
 ## ADR-018 — Product internationalization is a requirement, not a nice-to-have
@@ -12614,7 +12653,7 @@ existing scope rules.
   review, and the upload half of ADR-042's measurement waits on the first
 - [Storage benchmark at 10k / 100k / 1M entries](schema-scale-benchmark.md) has measured results. The portable end-to-end launcher remains open (#261)
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed. — and built: `kitsune:blueprint reverse` (ADR-039, the reverse, as built).
-- Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
+- Implement ADR-017’s group references and exact row pins in the translation-aware public schema and renderer.
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
 
   **Mark settled provisionally, 2026-09-12 — ADR-032**, on the same pattern this bullet already set for the domain. The mark is used; the filing waits here. The bullet's own phrasing was the problem: "before spending on a logo" reads as a bar on designing one, when the expenditure it protects against is registration.
