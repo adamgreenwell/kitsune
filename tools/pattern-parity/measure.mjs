@@ -22,11 +22,16 @@
 // mean "the engine gave no verdict", and collapsing either into "no match" hides the finding.
 import { readFileSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
+import { parityDump } from '../parity/provenance.mjs';
 
 const DEADLINE_MS = Number(process.env.PARITY_DEADLINE_MS ?? 2000);
+if (!Number.isInteger(DEADLINE_MS) || DEADLINE_MS < 1 || DEADLINE_MS > 2147483647) {
+    throw new Error('PARITY_DEADLINE_MS must be an integer from 1 to 2147483647.');
+}
 
-const path = process.argv[2] ?? new URL('./cases.json', import.meta.url).pathname;
-const cases = JSON.parse(readFileSync(path, 'utf8'));
+const path = process.argv[2] ?? new URL('./cases.json', import.meta.url);
+const corpus = readFileSync(path);
+const cases = JSON.parse(corpus.toString('utf8'));
 
 // The worker compiles and tests one case, then exits. Kept inline so the tool stays two files.
 const WORKER = `
@@ -38,6 +43,7 @@ try {
 } catch {
     compiles = false;
 }
+if (compiles) parentPort.postMessage({ compiled: true });
 parentPort.postMessage({ compiles, matches: compiles ? re.test(workerData.subject) : null });
 `;
 
@@ -47,15 +53,20 @@ async function measure(testCase) {
             eval: true,
             workerData: { pattern: testCase.pattern, subject: testCase.subject },
         });
+        let compiled = null;
 
         const timer = setTimeout(() => {
             // ⚠️ `terminate()` is what makes the deadline real. Without it the worker keeps
             // burning a core after the parent has moved on.
             void worker.terminate();
-            resolve({ compiles: true, matches: null, timedOut: true });
+            resolve({ compiles: compiled, matches: null, timedOut: true });
         }, DEADLINE_MS);
 
-        worker.once('message', (result) => {
+        worker.on('message', (result) => {
+            if (result.compiled === true) {
+                compiled = true;
+                return;
+            }
             clearTimeout(timer);
             void worker.terminate();
             resolve(result);
@@ -63,15 +74,20 @@ async function measure(testCase) {
 
         worker.once('error', () => {
             clearTimeout(timer);
-            resolve({ compiles: false, matches: null });
+            resolve({ compiles: compiled, matches: null, workerError: true });
+        });
+
+        worker.once('exit', () => {
+            clearTimeout(timer);
+            resolve({ compiles: compiled, matches: null, workerError: true });
         });
     });
 }
 
-const out = {};
+const out = [];
 
 for (const testCase of cases) {
-    out[testCase.id] = await measure(testCase);
+    out.push({ id: testCase.id, ...await measure(testCase) });
 }
 
-console.log(JSON.stringify(out, null, 2));
+console.log(JSON.stringify(parityDump('pattern', corpus, out, { deadline_ms: DEADLINE_MS }), null, 2));

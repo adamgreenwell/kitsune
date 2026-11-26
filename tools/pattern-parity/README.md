@@ -53,10 +53,23 @@ were rerun on PHP 8.5.12 / PCRE2 10.49 and Node 26.13.1 / V8 14.6.202.34-node.40
 Both engines matched all three original inputs on this same pair. This replay covers the
 three corrected rows. The two PCRE2 compile errors give no match verdict.
 
-## ⚠️ An incomplete result set is refused, not compared
+## Result format and coverage
 
-`compare.php` exits **2** rather than comparing when either result file's case IDs are not exactly
-`cases.json`'s, or when a result is missing `compiles` or `matches`.
+Each result file uses the `kitsune-parity-v1` format shared with the property harness.
+The envelope records the suite, SHA-256 of the exact input bytes, SHA-256 of each measurement
+and rule source listed in `../parity/source-map.json`, engine metadata and an array of rows
+with one unique `id` each. PHP records its version, PCRE2 version and PCRE settings. Node
+records its Node, V8 and Unicode versions and the worker deadline.
+
+`compare.php` exits **2** when either dump fails provenance, coverage or outcome validation.
+It checks the current `cases.json` bytes, so changing a pattern or subject requires rerunning
+both measurements even if the case IDs are the same. Run the comparison with the same PHP
+and PCRE settings as the PHP measurement because it applies the current refusal rule locally.
+Keep older unbound dumps with their historical records. Generate both dumps anew for a current result.
+
+Exit **1** indicates a divergence the grammar still accepts. Exit **3** indicates at least one
+unanswered case when no live defect was found. A known compile disagreement remains a divergence
+even if the engine that compiled it never returned a match result.
 
 That guard exists because the tool lied without it, which review found. An absent measurement was
 read through `?? null` as `{compiles: null, matches: null}`, and **two absences compare equal** — so
@@ -66,19 +79,21 @@ to 2, and nothing said anything. The unmeasured case did not merely vanish; it w
 bucket whose label is *"refusing costs nothing"*.
 
 One-sided absence is the mirror image: it manufactures a divergence out of nothing. A **duplicated
-id** is a third face of it — both measurement scripts key their output by id, so the second row
+id** is a third face of it — the original measurement scripts keyed their output by id, so the second row
 overwrites the first and one pattern is never measured while the id set still looks complete — and a
 **present-but-`null`** row is a fourth, which `isset()` reported as absent and the comparison then
 died on with a `TypeError` instead of this message.
 
 A **row with the right keys and the wrong types** is a fifth: `{"compiles": "false", "matches":
 "false"}` compares equal to the same strings on the other side, so two corrupted rows read as
-agreement. `compiles` must be a boolean and `matches` a boolean or null, where null is the third
-outcome this harness is careful about — the engine gave no verdict at all.
+agreement. `compiles` and `matches` carry boolean verdicts. A null match means the engine gave
+no match verdict. A timed-out or failed Node worker can also lack a compile verdict, which it
+reports as `compiles: null` with its diagnostic.
 
 A **`timedOut`-only no-verdict** is a sixth: that key is a diagnostic the Node reader adds, so
 deriving `no verdict from an engine` from it omitted a valid row carrying `compiles: true` and
-`matches: null` without it. Both sides are derived from compiled-and-no-verdict now.
+`matches: null` without it. An unanswered case is reported separately from disagreements
+and from agreements that would otherwise count as over-refusals.
 
 An **impossible row** is a seventh: `{"compiles": false, "matches": false}` has the right keys and
 the right types, and an engine that could not compile the pattern gave no verdict — `matches` must
