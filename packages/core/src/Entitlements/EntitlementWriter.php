@@ -15,6 +15,7 @@ use Closure;
 use DateTimeInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Connection;
+use Illuminate\Support\Str;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -23,6 +24,7 @@ use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entitlement;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Readers\ReaderErasureReceipts;
 use Kitsune\Core\Tenancy\Context;
 use PDO;
 use Throwable;
@@ -546,26 +548,26 @@ final class EntitlementWriter
      */
     public function forget(#[\SensitiveParameter] int|string $reader): int
     {
-        return $this->forgetWithWitness($reader)['erased'];
+        return $this->forgetWithWitness($reader, recordReceipts: true)['erased'];
     }
 
     /**
      * Exact identities erased by this producer, for a later raw proof after host account callbacks. The ordinary
      * int-returning door remains unchanged. The enclosing coordinator owns the transaction and callback authority.
      *
-     * @return array{erased:int,verify:Closure():void}
+     * @return array{erased:int,anchors:list<mixed>,verify:Closure():void}
      *
      * @internal First-party account erasure only; no general subject discovery or restoration contract.
      */
-    public function forgetWithWitness(#[\SensitiveParameter] int|string $reader): array
+    public function forgetWithWitness(#[\SensitiveParameter] int|string $reader, bool $recordReceipts = false): array
     {
-        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($reader): array {
+        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($reader, $recordReceipts): array {
             $orgId = $this->authority->org(EntitlementRefused::FORGET);
             $this->authority->authorise(EntitlementRefused::FORGET, null);
             $key = $this->authority->filedKey(EntitlementRefused::FORGET, $reader);
             $connection = (new Entitlement)->getConnection();
 
-            return TransactionRecovery::run($connection, function () use ($connection, $orgId, $key): array {
+            return TransactionRecovery::run($connection, function () use ($connection, $orgId, $key, $recordReceipts): array {
                 $pdo = $connection->getPdo();
                 $siteIds = $this->lockSites(null, EntitlementRefused::FORGET, null);
                 // These are the actual current locked rows erased below, not a preliminary reader discovery.
@@ -574,6 +576,7 @@ final class EntitlementWriter
                     fn ($query) => $query->where('org_id', $orgId)->whereIn('site_id', $siteIds)->where('reader_id', $key)->orderBy('id')->lockForUpdate()->get(),
                 );
                 $ids = $rows->modelKeys();
+                $anchors = $rows->map(static fn (Entitlement $row): mixed => $row->getRawOriginal('erasure_anchor'))->values()->all();
                 if ($ids !== []) {
                     $this->erase($ids);
                     // The deleted model keeps its key; the audit identifies the row without retaining its reader.
@@ -595,9 +598,50 @@ final class EntitlementWriter
                     }
                 };
 
+                if ($recordReceipts) {
+                    app(ReaderErasureReceipts::class)->recordErased($connection, $orgId, $anchors, ReaderErasureReceipts::GRANT, requireComplete: false);
+                }
                 $verify();
 
-                return ['erased' => $rows->count(), 'verify' => $verify];
+                return ['erased' => $rows->count(), 'anchors' => $anchors, 'verify' => $verify];
+            });
+        });
+    }
+
+    /** Replay one exact grant erasure without resolving its stored reader key or following other grants. */
+    public function replayErasure(string $anchor): bool
+    {
+        return EntitlementAuthority::mapped(EntitlementRefused::FORGET, null, function () use ($anchor): bool {
+            $orgId = $this->authority->org(EntitlementRefused::FORGET);
+            $this->authority->authorise(EntitlementRefused::FORGET, null);
+            $connection = (new Entitlement)->getConnection();
+
+            return TransactionRecovery::run($connection, function () use ($connection, $orgId, $anchor): bool {
+                $pdo = $connection->getPdo();
+                $level = $connection->transactionLevel();
+                $sites = $this->lockSites(null, EntitlementRefused::FORGET, null);
+                $row = Entitlement::withoutScopeBecause(
+                    'replay of one authenticated grant receipt on locked sites within its Org',
+                    fn ($query) => $query->where('org_id', $orgId)->whereIn('site_id', $sites)->where('erasure_anchor', $anchor)->lockForUpdate()->first(),
+                );
+                if ($row === null) {
+                    return false;
+                }
+                if ($row->erasure_anchor !== $anchor || (new AuditLog)->getConnection() !== $connection) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+
+                $this->erase([$row->id], 'recording the erasure of one exact restored grant');
+                $this->auditor->recordOrFail(self::ERASED, $row);
+                app(ReaderErasureReceipts::class)->record($connection, $orgId, $anchor, ReaderErasureReceipts::GRANT);
+                Permissions::forget();
+                $this->authority->authorise(EntitlementRefused::FORGET, null);
+                if ($this->context->orgId() !== $orgId || $connection->getPdo() !== $pdo || $connection->transactionLevel() !== $level || ! $pdo->inTransaction()
+                    || $connection->table('entitlements')->useWritePdo()->where('id', $row->id)->lockForUpdate()->first(['id']) !== null) {
+                    throw EntitlementRefused::because(EntitlementRefusal::Cancelled, EntitlementRefused::FORGET);
+                }
+
+                return true;
             });
         });
     }
@@ -974,6 +1018,9 @@ final class EntitlementWriter
     private function save(Entitlement $row, string $act, string $entitlement): array
     {
         $row->forceFill(['change_token' => bin2hex(random_bytes(32))]);
+        if ($row->erasure_anchor === null) {
+            $row->forceFill(['erasure_anchor' => Str::uuid()->toString()]);
+        }
         $expected = $row->getAttributes();
         self::$writing = true;
 

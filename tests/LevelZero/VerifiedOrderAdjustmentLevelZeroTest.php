@@ -65,7 +65,7 @@ it('backfills distinct identities for retained grants and refuses to remove witn
     $migration = require dirname(__DIR__, 2).'/packages/core/database/migrations/0001_01_01_000017_add_entitlement_change_token.php';
     expect(fn () => $migration->down())->toThrow(RuntimeException::class);
     $legacy = (array) DB::table('entitlements')->sole();
-    unset($legacy['id'], $legacy['change_token']);
+    unset($legacy['id'], $legacy['change_token'], $legacy['erasure_anchor']);
     DB::table('entitlements')->delete();
     $migration->down();
     DB::table('entitlements')->insert([$legacy, [...$legacy, 'source' => 'commerce.order:13']]);

@@ -193,7 +193,8 @@ function relayRun(string $dir, string $common, string $family, array $env = [], 
             'TMPDIR' => sys_get_temp_dir(),
             'PATH' => $dir.'/bin:'.getenv('PATH'),
             'KITSUNE_PROC' => $dir.'/proc',
-            'KITSUNE_WINDOW' => '1',
+            // Bash's whole-second clock can end a one-second window before either process samples.
+            'KITSUNE_WINDOW' => '2',
         ], $env),
     );
 
@@ -357,10 +358,9 @@ it('fails a PHP socket whose holder no longer exists', function (): void {
 it('drives its traffic without holding the verdict stream open', function (): void {
     /*
      * common.sh pins the verdict stream to descriptor 3, and every child inherits it. The driver is killed rather than
-     * waited on, so a curl it left running would hold the session open until that curl's own timeout. Two seconds of
-     * window, so the driver makes at least one request whichever part of a second it starts in.
+     * waited on, so a curl it left running would hold the session open until that curl's own timeout.
      */
-    $run = relayRun($this->dir, $this->common, $this->family, ['KITSUNE_WINDOW' => '2']);
+    $run = relayRun($this->dir, $this->common, $this->family);
 
     expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
         ->and(array_values(array_unique(explode("\n", trim((string) @file_get_contents($this->dir.'/driven'))))))->toBe(['free']);

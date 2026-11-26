@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 return [
     'address_help' => 'The entry\'s address on this site. Entries shared across the organisation have none.',
+    'redirect_previous_address' => 'Redirect the previous address',
     'type' => 'Type',
     'saved' => 'Saved',
     'note' => 'Note',

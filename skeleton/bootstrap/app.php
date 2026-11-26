@@ -12,12 +12,14 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
+use Kitsune\Core\Http\Api\SiteApiRoutes;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        then: static fn () => SiteApiRoutes::register(),
     )
     ->withMiddleware(function (Middleware $middleware): void {
         /*

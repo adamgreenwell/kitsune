@@ -15,6 +15,8 @@ use Closure;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Str;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Entitlements\EntitlementAuthority;
+use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Entitlements\UtcInstant;
 use Kitsune\Core\Models\ReaderToken;
 use Kitsune\Core\Models\Site;
@@ -90,6 +92,7 @@ final class ReaderTokens
                     'purpose' => $purpose,
                     'subject' => $subject,
                     'token_hash' => $hash,
+                    'erasure_anchor' => ReaderToken::anchorForHash($hash),
                     'expires_at' => CarbonImmutable::now('UTC')->startOfSecond()->addMinutes(self::LIFETIME_MINUTES),
                 ]);
             }), passing: UniqueConstraintViolationException::class);
@@ -145,7 +148,7 @@ final class ReaderTokens
      * Erase actual locked rows, retaining their opaque IDs for account-last final verification.
      * The returned raw proof runs within the caller's enclosing transaction after host deletion callbacks.
      *
-     * @return array{erased:int,verify:Closure():void}
+     * @return array{erased:int, anchors:list<mixed>, verify:Closure():void}
      *
      * @internal First-party whole-reader erasure only; not a new public reader privacy contract.
      */
@@ -157,8 +160,9 @@ final class ReaderTokens
 
             return TransactionRecovery::run($connection, function () use ($connection, $org, $purpose, $subject): array {
                 $native = $connection->getPdo();
-                $rows = $connection->table('reader_tokens')->useWritePdo()->where('org_id', $org)
-                    ->where('purpose', $purpose)->where('subject', $subject)->orderBy('id')->lockForUpdate()->pluck('id')->all();
+                $captured = $connection->table('reader_tokens')->useWritePdo()->where('org_id', $org)
+                    ->where('purpose', $purpose)->where('subject', $subject)->orderBy('id')->lockForUpdate()->get(['id', 'erasure_anchor', 'token_hash']);
+                $rows = $captured->pluck('id')->all();
                 $erased = 0;
                 foreach (array_chunk($rows, 100) as $ids) {
                     $erased += $connection->table('reader_tokens')->where('org_id', $org)->where('purpose', $purpose)
@@ -186,9 +190,39 @@ final class ReaderTokens
                 };
                 $verify();
 
-                return ['erased' => $erased, 'verify' => $verify];
+                $anchors = $captured->map(static fn (object $row): mixed => $row->erasure_anchor ?? ReaderToken::anchorForHash($row->token_hash));
+
+                return ['erased' => $erased, 'anchors' => $anchors->values()->all(), 'verify' => $verify];
             });
         });
+    }
+
+    /** Remove the exact signup link on this restore. A missing link leaves the authenticated receipt pending. */
+    public function replaySignupErasure(string $anchor, ReaderErasureReceipts $receipts): bool
+    {
+        $authority = app(EntitlementAuthority::class);
+        $org = $authority->org(EntitlementRefused::FORGET);
+        $authority->authorise(EntitlementRefused::FORGET, null);
+        $connection = (new ReaderToken)->getConnection();
+
+        return self::mapped(fn (): bool => TransactionRecovery::run($connection, function () use ($connection, $org, $anchor, $receipts): bool {
+            $query = $connection->table('reader_tokens')->useWritePdo()->where('org_id', $org)
+                ->where('purpose', self::REGISTER)->where('erasure_anchor', $anchor);
+            $row = (clone $query)->lockForUpdate()->first(['id', 'erasure_anchor']);
+            if ($row === null) {
+                return false;
+            }
+            if ($row->erasure_anchor !== $anchor || $query->where('id', $row->id)->delete() !== 1) {
+                throw new RuntimeException('The signup erasure did not remove its anchored link.');
+            }
+
+            $receipts->record($connection, $org, $anchor, ReaderErasureReceipts::SIGNUP);
+            if ($this->context->orgId() !== $org || $connection->table('reader_tokens')->useWritePdo()->where('id', $row->id)->exists()) {
+                throw new RuntimeException('An erased signup link reappeared.');
+            }
+
+            return true;
+        }));
     }
 
     /**

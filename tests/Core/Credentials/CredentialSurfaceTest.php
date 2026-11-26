@@ -59,7 +59,7 @@ it('marks every symbol it adds @internal', function (): void {
     expect($public)->toBe([], 'these are not marked @internal: '.implode(', ', $public));
 });
 
-it('keeps each storage decoder behind its designated internal callers', function (): void {
+it('keeps credential and journal ciphers separate with fixed internal callers', function (): void {
     $everything = credentialSourceFiles('');
     $read = static fn (string $file): string => (string) file_get_contents($file);
     $relative = static fn (string $file): string => substr($file, strlen(dirname(__DIR__, 3).'/packages/core/src/'));
@@ -70,10 +70,13 @@ it('keeps each storage decoder behind its designated internal callers', function
     $decrypting = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => preg_match($crypto, $read($f)) === 1)));
     $opening = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'cipher->open('))));
 
+    $journalCallers = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), '$this->journalCipher->'))));
+
     $readerDecoders = array_values(array_map($relative, array_filter($everything, static fn (string $f): bool => str_contains($read($f), 'ReaderColumnCast::read('))));
 
-    expect($decrypting)->toBe(['Credentials/CredentialCipher.php', 'Readers/ReaderColumnCast.php'])
+    expect($decrypting)->toBe(['Credentials/CredentialCipher.php', 'Privacy/ErasureJournalCipher.php', 'Readers/ReaderColumnCast.php'])
         ->and($opening)->toBe(['Credentials/CredentialReader.php'])
+        ->and($journalCallers)->toBe(['Readers/ReaderErasureJournal.php', 'Schema/RevisionErasureJournal.php'])
         ->and($readerDecoders)->toBe(['Readers/ReaderColumnProjection.php']);
 
     foreach ([...credentialSourceFiles('Filament'), ...credentialSourceFiles('Http')] as $file) {

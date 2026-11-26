@@ -19,6 +19,7 @@ use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\MiddlewarePriority;
 use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\ReaderToken;
+use Kitsune\Core\Readers\Contracts\AnchorsReaderErasure;
 use Kitsune\Core\Readers\Contracts\ClassifiesReaderColumns;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Readers\Contracts\ReaderColumnClass;
@@ -108,7 +109,7 @@ it('keeps the public reader surface to host contracts and the route registration
 
     $public = array_values(array_filter($symbols, static fn (string $symbol): bool => ! str_contains((string) (new ReflectionClass($symbol))->getDocComment(), '@internal')));
 
-    expect($public)->toBe([ClassifiesReaderColumns::class, ReaderAccount::class, ReaderColumnClass::class, ReaderRoutes::class]);
+    expect($public)->toBe([AnchorsReaderErasure::class, ClassifiesReaderColumns::class, ReaderAccount::class, ReaderColumnClass::class, ReaderRoutes::class]);
 });
 
 it('keeps the contract to five methods, exactly as published — it never grows', function (): void {

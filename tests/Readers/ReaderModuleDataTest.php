@@ -15,6 +15,7 @@ use Illuminate\Database\Query\Grammars\SQLiteGrammar;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
@@ -446,7 +447,7 @@ it('erases a store whose receipt committed after the callers repeatable-read sna
         DB::purge('reader-privacy-rival');
     });
     $rival->table('sites')->insert(['org_id' => $orgId, 'handle' => 'snapshot', 'slug' => 'privacy-snapshot', 'name' => 'Snapshot', 'locale' => 'en', 'created_at' => $now, 'updated_at' => $now]);
-    $readerId = (string) $rival->table('readers')->insertGetId(['org_id' => $orgId, 'email' => 'snapshot-reader@example.test', 'created_at' => $now, 'updated_at' => $now]);
+    $readerId = (string) $rival->table('readers')->insertGetId(['org_id' => $orgId, 'email' => 'snapshot-reader@example.test', 'erasure_anchor' => Str::uuid()->toString(), 'created_at' => $now, 'updated_at' => $now]);
     $connection->statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     $connection->beginTransaction();
     expect($connection->table('modules')->count())->toBe(0);

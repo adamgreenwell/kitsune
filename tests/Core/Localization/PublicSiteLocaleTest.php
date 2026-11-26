@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
+use Kitsune\Core\Http\SiteAddressResolver;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Localization\LocaleResolver;
 use Kitsune\Core\Models\Org;
@@ -82,7 +83,7 @@ function serve(string $uri): string
 {
     $request = Request::create($uri);
 
-    (new ResolveSiteFromRequest)->handle(
+    app(ResolveSiteFromRequest::class)->handle(
         $request,
         fn ($passed) => (new SetSiteLocale(new LocaleResolver))->handle($passed, fn () => response('ok')),
     );
@@ -912,7 +913,7 @@ describe('resolution does not scale with the number of sites', function (): void
             $sql = (string) preg_replace('/[`"]/', '', $query->sql);
 
             if (str_starts_with($sql, 'select * from sites')) {
-                $lookups[] = ['sql' => $sql, 'bindings' => count($query->bindings)];
+                $lookups[] = ['sql' => $sql, 'bindings' => $query->bindings];
             }
         });
 
@@ -929,8 +930,56 @@ describe('resolution does not scale with the number of sites', function (): void
          */
         expect($lookups[0]['sql'])->toContain('canonical_host');
 
-        expect($lookups[0]['bindings'])
-            ->toBeGreaterThanOrEqual(8, 'the four candidate host/prefix pairs should be bound, not scanned');
+        expect($lookups[0]['bindings'])->toContain('localhost', '/golfdom-ar', '');
+    });
+
+    it('looks up generated paths as a batch without changing the current Site', function (): void {
+        $context = app(Context::class);
+        $context->setSite($this->english);
+        $nested = Site::create([
+            'handle' => 'articles', 'slug' => 'admin-articles', 'name' => 'Articles',
+            'base_url' => '/golfdom/article', 'locale' => 'en',
+        ]);
+
+        $queries = [];
+        DB::listen(function ($query) use (&$queries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+            if (str_starts_with($sql, 'select * from sites')) {
+                $queries[] = $query->bindings;
+            }
+        });
+
+        $resolve = fn (string $host, array $paths): array => array_map(
+            fn (?Site $site) => $site?->id,
+            app(SiteAddressResolver::class)->resolvePaths($host, $paths),
+        );
+        $paths = ['/golfdom/article/lead', '/golfdom/brief/lead', '/golfdom-ar', '/private', '/golfdom/article/lead'];
+
+        expect($resolve('localhost', []))->toBe([])
+            ->and($resolve('localhost', $paths))->toBe([
+                $nested->id, $this->english->id, $this->arabic->id, null, $nested->id,
+            ])
+            ->and($queries)->toHaveCount(1)
+            ->and(array_count_values($queries[0])['/golfdom/article/lead'])->toBe(1)
+            ->and($context->site()?->id)->toBe($this->english->id);
+
+        expect($resolve('hosted.example.test', $paths))->toBe(array_fill(0, count($paths), $this->hosted->id));
+    });
+
+    it('bounds lookup parameters when many generated paths have different prefixes', function (): void {
+        $queries = [];
+        DB::listen(function ($query) use (&$queries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+            if (str_starts_with($sql, 'select * from sites')) {
+                $queries[] = count($query->bindings);
+            }
+        });
+
+        $paths = array_map(fn (int $index): string => '/golfdom/article/example-'.$index, range(1, 210));
+        $sites = app(SiteAddressResolver::class)->resolvePaths('localhost', $paths);
+        expect(array_map(fn (?Site $site) => $site?->id, $sites))->toBe(array_fill(0, count($paths), $this->english->id))
+            ->and($queries)->toHaveCount(2)
+            ->and(max($queries))->toBeLessThan(250);
     });
 });
 

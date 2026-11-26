@@ -47,6 +47,7 @@ use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\OrderFixture;
 use Kitsune\Core\Tests\Fixtures\StripeInboxFixture;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\TestCase;
 use Orchestra\Testbench\Foundation\Application as TestbenchApplication;
 
 [$script, $root, $directory, $mode, $role, $scenario] = $argv;
@@ -118,7 +119,7 @@ if ($mode === 'cleanup') {
 
 if ($mode === 'init') {
     $code = Artisan::call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations',
-        ...(str_starts_with($scenario, 'checkout-') ? [$root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'] : [])], '--realpath' => true, '--force' => true]);
+        ...(str_starts_with($scenario, 'checkout-') ? TestCase::READERS_MIGRATIONS : [])], '--realpath' => true, '--force' => true]);
     if ($code !== 0) {
         throw new RuntimeException('Disposable paid stock schema migration failed.');
     }

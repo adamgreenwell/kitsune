@@ -34,6 +34,7 @@ use Kitsune\Core\Readers\ReaderSessions;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
+use Kitsune\Core\Tests\TestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Process\Process;
 
@@ -159,7 +160,7 @@ if ($step === 'request' && $scenario === 'csrf-host') {
 }
 
 if ($step === 'seed') {
-    $exit = $console->call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations', $root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'], '--realpath' => true, '--force' => true]);
+    $exit = $console->call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations', ...TestCase::READERS_MIGRATIONS], '--realpath' => true, '--force' => true]);
 
     if ($exit !== 0) {
         throw new RuntimeException($console->output());

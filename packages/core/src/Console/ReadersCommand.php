@@ -23,6 +23,7 @@ use Kitsune\Core\Readers\ReaderAccounts;
 use Kitsune\Core\Readers\ReaderAddresses;
 use Kitsune\Core\Readers\ReaderConsents;
 use Kitsune\Core\Readers\ReaderErasure;
+use Kitsune\Core\Readers\ReaderErasureJournal;
 use Kitsune\Core\Readers\ReaderExport;
 use Kitsune\Core\Readers\ReaderLinks;
 use Kitsune\Core\Readers\ReaderMail;
@@ -36,6 +37,7 @@ use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 use Symfony\Component\Console\Input\StreamableInputInterface;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
@@ -57,12 +59,12 @@ final class ReadersCommand extends Command
 {
     use ReadsWrittenKeys;
 
-    private const ACTIONS = ['status', 'mode', 'addresses', 'find', 'export', 'erase', 'consent', 'consent-sweep'];
+    private const ACTIONS = ['status', 'mode', 'addresses', 'find', 'export', 'erase', 'consent', 'consent-sweep', 'export-erasure-journal', 'replay-erasure-journal'];
 
     private const INHERIT = 'inherit';
 
     protected $signature = 'kitsune:readers
-        {action : status, mode, addresses, find, export, erase, consent or consent-sweep}
+        {action : status, mode, addresses, find, export, erase, consent, consent-sweep, export-erasure-journal or replay-erasure-journal}
         {value? : For mode — off, sign-in, open or inherit; for addresses — hidden, shown or inherit; for consent — profiling or support_widget}
         {--org= : The organisation\'s slug}
         {--site= : For mode — the site\'s handle; without it, the organisation\'s own setting. Addresses are the organisation\'s alone}
@@ -70,7 +72,9 @@ final class ReadersCommand extends Command
         {--retention-days= : For consent — days the choice remains effective}
         {--disable : For consent — stop offering a purpose on this site}
         {--reader= : For export and erase — the reader\'s identifier, instead of their address on standard input}
-        {--force : Confirm erase, or acknowledge closing reader download links when changing mode}';
+        {--record : Require a replayable account or signup link receipt}
+        {--restore-host= : Confirm the restored host reader connection for split-store replay}
+        {--force : Confirm erase or replay, or acknowledge closing reader download links when changing mode}';
 
     protected $description = 'Report whether readers can sign in, set where they may and whether owners see their addresses, and find, export or erase one reader (ADR-037)';
 
@@ -79,7 +83,7 @@ final class ReadersCommand extends Command
         $action = $this->argument('action');
 
         if (! in_array($action, self::ACTIONS, true)) {
-            return $this->refuse('Refusing: kitsune:readers takes status, mode, addresses, find, export, erase, consent or consent-sweep. Nothing was read or written.');
+            return $this->refuse('Refusing: kitsune:readers takes status, mode, addresses, find, export, erase, consent, consent-sweep, export-erasure-journal or replay-erasure-journal. Nothing was read or written.');
         }
 
         $slug = $this->option('org');
@@ -125,6 +129,7 @@ final class ReadersCommand extends Command
                 'mode' => $this->setting($org, SettingsGuard::READER_ACCOUNTS, 'Reader accounts'),
                 'consent' => $this->consent($org),
                 'consent-sweep' => $this->sweepConsents($org),
+                'export-erasure-journal', 'replay-erasure-journal' => $this->erasureJournal($action),
                 'addresses' => $this->setting($org, SettingsGuard::READER_ADDRESSES, 'Readers\' addresses'),
                 default => $this->forReader($accounts, $org, $action),
             };
@@ -374,6 +379,11 @@ final class ReadersCommand extends Command
                 }
 
                 $erased = app(ReaderErasure::class)->eraseAddress($address);
+                if ($erased > 0 && $this->option('record')) {
+                    $this->info('Erased the pending signup link and recorded its replay receipt.');
+
+                    return self::SUCCESS;
+                }
                 $this->error(sprintf('%s Erased %d pending sign-up link%s.', $missing, $erased, $erased === 1 ? '' : 's'));
 
                 return self::FAILURE;
@@ -392,7 +402,7 @@ final class ReadersCommand extends Command
             return self::SUCCESS;
         }
 
-        $erased = app(ReaderErasure::class)->erase($key);
+        $erased = app(ReaderErasure::class)->erase($key, requireReceipt: $this->option('record') === true);
 
         $this->line(sprintf(
             'Erased %d entitlement grant%s and %d pending link%s; %s.',
@@ -404,6 +414,34 @@ final class ReadersCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    private function erasureJournal(string $action): int
+    {
+        if (is_string($this->option('site')) && $this->option('site') !== '') {
+            return $this->refuse('Reader erasure journals cover the whole Org. Leave --site off.');
+        }
+
+        $journal = app(ReaderErasureJournal::class);
+        if ($action === 'export-erasure-journal') {
+            $this->output->writeln($journal->export(), OutputInterface::OUTPUT_RAW);
+
+            return self::SUCCESS;
+        }
+        if (! $this->option('force')) {
+            return $this->refuse('Run replay-erasure-journal with --force.');
+        }
+
+        $stream = ($this->input instanceof StreamableInputInterface ? $this->input->getStream() : null) ?? STDIN;
+        if (@stream_isatty($stream) || ($input = fgets($stream)) === false) {
+            return $this->refuse('Supply the reader erasure journal on standard input.');
+        }
+
+        $restoreHost = $this->option('restore-host');
+        $result = $journal->replay(rtrim($input, "\r\n"), is_string($restoreHost) ? $restoreHost : null);
+        $this->output->writeln(json_encode($result, JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
+
+        return $result['unavailable'] + $result['module_unavailable'] + $result['failed'] === 0 ? self::SUCCESS : self::FAILURE;
     }
 
     /**

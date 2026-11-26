@@ -29,7 +29,7 @@ use Kitsune\Core\Tests\TestCase;
  */
 
 beforeEach(function (): void {
-    Artisan::call('migrate', ['--database' => 'custody', '--path' => [TestCase::READERS_MIGRATION], '--realpath' => true, '--force' => true]);
+    Artisan::call('migrate', ['--database' => 'custody', '--path' => TestCase::READERS_MIGRATIONS, '--realpath' => true, '--force' => true]);
     config(AppServiceProvider::readerConfig());
     Fx::boot();
 

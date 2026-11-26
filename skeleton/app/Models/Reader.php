@@ -17,7 +17,8 @@ use Illuminate\Contracts\Auth\Authenticatable as AuthenticatableContract;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
-use Kitsune\Core\Readers\Contracts\ClassifiesReaderColumns;
+use Illuminate\Support\Str;
+use Kitsune\Core\Readers\Contracts\AnchorsReaderErasure;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Readers\Contracts\ReaderColumnClass;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -44,7 +45,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property Carbon|null $updated_at
  */
 #[OrgScoped]
-class Reader extends Model implements AuthenticatableContract, ClassifiesReaderColumns, ReaderAccount
+class Reader extends Model implements AnchorsReaderErasure, AuthenticatableContract, ReaderAccount
 {
     use Authenticatable;
     use EnforcesScope;
@@ -54,7 +55,24 @@ class Reader extends Model implements AuthenticatableContract, ClassifiesReaderC
     /** Written through `createReader()` and core's `forceFill()` only. */
     protected $guarded = ['*'];
 
-    protected $hidden = ['password', 'remember_token'];
+    protected $hidden = ['password', 'remember_token', 'erasure_anchor'];
+
+    protected static function booted(): void
+    {
+        static::creating(static function (self $model): void {
+            $model->setAttribute('erasure_anchor', Str::uuid()->toString());
+        });
+        static::updating(static function (self $model): void {
+            if ($model->isDirty('erasure_anchor')) {
+                throw new \LogicException('The reader erasure anchor cannot be changed.');
+            }
+        });
+    }
+
+    public static function readerErasureAnchorColumn(): string
+    {
+        return 'erasure_anchor';
+    }
 
     /** @return array<string, string> */
     protected function casts(): array
@@ -116,6 +134,7 @@ class Reader extends Model implements AuthenticatableContract, ClassifiesReaderC
         return [
             'id' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'reader'],
             'org_id' => ['class' => ReaderColumnClass::Operational],
+            'erasure_anchor' => ['class' => ReaderColumnClass::Operational],
             'email' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'email'],
             'email_verified_at' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'email_verified_at'],
             'password' => ['class' => ReaderColumnClass::Secret],

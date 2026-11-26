@@ -13,6 +13,7 @@ use App\Providers\AppServiceProvider;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Orders\OrderAccess;
 use Kitsune\Commerce\Orders\OrderClaims;
@@ -115,7 +116,7 @@ it('expires invoice fields without withdrawing a living reader permanent purchas
 it('refuses old ownership and claim retry for an authenticated replacement account with the same reader key', function (): void {
     $key = (string) $this->reader->id;
     app(ReaderErasure::class)->erase($key);
-    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'replacement-access@example.test',
+    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'replacement-access@example.test', 'erasure_anchor' => Str::uuid()->toString(),
         'password' => null, 'email_verified_at' => null, 'created_at' => now(), 'updated_at' => now()]);
     Auth::guard(ReaderFixture::GUARD)->login(Reader::query()->findOrFail($key));
     app(Context::class)->setSite($this->site);

@@ -39,7 +39,10 @@ abstract class TestCase extends Orchestra
     use RefreshDatabase;
 
     /** The skeleton's migration for its `readers` table (ADR-037). */
-    public const READERS_MIGRATION = __DIR__.'/../../skeleton/database/migrations/0001_01_01_000020_create_readers_table.php';
+    public const READERS_MIGRATIONS = [
+        __DIR__.'/../../skeleton/database/migrations/0001_01_01_000020_create_readers_table.php',
+        __DIR__.'/../../skeleton/database/migrations/0001_01_01_000021_add_reader_erasure_anchor.php',
+    ];
 
     /** The fixture migrations the database was last built with in this process. */
     private static ?string $migratedFixtures = null;
@@ -211,7 +214,7 @@ abstract class TestCase extends Orchestra
              * The skeleton's own `readers` table, the real file: a migrator path may name one file. Every host here
              * gets it, since nothing reads it until a test declares the skeleton's reader guard (`ReaderTestCase`).
              */
-            self::READERS_MIGRATION,
+            ...self::READERS_MIGRATIONS,
         ]);
     }
 

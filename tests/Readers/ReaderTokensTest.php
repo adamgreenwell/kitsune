@@ -73,15 +73,17 @@ it('stores the secret\'s hash and nothing that opens anything', function (): voi
     $rows = tokensRows();
 
     expect($rows)->toHaveCount(1)
-        ->and(array_keys($rows[0]))->toBe(['id', 'org_id', 'site_id', 'purpose', 'subject', 'token_hash', 'expires_at'])
+        ->and(array_keys($rows[0]))->toBe(['id', 'org_id', 'site_id', 'purpose', 'subject', 'token_hash', 'expires_at', 'erasure_anchor'])
         ->and($rows[0]['token_hash'])->toBe(hash('sha256', $secret))
+        ->and($rows[0]['erasure_anchor'])->toBe(ReaderToken::anchorForHash(hash('sha256', $secret)))
+        ->and($rows[0]['erasure_anchor'])->not->toBe($rows[0]['token_hash'])
         ->and($rows[0]['subject'])->toBe((string) $this->reader->getKey())
         ->and($rows[0]['purpose'])->toBe('recover')
         ->and($rows[0]['site_id'])->toBe($this->world['sites']['golfdom']->getKey())
         ->and($rows[0]['org_id'])->toBe($this->world['golfdom']->getKey())
         ->and(json_encode($rows))->not->toContain($secret)
         ->and(strlen($secret))->toBe(43)
-        ->and(ReaderToken::query()->getModel()->getHidden())->toBe(['subject', 'token_hash']);
+        ->and(ReaderToken::query()->getModel()->getHidden())->toBe(['subject', 'token_hash', 'erasure_anchor']);
 });
 
 it('runs no query for a value that is not a secret', function (mixed $value): void {

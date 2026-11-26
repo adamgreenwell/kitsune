@@ -33,6 +33,7 @@ use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\FinancialAccessFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\TestCase;
 use Orchestra\Testbench\Foundation\Application as TestbenchApplication;
 
 [$script, $root, $directory, $mode, $role, $scenario] = $argv;
@@ -109,7 +110,7 @@ app()->instance(StripeCheckout::class, new StripeCheckout(new Client(['handler' 
 
 if ($mode === 'init') {
     $code = Artisan::call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations',
-        $root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'], '--realpath' => true, '--force' => true]);
+        ...TestCase::READERS_MIGRATIONS], '--realpath' => true, '--force' => true]);
     if ($code !== 0) {
         throw new RuntimeException('Disposable financial race schema migration failed.');
     }

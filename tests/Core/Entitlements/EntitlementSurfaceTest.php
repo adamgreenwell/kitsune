@@ -198,7 +198,7 @@ it('offers only the ordinary writer doors and checked internal order and erasure
     );
     sort($public);
 
-    expect($public)->toBe(['__construct', 'comp', 'forget', 'forgetWithWitness', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'reinstate', 'retireVerifiedOrderSource', 'reviseVerifiedOrder', 'revoke']);
+    expect($public)->toBe(['__construct', 'comp', 'forget', 'forgetWithWitness', 'grant', 'grantVerifiedOrder', 'isErasing', 'isWriting', 'reinstate', 'replayErasure', 'retireVerifiedOrderSource', 'reviseVerifiedOrder', 'revoke']);
 });
 
 it('reaches the writer from the owner\'s page alone, and the export from nowhere in the admin or over HTTP', function (): void {

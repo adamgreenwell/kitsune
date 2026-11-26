@@ -11,21 +11,26 @@ declare(strict_types=1);
 namespace Kitsune\Core\Themes;
 
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 use Illuminate\Support\Facades\View;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Models\Entry;
-use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Relations\EntryRelationResolver;
+use Symfony\Component\HttpFoundation\Response;
 
 final class PublicThemePage
 {
-    public function __construct(private readonly ThemeRegistry $themes, private readonly EntryRelationResolver $relations) {}
+    public function __construct(
+        private readonly ThemeRegistry $themes,
+        private readonly EntryRelationResolver $relations,
+        private readonly PublicEntryPaths $paths,
+        private readonly PublicEntryRedirects $redirects,
+        private readonly SiteMenus $menus,
+    ) {}
 
     /** Returns null for a Site whose operator has not selected a usable theme. */
-    public function render(Request $request, Site $site): ?Response
+    public function render(Request $request, Site $site, string $entryRoute): ?Response
     {
         $theme = $site->theme === null ? null : $this->themes->find($site->theme);
         if ($theme === null) {
@@ -36,11 +41,16 @@ final class PublicThemePage
         $prefix = trim((string) $site->path_prefix, '/');
 
         if ($prefix !== '') {
-            abort_unless($path === $prefix || str_starts_with($path, $prefix.'/'), 404);
+            $normalized = strtolower(substr($path, 0, strlen($prefix) + 1));
+            abort_unless($normalized === $prefix || $normalized === $prefix.'/', 404);
             $path = ltrim(substr($path, strlen($prefix)), '/');
         }
 
-        $view = ['site' => $site, 'locale' => app()->getLocale(), 'direction' => Kitsune::textDirection()];
+        $menus = [];
+        $menu = function (string $handle) use (&$menus, $request, $site, $theme, $entryRoute): array {
+            return $menus[$handle] ??= $this->menus->render($request, $site, $theme, $handle, $entryRoute, 'home');
+        };
+        $view = ['site' => $site, 'locale' => app()->getLocale(), 'direction' => Kitsune::textDirection(), 'menu' => $menu];
         if ($path === '') {
             $template = $theme->home();
             abort_if($template === null, 404);
@@ -51,20 +61,18 @@ final class PublicThemePage
         $segments = explode('/', $path);
         abort_unless(count($segments) === 2, 404);
         [$handle, $slug] = array_map(rawurldecode(...), $segments);
-        abort_if($slug === '' || strlen($slug) > 255 || preg_match('/[\/\\\\\x00-\x20\x7f]/', $slug), 404);
+        abort_unless(PublicEntryPaths::validType($handle) && PublicEntryPaths::validSlug($slug), 404);
+
+        $published = PublicEntryPaths::publishedTypes($site, $theme);
+        $type = $published->get($handle);
+        $entry = $type === null ? null : Entry::query()->where('org_id', $site->org_id)->where('site_id', $site->id)
+            ->where('entry_type_id', $type->id)->where('slug', $slug)->first();
+        if ($type === null || $entry === null || $entry->slug !== $slug || $entry->status !== 'published') {
+            return $this->redirects->response($request, $site, $theme, $published, $handle, $slug, $entryRoute) ?? abort(404);
+        }
 
         $template = $theme->entry($handle);
         abort_if($template === null, 404);
-
-        $published = EntryType::visibleFor($site, $site->org_id)
-            ->filter(fn (EntryType $type): bool => ! $type->is_media && in_array($type->handle, $theme->entryTypes, true))
-            ->keyBy('handle');
-
-        $type = $published->get($handle);
-        abort_unless($type instanceof EntryType, 404);
-
-        $entry = Entry::query()->where('org_id', $site->org_id)->where('site_id', $site->id)
-            ->where('entry_type_id', $type->id)->where('slug', $slug)->published()->firstOrFail();
 
         $type->loadMissing('fields.fieldStorage');
         $storages = [];
@@ -80,11 +88,26 @@ final class PublicThemePage
         });
 
         $related = [];
+        $targets = [];
         foreach ($storages as $storage) {
-            $related[$storage->handle] = array_column($resolved[$entry->id][$storage->id] ?? [], 'entry');
+            $entries = array_column($resolved[$entry->id][$storage->id] ?? [], 'entry');
+            $related[$storage->handle] = $entries;
+            foreach ($entries as $target) {
+                $targets[$target->id] = $target;
+            }
         }
 
-        return $this->response($template, $view + ['entry' => $entry, 'related' => $related]);
+        $relatedPaths = $this->paths->forEntries($request, $site, $theme, $targets, $published, $entryRoute);
+        foreach ($related as $handle => $entries) {
+            $related[$handle] = array_values(array_filter($entries, fn (Entry $target): bool => isset($relatedPaths[$target->id])));
+        }
+
+        return $this->response($template, $view + [
+            'entry' => $entry,
+            'entryPath' => PublicEntryPaths::path($site, $entry->type_handle, $slug),
+            'related' => $related,
+            'relatedPaths' => $relatedPaths,
+        ]);
     }
 
     /** @param array<string, mixed> $data */
