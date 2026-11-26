@@ -122,6 +122,7 @@ final class FirstOwnerCredentials
             $prompt = sprintf(self::PROMPT, $email, PasswordRules::minCharacters());
             $first = self::readQuestion($io, $prompt, $stream, $terminal);
             self::refuse(self::passwordRefusal($first, $email));
+            $io->text(self::strengthFeedback($first));
 
             $second = self::readQuestion($io, self::CONFIRM, $stream, $terminal);
         } catch (MissingInputException) {
@@ -217,6 +218,21 @@ final class FirstOwnerCredentials
         return EmailAddress::isAccepted($email) ? null : 'Refusing `--owner`: that is not an email address the sign-in form accepts — both the '
             .'browser\'s check and the server\'s — so its owner could never sign in. The value is not repeated here, in '
             .'case it was something other than an address. Nothing was written.';
+    }
+
+    /** The advisory estimate follows the reader form and runs only on an already valid, bounded answer. */
+    private static function strengthFeedback(#[\SensitiveParameter] string $password): string
+    {
+        $compact = preg_replace('/[^\p{L}\p{N}]/u', '', mb_strtolower($password, 'UTF-8')) ?? '';
+
+        if (preg_match('/^(.{1,4})\1+$/u', $password) === 1
+            || preg_match('/password|qwerty|letmein|123456|abcdef/u', $compact) === 1) {
+            return 'This password has a weak pattern. Use unrelated words or a password manager.';
+        }
+
+        return mb_strlen($password, 'UTF-8') >= min(64, PasswordRules::minCharacters() + 8)
+            ? 'This password has a stronger estimate. Keep it unique to this account.'
+            : 'This password has a fair strength estimate. Try more unrelated words or a longer generated password.';
     }
 
     /** @param resource $stream */
