@@ -13,6 +13,8 @@ namespace Kitsune\Core;
 use Filament\Notifications\Notification;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
+use Filament\Support\Facades\FilamentView;
+use Filament\Tables\View\TablesRenderHook;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Contracts\Validation\Factory as ValidationFactory;
@@ -56,6 +58,7 @@ use Kitsune\Core\Entitlements\EntitlementCheck;
 use Kitsune\Core\Entitlements\EntitlementWriter;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\MediaReaderBulk;
+use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Http\MiddlewarePriority;
@@ -367,7 +370,14 @@ final class KitsuneServiceProvider extends ServiceProvider
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
                 ->loadedOnRequest(),
             Js::make('kitsune-select-value-direction', __DIR__.'/../resources/js/select-value-direction.js'),
+            Js::make('kitsune-bulk-selection-recovery', __DIR__.'/../resources/js/bulk-selection-recovery.js'),
         ], BlockDirectionPlugin::PACKAGE);
+
+        FilamentView::registerRenderHook(
+            TablesRenderHook::TOOLBAR_BEFORE,
+            static fn (): string => view('kitsune::filament.bulk-selection-recovery')->render(),
+            scopes: ListEntries::class,
+        );
 
     }
 }
