@@ -25,6 +25,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
 use Kitsune\Core\Tests\Fixtures\FailingCommitPdo;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -53,7 +54,7 @@ beforeEach(function (): void {
     $role->grant('entry.image.publish');
     $this->actingAs($user);
     PanelTenancy::enter($this->site);
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -86,7 +87,7 @@ function readerBulkZeroName(Entry $entry): mixed
 /** @return list<array<string, mixed>> */
 function readerBulkZeroNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 const READER_BULK_ZERO_CONFIRMED = ['entitlement' => 'course.selected', 'confirmation' => 'course.selected'];

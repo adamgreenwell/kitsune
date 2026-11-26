@@ -41,6 +41,7 @@ use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
@@ -173,7 +174,7 @@ if (str_starts_with($mode, 'bad-offer-')) {
     echo json_encode(['unchanged' => $state() == $before, 'errors' => $component->errors(),
         'mapping' => Sellable::query()->first()?->entitlement_name, 'level' => DB::connection()->transactionLevel(),
         'pdo_transaction' => DB::connection()->getPdo()->inTransaction(), 'redirect' => $component->effects['redirect'] ?? null,
-        'notifications' => [...session()->get('filament.notifications', []), ...session()->get('filament.claimed_notifications', [])]], JSON_THROW_ON_ERROR);
+        'notifications' => FilamentNotices::snapshot()], JSON_THROW_ON_ERROR);
     exit;
 }
 
@@ -287,6 +288,5 @@ echo json_encode([
     'revision_notes' => app(RecordedRevisions::class)->held(),
     'errors' => $component->errors(),
     'redirect' => $component->effects['redirect'] ?? null,
-    'notifications' => [...session()->get('filament.notifications', []), ...session()->get('filament.claimed_notifications', [])],
-    'dispatches' => $component->effects['dispatches'] ?? [],
+    'notifications' => FilamentNotices::snapshot(),
 ], JSON_THROW_ON_ERROR);

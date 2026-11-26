@@ -20,7 +20,6 @@ use Kitsune\Core\Entitlements\EntitlementAuthority;
 use Kitsune\Core\Entitlements\EntitlementRecords;
 use Kitsune\Core\Entitlements\EntitlementRefused;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
-use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Context;
 
 /**
@@ -37,8 +36,6 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class ReaderExport
 {
-    use ReadsWrittenKeys;
-
     public function __construct(
         private readonly ReaderAccounts $accounts,
         private readonly Context $context,
@@ -130,10 +127,6 @@ final class ReaderExport
             return ($lock ? $query->lockForUpdate() : $query)->first();
         });
 
-        return $found instanceof ReaderAccount
-            && $found instanceof Authenticatable
-            && self::writtenKey($found->getAttributes()['org_id'] ?? null) === $orgId
-            ? $found
-            : null;
+        return ReaderAccounts::readerInOrg($found, $orgId);
     }
 }

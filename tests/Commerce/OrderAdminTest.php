@@ -33,6 +33,7 @@ use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as OrderAdminFx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PaidOrderFixture;
 use Kitsune\Core\Tests\Fixtures\StripeInboxFixture;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -172,7 +173,7 @@ it('lets an owner check retained unknown terms without inventing access or chang
         ->and($page->detail()['access_fulfillment'])->toMatchArray(['state' => 'held', 'category' => 'unknown_terms'])
         ->and(DB::table('entitlements')->count())->toBe(0)
         ->and((array) DB::table('commerce_order_lines')->where('order_id', $order->id)->sole())->toBe($snapshot)
-        ->and(session('filament.notifications'))->not->toBeEmpty();
+        ->and(FilamentNotices::snapshot())->not->toBeEmpty();
 });
 
 it('cancels once without changing snapshots and then erases all checked unpaid order children', function (): void {

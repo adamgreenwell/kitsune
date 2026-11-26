@@ -207,10 +207,9 @@ it('recovers a trash whose COMMIT was busy, puts the file back, and keeps the co
 });
 
 /*
- * T48. An erasure inside a host transaction whose own COMMIT fails: Laravel never tells the manager, so the erasure's
- * disposal runs at the next commit anywhere — and finds the rows still there, keeps the only copy, says so, and prune
- * keeps it too. ~~Nothing puts the file back: that is the residue ADR-042 accepts and lists.~~ kitsune:media-reconcile
- * puts it back, and prune then has nothing to say of it (slice 5b).
+ * T48. When the host's outer COMMIT fails, Laravel discards the pending disposal callback.
+ * The committed row and sole private copy remain. Prune reports and preserves the copy,
+ * and kitsune:media-reconcile restores the file to the disk named by the row.
  */
 it('keeps the only copy when a host\'s COMMIT around an erasure fails', function (): void {
     [$entry, $path] = levelZeroFile();
@@ -225,8 +224,7 @@ it('keeps the only copy when a host\'s COMMIT around an erasure fails', function
 
     expect(levelZeroRow($entry))->toBe(['trashed' => false, 'disk' => 'public'])
         ->and(levelZeroHeld($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum]);
-    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}")
-        && str_contains($message, 'rows are still there'))->once();
+    Log::shouldNotHaveReceived('warning');
 
     Artisan::call('kitsune:media-prune', ['--force' => true]);
     $output = Artisan::output();

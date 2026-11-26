@@ -30,11 +30,9 @@ use Kitsune\Core\Settings\SiteTimezone;
  * from core would move every date in a host's OTHER panels as well, and a long-lived worker would carry it between
  * requests. The closure handed to `timezone()` is asked when the component renders, so it reads this request's site.
  *
- * ⚠️ NOT FOR A DATE, AND FILAMENT WOULD CONVERT ONE IF ASKED. `DateTimePicker::getTimezone()` and
- * `CanFormatState::getTimezone()` return an explicit timezone first, for a date-only component as much as for any
- * other; having a time decides only the DEFAULT they fall back to. Measured: `DatePicker::make()->timezone(…)` in New
- * York hydrated `2026-09-18` as the seventeenth. So a date stays put because it is never handed one — `DatePicker`
- * and `TextColumn::date()` are not built here, and `SiteTimezoneTest` would see a date move.
+ * Date-only fields represent calendar days and need no Site timezone.
+ * Filament 5.12 also keeps the day when given an explicit picker timezone.
+ * SiteTimezoneTest verifies both hydration and dehydration.
  */
 final class SiteTime
 {

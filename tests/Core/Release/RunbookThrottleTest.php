@@ -600,7 +600,7 @@ function update(string $state, array $case, string $hostname, string $path, stri
     }
 
     probe($state, $case, $header, $hostname, $path, $edge, '200');
-    $body = answer($known, $throttled);
+    $body = answer($known, $throttled, $case['notification_protocol'] ?? 'dispatch');
 
     // Kept so a case can show what a family that read the body as text would have seen.
     file_put_contents($state.'/answers.jsonl', json_encode([
@@ -649,16 +649,19 @@ function probe(string $state, array $case, callable $header, string $hostname, s
 }
 
 /** The two answers a real sign-in attempt produces, both carrying the re-rendered form. */
-function answer(array $known, bool $throttled): string
+function answer(array $known, bool $throttled, string $protocol): string
 {
     $snapshot = json_decode($known['snapshot'], true);
     $snapshot['memo']['errors'] = $throttled ? [] : ['data.email' => ['These credentials do not match our records.']];
 
     return (string) json_encode([
+        ...($protocol === 'mailbox' ? ($throttled
+            ? ['filamentNotifications' => true, 'filamentNotificationBatch' => str_repeat('a', 40)]
+            : ['filamentNotifications' => true]) : []),
         'components' => [[
             'snapshot' => json_encode($snapshot, JSON_UNESCAPED_SLASHES),
             'effects' => [
-                'dispatches' => $throttled ? [['name' => 'notificationsSent', 'params' => []]] : [],
+                'dispatches' => $throttled && $protocol === 'dispatch' ? [['name' => 'notificationsSent', 'params' => []]] : [],
                 // ⚠️ EVERY ANSWER RE-RENDERS THE FORM, so the string `data.email` is in the throttled one
                 // too. A family that classified by body text would read this as a rejected sign-in.
                 'html' => '<form wire:submit="authenticate"><input wire:model="data.email"></form>',
@@ -1003,7 +1006,7 @@ it('claims of the underscore spelling only what it could see, and names what it 
         ->and($probes)->not->toContain('198.51.100.');
 });
 
-it('reads the throttle out of the snapshot, where the body text says the opposite', function (): void {
+it('reads the throttle out of the snapshot, where the body text says the opposite', function (string $protocol, string $signal): void {
     /*
      * ⚠️ THE TRAP THE #111 DRAFT WALKED INTO. Every 200 re-renders the login form, and the form contains
      * `data.email` — so "the answer mentions data.email" is true of the throttled answer as well. A family
@@ -1013,16 +1016,20 @@ it('reads the throttle out of the snapshot, where the body text says the opposit
      * This asserts BOTH halves: the text really is in the throttled answer (so the trap was live), and the
      * family still called it a throttle.
      */
+    throttleCase($this->state, ['notification_protocol' => $protocol]);
     $run = throttleRun($this->dir, $this->family);
     $throttled = array_values(array_filter(throttleAnswers($this->state), static fn (array $answer): bool => $answer['throttled']));
 
     expect($throttled)->not->toBe([])
         ->and($throttled[0]['body'])->toContain('data.email')
-        ->and($throttled[0]['body'])->toContain('notificationsSent')
+        ->and($throttled[0]['body'])->toContain($signal)
         ->and($run->getOutput())->toContain('attempt 6 over IPv4')
         ->and($run->getOutput())->toContain('— THROTTLED')
         ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS');
-});
+})->with([
+    'notification dispatch' => ['dispatch', 'notificationsSent'],
+    'response-owned notification mailbox' => ['mailbox', 'filamentNotificationBatch'],
+]);
 
 it('fails a forged forwarding header that reached the address the throttle counts by', function (string $key, array $case, string $named): void {
     /*

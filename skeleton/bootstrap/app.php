@@ -6,9 +6,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use App\Http\Middleware\TrustLoopbackProxies;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -42,8 +44,9 @@ return Application::configure(basePath: dirname(__DIR__))
          * public site is resolved from getHost() (ADR-021); a trusted X-Forwarded-Host would let whoever sets a header
          * pick the site and the root of every generated URL.
          */
+        $middleware->replace(TrustProxies::class, TrustLoopbackProxies::class);
         $middleware->trustProxies(
-            at: ['127.0.0.1', '::1'],
+            at: TrustLoopbackProxies::PEERS,
             headers: Request::HEADER_X_FORWARDED_FOR,
         );
     })
