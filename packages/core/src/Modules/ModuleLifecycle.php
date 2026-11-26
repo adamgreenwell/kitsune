@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Event;
 use Kitsune\Core\Events\Modules\ModuleDisabled;
 use Kitsune\Core\Events\Modules\ModuleEnabled;
 use Kitsune\Core\Models\Module;
+use Kitsune\Core\Models\ModuleUninstall;
 use RuntimeException;
 use Throwable;
 
@@ -45,6 +46,8 @@ final class ModuleLifecycle
 {
     public static function install(Application $app, string $handle): string
     {
+        self::refuseInterruptedUninstall($handle);
+
         if (Module::query()->where('handle', $handle)->exists()) {
             throw new RuntimeException("{$handle} is already installed. `kitsune:module upgrade` moves it to a new version.");
         }
@@ -326,6 +329,8 @@ final class ModuleLifecycle
 
     private static function lockedReceipt(string $handle): Module
     {
+        self::refuseInterruptedUninstall($handle);
+
         return Module::query()->useWritePdo()->where('handle', $handle)->lockForUpdate()->first()
             ?? throw new RuntimeException("{$handle} is not installed. Run `kitsune:module install {$handle}`.");
     }
@@ -374,6 +379,9 @@ final class ModuleLifecycle
         $manifest = self::manifest($handle);
         $provider = self::provider($app, $manifest);
 
+        // Resolve metadata before the data hook can destroy anything.
+        $path = $provider->migrationPath();
+
         /*
          * ⚠️ THE MODULE'S TEARDOWN AND THE RECEIPT COMMIT TOGETHER, for the reason install's do — and this
          * direction destroys data, so the half-done state is worse here.
@@ -392,11 +400,23 @@ final class ModuleLifecycle
          */
         $connection = (new Module)->getConnection();
 
-        self::withinTransaction($connection, function () use ($provider, $receipt): void {
+        self::withinTransaction($connection, function () use ($provider, $receipt, $handle): void {
+            $marker = ModuleUninstall::create([
+                'handle' => $handle,
+                'version' => $receipt->version,
+                'started_at' => now(),
+            ]);
+
+            if (! $marker->exists || ModuleUninstall::query()->useWritePdo()->where('handle', $handle)->value('version') !== $receipt->version) {
+                throw new RuntimeException("{$handle}'s uninstall marker could not be saved; teardown was refused.");
+            }
+
             /* The module's own refusal, before anything is destroyed. It knows its content; core does not. */
             $provider->uninstall();
 
-            $receipt->delete();
+            if ($receipt->delete() !== true || Module::query()->useWritePdo()->where('handle', $handle)->exists()) {
+                throw new RuntimeException("{$handle}'s receipt could not be removed; teardown was refused.");
+            }
         });
 
         /*
@@ -408,11 +428,28 @@ final class ModuleLifecycle
          * but a multi-statement down() that commits partial DDL and then throws may remain recorded against a
          * damaged schema. Reinstall is not a universal repair (ADR-038, corrected 2026-10-13); take a backup
          * and establish the module's recovery procedure before destructive teardown.
+         *
+         * The separate marker now commits with hook/receipt removal, survives a failed reset or process loss,
+         * and blocks admission until a consistent pre-uninstall backup is restored (ADR-038 / #264). It is
+         * not a receipt for an installed module and does not promise automatic repair of arbitrary down().
          */
-        $path = $provider->migrationPath();
+        try {
+            if ($path !== null) {
+                $migrator = self::migrator($app);
+                $names = array_keys($migrator->getMigrationFiles([$path]));
+                $migrator->reset([$path]);
 
-        if ($path !== null) {
-            self::migrator($app)->reset([$path]);
+                if (array_intersect($names, $migrator->getRepository()->getRan()) !== []) {
+                    throw new RuntimeException('Module migrations remain recorded after reset.');
+                }
+            }
+
+            $marker = ModuleUninstall::query()->useWritePdo()->where('handle', $handle)->firstOrFail();
+            if ($marker->delete() !== true || ModuleUninstall::query()->useWritePdo()->where('handle', $handle)->exists()) {
+                throw new RuntimeException('The uninstall marker could not be removed.');
+            }
+        } catch (Throwable $failure) {
+            throw new RuntimeException(self::interruptedUninstall($handle), previous: $failure);
         }
 
         return "Uninstalled {$handle}.";
@@ -422,19 +459,32 @@ final class ModuleLifecycle
     public static function status(): array
     {
         $rows = [];
+        $unfinished = ModuleUninstall::query()->useWritePdo()->orderBy('handle')->get()->keyBy('handle');
 
-        foreach (Module::query()->orderBy('handle')->get() as $receipt) {
+        foreach (Module::query()->useWritePdo()->orderBy('handle')->get() as $receipt) {
             $installed = ModuleDiscovery::version($receipt->handle);
 
             $rows[] = [
                 'handle' => (string) $receipt->handle,
                 'version' => (string) $receipt->version,
-                'enabled' => (bool) $receipt->is_enabled,
+                'enabled' => ! $unfinished->has($receipt->handle) && (bool) $receipt->is_enabled,
                 'status' => match (true) {
+                    $unfinished->has($receipt->handle) => 'uninstall incomplete; restore a consistent pre-uninstall backup',
                     $installed === null => 'not installed by Composer',
                     $installed !== $receipt->version => "stale: Composer reports {$installed}",
                     default => 'ok',
                 },
+            ];
+
+            $unfinished->forget($receipt->handle);
+        }
+
+        foreach ($unfinished as $marker) {
+            $rows[] = [
+                'handle' => (string) $marker->handle,
+                'version' => (string) $marker->version,
+                'enabled' => false,
+                'status' => 'uninstall incomplete; restore a consistent pre-uninstall backup',
             ];
         }
 
@@ -443,6 +493,8 @@ final class ModuleLifecycle
 
     private static function receipt(string $handle): Module
     {
+        self::refuseInterruptedUninstall($handle);
+
         $receipt = Module::query()->where('handle', $handle)->first();
 
         if (! $receipt instanceof Module) {
@@ -450,6 +502,20 @@ final class ModuleLifecycle
         }
 
         return $receipt;
+    }
+
+    private static function refuseInterruptedUninstall(string $handle): void
+    {
+        if (ModuleUninstall::query()->useWritePdo()->where('handle', $handle)->exists()) {
+            throw new RuntimeException(self::interruptedUninstall($handle));
+        }
+    }
+
+    private static function interruptedUninstall(string $handle): string
+    {
+        return "{$handle}'s uninstall is incomplete. Keep writers stopped and restore a consistent pre-uninstall "
+            .'backup with matching code and assets. Do not reinstall, recreate its receipt, edit the migration '
+            .'ledger or delete its uninstall marker to force admission. See docs/module-operations.md.';
     }
 
     private static function manifest(string $handle): ModuleManifest
