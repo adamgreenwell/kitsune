@@ -28,6 +28,7 @@ use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Gate;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
@@ -37,6 +38,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Relations\EntryRelationResolver;
 use Kitsune\Core\Tenancy\Context;
 
 /**
@@ -399,7 +401,7 @@ final class FieldValueRenderer
          */
         $user = Permissions::currentUser();
 
-        $search = static function (string $search) use ($targets, $user): array {
+        $search = static function (string $search) use ($targets, $user, $config): array {
             /*
              * ⚠️ `whereLike(..., caseSensitive: false)` RATHER THAN `like`, because `LIKE` is
              * case-SENSITIVE on PostgreSQL and case-insensitive on SQLite and a default MySQL
@@ -414,7 +416,19 @@ final class FieldValueRenderer
 
             // Bounded, because a search for "a" otherwise returns the whole table. The
             // author narrows; the control does not try to show everything.
-            return $query->orderBy('title')->limit(50)->pluck('title', 'id')->all();
+            $options = [];
+            $subject = $config->field !== null && $config->field->entryType?->subject_field_id === $config->field->id;
+            foreach ($query->orderBy('title')->orderBy('id')->limit(50)->get(['id', 'title', 'translation_group', 'site_id']) as $entry) {
+                $title = (string) $entry->title;
+                if (! $subject && $entry->translation_group !== null && $entry->site_id !== null) {
+                    $options['follow:'.$entry->id] = $title.' · '.__('Follow translations');
+                    $options['pin:'.$entry->id] = $title.' · '.__('Pin this entry');
+                } else {
+                    $options[$entry->id] = $title;
+                }
+            }
+
+            return $options;
         };
 
         $picker = Select::make($path)
@@ -431,11 +445,11 @@ final class FieldValueRenderer
              * not save a title change. `$record` is one of Filament's own evaluation parameters, so the
              * callback can ask what this entry already points at.
              */
-            ->getOptionLabelUsing(static fn (mixed $value, ?Model $record): ?string => self::relationLabels(
+            ->getOptionLabelUsing(static fn (mixed $value, ?Model $record): ?string => self::relationPickerLabels(
                 [$value],
                 $config,
                 $record,
-            )[(int) $value] ?? null)
+            )[(string) $value] ?? null)
             ->dehydrated(false);
 
         if (! $config->isMultiValue()) {
@@ -453,7 +467,7 @@ final class FieldValueRenderer
          */
         $picker = $picker
             ->multiple()
-            ->getOptionLabelsUsing(static fn (array $values, ?Model $record): array => self::relationLabels(
+            ->getOptionLabelsUsing(static fn (array $values, ?Model $record): array => self::relationPickerLabels(
                 $values,
                 $config,
                 $record,
@@ -479,6 +493,80 @@ final class FieldValueRenderer
         }
 
         return $picker;
+    }
+
+    /**
+     * @param  list<mixed>  $values
+     * @return array<int|string, string>
+     */
+    private static function relationPickerLabels(array $values, FieldConfig $config, ?Model $record): array
+    {
+        $pins = [];
+        $entries = [];
+        $following = [];
+        $groups = [];
+        $storedPins = [];
+        foreach ($values as $value) {
+            if (! is_string($value) && ! is_int($value)) {
+                continue;
+            }
+
+            if (preg_match('/^pin:([1-9][0-9]*)$/D', (string) $value, $match)) {
+                $pins[$value] = (int) $match[1];
+            } elseif (preg_match('/^follow:([1-9][0-9]*)$/D', (string) $value, $match)) {
+                $following[$value] = (int) $match[1];
+            } elseif (preg_match('/^group-link:([1-9][0-9]*)$/D', (string) $value, $match)) {
+                $groups[$value] = (int) $match[1];
+            } elseif (preg_match('/^pin-link:([1-9][0-9]*)$/D', (string) $value, $match)) {
+                $storedPins[$value] = (int) $match[1];
+            } elseif (ctype_digit((string) $value)) {
+                $entries[] = $value;
+            }
+        }
+
+        $labels = self::relationLabels($entries, $config);
+        $titles = self::relationLabels(array_values($pins + $following), $config);
+        foreach ($pins as $value => $id) {
+            if (isset($titles[$id])) {
+                $labels[$value] = $titles[$id].' · '.__('Pin this entry');
+            }
+        }
+
+        foreach ($following as $value => $id) {
+            if (isset($titles[$id])) {
+                $labels[$value] = $titles[$id].' · '.__('Follow translations');
+            }
+        }
+
+        if (($groups === [] && $storedPins === []) || ! $record instanceof Entry || ! $record->exists
+            || (! Gate::allows('view', $record) && ! Gate::allows('update', $record))) {
+            return $labels;
+        }
+
+        $stored = $record->relationPickerLinks($config->storage)->keyBy('id');
+        $pinTargets = array_filter(array_map(fn (int $id): ?int => $stored->get($id)?->target_entry_id, $storedPins));
+        $pinLabels = self::relationLabels(array_values($pinTargets), $config, $record, annotatePins: true);
+        foreach ($pinTargets as $value => $id) {
+            if (isset($pinLabels[$id])) {
+                $labels[$value] = $pinLabels[$id];
+            }
+        }
+
+        if ($groups === []) {
+            return $labels;
+        }
+
+        $resolved = collect(app(EntryRelationResolver::class)->resolve(
+            $record, $config->storage, false, static fn (Entry $entry): bool => Gate::allows('view', $entry),
+        ))->keyBy('link');
+        foreach ($groups as $value => $id) {
+            if ($stored->get($id)?->target_group_id !== null) {
+                $entry = $resolved->get($id)['entry'] ?? null;
+                $labels[$value] = $entry === null ? __('Translation unavailable on this Site') : $entry->title.' · '.__('Follow translations');
+            }
+        }
+
+        return $labels;
     }
 
     /**
@@ -527,7 +615,7 @@ final class FieldValueRenderer
      * @param  list<mixed>  $ids
      * @return array<int, string>
      */
-    public static function relationLabels(array $ids, FieldConfig $config, ?Model $record = null): array
+    public static function relationLabels(array $ids, FieldConfig $config, ?Model $record = null, bool $annotatePins = false): array
     {
         $wanted = [];
 
@@ -549,9 +637,12 @@ final class FieldValueRenderer
         foreach (
             Permissions::constrainToViewable(self::relationScope($targets), Permissions::currentUser())
                 ->whereKey($wanted)
-                ->pluck('title', 'id') as $id => $title
+                ->get(['id', 'title', 'translation_group']) as $entry
         ) {
-            $labels[(int) $id] = (string) $title;
+            $labels[$entry->id] = (string) $entry->title;
+            if ($annotatePins && $entry->translation_group !== null) {
+                $labels[$entry->id] .= ' · '.__('Pinned entry');
+            }
         }
 
         $withheld = array_values(array_diff($wanted, array_keys($labels)));

@@ -25,11 +25,13 @@ use RuntimeException;
  *
  * Unscoped because it is reached only through its Entry, which is scoped.
  *
+ * @phpstan-type RevisionRelationTarget int|array{group: string}
+ *
  * @property int $id
  * @property int $entry_id
  * @property array<string, mixed>|null $values
  * @property string $status
- * @property array<string, list<int>|null>|null $relation_state
+ * @property array<string, list<RevisionRelationTarget>|null>|null $relation_state
  * @property int $entry_type_id
  * @property string|null $title
  * @property string|null $slug

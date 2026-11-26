@@ -46,7 +46,8 @@ use RuntimeException;
  * reasoning as `EntryRevision`, which is reached only through its Entry.
  *
  * @property int $source_entry_id
- * @property int $target_entry_id
+ * @property int|null $target_entry_id
+ * @property int|null $target_group_id
  * @property int|null $field_storage_id
  * @property int $ordering
  * @property int $org_id
@@ -120,11 +121,12 @@ class EntryRelation extends Pivot
             }
 
             // Either endpoint moving needs rechecking, not just the target.
-            if ($relation->isDirty(['source_entry_id', 'target_entry_id'])) {
+            if ($relation->isDirty(['source_entry_id', 'target_entry_id', 'target_group_id'])) {
                 $relation->guardEndpointsVisible();
             }
 
-            if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
+            if ($relation->isDirty(['field_storage_id', 'target_entry_id', 'target_group_id', 'source_entry_id', 'org_id'])) {
+                $relation->guardGroupTarget();
                 $relation->guardTargetType();
             }
 
@@ -206,7 +208,9 @@ class EntryRelation extends Pivot
     public function guardCreate(bool $locked = false): void
     {
         $this->refuseKeysThatAreNotWholeIds();
+        $this->guardTargetIdentity();
         $this->guardStorageOwnership($locked);
+        $this->guardGroupTarget();
         $this->guardEndpointsVisible();
         $this->guardStorageStrategy($locked);
         $this->guardCardinality($locked);
@@ -227,6 +231,38 @@ class EntryRelation extends Pivot
     public function armLockNow(): void
     {
         $this->armLock();
+    }
+
+    private function guardTargetIdentity(): void
+    {
+        if (($this->target_entry_id === null) === ($this->target_group_id === null)) {
+            throw new RuntimeException('A relation must hold exactly one row pin or translation group.');
+        }
+    }
+
+    private function guardGroupTarget(): void
+    {
+        if ($this->target_group_id === null) {
+            return;
+        }
+
+        $connection = $this->getConnectionName();
+        $source = EntryWriteReads::query((new Entry)->setConnection($connection)->newQuery())
+            ->useWritePdo()->find($this->source_entry_id, ['id', 'org_id', 'entry_type_id']);
+        $group = (new EntryTranslationGroup)->setConnection($connection)->newQuery()
+            ->useWritePdo()->whereKey($this->target_group_id)->where('org_id', $this->org_id)->exists();
+
+        if ($source === null || (int) $this->org_id !== $source->org_id || ! $group || $this->field_storage_id === null) {
+            throw new RuntimeException('A translation-group link requires a field and a group in the source entry’s Org.');
+        }
+
+        $subject = (new EntryType)->setConnection($connection)->newQuery()
+            ->useWritePdo()->whereKey($source->entry_type_id)->value('subject_field_id');
+
+        if ($subject !== null && (new Field)->setConnection($connection)->newQuery()
+            ->useWritePdo()->whereKey($subject)->where('field_storage_id', $this->field_storage_id)->exists()) {
+            throw new RuntimeException('A subject identifier relation requires a row pin.');
+        }
     }
 
     /**
@@ -284,7 +320,7 @@ class EntryRelation extends Pivot
      */
     private function refuseKeysThatAreNotWholeIds(): void
     {
-        foreach (['source_entry_id', 'target_entry_id', 'field_storage_id', 'org_id'] as $column) {
+        foreach (['source_entry_id', 'target_entry_id', 'target_group_id', 'field_storage_id', 'org_id'] as $column) {
             $value = $this->getAttributes()[$column] ?? null;
 
             if ($value === null || self::writtenKey($value) !== null) {
@@ -513,6 +549,10 @@ class EntryRelation extends Pivot
 
     private function guardTargetType(bool $locked = false): void
     {
+        if ($this->target_entry_id === null) {
+            return;
+        }
+
         $storage = $this->storage($locked);
 
         if ($storage === null) {
@@ -574,8 +614,26 @@ class EntryRelation extends Pivot
         }
         $this->guardStorageStrategy(true);
         $this->guardCardinality(true);
-        if ($this->isDirty(['field_storage_id', 'target_entry_id'])) {
+        if ($this->isDirty(['field_storage_id', 'target_entry_id', 'target_group_id', 'source_entry_id', 'org_id'])) {
+            $this->guardPersistedTargetChange();
             $this->guardTargetType(true);
         }
+    }
+
+    private function guardPersistedTargetChange(): void
+    {
+        $columns = ['source_entry_id', 'target_entry_id', 'target_group_id', 'field_storage_id', 'org_id'];
+        $stored = $this->getConnection()->table($this->getTable())
+            ->useWritePdo()->where($this->getKeyName(), $this->getKey())->lockForUpdate()->first($columns);
+
+        if ($stored === null) {
+            return;
+        }
+
+        // A model may have been loaded before a target change or with only part of the row.
+        $updated = $this->newInstance();
+        $updated->setRawAttributes(array_replace((array) $stored, array_intersect_key($this->getDirty(), array_flip($columns))));
+        $updated->guardTargetIdentity();
+        $updated->guardGroupTarget();
     }
 }

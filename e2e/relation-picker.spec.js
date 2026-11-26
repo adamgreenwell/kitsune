@@ -1,5 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 const { selectField, selectValue, openSelect } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 
@@ -196,6 +198,55 @@ test.describe('a relation field round-trips through entry_relations', () => {
         await expect(pickerValue(page)).toContainText('week 3');
 
         await leaveClean(page);
+    });
+
+    test('can follow a translation group or pin its current entry', async ({ page }) => {
+        const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+            cwd: path.join(__dirname, '..', 'skeleton'),
+            encoding: 'utf8',
+        }).trim();
+        const title = `Translation group sample ${Date.now()}`;
+        const { source, target } = JSON.parse(tinker(`
+            $site = \\Kitsune\\Core\\Models\\Site::withoutGlobalScopes()->where('slug', 'golfdom')->firstOrFail();
+            app(\\Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);
+            $seed = \\Kitsune\\Core\\Models\\Entry::findOrFail(1);
+            $source = \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $seed->entry_type_id, 'title' => 'Mixed relations source']);
+            $target = \\Kitsune\\Core\\Models\\Entry::create([
+                'entry_type_id' => $source->entry_type_id, 'title' => '${title}',
+                'translation_group' => (string) \\Illuminate\\Support\\Str::uuid(),
+            ]);
+            echo json_encode(['source' => $source->id, 'target' => $target->id]);
+        `));
+        expect(target).toBeGreaterThan(0);
+
+        await page.goto(`/admin/${SITE}/c/article/${source}/edit`);
+        await choose(page, title, /Follow translations/);
+        await page.keyboard.press('Escape');
+        await choose(page, title, /Pin this entry/);
+        await save(page);
+        await page.reload();
+
+        await expect(pickerValue(page)).toContainText('Follow translations');
+        await expect(pickerValue(page)).toContainText('Pinned entry');
+        const stored = JSON.parse(tinker(`echo DB::table('entry_relations')->where('source_entry_id', ${source})
+            ->where(function ($query) { $query->where('target_entry_id', ${target})->orWhereNotNull('target_group_id'); })
+            ->orderBy('ordering')->get(['target_entry_id', 'target_group_id'])->toJson();`));
+        expect(stored).toEqual([
+            { target_entry_id: null, target_group_id: expect.any(Number) },
+            { target_entry_id: target, target_group_id: null },
+        ]);
+
+        tinker(`
+            $site = \\Kitsune\\Core\\Models\\Site::withoutGlobalScopes()->where('slug', 'golfdom')->firstOrFail();
+            app(\\Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);
+            \\Kitsune\\Core\\Models\\Entry::findOrFail(${target})->delete();
+        `);
+        await page.reload();
+        await expect(pickerValue(page)).toContainText('Translation unavailable on this Site');
+        await page.getByLabel('Title').first().fill('Mixed relations source edited');
+        await save(page);
+        await page.reload();
+        await expect(pickerValue(page)).toContainText('Translation unavailable on this Site');
     });
 
     test('clearing the field actually clears it', async ({ page }) => {
