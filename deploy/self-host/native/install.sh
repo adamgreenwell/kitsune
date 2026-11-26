@@ -163,6 +163,13 @@ start_services() {
     curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused --noproxy '*' http://127.0.0.1:8080/admin/login >/dev/null
 }
 
+install_host_packages() (
+    # Maintainer scripts create host files outside the installer's private state.
+    umask 022
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+)
+
 main() {
     (( $# == 7 )) || refuse 'usage: install.sh MANIFEST SIGNATURE PUBLIC_KEY FINGERPRINT VERSION CHANNEL ARCHIVE'
     (( EUID == 0 )) || refuse 'run on a dedicated Ubuntu host as root after reviewing the script'
@@ -228,8 +235,7 @@ main() {
     if [[ "$source_value" = sury ]]; then
         configure_sury
     fi
-    apt-get update 9>&-
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}" 9>&-
+    install_host_packages "${packages[@]}" 9>&-
     configure_application
     start_services
     mv -T -- "$work/release" "$destination/.installed"
