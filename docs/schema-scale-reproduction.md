@@ -1,4 +1,4 @@
-# Prepare a schema-scale SQLite fixture
+# Reproduce schema-scale benchmarks
 
 The in-process runner builds the synthetic schema and data, checks scoped queries, captures estimated
 plans and exercises actual entry and media writes. Its results cover application calls. The relation-picker browser case has its own command below. The full browser matrix and paired
@@ -40,6 +40,85 @@ For a fixture under a completed Linux pair, add `--paired` and pass the pair's `
 directory. The command verifies the checkout revision, profile receipt, seed result and application dependency
 lock before starting PHP. The profile identifies where the fixture was prepared. The browser command
 launches its own server, so its timing does not inherit the seed container's cgroup limits.
+
+## Measure panel reads
+
+Add `--panel-reads` to the browser command before the PHP path. For a paired
+fixture, put `--paired` first.
+
+~~~sh
+node bin/benchmark-schema-relations.cjs --panel-reads "$(command -v php)" "$unpacked_application" "$new_output_directory"
+~~~
+
+The seed supplies five Sites and their known article IDs for the browser. The browser signs
+in as each Site's owner and measures nine navigations per Site. It verifies dashboard, first
+and last article pages, broad and selective article search, view, edit, related records and the
+asset list. Each Site gets one warmup pass and 25 further passes with all nine cases interleaved.
+Navigation timing stops when the expected page element renders. Result assertions run separately.
+The last page is derived from
+the actual pagination summary, then independently checked after navigation. The report
+`schema-scale-panel-reads.json` includes every sample and the seed and lock digests. It also records 25 fetch-and-decode
+observations for a 70-byte private PNG shared within the Org, plus two denial checks across
+the Org and editor-grant boundaries.
+
+This measures read navigation to the requested page state. The historical matrix also profiled
+original SQL, additional permission controls and audited browser writes.
+Those observations have their own measurement boundaries.
+
+## Capture read SQL and replay its estimated plans
+
+Use `--panel-sql` in place of `--panel-reads`. The browser records a private SELECT profile for
+each navigation, warmup and pagination calibration. After the browser exits, a separate
+query-only PDO connection obtains estimated plans using the captured statements and bindings.
+Instrumentation adds work to the timed navigation. The final `schema-scale-panel-sql.json` binds
+the digest of `schema-scale-read-plans.json`, which reports profile and statement counts and
+nonempty estimated plan digests. Both receipts are needed for a completed SQL run.
+The raw profiles are private and can include bound values from the synthetic fixture. This
+mode profiles the panel page requests. Private-image fetch and write timing retain their own
+boundaries.
+
+## Measure panel writes on a fresh fixture
+
+Pass `--panel-writes` when preparing a fresh SQLite seed and when starting its browser stage.
+
+~~~sh
+env -i PATH="$PATH" php -d memory_limit=128M bin/benchmark-schema-scale.php --panel-writes \
+  "$unpacked_application" 10000 "$new_output_directory"
+node bin/benchmark-schema-relations.cjs --panel-writes "$(command -v php)" "$unpacked_application" "$new_output_directory"
+~~~
+
+The seed records write authority for that output directory, database and dependency lock.
+Finish all read stages first. A fixture accepts one browser stage at a time and refuses further
+reads or writes once its write stage starts. It writes 25 change-and-restore pairs across 12 cases,
+covering three rich-text sizes and four operations. It checks persisted values, link order,
+revision retention and the signed-in actor's audit row after every save. The timer stops at
+the returned save response. Database verification runs outside the timed interval. See
+`schema-scale-panel-writes.json` for the 600 samples. The paired SQLite fixtures are for
+read stages.
+
+## Run the seed and broad browser case on a native database
+
+Use a local Docker socket and the same built application. Install the checkout's browser dependencies
+and Chromium, and use PHP with the PDO extension for the selected engine. Pass the full ID of a
+reviewed local Linux image for PostgreSQL, MySQL, or MariaDB.
+
+~~~sh
+engine=mysql
+image_id=$(docker image inspect --format '{{.Id}}' mysql:8.4)
+bin/benchmark-schema-scale-native.sh "$engine" "$image_id" "$unpacked_application" 10000 "$new_output_directory"
+~~~
+
+Use `pgsql`, `mysql` or `mariadb`, and the same three corpus sizes as the SQLite runner. Each run
+creates a fresh database, maps one port on IPv4 loopback, and verifies database ownership before
+migrations. The launcher runs the application seed and the 25-search owner browser case. Add
+`--panel-reads` or `--panel-sql` before the engine to include navigation. Add `--panel-writes`
+to include audited writes after any read stage. The launcher stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
+confirm teardown and keep the output private because it includes disposable fixture credentials.
+
+`database-runtime.txt` records the database container's configured limits of two CPUs, 2 GiB and
+256 processes. PHP and Chromium run on the host. Compare these results as a native database control,
+with the SQLite pair below providing separate app resource-floor evidence. The historical
+panel, write and permission matrix has its own qualification record in [issue #261](https://github.com/adamgreenwell/kitsune/issues/261).
 
 ## Compare Linux app resource profiles
 

@@ -19,7 +19,9 @@ use Kitsune\Core\Http\Middleware\RequireReader;
 use Kitsune\Core\Http\MiddlewarePriority;
 use Kitsune\Core\Media\MediaStream;
 use Kitsune\Core\Models\ReaderToken;
+use Kitsune\Core\Readers\Contracts\ClassifiesReaderColumns;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
+use Kitsune\Core\Readers\Contracts\ReaderColumnClass;
 use Kitsune\Core\Readers\ReaderRoutes;
 
 /*
@@ -97,7 +99,7 @@ function surfaceCode(string $file): string
     return $code;
 }
 
-it('marks every symbol it adds @internal, but the contract and the routes line', function (): void {
+it('keeps the public reader surface to host contracts and the route registration', function (): void {
     $symbols = surfaceSymbols();
 
     // Not vacuous: the sweep found the controllers and the sessions, and the reader's download (ADR-041).
@@ -106,7 +108,7 @@ it('marks every symbol it adds @internal, but the contract and the routes line',
 
     $public = array_values(array_filter($symbols, static fn (string $symbol): bool => ! str_contains((string) (new ReflectionClass($symbol))->getDocComment(), '@internal')));
 
-    expect($public)->toBe([ReaderAccount::class, ReaderRoutes::class]);
+    expect($public)->toBe([ClassifiesReaderColumns::class, ReaderAccount::class, ReaderColumnClass::class, ReaderRoutes::class]);
 });
 
 it('keeps the contract to five methods, exactly as published — it never grows', function (): void {
@@ -136,8 +138,8 @@ it('keeps an address, a password, a key and a connection out of a stack trace', 
     foreach (surfaceDoorFiles() as $file) {
         $source = (string) file_get_contents($file);
 
-        // A declared parameter: a type that starts with a letter, a backslash or `?` — never `||` or `&&` — then the name.
-        preg_match_all('/(?<attr>#\[\\\\SensitiveParameter\]\s*)?(?:\??[A-Za-z\\\\][\w\\\\|&]*\s+)\$(?<name>\w+)\s*[,)=]/', $source, $matches, PREG_SET_ORDER);
+        // A declaration starts with a PHP type, including parenthesized intersections, then the variable.
+        preg_match_all('/(?<attr>#\[\\\\SensitiveParameter\]\s*)?(?:(?:\([A-Za-z\\\\][\w\\\\&]*\)\|)?\??[A-Za-z\\\\][\w\\\\|&]*\s+)\$(?<name>\w+)\s*[,)=]/', $source, $matches, PREG_SET_ORDER);
 
         foreach ($matches as $match) {
             if (in_array($match['name'], $sensitive, true) && $match['attr'] === '') {

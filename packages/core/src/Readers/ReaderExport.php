@@ -45,32 +45,47 @@ final class ReaderExport
     ) {}
 
     /**
-     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string, consents?: list<array{site: int, purpose: string, notice_version: string, granted: bool, recorded_at: string, expires_at: ?string, retain_until: string}>, module_data?: array<string, array<string, mixed>>}
+     * @return array{account: array<string, scalar|null>|null, entitlements: list<array<string, ?string>>, pending_links: list<array{purpose: string, site: ?string, expires_at: string}>, generated_at: string, host_coverage?: array<string, int|string>, module_coverage?: string, consents?: list<array{site: int, purpose: string, notice_version: string, granted: bool, recorded_at: string, expires_at: ?string, retain_until: string}>, module_data?: array<string, array<string, mixed>>}
      *
      * @throws EntitlementRefused
      */
-    public function for(#[\SensitiveParameter] int|string $reader): array
+    public function for(#[\SensitiveParameter] int|string $reader, bool $reportCoverage = false): array
     {
         $entitlements = EntitlementRecords::forReader($reader);
         $account = $this->find($reader);
         $address = $account !== null ? EmailAddress::normalise($account->readerEmail()) : null;
         $key = app(EntitlementAuthority::class)->filedKey(EntitlementRefused::EXPORT, $reader);
 
+        $host = $reportCoverage ? ReaderColumnProjection::for($account) : null;
         $records = [
-            'account' => $account?->exportAccount(),
+            'account' => $host !== null ? $host['account'] : $account?->exportAccount(),
             'entitlements' => $entitlements,
             'pending_links' => app(ReaderTokens::class)->pending($key, $address),
             'generated_at' => CarbonImmutable::now('UTC')->format('Y-m-d\TH:i:s\Z'),
         ];
+        if ($host !== null) {
+            $records['host_coverage'] = $host['coverage'];
+        }
+
         $consents = app(ReaderConsents::class)->export(ReaderGuard::stored($account?->getKey()) ?? $key);
         if ($consents !== []) {
             $records['consents'] = $consents;
         }
 
-        $modules = app(ReaderModuleData::class)->export($key);
+        try {
+            $modules = app(ReaderModuleData::class)->export($key);
+            if ($modules !== []) {
+                $records['module_data'] = $modules;
+            }
+            if ($reportCoverage) {
+                $records['module_coverage'] = 'participating_installed_modules';
+            }
+        } catch (ReaderModuleDataUnavailable $error) {
+            if (! $reportCoverage) {
+                throw $error;
+            }
 
-        if ($modules !== []) {
-            $records['module_data'] = $modules;
+            $records['module_coverage'] = 'unavailable';
         }
 
         return $records;

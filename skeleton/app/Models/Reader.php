@@ -17,7 +17,9 @@ use Illuminate\Contracts\Auth\Authenticatable as AuthenticatableContract;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Kitsune\Core\Readers\Contracts\ClassifiesReaderColumns;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
+use Kitsune\Core\Readers\Contracts\ReaderColumnClass;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -42,7 +44,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property Carbon|null $updated_at
  */
 #[OrgScoped]
-class Reader extends Model implements AuthenticatableContract, ReaderAccount
+class Reader extends Model implements AuthenticatableContract, ClassifiesReaderColumns, ReaderAccount
 {
     use Authenticatable;
     use EnforcesScope;
@@ -105,6 +107,21 @@ class Reader extends Model implements AuthenticatableContract, ReaderAccount
             'has_password' => $this->password !== null,
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
+        ];
+    }
+
+    /** @return array<string, array{class: ReaderColumnClass, export_as?: string}> */
+    public static function readerColumnPrivacy(): array
+    {
+        return [
+            'id' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'reader'],
+            'org_id' => ['class' => ReaderColumnClass::Operational],
+            'email' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'email'],
+            'email_verified_at' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'email_verified_at'],
+            'password' => ['class' => ReaderColumnClass::Secret],
+            'remember_token' => ['class' => ReaderColumnClass::Secret],
+            'created_at' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'created_at'],
+            'updated_at' => ['class' => ReaderColumnClass::Personal, 'export_as' => 'updated_at'],
         ];
     }
 
