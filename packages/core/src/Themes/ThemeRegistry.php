@@ -51,7 +51,7 @@ final class ThemeRegistry
         }
 
         foreach ($types as $type) {
-            if (! is_string($type) || ! preg_match('/^[a-z][a-z0-9_-]{0,63}$/D', $type)) {
+            if (! is_string($type) || ! PublicEntryPaths::validType($type)) {
                 return null;
             }
         }

@@ -24,6 +24,8 @@ use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Pages\Blueprints;
 use Kitsune\Core\Filament\Pages\Credentials;
 use Kitsune\Core\Filament\Pages\Entitlements;
+use Kitsune\Core\Filament\Pages\NavigationMenus;
+use Kitsune\Core\Filament\Pages\NavigationRedirects;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
@@ -143,7 +145,7 @@ final class KitsunePanel
                 RoleResource::class,
                 ...app(AdminSurface::class)->resources(),
             ])
-            ->pages([Dashboard::class, Blueprints::class, Credentials::class, Entitlements::class])
+            ->pages([Dashboard::class, Blueprints::class, Credentials::class, Entitlements::class, NavigationMenus::class, NavigationRedirects::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...))
             // Drawn here rather than fetched. Filament's default sends every signed-in user's initials and the site's
@@ -268,6 +270,19 @@ final class KitsunePanel
                     ->icon('heroicon-o-square-3-stack-3d')
                     ->url(fn (): string => Blueprints::getUrl())
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.blueprints')),
+            ] : []),
+
+            ...(NavigationMenus::canAccess() ? [
+                NavigationItem::make(__('kitsune::navigation.menus'))
+                    ->group(__('kitsune::navigation.group'))
+                    ->icon('heroicon-o-bars-3')
+                    ->url(fn (): string => NavigationMenus::getUrl())
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.navigation-menus')),
+                NavigationItem::make(__('kitsune::navigation.redirects'))
+                    ->group(__('kitsune::navigation.group'))
+                    ->icon('heroicon-o-arrow-uturn-right')
+                    ->url(fn (): string => NavigationRedirects::getUrl())
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.navigation-redirects')),
             ] : []),
 
             // Credentials sit with the owner's other screens, hidden by the rule that gates the URL — and until a

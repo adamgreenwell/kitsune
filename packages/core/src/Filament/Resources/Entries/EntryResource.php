@@ -24,6 +24,7 @@ use Filament\Actions\ViewAction;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Panel;
 use Filament\Resources\Resource;
@@ -195,6 +196,9 @@ class EntryResource extends Resource
                         },
                     ),
                 ]),
+            Toggle::make(EditEntry::REMEMBER_ADDRESS)
+                ->label(__('kitsune::admin.redirect_previous_address'))
+                ->visible(fn (?Entry $record): bool => EditEntry::canRememberAddress($record)),
             /*
              * ⚠️ `published` IS WITHHELD FROM SOMEBODY WHO MAY NOT PUBLISH, AND ALSO REFUSED IN VALIDATION.
              * ADR-033 registers `entry.{type}.publish` as an action, and AGENTS.md #14 says a published
