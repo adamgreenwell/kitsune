@@ -3,7 +3,7 @@
 [Issue #261](https://github.com/adamgreenwell/kitsune/issues/261) records six Linux SQLite floor/control
 cases and nine native database cases. The measurements use the synthetic corpus and application at
 [`4e6f905`](https://github.com/adamgreenwell/kitsune/tree/4e6f9059d841533b7ff45e18685da2c7022392ab).
-The portable end-to-end launcher remains open.
+The [reproduction guide](schema-scale-reproduction.md) documents the portable runner.
 
 ## Corpus and measurement
 
@@ -13,7 +13,18 @@ on one site. The nine populations are 30% primary articles, 15% sibling articles
 and 5% primary assets in the largest org, then 15%, 5%, 5%, and 5% in the second org, then 5% articles in
 the third. The corpus has org-owned article and asset types, rich text, an indexed score, category and
 tag values, ordered relations, revisions and physical private media. Rich-text samples are 768, 4,096
-or 32,768 bytes, and private PNGs are 70-byte 1×1 fixtures.
+or 32,768 bytes, and private PNGs are 70-byte 1×1 fixtures. Revision histories use 1, 4, 11 or 50 versions.
+The validated panel fixture has these exact totals.
+
+| Entries | Revisions | Ordered links | Private PNGs | PNG payload bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 30,503 | 1,400 | 3,000 | 210,000 |
+| 100,000 | 296,550 | 14,000 | 30,000 | 2,100,000 |
+| 1,000,000 | 2,989,895 | 140,000 | 300,000 | 21,000,000 |
+
+Bulk import timings cover fixture construction. The audited editor saves exercise ordinary
+application writes. The PNG payload total describes file contents. The stopped-database table
+below describes database directory allocation.
 
 Each case has 25 sequential warm observations per metric. The tables show median / observed p95 in
 milliseconds, rounded to whole milliseconds. Observed p95 is sample 24 of 25 after sorting. Dashboard,
@@ -67,6 +78,43 @@ partial and diagnostic profiles. The timing statistics use the completed sample 
 picker spent a median 21.97 seconds in the original title SELECT. This gives [#331](https://github.com/adamgreenwell/kitsune/issues/331)
 a measured starting point before any query or index change. The 1M deep-page reads on both InnoDB
 engines also warrant separate plan analysis.
+
+## Portable runner qualification
+
+The [reproduction guide](schema-scale-reproduction.md) describes the disposable
+fixtures and browser commands. A 100,000-row SQLite run collected 1,175 page profiles,
+100 picker profiles and 600 verified save profiles. The save stage produced an
+estimated plan for each of 798 original SQL-and-binding pairs.
+
+The 1,000,000-row SQLite host run verified 1,001,347 fixture checks. Its three
+instrumented browser stages kept the same seed and dependency lock.
+
+| Stage | Request profiles | SELECT occurrences | SQL-and-binding pairs with plans |
+| --- | ---: | ---: | ---: |
+| Panel reads | 1,175 | 79,114 | 269 |
+| Targeted picker | 100 | 2,300 | 56 |
+| Isolated saves | 600 | 33,700 | 798 |
+
+All 600 saves passed their audit. The reports bind the seed and plan SHA-256
+digests. This run used host PHP 8.5.12 and Node 24.22.2. The Linux resource
+limits below apply to the separate paired workload.
+
+On the 10,000-row PostgreSQL and MariaDB fixtures, each run collected 1,175 page
+profiles and 100 picker profiles. Each isolated save stage verified 600 audited
+writes, recorded 33,700 SELECT occurrences and produced plans for 803 SQL-and-binding
+pairs. The MariaDB run recorded the lock plan in 79 pairs. A separate MySQL
+10,000-row diagnostic verified 600 isolated saves and covered 803 pairs. Disposable
+database cleanup was verified on all three engines. The original native timeout
+remains in the issue evidence.
+
+The portable save protocol waits for the revision table before timing and ends at
+the save response body. The historical tables above time through the Saved
+notification. SQL collection adds work to the instrumented requests, which use
+separate timing fields. The estimated plans reflect the post-run fixture.
+
+The paired Linux seed and query runs separately verified the 1 vCPU / 1 GiB and
+2 vCPU / 2 GiB profiles for all three sizes. The portable host browser timings
+retain the runtime and resource notes in their own receipts.
 
 ## Measurement records
 

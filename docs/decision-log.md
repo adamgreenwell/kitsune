@@ -1846,6 +1846,22 @@ accounted for 21.97 seconds. Keep that query an explicit follow-up under #331. P
 case-insensitive substring matching and the default SQLite installation when evaluating it. The
 portable reproduction launcher and production-scale workload evidence remain open.
 
+### Amendment — Portable schema-scale runner, 2026-11-26 (#261)
+
+The [reproduction guide](schema-scale-reproduction.md) records how to build a
+private fixture, run the real browser workloads and verify their report and plan
+digests. SQLite starts with the service-free seed. PostgreSQL, MySQL and MariaDB
+use a separate disposable database only for the optional native benchmark.
+The portable runs preserve the scoped search and write audits described in the
+[schema scale report](schema-scale-benchmark.md). This adds no dependency to the
+native single-site installation.
+
+The portable Linux pair verifies the app resource profiles for the in-process
+seed and query workload. Use the original paired browser cases above when
+reasoning about browser behavior at the floor. The portable browser stages have
+their own runtime and timing boundaries. Keep the #331 relation query
+investigation and realistic production concurrency as separate work.
+
 ## ADR-028 — A generated column is named for its projection, not for its owner
 
 **Status:** Decided · 2026-09-07

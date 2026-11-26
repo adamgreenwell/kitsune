@@ -148,6 +148,33 @@ confirm teardown and keep the output private because it includes disposable fixt
 with the SQLite pair below providing separate app resource-floor evidence. The historical
 panel, write and permission matrix has its own qualification record in [issue #261](https://github.com/adamgreenwell/kitsune/issues/261).
 
+## Run the complete host browser sequence
+
+For a native database, combine the three options on one fresh fixture.
+
+~~~sh
+bin/benchmark-schema-scale-native.sh --panel-sql --panel-control-sql --panel-write-sql \
+  "$engine" "$image_id" "$unpacked_application" "$rows" "$new_output_directory"
+~~~
+
+For SQLite, run the broad picker and read commands before opening the write stage.
+The directory uses the write opt-in when seeding and can enter the write stage once.
+
+~~~sh
+php_bin=$(command -v php)
+env -i PATH="$PATH" "$php_bin" -d memory_limit=128M bin/benchmark-schema-scale.php --panel-writes \
+  "$unpacked_application" "$rows" "$new_output_directory" &&
+node bin/benchmark-schema-relations.cjs "$php_bin" "$unpacked_application" "$new_output_directory" &&
+node bin/benchmark-schema-relations.cjs --panel-sql "$php_bin" "$unpacked_application" "$new_output_directory" &&
+node bin/benchmark-schema-relations.cjs --panel-control-sql "$php_bin" "$unpacked_application" "$new_output_directory" &&
+node bin/benchmark-schema-relations.cjs --panel-write-sql "$php_bin" "$unpacked_application" "$new_output_directory"
+~~~
+
+A successful sequence has a broad-picker report and three complete browser
+receipts. Check that each SQL receipt names the matching plan file and its
+SHA-256 digest. A native run also verifies teardown in `cleanup-result.txt`.
+Review the Linux app profiles below for the separately measured cgroup limits.
+
 ## Compare Linux app resource profiles
 
 Use a local, reviewed Linux image with Bash or POSIX shell, PHP 8.4 or newer, and the built
