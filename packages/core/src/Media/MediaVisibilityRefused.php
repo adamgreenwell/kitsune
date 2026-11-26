@@ -30,6 +30,9 @@ final class MediaVisibilityRefused extends RuntimeException
     /** The entry is neither this site's nor shared with this site's organisation. */
     public const OUT_OF_SCOPE = 'out_of_scope';
 
+    /** Sharing was requested from a record loaded before a scope or type change. */
+    public const STALE = 'stale';
+
     /** The acting user may not publish the entry's type. */
     public const NOT_PERMITTED = 'not_permitted';
 
@@ -95,6 +98,12 @@ final class MediaVisibilityRefused extends RuntimeException
 
     public const TO_STOP = 'stop offering';
 
+    public const TO_SHARE = 'change sharing';
+
+    public const OWNER_REQUIRED = 'owner_required';
+
+    public const ACTIVE_READER_OFFER = 'active_reader_offer';
+
     /**
      * @param  string  $to  "public" or "private", or `TO_OFFER` or `TO_STOP`
      * @param  ?string  $disk  the disk the refusal is about, where there is one
@@ -114,11 +123,15 @@ final class MediaVisibilityRefused extends RuntimeException
         $prefix = match ($to) {
             self::TO_OFFER => sprintf('Refusing to offer entry %d to readers: ', $entryId),
             self::TO_STOP => sprintf('Refusing to stop offering entry %d to readers: ', $entryId),
+            self::TO_SHARE => sprintf('Refusing to change sharing for entry %d: ', $entryId),
             default => sprintf('Refusing to make entry %d %s: ', $entryId, $to),
         };
 
         parent::__construct($prefix.match ($reason) {
+            self::OWNER_REQUIRED => 'only an organisation owner can change sharing.',
+            self::ACTIVE_READER_OFFER => 'stop offering the file to readers before changing its sharing.',
             self::GONE => 'it no longer exists.',
+            self::STALE => 'its site or type changed since it was loaded. Reload the entry before changing sharing.',
             self::OUT_OF_SCOPE => 'it is neither this site\'s nor shared with this site\'s organisation, so nothing was changed.',
             self::NOT_PERMITTED => sprintf(
                 'that needs [entry.%s.publish], which the acting user does not hold, so nothing was changed (ADR-042 decision 32).',

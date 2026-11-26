@@ -17,6 +17,7 @@ use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
 use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\MediaReaderActions;
+use Kitsune\Core\Filament\MediaSharingActions;
 use Kitsune\Core\Filament\MediaVisibilityActions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 
@@ -40,6 +41,6 @@ class EditEntry extends EditRecord
      */
     protected function getHeaderActions(): array
     {
-        return [...MediaVisibilityActions::all(), ...MediaReaderActions::all(), DeleteAction::make()->using(MediaDeletionNotice::deleteOne(...))];
+        return [...MediaVisibilityActions::all(), ...MediaReaderActions::all(), ...MediaSharingActions::all(), DeleteAction::make()->using(MediaDeletionNotice::deleteOne(...))];
     }
 }

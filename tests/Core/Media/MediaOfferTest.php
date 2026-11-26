@@ -618,7 +618,10 @@ describe('the actions', function (): void {
         expect(array_map(static fn (Action $action): string => $action->getName(), MediaReaderActions::all()))
             ->toBe(['offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders'])
             ->and($names(ViewEntry::class))->toBe(['makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders', 'edit'])
-            ->and($names(EditEntry::class))->toBe(['makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders', 'delete']);
+            ->and($names(EditEntry::class))->toBe([
+                'makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders',
+                'shareFileWithOrg', 'keepFileToSite', 'delete',
+            ]);
 
         app()->instance(EntryType::class, EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']));
 

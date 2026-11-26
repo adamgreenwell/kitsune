@@ -645,6 +645,14 @@ final class Permissions
         return once(fn (): bool => self::resolveIsOwner($userId, $orgId, $class));
     }
 
+    /** Re-read ownership at a write boundary after the caller has taken its lock. @internal */
+    public static function isOwnerNow(Authenticatable $user): bool
+    {
+        [$userId, $orgId] = self::key($user);
+
+        return $userId !== null && $orgId !== null && self::resolveIsOwner($userId, $orgId, $user::class);
+    }
+
     private static function resolveIsOwner(int|string $userId, int $orgId, string $class): bool
     {
         if (! self::isMemberOfCurrentOrg($userId, $class)) {
