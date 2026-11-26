@@ -30,7 +30,16 @@ on loopback.
 
 ## Recover or upgrade
 
-On an interrupted install, rerun the same reviewed release with the same inputs. The installer
+On an interrupted fresh install, rerun the same reviewed release with the same inputs.
+For an interrupted upgrade, follow the journal and recovery procedure in [the upgrade guide](../../../docs/upgrades.md). The installer
 preserves the existing key and SQLite data. On a completed installation, it reports the installed
 state and directs you to [upgrades](../../../docs/upgrades.md). Keep a backup of the entire data
 directory while the site is stopped and store a protected copy of `APP_KEY`.
+
+## Reruns and upgrades
+
+A normal installer rerun verifies the manifest and archive, compares the release receipt, and
+returns success for the already installed release. Use the signed upgrade workflow for a
+different release. The installer accepts its commands with an `upgrade` prefix. See
+[upgrade and compatibility](../../../docs/upgrades.md) for preparation, migration, staging,
+traffic handoff and recovery.

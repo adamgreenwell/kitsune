@@ -95,14 +95,20 @@ output directory and a new archive filename.
 bin/build-runtime-bundle.sh "$source_checkout" "$exact_source_commit" "$output_archive"
 ```
 
-The builder resolves dependencies for PHP 8.4.0, installs production packages, copies required
-`kitsune/*` packages from the same commit, and generates the Laravel package index and Filament assets.
+The development builder resolves dependencies for PHP 8.4.0, installs production packages, and assigns
+each bundled `kitsune/*` dependency the version `dev-<exact_source_commit>`. It copies those packages
+from the same commit and generates the Laravel package index and Filament assets. Use those versions in
+the development manifest so Composer, the manifest, and installed module receipts agree.
+For explicit versions, append `--package-plan=/absolute/path/to/release-plan.json`. The builder reads the
+same `packages` map used to create the manifest, so use the same package versions when signing and replaying
+the archive.
 It embeds the resulting `composer.lock` and reports both its SHA-256 and the archive SHA-256. The archive
 contains neither local configuration, an SQLite database, nor generated application logs. Installer
 qualification must verify the extracted archive on the supported hosts.
 
 For a release replay, retain the embedded lock as a build input alongside the commit and toolchain.
 Supply it as the fourth argument and compare the archive's hash before listing it in the build plan.
+A lock produced before commit-specific versions were pinned must be regenerated for a new candidate.
 
 ```sh
 tar -xOzf "$output_archive" ./composer.lock > "$saved_runtime_lock"

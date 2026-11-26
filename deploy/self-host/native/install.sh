@@ -170,11 +170,27 @@ install_host_packages() (
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
 )
 
+require_install_journal_available() {
+    local journal=$1 php=$2 repository=$3
+    if [[ ! -e "$journal" && ! -L "$journal" ]]; then
+        return
+    fi
+
+    "$php" -r '
+        require $argv[1]."/bin/release/SelfHostUpgradeJournal.php";
+        $journal = Kitsune\Release\SelfHostUpgradeJournal::open($argv[2], readOnly: true);
+        $journal->requireAvailable();
+    ' "$repository" "$journal" 9>&- >/dev/null 2>&1 \
+        || refuse 'resolve the native upgrade journal before rerunning the installer; see docs/upgrades.md'
+}
+
 main() {
-    (( $# == 7 )) || refuse 'usage: install.sh MANIFEST SIGNATURE PUBLIC_KEY FINGERPRINT VERSION CHANNEL ARCHIVE'
     (( EUID == 0 )) || refuse 'run on a dedicated Ubuntu host as root after reviewing the script'
     [[ -d /run/systemd/system ]] || refuse 'a running systemd host is required'
-    [[ $7 == *.tar.gz ]] || refuse 'the application archive must be a .tar.gz'
+    if [[ ${1:-} != upgrade ]]; then
+        (( $# == 7 )) || refuse 'usage: install.sh MANIFEST SIGNATURE PUBLIC_KEY FINGERPRINT VERSION CHANNEL ARCHIVE'
+        [[ $7 == *.tar.gz ]] || refuse 'the application archive must be a .tar.gz'
+    fi
     local tool
     for tool in curl openssl dpkg ss flock; do
         command -v "$tool" >/dev/null || refuse "missing host prerequisite: $tool"
@@ -196,16 +212,38 @@ main() {
     local -a packages
     read -r -a packages <<< "$packages_value"
 
-    # Serialize installation on this host before creating or inspecting owned state.
-    exec 9>>/run/lock/kitsune-native-install.lock
-    flock -n 9 || refuse 'another installation is running'
+    if [[ $1 == upgrade ]]; then
+        shift
+        case "${1:-}" in
+            inspect|plan|request-native-admission|verify-native-admission|migrate-native|stage-native|confirm-native-private|publish-native|recover-native) ;;
+            *) refuse 'choose an explicit native upgrade phase; see docs/upgrades.md' ;;
+        esac
+        # The upgrade commands own the journal and installer locks across each operation.
+        exec env -i PATH=/usr/bin:/bin "/usr/bin/php$php_version" "$root/bin/self-host-upgrade.php" "$@"
+    fi
+
+    # Keep the same root-owned lock as the PHP upgrade commands, including after a reboot.
+    local lock=/run/lock/kitsune-native-install.lock
+    if [[ ! -e "$lock" && ! -L "$lock" ]]; then
+        (set -o noclobber; : > "$lock") 2>/dev/null || true
+    fi
+    [[ -f "$lock" && ! -L "$lock" && "$(stat -c '%u:%a:%h' -- "$lock")" == '0:600:1' ]] \
+        || refuse 'the native installer lock must be a root-owned private file'
+    exec 9<> "$lock"
+    flock -n 9 || refuse 'another installation or upgrade is running'
+    require_install_journal_available /var/lib/kitsune-upgrades/journal "/usr/bin/php$php_version" "$root"
     if [[ -e "$destination/.installed" || -L "$destination/.installed" ]]; then
         [[ ! -L "$destination" && ! -L "$destination/.installed" && ! -L "$destination/.release" ]] \
             && cmp -s "$destination/.release" "$destination/.installed" \
             || refuse 'existing installation has invalid release records'
         [[ -s "$state/database/database.sqlite" && -s "$state/.env" ]] \
             || refuse 'restore the database and APP_KEY for the existing installation'
-        printf '%s\n' 'Existing Kitsune installation detected. See docs/upgrades.md for the upgrade process.'
+        work=$(mktemp -d /opt/.kitsune-inspect.XXXXXXXX)
+        trap 'rm -rf -- "$work"' EXIT
+        verify_application "$@" "$architecture"
+        cmp -s "$work/release" "$destination/.installed" \
+            || refuse 'a different verified release requires install.sh upgrade with a signed admission; see docs/upgrades.md'
+        printf '%s\n' 'The requested release is already installed. Use install.sh upgrade inspect to review its state.'
         return
     fi
     if [[ ! -e "$destination" && ! -L "$destination" ]]; then

@@ -30,7 +30,7 @@ final class SelfHostUpgradePlan
             throw new InvalidArgumentException('Choose the deployment platform explicitly.');
         }
 
-        $targetArtifact = self::targetArchive($target, $archivePath, $platform);
+        $targetArtifact = self::verifiedTargetArchive($target, $archivePath, $platform);
         $result = [
             'installation' => $installation,
             'origin' => [
@@ -79,7 +79,7 @@ final class SelfHostUpgradePlan
     }
 
     /** @return array{name:string, role:string, platform:string, size:int, sha256:string} */
-    private static function targetArchive(Manifest $target, string $path, string $platform): array
+    public static function verifiedTargetArchive(Manifest $target, string $path, string $platform): array
     {
         $name = basename($path);
         foreach ($target->artifacts as $artifact) {
