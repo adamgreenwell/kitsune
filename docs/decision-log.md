@@ -2056,6 +2056,12 @@ additive re-apply and cannot be met for a field that already holds data; see the
 Marketing Site 1.1.0 exists~~ condition 2 met by the released Marketing Site 1.1.0, upgraded from 1.0.0 by a named test
 (ADR-039, Marketing Site 1.1.0, as built, 2026-10-04); ~~condition 3's figures owed~~ **2026-10-22 (#207): constrained-container apply figures [recorded](benchmarks/blueprint-floor-2026-10-22.md); condition 3's real native-host evidence remains owed**. **Not met** — on condition 3 alone. Once met, the public side is the placeholder and the admin until v1.1, said publicly
 
+**Native apply measured, 2026-11-25 (#208).** A fresh SQLite database in a disposable ARM64 Linux guest
+configured for 1 vCPU and 1 GB applied Marketing Site at 82,640 KiB peak process RSS in 0.29 seconds.
+The reapply preserved the database bytes. The same source tree separately passed the Marketing Site admin
+browser scenarios. This supplies condition 3's native apply evidence. The first real project-site install
+still requires its own deployment and service readback. [Native measurement](benchmarks/blueprint-floor-2026-10-22.md#native-marketing-site-apply-2026-11-25)
+
 Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
 
 **The project's own site is its first install.** Not a demo of one — the real thing, in public, with the maintainer as the operator who has to live with it.

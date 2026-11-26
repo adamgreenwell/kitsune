@@ -87,7 +87,7 @@ the older developer-host figures is claimed.
 
 ## Remaining evidence
 
-- Native-host installation, application service and Marketing Site behavior at the real floor remain unmeasured.
+- The native Marketing Site apply is recorded below. First hosted installation and service acceptance remain in #208.
 - Concurrent requests and full-system memory pressure remain unmeasured.
 - Private media stage workloads remain #219's separate work.
 - Host extension portability remains #128's separate work.
@@ -96,3 +96,28 @@ Raw stdout, per-container inspections, source manifests and database audit recei
 task's `artifacts/issue207` evidence. Qualification receipt SHA-256:
 `1daee99ff8143b19cb3fb8b4bb694f8886716e42fa9a787fb99521f23cf16135`.
 The older `floor.composer.lock` and its historical results remain intact; this dated lock records a different graph.
+
+
+## Native Marketing Site apply, 2026-11-25
+
+A disposable ARM64 Linux guest configured for 1 vCPU and 1 GB reported 970,200 kB usable memory.
+It ran PHP 8.5.4 with SQLite, file-backed sessions and cache, a synchronous queue, and log-only mail.
+The guest had no installed container runtime or listening MySQL, PostgreSQL or Redis service.
+
+| Command | Elapsed | Peak process RSS |
+|---|---:|---:|
+| Fresh Marketing Site 1.1.0 apply with first owner | 0.29 s | 82,640 KiB |
+| Same-version reapply | 0.10 s | 78,836 KiB |
+
+The fresh database had zero users, Orgs, Sites or blueprint receipts before the apply. SQLite integrity
+and foreign-key checks passed afterward. The application recorded one owner, Org, Site, blueprint
+receipt and page type. The reapply skipped and preserved the exact SQLite bytes. A separate browser
+run on the same source tree passed eight Marketing Site cases, including editing a page after
+publication through the admin. The existing PHP fixture suite passed 26 tests covering fresh apply,
+idempotent reapply, and an additive upgrade over released 1.0.0 with operator edits.
+
+The archive was built from main `30b8837792701edb88f7e16f45acc3ec9f4c9ea1`. Its SHA-256 was
+`4f57cc6e56b1d68b531dc87f4046952a284b5785f668a3e052303b9546f2e6e6` and its embedded Composer lock
+SHA-256 was `62cd56414a0e2b37e9cad124fc80fb887a138a3f4dccd198d18a3faaa95e2313`. These results
+measure one native apply and reapply. The target installation, service load, restart and public hostname
+evidence are tracked separately. [First project-site install #208](https://github.com/adamgreenwell/kitsune/issues/208)
