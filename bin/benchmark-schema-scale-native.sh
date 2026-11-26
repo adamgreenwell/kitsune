@@ -12,7 +12,12 @@ refuse() {
     exit 1
 }
 
-(( $# == 5 )) || refuse 'usage: benchmark-schema-scale-native.sh DRIVER IMAGE_ID APPLICATION ROWS ABSOLUTE_NEW_OUTPUT'
+panel_reads=
+if [[ "${1-}" == --panel-reads ]]; then
+    panel_reads=1
+    shift
+fi
+(( $# == 5 )) || refuse 'usage: benchmark-schema-scale-native.sh [--panel-reads] DRIVER IMAGE_ID APPLICATION ROWS ABSOLUTE_NEW_OUTPUT'
 driver=$1
 image=$2
 application=$(cd -- "$3" && pwd -P) || refuse 'the built application is unavailable'
@@ -194,4 +199,8 @@ env -i PATH="$PATH" "$php_bin" -d memory_limit=128M "$root/bin/benchmark-schema-
     || refuse "seed failed; see $out/seed.log"
 env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native "$php_bin" "$application" "$out" > "$out/browser.log" 2>&1 \
     || refuse "browser benchmark failed; see $out/browser.log"
+if [[ "$panel_reads" == 1 ]]; then
+    env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native --panel-reads "$php_bin" "$application" "$out" > "$out/panel-reads.log" 2>&1 \
+        || refuse "panel reads failed; see $out/panel-reads.log"
+fi
 printf 'Native schema benchmark completed: %s\n' "$out"

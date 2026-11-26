@@ -13,6 +13,7 @@ namespace Kitsune\Benchmarks;
 use Generator;
 use InvalidArgumentException;
 use Kitsune\Core\Models\Entry;
+use LogicException;
 use OutOfBoundsException;
 
 /**
@@ -81,6 +82,44 @@ final class SchemaScaleCorpus
     public function populations(): array
     {
         return $this->groups;
+    }
+
+    /** @return list<array{site: int, owner: int, article: int, selective_article: int}> */
+    public function panelReadTargets(): array
+    {
+        $targets = [];
+        $before = 0;
+        foreach ($this->groups as $group) {
+            $last = $before + $group['rows'];
+            if ($group['kind'] === 'article' && $group['site'] !== null) {
+                $first = $before + 1;
+                while ($first <= $last && $this->row($first)['deleted_at'] !== null) {
+                    $first++;
+                }
+                if ($first > $last) {
+                    throw new LogicException('A browser target Site has no live article.');
+                }
+                $selective = $last;
+                while ($this->row($selective)['deleted_at'] !== null) {
+                    $selective--;
+                }
+                $targets[] = [
+                    'site' => $group['site'],
+                    'owner' => $group['org'],
+                    'article' => $first,
+                    'selective_article' => $selective,
+                ];
+            }
+            $before = $last;
+        }
+
+        return $targets;
+    }
+
+    /** @return array{shared: int, other_org: int} */
+    public function panelMediaTargets(): array
+    {
+        return ['shared' => $this->targets[1][0], 'other_org' => $this->targets[2][0]];
     }
 
     /** @return Generator<int, array<string, mixed>> */

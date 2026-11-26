@@ -35,6 +35,34 @@ it('keeps the three scales comparable without losing smaller populations', funct
     }
 });
 
+it('supplies live panel read targets in each Site at the three scales', function (): void {
+    foreach ([10_000, 100_000, 1_000_000] as $size) {
+        $corpus = new SchemaScaleCorpus($size);
+        $targets = $corpus->panelReadTargets();
+        expect(array_column($targets, 'site'))->toBe([1, 2, 3, 4, 5])
+            ->and(array_column($targets, 'owner'))->toBe([1, 1, 2, 2, 3]);
+
+        $media = $corpus->panelMediaTargets();
+        foreach (['shared' => 1, 'other_org' => 2] as $key => $org) {
+            $row = $corpus->row($media[$key]);
+            expect($row['org'])->toBe($org)
+                ->and($row['kind'])->toBe('asset')
+                ->and($row['site'])->toBeNull()
+                ->and($row['deleted_at'])->toBeNull();
+        }
+
+        foreach ($targets as $target) {
+            foreach ([$target['article'], $target['selective_article']] as $id) {
+                $row = $corpus->row($id);
+                expect($row['site'])->toBe($target['site'])
+                    ->and($row['org'])->toBe($target['owner'])
+                    ->and($row['kind'])->toBe('article')
+                    ->and($row['deleted_at'])->toBeNull();
+            }
+        }
+    }
+});
+
 it('streams an exact corpus with distinct ids and both scope boundaries', function (): void {
     $corpus = new SchemaScaleCorpus(10_000);
     $ids = $visible = [];

@@ -450,6 +450,8 @@ final class SchemaScaleExperiment
             'resource_limits_applied' => null, 'cache_condition' => 'warm local process and OS; no cold-cache claim',
             'resource_scope' => 'The application does not attest CPU or host-memory limits. See the paired launcher receipt when available.',
             'reads' => $reads, 'audited_writes' => $writes,
+            'panel_read_targets' => $panelMedia ? $corpus->panelReadTargets() : [],
+            'panel_media_targets' => $panelMedia ? $corpus->panelMediaTargets() : [],
             'title_phase_audit_rows' => $auditAfter - $auditBefore,
             'field_and_media_phase_audit_rows' => $auditBeforeProvisioning - $auditAfter,
             'account_provisioning_audit_rows' => $db->table('audit_log')->count() - $auditBeforeProvisioning,
