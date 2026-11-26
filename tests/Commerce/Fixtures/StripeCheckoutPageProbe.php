@@ -37,6 +37,7 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\ReaderFixture;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\TestCase;
 
 define('KITSUNE_CATALOGUE_PROBE_CLASSES_ONLY', true);
 require __DIR__.'/PublicCataloguePageProbe.php';
@@ -73,7 +74,7 @@ $console->bootstrap();
 $prefix = $scenario === 'root' ? '' : ($scenario === 'nested' ? '/news/fr/shop' : '/brand');
 $origin = $scenario === 'root' ? 'http://checkout.test' : 'http://localhost';
 if ($step === 'seed') {
-    if ($console->call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations', $root.'/skeleton/database/migrations/0001_01_01_000020_create_readers_table.php'], '--realpath' => true, '--force' => true]) !== 0) {
+    if ($console->call('migrate', ['--path' => [$root.'/packages/core/database/migrations', $root.'/tests/Commerce/migrations', ...TestCase::READERS_MIGRATIONS], '--realpath' => true, '--force' => true]) !== 0) {
         throw new RuntimeException($console->output());
     }
     $org = Org::create(['slug' => 'stripe-page', 'name' => 'Stripe test org', 'currency' => 'USD']);

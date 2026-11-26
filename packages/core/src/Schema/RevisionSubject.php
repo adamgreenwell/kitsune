@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Schema;
 
+use Illuminate\Support\Str;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
@@ -23,7 +24,7 @@ final class RevisionSubject
     /**
      * Capture only schema and scope. The subject value already lives in the existing revision representations.
      *
-     * @return array{org: int, site: ?int, type: int, storage: int, strategy: string, key: string, fields: array<string, array{storage: int, strategy: string, key: string}>}|null
+     * @return array{org: int, site: ?int, type: int, storage: int, strategy: string, key: string, witness: string, fields: array<string, array{storage: int, strategy: string, key: string}>}|null
      */
     public static function capture(Entry $entry): ?array
     {
@@ -74,6 +75,7 @@ final class RevisionSubject
             'org' => (int) $entry->org_id,
             'site' => $entry->site_id === null ? null : (int) $entry->site_id,
             'type' => (int) $entry->entry_type_id,
+            'witness' => Str::uuid()->toString(),
             ...$subject,
             'fields' => $projection,
         ];

@@ -48,6 +48,7 @@ use Kitsune\Core\Console\MediaS3DiagnoseCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\ReadersCommand;
+use Kitsune\Core\Console\RevisionErasureCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Console\SiteApiTokenCommand;
 use Kitsune\Core\Console\SiteCommand;
@@ -335,6 +336,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 BenchmarkAdminCommand::class,
                 ModuleCommand::class,
                 ReadersCommand::class,
+                RevisionErasureCommand::class,
                 SchemaSyncCommand::class,
                 SiteApiTokenCommand::class,
                 SiteCommand::class,

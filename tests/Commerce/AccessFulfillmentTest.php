@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\AccessEffect;
 use Kitsune\Commerce\Models\AccessWork;
@@ -421,7 +422,7 @@ it('preserves an expired initial source absence across a later grant callback', 
             $second = (array) DB::table('entitlements')->where('id', $audit->target_id)->sole();
             unset($second['id']);
             DB::table('entitlements')->insert([...$second, 'entitlement' => 'course.purchased', 'expires_at' => null,
-                'change_token' => str_repeat('a', 64)]);
+                'change_token' => str_repeat('a', 64), 'erasure_anchor' => Str::uuid()->toString()]);
             $attacked = true;
         }
     }, function () use ($order): void {

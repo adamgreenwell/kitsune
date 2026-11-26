@@ -15,6 +15,7 @@ use DateTimeInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Entitlements\EntitlementCheck;
@@ -147,6 +148,7 @@ final class EntitlementFixture
         ?int $orgId = null,
     ): int {
         return (int) DB::table('entitlements')->insertGetId([
+            'erasure_anchor' => Str::uuid()->toString(),
             'org_id' => $orgId ?? $site->org_id,
             'site_id' => $site->getKey(),
             'reader_id' => $readerId,

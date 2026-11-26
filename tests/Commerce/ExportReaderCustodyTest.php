@@ -14,6 +14,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
@@ -206,7 +207,7 @@ it('does not rediscover an erased purchase through a replacement account with th
     app(OrderPrivacy::class)->adoptAsOwner($order->reference, $this->policy->version, 'Explicit erasure fixture adoption', true);
     app(AccessFulfillment::class)->reconcile($order->reference);
     expect(app(ReaderErasure::class)->erase($key)['account'])->toBeTrue();
-    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'replacement-export@example.test',
+    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'replacement-export@example.test', 'erasure_anchor' => Str::uuid()->toString(),
         'password' => null, 'email_verified_at' => null, 'created_at' => now(), 'updated_at' => now()]);
     $export = app(ReaderExport::class)->for($key);
     expect($export['module_data']['kitsune/commerce'])->toBe(['carts' => [], 'orders' => []])
