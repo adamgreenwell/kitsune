@@ -18,7 +18,6 @@ use Kitsune\Core\Auth\ReaderGuard;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Readers\ReaderAccounts;
-use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Context;
 use PDOException;
 
@@ -43,8 +42,6 @@ use PDOException;
  */
 final class ReaderNames
 {
-    use ReadsWrittenKeys;
-
     /** The page's readers' addresses are shown. */
     public const SHOWN = 'shown';
 
@@ -147,10 +144,14 @@ final class ReaderNames
             $found = [];
 
             foreach ($rows as $row) {
-                $read = $row instanceof ReaderAccount ? self::readBack($row, $model, $orgId) : null;
+                $reader = ReaderAccounts::readerInOrg($row, $orgId);
+                if ($reader === null) {
+                    continue;
+                }
 
+                $read = self::readBack($reader, $model);
                 if ($read !== null) {
-                    $found[$read] = $row;
+                    $found[$read] = $reader;
                 }
             }
 
@@ -168,15 +169,8 @@ final class ReaderNames
      *
      * @param  class-string<Model>  $model
      */
-    private static function readBack(ReaderAccount $row, string $model, int $orgId): ?string
+    private static function readBack(Model&Authenticatable&ReaderAccount $row, string $model): ?string
     {
-        if (! $row instanceof Model || ! $row instanceof Authenticatable) {
-            return null;
-        }
-
-        if (self::writtenKey($row->getAttributes()['org_id'] ?? null) !== $orgId) {
-            return null;
-        }
 
         $byKey = ReaderGuard::stored(Permissions::userKey($row->getKey(), $model));
 

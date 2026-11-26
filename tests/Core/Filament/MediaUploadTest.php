@@ -19,6 +19,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
@@ -46,6 +47,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -84,7 +86,7 @@ function stillStaged(): array
 /** @return list<array<string, mixed>> */
 function uploadNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** A file stored through the library itself, as the panel's upload would store it. */
@@ -265,7 +267,9 @@ describe('the handler', function (): void {
             ->and(Entry::query()->count())->toBe(0)
             ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles())->toBe([])
             ->and(stillStaged())->toHaveCount(1)
-            ->and(stillStaged()[0])->toEndWith('.png.json');
+            ->and(stillStaged()[0])->toEndWith('.bin.json')
+            ->and(json_decode(Storage::disk(FileUploadConfiguration::disk())->get(stillStaged()[0]), true, flags: JSON_THROW_ON_ERROR)['name'])
+            ->toBe('photo.png');
     });
 
     /*
@@ -800,7 +804,7 @@ describe('a media type\'s create page', function (): void {
         // The control: the same reader on another type's create page is refused by the permission, not as missing.
         app()->instance(EntryType::class, EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']));
 
-        expect($status())->toBe(403);
+        expect($status)->toThrow(AuthorizationException::class);
 
         // And allowed there, once they may create.
         $this->role->grant(Permissions::forEntryType('article', 'create'));

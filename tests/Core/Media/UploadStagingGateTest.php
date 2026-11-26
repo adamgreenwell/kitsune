@@ -575,7 +575,9 @@ describe('a file the intake disk did not store', function (): void {
             ])
             // The sidecar Livewire wrote first names no file the answer carries: it stays for the sweep, as it did.
             ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(1)
-            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.png.json');
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.bin.json')
+            ->and(json_decode(Storage::disk(MediaDisks::INTAKE)->get(Storage::disk(MediaDisks::INTAKE)->allFiles()[0]), true, flags: JSON_THROW_ON_ERROR)['name'])
+            ->toBe('photo.png');
         notStoredReported(1, 1);
     });
 
@@ -594,7 +596,9 @@ describe('a file the intake disk did not store', function (): void {
             ->and(json_decode((string) $response->getContent(), true)['errors'])->toBe(['files.1' => [GuardUploadStaging::NOT_STORED]])
             // The first file and its sidecar are gone; only the second's orphaned sidecar is left.
             ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(1)
-            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.png.json');
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles()[0])->toEndWith('.bin.json')
+            ->and(json_decode(Storage::disk(MediaDisks::INTAKE)->get(Storage::disk(MediaDisks::INTAKE)->allFiles()[0]), true, flags: JSON_THROW_ON_ERROR)['name'])
+            ->toBe('two.png');
         notStoredReported(1, 2);
         Exceptions::assertNotReported(fn (RuntimeException $e): bool => str_contains($e->getMessage(), 'could not be removed'));
     });

@@ -69,3 +69,16 @@ make its records or files public.
 
 The theme runs on Blade and the existing database at request time. A standard SQLite
 installation can render it without Node, a separate service or a worker.
+
+## Response caching
+
+Kitsune renders theme HTML for each request and sends `Cache-Control: private, no-store` on
+theme pages. Trusted Blade can access the request, session or reader state. Each response
+uses the current Org, Site, locale, entries and menus. Kitsune's release script rebuilds
+compiled Blade template code into that release’s private view cache. Each response renders
+that code against the current request.
+
+A support integration can place an inert, identity-free placeholder in a theme. The separate
+support module will authorize the current reader on a same-origin POST under the current
+Site's canonical prefix. Keep that response private and out of storage, including when
+authorization is refused. The module remains subject to the provider qualification in ADR-036.

@@ -325,10 +325,10 @@ describe('against a rival holding the row', function (): void {
     })->with(['entry' => ['entries', 'id'], 'file' => ['media_files', 'entry_id']]);
 
     /*
-     * T54. A lock wait inside a nested trash, and a host that catches it and commits. On MySQL and MariaDB the timeout
-     * ends only the statement and Laravel does not roll back the savepoint — so without custody's own `ROLLBACK TO`, the
-     * host's commit would commit the trash with its file still on the web. The control shows the engine doing exactly
-     * that to a write custody does not guard.
+     * T54. A lock wait inside a nested trash must leave the entry live and keep its public file even when the host
+     * catches the error and commits. Our original MySQL and MariaDB control showed that a raw nested write survived
+     * with the earlier Laravel version. The refreshed framework attempts the savepoint rollback itself. Keep testing
+     * custody's explicit recovery because the supported framework range includes that earlier behavior.
      */
     it('keeps an entry whose nested trash waited on a rival past its timeout', function (): void {
         // Published: on the public disk its row names, committed before the rival takes its lock.
@@ -385,27 +385,43 @@ describe('against a rival holding the row', function (): void {
             ->and($exit)->toBe(1);
     });
 
-    it('shows the engine keeping a savepoint\'s write that a lock wait interrupted', function (): void {
-        if (DB::connection()->getDriverName() === 'pgsql') {
-            $this->markTestSkipped('PostgreSQL\'s lock_timeout is not a concurrency error, so Laravel rolls the savepoint back itself.');
-        }
-
+    it('rolls back a nested write when the next statement hits a lock wait', function (): void {
         $this->rival->beginTransaction();
         $this->rival->table('media_files')->where('entry_id', $this->ids['entry'])->lockForUpdate()->first();
 
-        DB::transaction(function (): void {
+        // Characterise the pinned framework independently of Kitsune's transaction wrapper.
+        $failure = DB::transaction(function (): QueryException|DeadlockException|null {
+            $level = DB::transactionLevel();
+            DB::table('entries')->where('id', $this->ids['entry'])->update(['slug' => 'outer-savepoint-witness']);
+
             try {
                 DB::transaction(function (): void {
                     DB::table('entries')->where('id', $this->ids['entry'])->update(['deleted_at' => now()]);
                     DB::table('media_files')->where('entry_id', $this->ids['entry'])->lockForUpdate()->first();
                 });
-            } catch (DeadlockException) {
+            } catch (QueryException|DeadlockException $error) {
+                expect(DB::transactionLevel())->toBe($level)
+                    ->and(DB::connection()->getPdo()->inTransaction())->toBeTrue();
+
+                return $error;
             }
+
+            return null;
         });
 
         $this->rival->rollBack();
 
-        expect(DB::table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->value('deleted_at'))->not->toBeNull();
+        $previous = $failure instanceof DeadlockException ? $failure->getPrevious() : $failure;
+        expect($previous)->toBeInstanceOf(QueryException::class);
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            expect($previous->errorInfo[0])->toBe('55P03');
+        } else {
+            expect($previous->errorInfo[1])->toBe(1205);
+        }
+
+        $entry = DB::table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->first();
+        expect($entry->deleted_at)->toBeNull()
+            ->and($entry->slug)->toBe('outer-savepoint-witness');
     });
 });
 

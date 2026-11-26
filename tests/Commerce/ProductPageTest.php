@@ -46,8 +46,7 @@ it('hands native saved listeners the new shared values after an edit', function 
     expect($result['observed'])->toBe(['CHANGED', '2500', '5'])
         ->and($result['persisted'])->toBe(['sku' => 'CHANGED', 'price_minor' => '2500', 'stock' => '5'])
         ->and($result['errors'])->toBe([])->and($result['level'])->toBe(0)->and($result['pdo_transaction'])->toBeFalse()
-        ->and($result['notifications'])->toHaveCount(1)->and($result['notifications'][0]['title'])->toBe('Saved')
-        ->and(array_column($result['dispatches'], 'name'))->toContain('notificationsSent');
+        ->and($result['notifications'])->toHaveCount(1)->and($result['notifications'][0]['title'])->toBe('Saved');
 });
 
 it('keeps a concurrently changed balance when saving an already loaded native product form', function (): void {

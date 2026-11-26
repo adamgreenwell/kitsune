@@ -907,7 +907,7 @@ final class EntitlementWriter
                     }
                 }
             } else {
-                $this->auditor->recordOrFail($action ?? throw EntitlementRefused::because(EntitlementRefusal::Cancelled, $act, $entitlement), $row);
+                $this->auditor->recordOrFail($action, $row);
             }
 
             return $outcome;

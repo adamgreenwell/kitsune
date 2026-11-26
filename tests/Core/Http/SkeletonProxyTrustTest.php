@@ -33,10 +33,12 @@ $probe = static function (array $cases, array $env = []): array {
         $app = require $root.'/skeleton/bootstrap/app.php';
         $app->instance('config', new Illuminate\Config\Repository([]));
         $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-        $seen = ['global' => in_array(Illuminate\Http\Middleware\TrustProxies::class, $kernel->getGlobalMiddleware(), true)];
+        $proxyClass = App\Http\Middleware\TrustLoopbackProxies::class;
+        $seen = ['global' => in_array($proxyClass, $kernel->getGlobalMiddleware(), true)];
+        $proxy = $app->make($proxyClass);
         foreach (json_decode((string) stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR) as $name => [$uri, $server]) {
             $request = Illuminate\Http\Request::create($uri, 'GET', [], [], [], $server);
-            (new Illuminate\Http\Middleware\TrustProxies)->handle($request, function ($resolved) use (&$seen, $name) {
+            $proxy->handle($request, function ($resolved) use (&$seen, $name) {
                 $seen[$name] = ['ip' => $resolved->ip(), 'secure' => $resolved->isSecure(), 'host' => $resolved->getHost(), 'root' => $resolved->root()];
 
                 return new Illuminate\Http\Response;
