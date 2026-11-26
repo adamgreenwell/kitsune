@@ -70,12 +70,27 @@ Those observations have their own measurement boundaries.
 Use `--panel-sql` in place of `--panel-reads`. The browser records a private SELECT profile for
 each navigation, warmup and pagination calibration. After the browser exits, a separate
 query-only PDO connection obtains estimated plans using the captured statements and bindings.
-Instrumentation adds work to the timed navigation. The final `schema-scale-panel-sql.json` binds
-the digest of `schema-scale-read-plans.json`, which reports profile and statement counts and
-nonempty estimated plan digests. Both receipts are needed for a completed SQL run.
+`schema-scale-read-plans.json` reports the profile and statement counts and the plan digests.
 The raw profiles are private and can include bound values from the synthetic fixture. This
 mode profiles the panel page requests. Private-image fetch and write timing retain their own
 boundaries.
+
+## Verify permissions and measure targeted picker searches
+
+Run the browser command with `--panel-controls` before the PHP path. The fixture supplies
+live articles and assets for the success and denial controls. The browser checks eight
+denials across the sibling Site, Org and editor-grant boundaries, verifying accessible
+controls for the same records first. Four additional direct requests verify Org
+page access with both owners. Four targeted picker searches verify the returned
+IDs or the expected empty result, with 25 timed observations per case after warmup.
+Search timing starts when the term is entered and ends when the Livewire response body is
+available. It includes the picker debounce. The output is `schema-scale-panel-controls.json`.
+
+Use `--panel-control-sql` to record each of the 100 timed picker POST requests and
+obtain estimated plans for their captured SELECTs. Its timing includes the capture
+cost and uses separate fields from the ordinary control run. The final
+`schema-scale-panel-control-sql.json` binds the plan receipt digest. The two
+preliminary positive searches and the warmup searches run outside SQL capture.
 
 ## Measure panel writes on a fresh fixture
 
@@ -88,13 +103,23 @@ node bin/benchmark-schema-relations.cjs --panel-writes "$(command -v php)" "$unp
 ~~~
 
 The seed records write authority for that output directory, database and dependency lock.
-Finish all read stages first. A fixture accepts one browser stage at a time and refuses further
-reads or writes once its write stage starts. It writes 25 change-and-restore pairs across 12 cases,
+Run the write stage once per fixture. It writes 25 change-and-restore pairs across 12 cases,
 covering three rich-text sizes and four operations. It checks persisted values, link order,
 revision retention and the signed-in actor's audit row after every save. The timer stops at
 the returned save response. Database verification runs outside the timed interval. See
 `schema-scale-panel-writes.json` for the 600 samples. The paired SQLite fixtures are for
 read stages.
+
+For an instrumented run, use `--panel-write-sql` in the browser command with the
+same `--panel-writes` seed opt-in. This profiles the SELECTs in each audited save
+request, including changes and restores. Database verification and estimated plan
+replay run outside the timed interval. The instrumented timings include the cost of
+recording the SQL and use separate fields. Plans describe the post-run fixture. The final `schema-scale-panel-write-sql.json` binds the plan
+receipt digest and requires all 600 save profiles. Treat the raw profiles as private.
+On MariaDB the known locking SELECTs get estimated plans in one allowlisted
+EXPLAIN-only transaction. It rolls back and verifies the session's read-only default.
+Other statements are planned with read-only enforcement. An interrupted or
+failed plan stage may leave a private partial receipt for diagnosis.
 
 ## Run the seed and broad browser case on a native database
 
@@ -112,7 +137,10 @@ Use `pgsql`, `mysql` or `mariadb`, and the same three corpus sizes as the SQLite
 creates a fresh database, maps one port on IPv4 loopback, and verifies database ownership before
 migrations. The launcher runs the application seed and the 25-search owner browser case. Add
 `--panel-reads` or `--panel-sql` before the engine to include navigation. Add `--panel-writes`
-to include audited writes after any read stage. The launcher stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
+to include audited writes after any read stage, or use `--panel-write-sql` to
+profile the save SELECTs. Use `--panel-controls` before the engine
+to run the permission and picker controls before writes. Add `--panel-control-sql`
+in place of `--panel-controls` to capture those picker SELECTs. The launcher stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
 confirm teardown and keep the output private because it includes disposable fixture credentials.
 
 `database-runtime.txt` records the database container's configured limits of two CPUs, 2 GiB and

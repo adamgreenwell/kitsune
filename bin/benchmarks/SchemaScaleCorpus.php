@@ -116,10 +116,19 @@ final class SchemaScaleCorpus
         return $targets;
     }
 
-    /** @return array{shared: int, other_org: int} */
+    /** @return array{shared: int, other_org: int, site_only: int} */
     public function panelMediaTargets(): array
     {
-        return ['shared' => $this->targets[1][0], 'other_org' => $this->targets[2][0]];
+        $before = 0;
+        foreach ($this->groups as $group) {
+            if ($group['org'] === 1 && $group['site'] === 1 && $group['kind'] === 'asset') {
+                // The first row of each population is live at every corpus size.
+                return ['shared' => $this->targets[1][0], 'other_org' => $this->targets[2][0], 'site_only' => $before + 1];
+            }
+            $before += $group['rows'];
+        }
+
+        throw new LogicException('The corpus has no assets specific to the first Site.');
     }
 
     /** @return Generator<int, array<string, mixed>> */

@@ -99,7 +99,7 @@ it('requires a private native fixture before loading the supplied application', 
     }
 });
 
-it('refuses to replay benchmark plans once panel writes have started', function (): void {
+it('refuses to replay benchmark :dataset plans once panel writes have started', function (string $stage): void {
     $temporary = sys_get_temp_dir().'/kitsune-scale-read-replay-'.bin2hex(random_bytes(8));
     mkdir($temporary, 0700);
     $fixture = realpath($temporary);
@@ -108,14 +108,14 @@ it('refuses to replay benchmark plans once panel writes have started', function 
     touch($fixture.'/panel-writes.started');
 
     try {
-        $process = new Process([PHP_BINARY, dirname(__DIR__, 3).'/bin/benchmarks/schema-scale-read-plans.php',
+        $process = new Process([PHP_BINARY, dirname(__DIR__, 3).'/bin/benchmarks/schema-scale-'.$stage.'-plans.php',
             $fixture.'/application', $fixture]);
         $process->run();
 
         expect($process->getExitCode())->toBe(1)
             ->and($process->getOutput())->toBe('')
-            ->and($process->getErrorOutput())->toContain('Benchmark plans refused: RuntimeException');
+            ->and($process->getErrorOutput())->toContain('plans refused: RuntimeException');
     } finally {
         File::deleteDirectory($fixture);
     }
-});
+})->with(['read', 'picker']);

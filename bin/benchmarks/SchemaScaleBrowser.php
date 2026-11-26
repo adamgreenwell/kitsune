@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
+use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 
 if (PHP_SAPI !== 'cli-server') {
     exit(1);
@@ -35,11 +36,52 @@ $app = require $application.'/bootstrap/app.php';
 $app->useEnvironmentPath($fixture);
 $app->useStoragePath($fixture.'/storage');
 $request = Request::capture();
-$tag = $request->headers->get('X-Kitsune-Scale-Read');
-if (getenv('KITSUNE_SCALE_CAPTURE_READ_SQL') === '1' && $request->isMethod('GET') && $request->headers->get('Sec-Fetch-Dest') === 'document'
-    && is_string($tag) && preg_match('/\Ap[0-9]{5}\z/D', $tag) === 1
-    && preg_match('~\A/admin/scale-site-[1-5](?:/|\z)~D', $request->getPathInfo()) === 1) {
-    $folder = $fixture.'/read-sql';
+$readTag = $request->headers->get('X-Kitsune-Scale-Read');
+$actionTag = $request->headers->get('X-Kitsune-Scale-Action');
+$refererPath = parse_url((string) $request->headers->get('referer'), PHP_URL_PATH);
+$captureRead = getenv('KITSUNE_SCALE_CAPTURE_READ_SQL') === '1'
+    && $request->isMethod('GET') && $request->headers->get('Sec-Fetch-Dest') === 'document'
+    && is_string($readTag) && preg_match('/\Ap[0-9]{5}\z/D', $readTag) === 1
+    && preg_match('~\A/admin/scale-site-[1-5](?:/|\z)~D', $request->getPathInfo()) === 1;
+$captureAction = getenv('KITSUNE_SCALE_CAPTURE_ACTION_SQL') === '1' && $request->isMethod('POST')
+    && $request->headers->has('X-Livewire') && is_file($fixture.'/panel-writes.started')
+    && is_string($actionTag) && preg_match('/\Aa[0-9]{5}\z/D', $actionTag) === 1
+    && preg_match('~\A/livewire(?:-[a-f0-9]{8})?/update\z~D', $request->getPathInfo()) === 1
+    && is_string($refererPath) && preg_match('~\A/admin/scale-site-1/c/article/(?:1|3|11)/edit\z~D', $refererPath) === 1;
+
+$pickerTag = $request->headers->get('X-Kitsune-Scale-Picker');
+$capturePicker = getenv('KITSUNE_SCALE_CAPTURE_PICKER_SQL') === '1' && $request->isMethod('POST')
+    && $request->headers->has('X-Livewire') && ! file_exists($fixture.'/panel-writes.started')
+    && is_string($pickerTag) && preg_match('/\Ak[0-9]{5}\z/D', $pickerTag) === 1
+    && preg_match('~\A/livewire(?:-[a-f0-9]{8})?/update\z~D', $request->getPathInfo()) === 1
+    && is_string($refererPath) && preg_match('~\A/admin/scale-site-[123]/c/article/[1-9][0-9]*/edit\z~D', $refererPath) === 1;
+
+$component = null;
+if ($captureAction || $capturePicker) {
+    $components = $request->json('components');
+    $update = is_array($components) && count($components) === 1 ? $components[0] : null;
+    $calls = is_array($update) ? ($update['calls'] ?? null) : null;
+    $call = is_array($calls) && count($calls) === 1 ? $calls[0] : null;
+    $method = $captureAction ? 'save' : 'callSchemaComponentMethod';
+    $snapshot = is_string($update['snapshot'] ?? null) ? json_decode($update['snapshot'], true) : null;
+    $memo = $snapshot['memo'] ?? null;
+    if (($call['method'] ?? null) !== $method || ($capturePicker && ($call['params'][1] ?? null) !== 'getSearchResultsForJs')
+        || ($memo['name'] ?? null) !== EditEntry::class
+        || ! is_string($memo['path'] ?? null) || '/'.ltrim($memo['path'], '/') !== $refererPath) {
+        http_response_code(422);
+
+        return;
+    }
+    $component = ['name' => $memo['name'], 'method' => $method];
+}
+
+if ($captureRead || $captureAction || $capturePicker) {
+    [$tag, $directory] = match (true) {
+        $captureRead => [$readTag, 'read-sql'],
+        $captureAction => [$actionTag, 'action-sql'],
+        $capturePicker => [$pickerTag, 'picker-sql'],
+    };
+    $folder = $fixture.'/'.$directory;
     if (is_link($folder) || ! is_dir($folder) || realpath($folder) !== $folder
         || (fileperms($folder) & 0077) !== 0) {
         http_response_code(500);
@@ -85,7 +127,8 @@ if (getenv('KITSUNE_SCALE_CAPTURE_READ_SQL') === '1' && $request->isMethod('GET'
         $profile = json_encode([
             'version' => 1,
             'status' => http_response_code(),
-            'path' => $request->getPathInfo(),
+            ...($component === null ? [] : ['component' => $component]),
+            'path' => $captureRead ? $request->getPathInfo() : $refererPath,
             'tag' => $tag,
             'overflow' => $overflow,
             'selects' => $queries,
