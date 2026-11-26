@@ -216,6 +216,15 @@ class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadin
                     .'(ADR-020). Nominate a relation limited to one target.';
             }
 
+            if (EntryRelation::query()->useWritePdo()->where('field_storage_id', $storage->id)
+                ->whereNotNull('target_group_id')
+                ->whereIn('source_entry_id', $this->getConnection()->table('entries')
+                    ->select('id')->where('entry_type_id', $this->getKey()))
+                ->exists()) {
+                return "Field [{$storage->handle}] already follows translation groups. "
+                    .'A subject identifier relation requires row pins.';
+            }
+
             return null;
         }
 

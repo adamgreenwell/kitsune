@@ -10,15 +10,21 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Concerns;
 
+use Filament\Resources\Pages\CreateRecord;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\RelationManagers\RevisionsRelationManager;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Relations\EntryRelationWriter;
 use Kitsune\Core\Schema\RecordedRevisions;
+use Throwable;
 
 /**
  * Carries relation fields between the form and `entry_relations`.
@@ -39,6 +45,11 @@ use Kitsune\Core\Schema\RecordedRevisions;
  */
 trait SyncsFieldRelations
 {
+    public function hasDatabaseTransactions(): bool
+    {
+        return $this->relationFields() !== [] || parent::hasDatabaseTransactions();
+    }
+
     /**
      * Fills the form's relation state from the entry's existing relations.
      *
@@ -63,7 +74,7 @@ trait SyncsFieldRelations
         }
 
         foreach ($this->relationFields() as $field) {
-            $ids = $record->linkedIdsForField($field->fieldStorage);
+            $ids = $record->relationPickerValues($field->fieldStorage);
 
             // ⚠️ A single-value picker wants a scalar, not a one-element array — Filament
             // renders an array into a `multiple()` control and nothing into a single one,
@@ -190,7 +201,21 @@ trait SyncsFieldRelations
 
     protected function afterCreate(): void
     {
-        $this->syncRelationsFromForm();
+        try {
+            $this->syncRelationsFromForm();
+        } catch (Throwable $failure) {
+            if ($this instanceof CreateRecord) {
+                // Filament rolls back the insert. Livewire must not serialize its vanished record.
+                $record = $this->getRecord();
+                if ($record instanceof Entry) {
+                    app(RecordedRevisions::class)->take($record->id);
+                }
+                $this->record = null;
+                $this->form->model($this->getModel());
+            }
+
+            throw $failure;
+        }
     }
 
     protected function syncRelationsFromForm(): void
@@ -276,10 +301,35 @@ trait SyncsFieldRelations
                 continue;
             }
 
-            $ids = $state[$handle];
-            $ids = $ids === null ? [] : (array) $ids;
+            $choices = [];
 
-            $record->syncFieldRelations($field->fieldStorage, array_values($ids));
+            foreach ((array) $state[$handle] as $value) {
+                $matches = [];
+                if ((! is_int($value) && ! is_string($value))
+                    || ! preg_match('/^(?:(group-link|pin-link|follow|pin):)?([1-9][0-9]*)$/D', (string) $value, $matches)
+                    || filter_var($matches[2], FILTER_VALIDATE_INT) === false) {
+                    throw ValidationException::withMessages(['data.relations.'.$handle => __('Select an available relation.')]);
+                }
+
+                $id = (int) $matches[2];
+                $choices[] = match ($matches[1]) {
+                    'group-link', 'pin-link' => ['keep' => $id],
+                    'follow' => ['entry' => $id, 'follow' => true],
+                    default => ['entry' => $id, 'pin' => true],
+                };
+            }
+
+            try {
+                app(EntryRelationWriter::class)->replace(
+                    $record,
+                    $field->fieldStorage,
+                    $choices,
+                    fn (Entry $entry): bool => $this instanceof CreateRecord ? EntryResource::canCreate() : Gate::allows('update', $entry),
+                    static fn (Entry $entry): bool => Gate::allows('view', $entry),
+                );
+            } catch (ValidationException $failure) {
+                throw ValidationException::withMessages(['data.relations.'.$handle => $failure->errors()['relations'] ?? [$failure->getMessage()]]);
+            }
         }
     }
 
