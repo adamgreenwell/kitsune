@@ -335,26 +335,5 @@ it('runs the module migrations on install and rolls them back on uninstall', fun
     expect(Schema::hasTable('fixture_things'))->toBeFalse();
 });
 
-/**
- * ⚠️ THE MODULE REFUSES, AND NOTHING IS DESTROYED FIRST. Core cannot know what a module's content is, so
- * uninstall asks and the module throws — before a single migration is rolled back. The table surviving is
- * the assertion that matters: a refusal that arrived after the rollback would be worthless.
- */
-it('lets a module refuse to be uninstalled while it holds content', function (): void {
-    ModuleLifecycle::install(app(), PKG);
-
-    DB::table('fixture_things')->insert(['name' => 'still here']);
-
-    expect(fn () => ModuleLifecycle::uninstall(app(), PKG))
-        ->toThrow(RuntimeException::class, 'still holds things');
-
-    expect(Schema::hasTable('fixture_things'))->toBeTrue()
-        ->and(DB::table('fixture_things')->count())->toBe(1)
-        ->and(Module::query()->where('handle', PKG)->exists())->toBeTrue();
-
-    /* And once the content is gone, the same uninstall succeeds. */
-    DB::table('fixture_things')->delete();
-
-    expect(ModuleLifecycle::uninstall(app(), PKG))->toContain('Uninstalled');
-    expect(Schema::hasTable('fixture_things'))->toBeFalse();
-});
+// The content-refusal-and-retry contract now lives in ModuleLifecycle/UninstallRecoveryTest: it needs real
+// outer commits. On MySQL, this wrapper's earlier install DDL has already committed its transaction.

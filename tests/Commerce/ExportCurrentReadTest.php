@@ -20,6 +20,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\CommittedModuleReceipt;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
 use Kitsune\Core\Tests\Fixtures\OrderFixture;
 
@@ -41,9 +42,9 @@ it('exports newly committed historical custody from an older native repeatable-r
     config(['database.connections.'.$rivalName => config('database.connections.'.$default)]);
     $rival = DB::connection($rivalName);
     $orgId = null;
-    $moduleId = null;
+    $moduleReceipt = new CommittedModuleReceipt($rival);
     // The rival fixtures are committed, so register their exact cleanup before making the first write.
-    $this->afterRollback(function () use ($rival, $rivalName, $default, &$orgId, &$moduleId): void {
+    $this->afterRollback(function () use ($rival, $rivalName, $default, &$orgId, $moduleReceipt): void {
         DB::setDefaultConnection($default);
         if ($orgId !== null) {
             foreach ([HistoricalAccess::TABLE, HistoricalAccess::WORK, PrivacyState::TABLE,
@@ -53,9 +54,7 @@ it('exports newly committed historical custody from an older native repeatable-r
             }
             $rival->table('orgs')->where('id', $orgId)->delete();
         }
-        if ($moduleId !== null) {
-            $rival->table('modules')->where('id', $moduleId)->where('handle', 'kitsune/commerce')->delete();
-        }
+        $moduleReceipt->remove();
         DB::purge($rivalName);
     });
     $suffix = bin2hex(random_bytes(6));
@@ -63,7 +62,7 @@ it('exports newly committed historical custody from an older native repeatable-r
     $orgId = (int) $rival->table('orgs')->insertGetId(['slug' => 'export-current-'.$suffix, 'name' => 'Current export',
         'currency' => 'USD', 'created_at' => $now, 'updated_at' => $now]);
     if (! $rival->table('modules')->where('handle', 'kitsune/commerce')->exists()) {
-        $moduleId = (int) $rival->table('modules')->insertGetId(['handle' => 'kitsune/commerce',
+        $moduleReceipt->create(['handle' => 'kitsune/commerce',
             'version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => false, 'installed_at' => $now]);
     }
 

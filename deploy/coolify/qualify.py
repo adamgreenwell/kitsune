@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -17,11 +18,52 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--image", required=True, help="locally built profile image")
 parser.add_argument("--receipt", required=True, type=Path)
 args = parser.parse_args()
+diagnostic_names = ("failure.stdout", "failure.stderr", "compose.log")
+if args.receipt.name.casefold() in diagnostic_names:
+    parser.error("--receipt must use a name distinct from the diagnostic files")
 profile = Path(__file__).resolve().parent
 project = "kitsune-profile-" + secrets.token_hex(6)
 host = "development.kitsunecms.org"
 checks = []
-result = {"project": project, "checks": checks, "provider_calls": False}
+result = {
+    "project": project, "checks": checks, "provider_calls": False,
+    "passed": False, "cleanup_attempted": False, "cleanup_verified": None,
+    "cleanup_errors": [], "archive_errors": [],
+}
+
+
+def report():
+    summary = {key: value for key, value in result.items() if key in {
+        "project", "passed", "failure", "cleanup_attempted", "cleanup_verified",
+        "cleanup_errors", "archive_errors", "restore_failure", "interrupted",
+    }}
+    print(json.dumps({**summary, "checks": len(checks), "receipt": str(args.receipt)}))
+    if result.get("interrupted"):
+        return 130
+    return 0 if (
+        result["passed"] and result["cleanup_verified"]
+        and not result["cleanup_errors"] and not result["archive_errors"]
+    ) else 1
+
+
+def failure_detail(failure):
+    if isinstance(failure, KeyboardInterrupt):
+        result["interrupted"] = True
+    return str(failure) or type(failure).__name__
+
+
+def write_private(path, data):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+
+
+try:
+    # A new directory gives the run exclusive names for the receipt and its diagnostics.
+    args.receipt.parent.mkdir(mode=0o700)
+except (OSError, KeyboardInterrupt) as failure:
+    result["archive_errors"].append(f"create receipt directory: {failure_detail(failure)}")
+    raise SystemExit(report())
 
 
 def command(argv, *, data=None, required=True, env=None):
@@ -29,9 +71,12 @@ def command(argv, *, data=None, required=True, env=None):
                              stderr=subprocess.PIPE, env=env)
     if required and process.returncode:
         # Logs stay in the private receipt directory, never in an exception message.
-        (private / "failure.stdout").write_bytes(process.stdout)
-        (private / "failure.stderr").write_bytes(process.stderr)
-        raise RuntimeError("Command failed; inspect private diagnostic files")
+        for name, data in (("failure.stdout", process.stdout), ("failure.stderr", process.stderr)):
+            try:
+                (private / name).write_bytes(data)
+            except (OSError, KeyboardInterrupt) as failure:
+                result["archive_errors"].append(f"record {name}: {failure_detail(failure)}")
+        raise RuntimeError(f"Command failed (exit {process.returncode}); inspect private diagnostic files")
     return process
 
 
@@ -74,11 +119,12 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
         while time.monotonic() < deadline:
             identity = dc("ps", "-q", "app").stdout.decode().strip()
             if identity:
-                state = json.loads(command(["docker", "inspect", identity]).stdout)[0]
-                if state["State"].get("Health", {}).get("Status") == "healthy":
-                    return state
+                inspected = command(["docker", "inspect", identity], required=False)
+                if inspected.returncode == 0:
+                    state = json.loads(inspected.stdout)[0]
+                    if state["State"].get("Health", {}).get("Status") == "healthy":
+                        return state
             time.sleep(1)
-        dc("logs", "--no-color", "app", "database", "origin-certificates")
         raise RuntimeError("Profile did not become healthy within 180 seconds")
 
     def request(path="/", headers=(), plain=False, trusted=True):
@@ -99,13 +145,28 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
         body, _, status = process.stdout.rpartition(b"\n")
         return process.returncode, status.decode(), body
 
-    existing = command(["docker", "ps", "--all", "--quiet", "--filter",
-                        "label=com.docker.compose.project=" + project]).stdout.strip()
-    existing_volumes = command(["docker", "volume", "ls", "--quiet", "--filter",
-                                "label=com.docker.compose.project=" + project]).stdout.strip()
-    check("disposable project namespace is unused", not existing and not existing_volumes)
+    label = "label=com.docker.compose.project=" + project
+    containers = ["docker", "ps", "--all", "--quiet", "--filter", label]
+    volumes = ["docker", "volume", "ls", "--quiet", "--filter", label]
+    networks = ["docker", "network", "ls", "--quiet", "--filter", label]
+    cleanup_required = False
+
+    def cleanup_command(name, run):
+        try:
+            process = run()
+        except (OSError, KeyboardInterrupt) as failure:
+            result["cleanup_errors"].append(f"{name}: {failure_detail(failure)}")
+            return None
+        if process.returncode:
+            result["cleanup_errors"].append(f"{name}: exit {process.returncode}")
+            return None
+        return process.stdout.split()
 
     try:
+        existing = command(containers).stdout.strip()
+        existing_volumes = command(volumes).stdout.strip()
+        existing_networks = command(networks).stdout.strip()
+        check("disposable project namespace is unused", not (existing or existing_volumes or existing_networks))
         build_env = private / "build.env"
         build_env.write_text("")
         clean_environment = {key: value for key, value in os.environ.items() if key not in {
@@ -129,6 +190,7 @@ with tempfile.TemporaryDirectory(prefix=project + "-") as directory:
         check("SMTP credential is absent from every build argument", all(
             smtp_password not in json.dumps(service.get("build", {}))
             for service in rendered["services"].values()))
+        cleanup_required = True
         dc("up", "--detach", "--no-build", "app")
         state = healthy()
         initializer = app("cat", "/usr/local/bin/kitsune-tls-init").stdout
@@ -228,7 +290,15 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
             check("rightmost untrusted client address wins", observed["ip"] == "203.0.113.25")
             check("forwarded prefix does not rewrite URLs", observed["admin"] == "https://" + host + "/admin")
         finally:
-            app("tee", index, data=original)
+            probe_failed = sys.exc_info()[0] is not None
+            try:
+                restored = app("tee", index, data=original, required=False)
+                if restored.returncode:
+                    result["restore_failure"] = f"Restore command failed (exit {restored.returncode})"
+            except (OSError, KeyboardInterrupt) as failure:
+                result["restore_failure"] = failure_detail(failure)
+            if not probe_failed:
+                check("front controller restore command succeeded", "restore_failure" not in result)
         check("original front controller restored exactly", app("cat", index).stdout == original)
         check("original application serves after probe", request()[1] == "200")
 
@@ -264,7 +334,8 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
            "SELECT COUNT(*) FROM users")
         check("no administrator was silently provisioned", dc("exec", "-T", "database", "psql", "-U", "kitsune",
               "-d", "kitsune", "-Atc", "SELECT COUNT(*) FROM users").stdout.strip() == b"0")
-        private_volume = next(m["Name"] for m in state["Mounts"] if m["Destination"] == "/run/kitsune-tls")
+        private_volume = next((m["Name"] for m in state["Mounts"] if m["Destination"] == "/run/kitsune-tls"), None)
+        check("origin TLS volume is mounted", private_volume is not None)
         refused = command(["docker", "run", "--rm", "--network", "none", "--volume",
                            private_volume + ":/run/kitsune-tls:ro", args.image], required=False)
         check("missing application key refuses before startup", refused.returncode != 0)
@@ -274,31 +345,39 @@ $kernel->handle(\\Illuminate\\Http\\Request::capture())->send();
         result["architecture"] = command(["docker", "image", "inspect", args.image,
                                            "--format", "{{.Architecture}}"]).stdout.decode().strip()
         result["passed"] = True
-    except Exception as failure:
-        result["passed"] = False
-        result["failure"] = str(failure)
-        logs = dc("logs", "--no-color", required=False)
-        (private / "compose.log").write_bytes(logs.stdout + logs.stderr)
+    except (Exception, KeyboardInterrupt) as failure:
+        result["failure"] = f"{type(failure).__name__}: {failure}" if str(failure) else type(failure).__name__
+        if isinstance(failure, KeyboardInterrupt):
+            result["interrupted"] = True
+        if cleanup_required:
+            try:
+                logs = dc("logs", "--no-color", required=False)
+                (private / "compose.log").write_bytes(logs.stdout + logs.stderr)
+                if logs.returncode:
+                    result["archive_errors"].append(f"collect Compose logs: exit {logs.returncode}")
+            except (OSError, KeyboardInterrupt) as log_failure:
+                result["archive_errors"].append(f"collect Compose logs: {failure_detail(log_failure)}")
     finally:
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(args.receipt.parent, 0o700)
-        for file in private.iterdir():
-            if file.name not in {"fixture.env", "override.json"} and file.is_file():
-                target = args.receipt.parent / file.name
-                target.write_bytes(file.read_bytes())
-                os.chmod(target, 0o600)
-        # Only this random disposable project's resources are eligible for cleanup.
-        identities = command(["docker", "ps", "--all", "--quiet", "--filter",
-                              "label=com.docker.compose.project=" + project]).stdout.split()
-        result["owned_container_count"] = len(identities)
-        dc("down", "--volumes", "--remove-orphans", required=False)
-        remaining = command(["docker", "ps", "--all", "--quiet", "--filter",
-                             "label=com.docker.compose.project=" + project]).stdout.strip()
-        volumes = command(["docker", "volume", "ls", "--quiet", "--filter",
-                           "label=com.docker.compose.project=" + project]).stdout.strip()
-        result["cleanup_verified"] = not remaining and not volumes
-        args.receipt.write_text(json.dumps(result, indent=2) + "\n")
-        os.chmod(args.receipt, 0o600)
-print(json.dumps({"passed": result.get("passed"), "checks": len(checks),
-                  "cleanup_verified": result["cleanup_verified"], "receipt": str(args.receipt)}))
-raise SystemExit(0 if result.get("passed") and result["cleanup_verified"] else 1)
+        if cleanup_required:
+            result["cleanup_attempted"] = True
+            identities = cleanup_command("inventory owned containers", lambda: command(containers, required=False))
+            result["owned_container_count"] = None if identities is None else len(identities)
+            cleanup_command("Compose down", lambda: dc("down", "--volumes", "--remove-orphans", required=False))
+            remaining = cleanup_command("verify containers", lambda: command(containers, required=False))
+            remaining_volumes = cleanup_command("verify volumes", lambda: command(volumes, required=False))
+            remaining_networks = cleanup_command("verify networks", lambda: command(networks, required=False))
+            result["cleanup_verified"] = remaining == remaining_volumes == remaining_networks == []
+
+        for name in diagnostic_names:
+            diagnostic = private / name
+            try:
+                if diagnostic.is_file():
+                    write_private(args.receipt.parent / name, diagnostic.read_bytes())
+            except (OSError, KeyboardInterrupt) as failure:
+                result["archive_errors"].append(f"copy {name}: {failure_detail(failure)}")
+        try:
+            write_private(args.receipt, (json.dumps(result, indent=2) + "\n").encode())
+        except (OSError, KeyboardInterrupt) as failure:
+            result["archive_errors"].append(f"write receipt: {failure_detail(failure)}")
+
+raise SystemExit(report())

@@ -19,7 +19,10 @@ declare(strict_types=1);
  * asking about a pattern the server never compiles is the mistake `pattern-parity`'s README opens with.
  */
 
-$names = json_decode((string) file_get_contents($argv[1] ?? 'php://stdin'), true, 512, JSON_THROW_ON_ERROR);
+require __DIR__.'/../parity/provenance.php';
+
+$corpus = parityRead($argv[1] ?? 'php://stdin');
+$names = json_decode($corpus, true, 512, JSON_THROW_ON_ERROR)['names'];
 
 $out = [];
 
@@ -27,7 +30,10 @@ foreach ($names as $name) {
     $expression = '/^\p{'.$name.'}$/uD';
 
     if (@preg_match($expression, 'a') === false) {
-        $out[$name] = ['error' => 'does not compile'];
+        if (preg_last_error() !== PREG_INTERNAL_ERROR) {
+            throw new RuntimeException("PCRE could not give a verdict for {$name}: ".preg_last_error_msg());
+        }
+        $out[] = ['id' => $name, 'error' => 'does not compile'];
 
         continue;
     }
@@ -38,15 +44,22 @@ foreach ($names as $name) {
 
     for ($codepoint = 0; $codepoint <= 0x10FFFF; $codepoint++) {
         if ($codepoint === 0xD800) {
+            if ($start !== null) {
+                $ranges[] = [$start, 0xD7FF];
+                $start = null;
+            }
             $codepoint = 0xDFFF;
 
             continue;
         }
 
         $character = mb_chr($codepoint, 'UTF-8');
-        $inside = $character !== false && @preg_match($expression, $character) === 1;
+        $match = $character === false ? false : @preg_match($expression, $character);
+        if ($match === false) {
+            throw new RuntimeException(sprintf('PCRE could not give a verdict for %s at U+%04X.', $name, $codepoint));
+        }
 
-        if ($inside) {
+        if ($match === 1) {
             $count++;
             $start ??= $codepoint;
         } elseif ($start !== null) {
@@ -59,7 +72,7 @@ foreach ($names as $name) {
         $ranges[] = [$start, 0x10FFFF];
     }
 
-    $out[$name] = ['count' => $count, 'sha' => sha1(json_encode($ranges, JSON_THROW_ON_ERROR)), 'ranges' => $ranges];
+    $out[] = ['id' => $name, 'count' => $count, 'sha' => sha1(json_encode($ranges, JSON_THROW_ON_ERROR)), 'ranges' => $ranges];
 }
 
-echo json_encode($out, JSON_THROW_ON_ERROR), "\n";
+echo json_encode(parityDump('property', $corpus, parityPcreEngine(), $out), JSON_THROW_ON_ERROR), "\n";

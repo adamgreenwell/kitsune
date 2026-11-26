@@ -49,8 +49,10 @@ final class RequireReader
 
         abort_if($site === null, 404);
 
-        if (ReaderLinks::isOwn($site, $request->getPathInfo())) {
-            $request->session()->put(self::INTENDED, $request->getPathInfo());
+        $intended = ReaderLinks::canonicalPath($site, $request->getPathInfo());
+
+        if ($intended !== null) {
+            $request->session()->put(self::INTENDED, $intended);
         }
 
         return new RedirectResponse(ReaderLinks::path($site, ReaderLinks::SIGN_IN), 303);

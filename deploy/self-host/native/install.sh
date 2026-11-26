@@ -163,6 +163,27 @@ start_services() {
     curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused --noproxy '*' http://127.0.0.1:8080/admin/login >/dev/null
 }
 
+install_host_packages() (
+    # Maintainer scripts create host files outside the installer's private state.
+    umask 022
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+)
+
+require_install_journal_available() {
+    local journal=$1 php=$2 repository=$3
+    if [[ ! -e "$journal" && ! -L "$journal" ]]; then
+        return
+    fi
+
+    "$php" -r '
+        require $argv[1]."/bin/release/SelfHostUpgradeJournal.php";
+        $journal = Kitsune\Release\SelfHostUpgradeJournal::open($argv[2], readOnly: true);
+        $journal->requireAvailable();
+    ' "$repository" "$journal" 9>&- >/dev/null 2>&1 \
+        || refuse 'resolve the native upgrade journal before rerunning the installer; see docs/upgrades.md'
+}
+
 main() {
     (( EUID == 0 )) || refuse 'run on a dedicated Ubuntu host as root after reviewing the script'
     [[ -d /run/systemd/system ]] || refuse 'a running systemd host is required'
@@ -210,6 +231,7 @@ main() {
         || refuse 'the native installer lock must be a root-owned private file'
     exec 9<> "$lock"
     flock -n 9 || refuse 'another installation or upgrade is running'
+    require_install_journal_available /var/lib/kitsune-upgrades/journal "/usr/bin/php$php_version" "$root"
     if [[ -e "$destination/.installed" || -L "$destination/.installed" ]]; then
         [[ ! -L "$destination" && ! -L "$destination/.installed" && ! -L "$destination/.release" ]] \
             && cmp -s "$destination/.release" "$destination/.installed" \
@@ -251,8 +273,7 @@ main() {
     if [[ "$source_value" = sury ]]; then
         configure_sury
     fi
-    apt-get update 9>&-
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}" 9>&-
+    install_host_packages "${packages[@]}" 9>&-
     configure_application
     start_services
     mv -T -- "$work/release" "$destination/.installed"

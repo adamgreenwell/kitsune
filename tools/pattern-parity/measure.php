@@ -18,25 +18,31 @@ declare(strict_types=1);
  * three from the missing `D`.
  */
 require __DIR__.'/../../vendor/autoload.php';
+require __DIR__.'/../parity/provenance.php';
 
 use Kitsune\Core\Fields\Pattern;
 
-$cases = json_decode((string) file_get_contents($argv[1] ?? __DIR__.'/cases.json'), true, 512, JSON_THROW_ON_ERROR);
+$corpus = parityRead($argv[1] ?? __DIR__.'/cases.json');
+$cases = json_decode($corpus, true, 512, JSON_THROW_ON_ERROR);
 $out = [];
 
 foreach ($cases as $case) {
     $delimited = Pattern::delimit($case['pattern']);
-    $compiles = $delimited !== null && @preg_match($delimited, '') !== false;
+    $compiles = $delimited !== null;
     $matches = null;
 
     if ($compiles) {
-        $result = @preg_match($delimited, $case['subject']);
-        // null means PCRE ERRORED rather than answered — a backtrack limit, most likely, which
-        // is a third outcome and not the same as "no match".
-        $matches = $result === false ? null : (bool) $result;
+        $probe = @preg_match($delimited, '');
+        if ($probe !== false) {
+            $result = @preg_match($delimited, $case['subject']);
+            $matches = $result === false ? null : (bool) $result;
+        } elseif (preg_last_error() === PREG_INTERNAL_ERROR) {
+            // An invalid expression is reported as a PCRE internal error. Resource limits leave no match verdict.
+            $compiles = false;
+        }
     }
 
-    $out[$case['id']] = ['compiles' => $compiles, 'matches' => $matches];
+    $out[] = ['id' => $case['id'], 'compiles' => $compiles, 'matches' => $matches];
 }
 
-echo json_encode($out, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), "\n";
+echo json_encode(parityDump('pattern', $corpus, parityPcreEngine(), $out), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR), "\n";

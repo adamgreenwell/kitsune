@@ -9,27 +9,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\File;
+use Kitsune\Core\Tests\Fixtures\CommerceRaceNamespace;
 use Symfony\Component\Process\Process;
-
-function orderClaimCopyApplication(string $source, string $target): void
-{
-    File::ensureDirectoryExists($target);
-    foreach (new FilesystemIterator($source, FilesystemIterator::SKIP_DOTS) as $item) {
-        if ($item->getFilename() === 'vendor' || $item->isLink()) {
-            continue;
-        }
-        $destination = $target.'/'.$item->getFilename();
-        if ($item->isDir()) {
-            if (str_ends_with($destination, '/bootstrap/cache')) {
-                File::ensureDirectoryExists($destination);
-            } else {
-                orderClaimCopyApplication($item->getPathname(), $destination);
-            }
-        } else {
-            File::copy($item->getPathname(), $destination);
-        }
-    }
-}
 
 /** @param list<Process> $processes */
 function orderClaimBarrier(string $path, array $processes = []): array
@@ -56,7 +37,7 @@ it('binds a guest order once when two authenticated readers race on independent 
     File::ensureDirectoryExists($directory, 0700);
     touch($directory.'/race.sqlite');
     foreach (['controller', 'A', 'B', 'read', 'cleanup'] as $role) {
-        orderClaimCopyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
+        CommerceRaceNamespace::copyApplication($root.'/vendor/orchestra/testbench-core/laravel', $directory.'/app-'.$role);
     }
     $processes = [];
     $child = static function (string $mode, string $role) use ($root, $directory, &$processes): Process {

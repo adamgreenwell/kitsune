@@ -64,17 +64,20 @@ run_profile() {
                 exit 1
             fi
             printf "cpu.max=%s\nmemory.max=%s\nmemory.swap.max=%s\npids.max=%s\n" "$cpu" "$memory" "$swap" "$pids"
-            php -d memory_limit=128M -r '\''
+            runtime=$(php -d memory_limit=128M -r '\''
                 if (PHP_VERSION_ID < 80400 || ! extension_loaded("pdo_sqlite")) exit(1);
                 require "/application/vendor/autoload.php";
                 echo json_encode(["php" => PHP_VERSION, "sqlite" => (new PDO("sqlite::memory:"))
                     ->query("select sqlite_version()")->fetchColumn(), "php_memory" => ini_get("memory_limit"),
                     "composer_lock_sha256" => hash_file("sha256", "/application/composer.lock")], JSON_THROW_ON_ERROR), "\n";
-            '\''
+            '\'')
+            printf "%s\n" "$runtime"
             if [ "$3" = run ]; then
-                exec env -i PATH="$PATH" php -d memory_limit=128M "$4/bin/benchmark-schema-scale.php" /application "$5" "$6"
+                env -i PATH="$PATH" php -d memory_limit=128M "$4/bin/benchmark-schema-scale.php" /application "$5" "$6" || exit "$?"
             fi
-        ' pair "$cpu" "$ram" "$mode" "$root" "$rows" "$out/$profile" > "$out/$profile.log" 2>&1 \
+            php "$4/bin/benchmarks/write-schema-scale-pair-receipt.php" "$7" "$3" "$8" "$9" \
+                "$5" "${cpu%% *}" "${cpu##* }" "$memory" "$swap" "$pids" "$runtime" "$6"
+        ' pair "$cpu" "$ram" "$mode" "$root" "$rows" "$out/$profile" "$profile" "$source_sha" "$image" > "$out/$profile.log" 2>&1 \
         || refuse "$profile failed; see $out/$profile.log"
 }
 

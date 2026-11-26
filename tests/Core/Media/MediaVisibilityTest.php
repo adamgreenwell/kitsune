@@ -1159,3 +1159,146 @@ describe('what review found', function (): void {
             ->and(file_get_contents($path))->toBe('what the private disk holds now');
     });
 });
+
+describe('changing file sharing', function (): void {
+    it('shares with the org and keeps the same file to a site with one audit per change', function (): void {
+        $owner = visActingWith();
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'sharing.png', siteOnly: true);
+        $file = visRow($entry);
+        $audit = fn () => DB::table('audit_log')->where('target_id', (string) $entry->getKey())->count();
+        $before = $audit();
+
+        expect(MediaVisibility::changeSharing($entry, true))->toBe(MediaVisibility::SWITCHED);
+        $shared = Entry::query()->findOrFail($entry->getKey());
+        expect($shared->site_id)->toBeNull()
+            ->and($shared->slug)->toBeNull()
+            ->and(visRow($shared))->toBe($file)
+            ->and($audit())->toBe($before + 1);
+
+        expect(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, false))->reason)
+            ->toBe(MediaVisibilityRefused::STALE);
+        expect(MediaVisibility::changeSharing($shared, true))->toBe(MediaVisibility::UNCHANGED)
+            ->and($audit())->toBe($before + 1);
+        expect(MediaVisibility::changeSharing($shared, false))->toBe(MediaVisibility::SWITCHED)
+            ->and(Entry::query()->findOrFail($entry->getKey())->site_id)->toBe($entry->site_id)
+            ->and(visRow($shared))->toBe($file)
+            ->and($audit())->toBe($before + 2);
+
+        expect(DB::table('audit_log')->where('target_id', (string) $entry->getKey())
+            ->whereIn('action', [MediaVisibility::SHARED_WITH_ORG, MediaVisibility::KEPT_TO_SITE])
+            ->orderBy('id')->pluck('action')->all())->toBe([MediaVisibility::SHARED_WITH_ORG, MediaVisibility::KEPT_TO_SITE]);
+    });
+
+    it('requires an owner and refuses an active offer until it has been withdrawn', function (): void {
+        $editor = visActingWith('view', 'publish');
+        $entry = visStored(VISIBILITY_PNG, 'offer-sharing.png', siteOnly: true);
+        expect(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, true))->reason)
+            ->toBe(MediaVisibilityRefused::OWNER_REQUIRED);
+
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($editor->getKey());
+        MediaVisibility::offer($entry, 'course.shared');
+        expect(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, true))->reason)
+            ->toBe(MediaVisibilityRefused::ACTIVE_READER_OFFER)
+            ->and(visRow($entry)['reader_entitlement'])->toBe('course.shared');
+
+        MediaVisibility::stopOffering($entry);
+        expect(MediaVisibility::changeSharing($entry, true))->toBe(MediaVisibility::SWITCHED)
+            ->and(visRow($entry)['reader_entitlement'])->toBeNull();
+    });
+
+    it('rechecks ownership when the role is removed after the entry is opened', function (): void {
+        $otherOwner = visActingWith();
+        $owner = visActingWith();
+        $role = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        $role->assignTo($otherOwner->getKey());
+        $role->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'ownership-changed.png', siteOnly: true);
+        expect(Permissions::isOwner($owner))->toBeTrue();
+
+        $role->removeFrom($owner->getKey());
+
+        expect(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, true))->reason)
+            ->toBe(MediaVisibilityRefused::OWNER_REQUIRED)
+            ->and($entry->fresh()->site_id)->toBe($entry->site_id);
+    });
+
+    it('keeps stored media in its original scope when a normal or quiet save attempts a move', function (): void {
+        $owner = visActingWith();
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'ordinary-saves.png', siteOnly: true);
+        $site = $entry->site_id;
+        $before = visRow($entry);
+
+        foreach (['save', 'saveQuietly'] as $method) {
+            $entry->site_id = null;
+            $entry->slug = null;
+            expect(fn () => $entry->{$method}())->toThrow(RuntimeException::class, 'A stored file changes sharing');
+            $entry->refresh();
+            expect($entry->site_id)->toBe($site)
+                ->and(visRow($entry))->toBe($before);
+        }
+    });
+
+    it('restores a pre-sharing revision while retaining the current scope and empty slug', function (): void {
+        $owner = visActingWith();
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'before-sharing.png', siteOnly: true);
+        $revision = $entry->revisions()->firstOrFail();
+        expect($revision->snapshot()['slug'])->not->toBeNull();
+        $entry->update(['title' => 'Edited title']);
+
+        MediaVisibility::changeSharing($entry, true);
+        $shared = Entry::query()->findOrFail($entry->getKey());
+        $shared->restoreRevision($revision);
+        expect($shared->fresh()->title)->toBe('before-sharing')
+            ->and($shared->fresh()->site_id)->toBeNull()
+            ->and($shared->fresh()->slug)->toBeNull();
+    });
+
+    it('refuses a bulk sharing change and rolls back a change whose audit fails', function (): void {
+        $owner = visActingWith();
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'audit-sharing.png', siteOnly: true);
+        $site = $entry->site_id;
+        $slug = $entry->slug;
+        $file = visRow($entry);
+
+        expect(fn () => Entry::withoutScopeBecause('checking the media sharing invariant within a reviewed writer scope',
+            fn ($query) => $query->whereKey($entry->getKey())->update(['site_id' => null, 'slug' => null])))
+            ->toThrow(RuntimeException::class, 'A stored file changes sharing');
+
+        AuditorStandIn::install()->throwOnce(new RuntimeException('The audit store refused the write.'));
+        expect(fn () => MediaVisibility::changeSharing($entry, true))
+            ->toThrow(RuntimeException::class, 'The audit store refused the write.');
+
+        $entry->refresh();
+        expect($entry->site_id)->toBe($site)
+            ->and($entry->slug)->toBe($slug)
+            ->and(visRow($entry))->toBe($file)
+            ->and(DB::table('audit_log')->where('action', MediaVisibility::SHARED_WITH_ORG)->count())->toBe(0);
+    });
+
+    it('refuses sharing from a sibling Site or a different Org even for an owner', function (): void {
+        $owner = visActingWith();
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+        $entry = visStored(VISIBILITY_PNG, 'scope-sharing.png', siteOnly: true);
+        $sibling = Site::create(['handle' => 'sibling', 'slug' => 'visibility-sibling', 'name' => 'Sibling', 'locale' => 'en']);
+        $context = app(Context::class);
+        $context->setSite($sibling);
+        expect(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, true))->reason)
+            ->toBe(MediaVisibilityRefused::OUT_OF_SCOPE);
+
+        $other = Org::create(['slug' => 'other-sharing', 'name' => 'Other sharing']);
+        $context->forget()->setOrg($other);
+        $otherSite = Site::create(['handle' => 'other', 'slug' => 'other-sharing-site', 'name' => 'Other Site', 'locale' => 'en']);
+        $context->setSite($otherSite);
+        DB::table('org_user')->insert(['org_id' => $other->getKey(), 'user_id' => $owner->getKey()]);
+        Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+
+        expect(Permissions::isOwnerNow($owner))->toBeTrue()
+            ->and(visRefusedBy(fn () => MediaVisibility::changeSharing($entry, true))->reason)
+            ->toBe(MediaVisibilityRefused::OUT_OF_SCOPE)
+            ->and(DB::table('entries')->where('id', $entry->getKey())->value('site_id'))->toBe($entry->site_id);
+    });
+});

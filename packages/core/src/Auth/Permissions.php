@@ -513,7 +513,7 @@ final class Permissions
      * ⚠️ AND KNOWING IT IS WHAT LETS CORE OFFER ROLE ASSIGNMENT AT ALL, which is a decision #84 reversed on
      * this evidence: the assignment UI was going to live in the skeleton because core must not own a user
      * MODEL. It still does not own one — it asks the panel — and putting the screen here avoids opening an
-     * extension point in core's navigation before the extension API exists (Standing Principle #1).
+     * extension point in core's navigation before the extension API exists (Standing Principle #2).
      *
      * @return class-string<Model>|null
      */
@@ -643,6 +643,14 @@ final class Permissions
         $class = $user::class;
 
         return once(fn (): bool => self::resolveIsOwner($userId, $orgId, $class));
+    }
+
+    /** Re-read ownership at a write boundary after the caller has taken its lock. @internal */
+    public static function isOwnerNow(Authenticatable $user): bool
+    {
+        [$userId, $orgId] = self::key($user);
+
+        return $userId !== null && $orgId !== null && self::resolveIsOwner($userId, $orgId, $user::class);
     }
 
     private static function resolveIsOwner(int|string $userId, int $orgId, string $class): bool

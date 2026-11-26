@@ -59,7 +59,7 @@ module.exports = defineConfig({
         {
             name: 'skeleton',
             // Readers sign in with no storage state: every reader spec starts as a stranger, and signs its owner in itself.
-            testMatch: /(skeleton|public-site-locale|readers|reader-sessions|reader-mail)\.spec\.js/,
+            testMatch: /(skeleton|public-site-locale|canonical-site-prefix|readers|reader-sessions|reader-mail)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {
@@ -115,7 +115,7 @@ module.exports = defineConfig({
          */
         {
             name: 'media-delivery',
-            testMatch: /(?:staff-media-stream|media-(delivery|sharing|staging|deletion|upload|tiles|trash|visibility|bulk-removal))\.spec\.js/,
+            testMatch: /(?:staff-media-stream|media-(delivery|sharing|staging|deletion|upload|tiles|trash|visibility|bulk-removal|reader-bulk))\.spec\.js/,
             dependencies: ['setup', 'setup-reader'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

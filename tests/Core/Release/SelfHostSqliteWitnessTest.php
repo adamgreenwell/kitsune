@@ -59,3 +59,28 @@ it('binds the schema, ledger and module receipts of an isolated SQLite backup wi
         }
     }
 });
+
+it('requires an origin to resolve any recorded module uninstall before upgrade admission', function (bool $pending): void {
+    $source = $this->root.'/module-origin.sqlite';
+    $database = new SQLite3($source);
+    $database->exec('CREATE TABLE migrations (id INTEGER PRIMARY KEY, migration TEXT NOT NULL, batch INT NOT NULL)');
+    $database->exec('CREATE TABLE modules (handle TEXT UNIQUE, version TEXT, is_enabled INT, installed_at TEXT)');
+    $database->exec('CREATE TABLE module_uninstalls (handle TEXT PRIMARY KEY, started_at TEXT NOT NULL)');
+    if ($pending) {
+        // The ordinary module receipt has already been removed.
+        $database->exec("INSERT INTO module_uninstalls VALUES ('kitsune/person', '2026-01-01 00:00:00')");
+    }
+    $database->close();
+
+    mkdir($this->root.'/origin', 0700);
+    SelfHostSqliteBackup::create($source, $this->root.'/origin');
+    $copy = $this->root.'/origin/database.sqlite';
+    $before = hash_file('sha256', $copy);
+
+    if ($pending) {
+        expect(fn () => SelfHostSqliteWitness::inspect($copy))->toThrow(RuntimeException::class, 'Recover the interrupted module uninstall');
+    } else {
+        expect(SelfHostSqliteWitness::inspect($copy))->toHaveKeys(['schema_sha256', 'migrations_sha256', 'modules_sha256']);
+    }
+    expect(hash_file('sha256', $copy))->toBe($before);
+})->with([false, true]);

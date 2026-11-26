@@ -68,6 +68,19 @@ return [
         'new' => 'New password',
         'confirm' => 'Type the same password again',
         'hint' => 'At least :min characters. A few words in a row is easy to remember and hard to guess.',
+        'requirements' => 'At most :max bytes (some characters use more than one byte). No control characters. No spaces or invisible characters at either end. Do not use your email address. Use a unique password; unrelated words or a password manager can help.',
+        'strength' => [
+            'empty' => 'Password strength: enter a password for a local estimate.',
+            'short' => 'Password strength: too short. Use at least :min characters; try several unrelated words.',
+            'long' => 'Password cannot be used: over :max bytes. Shorten it; some characters use more than one byte.',
+            'control' => 'Password cannot be used: remove control characters.',
+            'edges' => 'Password cannot be used: remove spaces or invisible characters at either end.',
+            'email' => 'Password cannot be used: choose something other than your email address.',
+            'weak' => 'Password strength: weak pattern. Avoid repeated text and common sequences; try unrelated words or a password manager.',
+            'fair' => 'Password strength: fair estimate. More unrelated words or a longer generated password can help.',
+            'stronger' => 'Password strength: stronger estimate. Keep it unique to this account.',
+            'limits' => 'This estimate checks length and a few common patterns on this page only. It cannot detect every weak or previously exposed password. The server still checks the requirements when you submit.',
+        ],
         'missing' => 'Choose a password.',
         'short' => 'Your password must be at least :min characters. A few words in a row is easy to remember and hard to guess.',
         'long' => 'Your password is longer than :max bytes, and only the first :max would count. Please choose a shorter one.',
@@ -135,6 +148,12 @@ return [
         'ip_day' => '{1} Too many requests from your connection today. Please try again in an hour. Nothing was sent.|[2,*] Too many requests from your connection today. Please try again in :count hours. Nothing was sent.',
         // Counted: `ReaderPage` picks the form by `:count`, the whole minutes still to wait.
         'account' => '{1} Too many attempts to sign in to this account. Please wait a minute, or choose a new password.|[2,*] Too many attempts to sign in to this account. Please wait :count minutes, or choose a new password.',
+    ],
+    'mode_warning' => [
+        // Labels with numeric values, not a grammatical plural selector.
+        'impact' => 'Reader download impact — offered files: :files; affected sites: :sites.',
+        'consequence' => 'Reader sign-in, account pages and download links will return 404 while accounts are off. Files, offers and entitlements are kept. Turn reader accounts back on to restore access.',
+        'confirm' => 'Refusing: this change closes reader download links. Run it again with --force to acknowledge the warning. Nothing was written.',
     ],
     'errors' => [
         'summary' => 'There is a problem',

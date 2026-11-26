@@ -28,6 +28,11 @@ final class SelfHostSqliteWitness
             $database->enableExceptions(true);
             $database->exec('PRAGMA query_only = ON');
             $database->exec('BEGIN');
+            $uninstallLedger = $database->querySingle("
+                SELECT name FROM main.sqlite_schema WHERE type = 'table' AND name = 'module_uninstalls'
+            ");
+            $pendingUninstall = $uninstallLedger !== null
+                && $database->querySingle('SELECT EXISTS (SELECT handle FROM main.module_uninstalls)') === 1;
             $schema = self::fingerprint($database, 'schema', "
                 SELECT type, name, tbl_name, sql FROM main.sqlite_schema
                 WHERE substr(name, 1, 7) <> 'sqlite_'
@@ -44,6 +49,10 @@ final class SelfHostSqliteWitness
             throw new RuntimeException('The SQLite origin lacks the required schema, migration or module records.');
         } finally {
             $database->close();
+        }
+
+        if ($pendingUninstall) {
+            throw new RuntimeException('Recover the interrupted module uninstall before admitting this origin.');
         }
 
         return ['schema_sha256' => $schema, 'migrations_sha256' => $migrations, 'modules_sha256' => $modules];

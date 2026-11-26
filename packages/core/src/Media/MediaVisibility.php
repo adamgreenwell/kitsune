@@ -17,15 +17,19 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Entitlements\EntitlementName;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\MediaFile;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use LogicException;
 use RuntimeException;
 use stdClass;
 use Throwable;
+use WeakMap;
 
 /**
  * A stored file made public or private — Adam, ADR-042 decision 32.
@@ -72,6 +76,15 @@ final class MediaVisibility
     public const OFFER_CHANGED = 'media.reader_offer_changed';
 
     public const OFFER_STOPPED = 'media.reader_offer_stopped';
+
+    public const SHARED_WITH_ORG = 'media.shared_with_org';
+
+    public const KEPT_TO_SITE = 'media.kept_to_site';
+
+    private const ALL_SITES = 0;
+
+    /** @var WeakMap<Entry, int>|null */
+    private static ?WeakMap $sharingWrites = null;
 
     /**
      * Whether a user may change the visibility of a file of this type: whoever may publish it (decision 32). A null user is
@@ -383,6 +396,82 @@ final class MediaVisibility
         });
     }
 
+    /** Move a stored file between the current Site and Org sharing under the file's custody lock. */
+    public static function changeSharing(Entry $entry, bool $share): string
+    {
+        $connection = $entry->getConnection();
+        $id = self::keyOf($entry, $connection, 'shared differently');
+        self::refuseWithoutOrg($id, 'shared differently');
+
+        $context = app(Context::class);
+        $site = $context->siteId();
+        $org = $context->orgId();
+        if ($site === null || $org === null) {
+            throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OUT_OF_SCOPE, MediaVisibilityRefused::TO_SHARE);
+        }
+
+        // Owner administration locks the Org first. Operations holding it may also need its entries.
+        $lockOrg = static function () use ($connection, $org, $id): void {
+            if (Org::on($connection->getName())->whereKey($org)->lockForUpdate()->first(['id']) === null) {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OUT_OF_SCOPE, MediaVisibilityRefused::TO_SHARE);
+            }
+        };
+
+        return MediaCustody::locked($connection, $id, static function (?stdClass $locked, ?stdClass $file) use ($connection, $entry, $id, $share, $org, $site): string {
+            $owner = app(EntryWriteReads::class)->run($connection, static function () use ($connection, $org, $site, $id): bool {
+                if (! EntryWriteReads::exists(Site::on($connection->getName())->where('org_id', $org)->whereKey($site))) {
+                    throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OUT_OF_SCOPE, MediaVisibilityRefused::TO_SHARE);
+                }
+
+                $user = Permissions::currentUser();
+
+                return $user !== null && Permissions::isOwnerNow($user);
+            });
+            if (! $owner) {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OWNER_REQUIRED, MediaVisibilityRefused::TO_SHARE);
+            }
+
+            $row = self::guard($connection, $entry, $id, $file, MediaVisibilityRefused::TO_SHARE, ownerAlreadyChecked: true);
+            $destination = $share ? null : $site;
+            if (($row->site_id === null ? null : (int) $row->site_id) === $destination) {
+                return self::UNCHANGED;
+            }
+
+            if (($file->reader_entitlement ?? null) !== null) {
+                throw new MediaVisibilityRefused($id, MediaVisibilityRefused::ACTIVE_READER_OFFER, MediaVisibilityRefused::TO_SHARE);
+            }
+
+            $fresh = $entry->newQuery()->whereKey($id)->lockForUpdate()->firstOrFail();
+            self::$sharingWrites ??= new WeakMap;
+            self::$sharingWrites[$fresh] = $destination ?? self::ALL_SITES;
+
+            try {
+                $fresh->site_id = $destination;
+                if ($share) {
+                    $fresh->slug = null;
+                }
+                if (! $fresh->save()) {
+                    throw new RuntimeException('The media sharing change could not be saved.');
+                }
+            } finally {
+                unset(self::$sharingWrites[$fresh]);
+            }
+
+            return self::SWITCHED;
+        }, beforeEntryLock: $lockOrg);
+    }
+
+    /** The only kind of audited model write permitted by the active file-custody callback. @internal */
+    public static function sharingWriteAction(Entry $entry, mixed $destination): ?string
+    {
+        $site = self::$sharingWrites[$entry] ?? null;
+        if ($site === self::ALL_SITES) {
+            return $destination === null ? self::SHARED_WITH_ORG : null;
+        }
+
+        return $site !== null && $site === $destination ? self::KEPT_TO_SITE : null;
+    }
+
     /**
      * The key of the row this switch locks, switches and audits — refusing an instance that would make those two rows, or
      * two connections (review of decision 32).
@@ -472,11 +561,11 @@ final class MediaVisibility
      * @throws MediaVisibilityRefused
      * @throws RuntimeException when the instance was moved or retyped since it was loaded
      */
-    private static function guard(Connection $connection, Entry $entry, int $id, ?stdClass $file, string $to): stdClass
+    private static function guard(Connection $connection, Entry $entry, int $id, ?stdClass $file, string $to, bool $ownerAlreadyChecked = false): stdClass
     {
         // Read again, for what custody's lock does not read: it took the row, and a row gone since it was loaded is null here.
         $row = $connection->table('entries')->where('id', $id)->lockForUpdate()
-            ->first(['org_id', 'site_id', 'type_handle', 'title', 'deleted_at']);
+            ->first(['org_id', 'site_id', 'entry_type_id', 'type_handle', 'title', 'deleted_at']);
 
         if ($row === null) {
             throw new MediaVisibilityRefused($id, MediaVisibilityRefused::GONE, $to);
@@ -490,11 +579,19 @@ final class MediaVisibility
             throw new MediaVisibilityRefused($id, MediaVisibilityRefused::OUT_OF_SCOPE, $to);
         }
 
-        $entry->refuseIfTheRowMovedUnderneath('change the visibility of');
+        if ($to === MediaVisibilityRefused::TO_SHARE) {
+            foreach (['site_id', 'org_id', 'entry_type_id'] as $column) {
+                if ((string) $row->{$column} !== (string) $entry->getRawOriginal($column)) {
+                    throw new MediaVisibilityRefused($id, MediaVisibilityRefused::STALE, $to);
+                }
+            }
+        } else {
+            $entry->refuseIfTheRowMovedUnderneath('change the visibility of');
+        }
 
         $handle = (string) $row->type_handle;
 
-        if (! self::mayChange(Permissions::currentUser(), $handle)) {
+        if (! $ownerAlreadyChecked && ! self::mayChange(Permissions::currentUser(), $handle)) {
             throw new MediaVisibilityRefused($id, MediaVisibilityRefused::NOT_PERMITTED, $to, detail: $handle);
         }
 

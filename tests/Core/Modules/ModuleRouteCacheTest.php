@@ -21,12 +21,17 @@ use Symfony\Component\Process\Process;
 /** @return array<string, mixed> */
 function moduleCachedBoot(string $temporary, string $mode): array
 {
-    $root = dirname(__DIR__, 3);
-    $probe = new Process([PHP_BINARY, __DIR__.'/../Fixtures/ModuleRouteCacheProbe.php', $root, $temporary, $mode], $root);
-    $probe->setTimeout(30);
-    $probe->mustRun();
+    return json_decode(moduleCacheProcess($temporary, $mode)->mustRun()->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+}
 
-    return json_decode($probe->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+function moduleCacheProcess(string $temporary, string $mode, bool $requireAdmission = false): Process
+{
+    $root = dirname(__DIR__, 3);
+    $probe = new Process([PHP_BINARY, __DIR__.'/../Fixtures/ModuleRouteCacheProbe.php', $root, $temporary, $mode], $root, [
+        'KITSUNE_RELEASE_REQUIRE_MODULES' => $requireAdmission ? '1' : '0',
+    ]);
+
+    return $probe->setTimeout(30);
 }
 
 beforeEach(function (): void {
@@ -73,6 +78,49 @@ it('does not register stale enabled module code merely because an old cached URI
     $fresh = moduleCachedBoot($temporary, 'read');
     expect($fresh['enabled'])->toBeTrue()->and($fresh['cache_file'])->toBeTrue()
         ->and($fresh['currency_route'])->toEndWith('/storefront/currency')->and($fresh['provider_registered'])->toBeFalse();
+});
+
+it('rebuilds enabled module routes after the admission table migration instead of keeping a pre-migration cache', function (): void {
+    $temporary = $this->cacheDirectory.'/host';
+    mkdir($temporary, 0700);
+    $before = moduleCachedBoot($temporary, 'seed-legacy-enabled');
+    expect($before['cache_command'])->toBe(0)->and($before['cache_file'])->toBeTrue()
+        ->and($before['provider_registered'])->toBeFalse()->and($before['currency_route'])->toBeNull();
+
+    moduleCachedBoot($temporary, 'migrate-guard');
+    $staleCache = moduleCachedBoot($temporary, 'read');
+    expect($staleCache['provider_registered'])->toBeTrue()->and($staleCache['currency_route'])->toBeNull();
+    // A separate command removes the old route set before any final cache command boots its application.
+    expect(moduleCachedBoot($temporary, 'clear')['cache_command'])->toBe(0);
+    $rebuilt = moduleCachedBoot($temporary, 'cache');
+    expect($rebuilt['cache_command'])->toBe(0)
+        ->and($rebuilt['currency_route'])->toEndWith('/storefront/currency');
+    $fresh = moduleCachedBoot($temporary, 'read');
+    expect($fresh['provider_registered'])->toBeTrue()
+        ->and($fresh['currency_url'])->toEndWith('/admin/golfdom/storefront/currency');
+});
+
+it('refuses to build final caches when module admission cannot read the migrated schema', function (string $mode): void {
+    $temporary = $this->cacheDirectory.'/host';
+    mkdir($temporary, 0700);
+    $run = moduleCacheProcess($temporary, $mode, requireAdmission: true);
+    $run->run();
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput().$run->getErrorOutput())->toContain('Module admission records could not be read after migration.')
+        ->not->toContain('SQLSTATE', 'module_uninstalls', 'modules.sqlite')
+        ->and(is_file($temporary.'/bootstrap/cache/routes-v7.php'))->toBeFalse();
+})->with(['seed-legacy-enabled', 'seed-malformed-enabled']);
+
+it('admits an enabled matching module while building the final caches', function (): void {
+    $temporary = $this->cacheDirectory.'/host';
+    mkdir($temporary, 0700);
+    $run = moduleCacheProcess($temporary, 'seed-enabled', requireAdmission: true)->mustRun();
+    $cached = json_decode($run->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($cached['provider_registered'])->toBeTrue()
+        ->and($cached['cache_command'])->toBe(0)
+        ->and($cached['currency_route'])->toEndWith('/storefront/currency');
 });
 
 it('leaves a cancelled switch unchanged with an uncached application safe to boot', function (): void {

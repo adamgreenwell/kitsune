@@ -4,8 +4,9 @@
     file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
     A reader page's frame — ADR-037, as built. No theme layer yet (ADR-011): the welcome page's palette, inline styles,
-    system fonts, no JavaScript and nothing off-host (ADR-027, ADR-020 #7), because `ReaderArea`'s policy allows inline
-    styles and nothing else. Logical properties only, so a right-to-left page needs nothing of its own.
+    system fonts and nothing off-host (ADR-027, ADR-020 #7). ReaderArea permits inline styles and otherwise no script,
+    except the password-choice view's one hash-pinned, local feedback enhancement (#301 / ADR-037 amendment).
+    Logical properties only, so a right-to-left page needs nothing of its own.
 
     `<html>` is the site's language and direction; `<main>` is the language the copy was found in (`ReaderPage`).
     No promise in 0.x: a host may override this through `resources/views/vendor/kitsune/readers/`.

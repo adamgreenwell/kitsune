@@ -795,7 +795,7 @@ sibling's (`/golfdom/account`) would make that sibling's reader pages 404: close
 
 ## ADR-020 — Privacy by design: classification, redactable revisions, payload-free audit
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23 (#262)** · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
 **Not legal advice.** A privacy attorney should review before any compliance claim appears in marketing, a DPA, or a security questionnaire. What is settled here is which obligations are *architectural*.
 
 ### The category distinction that drives this
@@ -971,6 +971,38 @@ were each overridden as they were found, which is precisely how `truncate()`
 survived three rounds and erased the whole table with no event and no
 override. The remaining mutators are refused together rather than one review
 at a time.
+
+---
+
+### Amendment — measured revision growth, 2026-10-23 (#262)
+
+The open question was **“Revision storage growth — full-JSON snapshots get expensive; consider diffs.”**
+That question is now measured against the actual fifty-version cap, rather than assuming a thousand edits
+means a thousand retained snapshots. The original privacy reasoning above remains in force.
+
+The [revision-growth experiment](benchmarks/revision-growth.md) compares nine valid synthetic histories
+(2/32/256 KiB rich text, mostly scalar edits, insertions and replacements), one thousand authored edits each,
+with a disposable checkpoint/object-key diff prototype. It includes media references, personal inline/promoted/
+relation data and retained originals; real guarded restores, erasure and replacement-link preservation;
+persisted corruption/interruption controls; and staged migration/restart/identity and storage observations.
+The [numeric record](benchmarks/revision-growth.json) preserves the historical source fingerprints, sample scopes,
+timings, descriptive intervals and limitations. Invalid earlier short-text pilot figures are excluded.
+
+**Keep full snapshots and the current fifty-version retention.** Mostly scalar histories can save logical
+bytes in this prototype; frequent body edits replace the whole string and provide little benefit. Its
+repeated per-version list/erasure replay is deliberately reported as an implementation cost, not a lower
+bound for every diff design. Neither those timings nor different-scope write/erasure columns establish a
+production speedup. No representative storage pressure or measured need justifies a runtime format change.
+
+Erasure must still reach every checkpoint, operation and original, and erased relation history remains
+`null` (unknown), so restoring it cannot clear a later replacement relation. Logical erasure is separate
+from secure physical media erasure and backup replay. The experiment is warm local SQLite, not server-engine,
+concurrent-writer, power-loss or ADR-027 floor qualification. Its combined large-case harness needed more
+than 128 MiB; isolated current erasure passed at that cap, and no product setting changed.
+
+The old open-question bullet is retired by this bounded finding. A future representation proposal needs its
+own workload/storage evidence and measured writer, replay, erasure, migration/cutover/reversal, concurrency
+and supported-engine/floor behavior. This PR contains development measurement code and findings only.
 
 ---
 
@@ -1384,6 +1416,14 @@ org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR me
 
 `locked_keys`, this entry's open question, is still open; nothing in this key needs it.
 
+**Amendment — warning before reader downloads close (#251, 2026-10-25).** The existing installation-operator
+`kitsune:readers mode` command remains the human settings door. Before `off` or a revert to `inherit` would change a
+site's effective mode from `sign-in`/`open` to `off`, it previews recorded private file offers in the affected sites.
+An org-level write respects site and SiteGroup overrides; a site revert uses the stored parents and platform
+default. A positive count requires an explicit `--force` acknowledgement before the existing audited
+`SettingsWriter` runs, including interactive use. ADR-041's #251 amendment below defines the count, words and
+residual race. There is no new staff settings route or change to owner/publisher authorization.
+
 ### Amendment — a third platform key, `reader_addresses`, the organisation's alone, 2026-10-10
 
 **Status:** Amended · ADR-037 decision 1, as built
@@ -1584,6 +1624,14 @@ ADR-013 pins `^8.4`. **Ubuntu 24.04 LTS — in support until 2029 — ships PHP 
 Supporting only one of the two costs a real constituency, so both ship.
 
 > **Amended 2026-09-15: the native path named a PPA that does not cover the current LTS.** The Launchpad PPA `ppa:ondrej/php` has no suite for Ubuntu 26.04 LTS — its `dists/resolute/Release` returns 404 — and describes itself as being merged into its maintainer's apt repository, [packages.sury.org/php](https://packages.sury.org/php/), which it names as the canonical source for 26.04. That repository publishes both 24.04 and 26.04 with PHP 8.4 and 8.5. 26.04 needs no third-party source at all: its own archive ships PHP 8.5, which satisfies `^8.4`, while 24.04 ships 8.3. The native path therefore uses the distribution's own PHP wherever it meets the floor, and packages.sury.org only where it does not. Found while provisioning the alpha's stage server, which runs PHP 8.5 from Ubuntu's archive.
+
+> **Native package preflight, 2026-11-25 (#215).** Ubuntu's own FPM packages are PHP 8.1 on Jammy, PHP 8.3 on Noble,
+> and PHP 8.5 on Resolute. The amd64 and arm64 package indexes from Ondřej Surý both include the PHP 8.4 CLI, FPM
+> and extensions selected for Jammy and Noble. The preflight reports that package plan without modifying APT. The
+> package indexes establish availability on the date checked. Repository trust, package activation and host
+> acceptance still belong to installer qualification. [Jammy](https://packages.ubuntu.com/jammy-updates/php8.1-fpm) ·
+> [Noble](https://packages.ubuntu.com/en/noble-updates/php/) · [Resolute](https://packages.ubuntu.com/resolute-updates/php/) ·
+> [Surý repository instructions](https://packages.sury.org/php/README.txt)
 
 ### Security posture, decided deliberately rather than by default
 
@@ -2252,7 +2300,7 @@ It is mature, audited, and adopting it would save real work — including a reso
 
 - **AGENTS.md invariant 2: every model declares its scope.** A vendor model cannot carry `#[OrgScoped]` and cannot `use EnforcesScope`. The package's `teams` feature models **one** scoping axis; Kitsune has two that scope data and one that does not (ADR-021). An authorization table with no declared scope is precisely the shape invariant 2 exists to refuse, and it would be the first one in the schema.
 - **Permissions here are derived from schema rather than enumerated by an operator.** Entry types are created at runtime through the admin, so the permission set changes when content modelling changes. A design whose mental model is a fixed list maintained in a seeder is fighting the flagship feature.
-- **Standing Principle #1.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
+- **Standing Principles #1 and #2.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
 - **ADR-025** already sets the bar: a runtime dependency of core gets argued for rather than assumed.
 
 ### Why a table rather than a JSON column on the role
@@ -2317,17 +2365,33 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 `architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.
 
-⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
+⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #2 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
 
 ⚠️ **Amended 2026-10-06 (ADR-040's admin):** owner-only in v1.0 now also covers setting, replacing and removing an
 org's credentials and switching it between test and live mode. Still no subject: `credential.manage` would be refused
-by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
-#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
+by `Permissions::allows()` even for an owner. **Historical citation notice (superseded 2026-10-22):** ~~The v1.2 clause this paragraph and the next cite as "Standing Principle
+#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.~~
 
 ⚠️ **Amended 2026-10-07 (ADR-040's entitlements page):** owner-only in v1.0 also covers listing who holds what on a
 site, giving a comp, revoking one source and reading a row's history. Still no subject: `entitlement.manage` would be
 refused by the vocabulary even for an owner, and delegating a comp — the one act that gives back access a refund took —
 waits for v1.2's subjects.
+
+### Citation amendment — 2026-10-22 (issue #258)
+
+**The v1.2 gate belongs to [Standing Principle #2](#standing-principles).** This ADR previously cited
+"Standing Principle #1" beside the package rejection, owner-only schema/role administration, and the decision
+to keep role navigation in core. The reasoning stays visible above: a package can create an ecosystem obligation,
+a new permission subject broadens the surface, and a host navigation seam would open an extension point.
+Principle #1 is still the reason to avoid an ecosystem-breaking rewrite; Principle #2 sets the freeze at v1.2
+and the deprecation rule within a major. The package rejection now cites both, because it uses both reasons.
+ADR-025's combined reference to Principles #1 and #2 already does the same job and remains unchanged.
+
+The September record counted eleven misrouted references. At this amendment's source snapshot there are **fourteen
+active citations** to correct: three in this ADR, four PHP docblocks, two browser-test comments, two roadmap
+paragraphs, and one each in the README, CONTRIBUTING and architecture. Historical notices that identified the
+misroute are retained as historical notices; they do not prescribe the gate. The citations change, while the
+owner-only boundaries, named first-party exceptions, v1.2 date and public surface stay as decided.
 
 ### A policy is not a query scope
 
@@ -2489,7 +2553,7 @@ the correction and gains a second half — **name the id, withhold the person, a
 
 ⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
 
-The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
+The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #2 keeps shut until v1.2.
 
 **An org may not lose its last held owner role.** Refused by `Role` itself rather than by the form, because an org that loses its last owner cannot get one back: schema editing and role administration are both owner-only, so the only person who could restore the flag is the one who just removed it. The guard asks whether this change takes the **last held** one rather than whether the result has any — a fresh install mid-seed has an owner role nobody holds yet, and the second question would refuse to let a seeder correct one.
 
@@ -3157,6 +3221,21 @@ job.
   the interrupted command returns (read), so a flag set after the rename could still say "not activated" once the
   rename had happened. That Forge's own activation behaves the same is inferred until the first alpha deploy.
 
+⚠️ **Amended 2026-10-23 — final caches must see the migrated admission schema (#264).** Keep the original
+pre-migration cache and serving check: it still refuses a broken release before any schema write. A new
+module-admission table can be absent in an existing installation, however, so fail-closed boot excludes modules
+while that first cache is built. Both the native release script and isolated Coolify startup therefore rebuild
+the five explicit caches and repeat the serving check after migration, before accepting the release. Both
+require a successful module-admission read throughout that final cache and serving pass. A generic health
+response can stay healthy while an enabled module is absent, so it cannot substitute for the admission read.
+The old
+two-post-migration-step claim above no longer describes every possible failure: this extra build can fail after
+the database changed, and rollback still does not undo migrations. No missing admission table is treated as
+permission to register modules. A disposable fresh-application route-cache test measures the omitted enabled
+module route, its continued absence after migration alone, and its recovery after the final cache rebuild;
+the release-script fixture executes and verifies both cache/serving passes. This is local qualification, not
+a deployment or authorization to activate either environment.
+
 ### Rejected
 
 | Rejected | Why it lost |
@@ -3582,6 +3661,20 @@ always typed twice** — "passwords always need to be typed twice" — so both p
 from the floor of fifteen to a ceiling of sixty-four, for readers and the first owner alike; a value below the floor,
 above the ceiling or not a whole number is replaced by the bound and named by `kitsune:readers status` — "should not
 be allowed to be weak ever even by manual override".
+
+⚠️ **Amended 2026-10-23 — optional password-strength feedback (#301).** The original no-script reader pages keep
+their form and server checks. Only a rendered password-choice view (sign-up completion or reset, including a refused
+POST) now permits one static script by its exact SHA-256 CSP hash. Other reader pages, redirects, dead links and files
+keep their original policy; no script origin, inline wildcard, network connection or dependency is added. The script
+reads the field locally and writes translated text: required minimum, the 72-byte ceiling, unusable characters/edges,
+the address itself, a few repeated/common patterns, and a length-based estimate. It neither changes nor submits the
+password, saves it, nor consults a strength service. Requirements remain visible without JavaScript, and the server's
+`PasswordRules` remain authoritative. The estimate is explicitly limited: no entropy claim or breach-list check, and a
+long predictable phrase outside its small pattern list can still look stronger. A unique generated password or
+unrelated words are suggested without new composition rules. Feedback uses words rather than colour; a polite live
+region announces a changed category after a pause or on blur, instead of every keystroke. Existing keyboard, paste and
+new-password autocomplete remain. Staff have no web creation/reset form in this slice: the first owner still uses the
+hidden CLI prompt or standard input (ADR-039), and no staff reset route is invented here.
 
 **The pages.** Eight more routes per prefix, every one a fallback as before: `/account/register` asks for a sign-up
 link and `/account/register/complete` uses one, both only where the site is `open` (`ReaderArea::class.':open'`, in
@@ -4092,6 +4185,39 @@ This is a source-derived residual, not a failure reproduced on a live installati
 migrations or teardown writes, so it does not encounter it; a later destructive migration needs a tested recovery
 procedure, a backup and quiescent writers rather than a promise that reinstall always repairs it.
 [#264](https://github.com/adamgreenwell/kitsune/issues/264) tracks reproduction and recovery.
+
+⚠️ **Amended 2026-10-23 — interrupted uninstall is a separate recorded state (#264).** The residual above is
+now reproduced on disposable SQLite 3.53.4, PostgreSQL 17.11, MySQL 8.4.7 and MariaDB 10.6.28 with an actual
+installed Composer fixture and Laravel's migrator. A successful first drop followed by a failing second drop
+leaves that first table/data absent on SQLite and both MySQL engines, while its migration remains recorded
+and its receipt is gone. The previous install and enable then accept the damaged schema. PostgreSQL rolls
+the failed file's DDL back; that does not roll receipt deletion back. No production incident is claimed.
+
+Keep the original ordering reason: schema reset still follows the data-hook/receipt transaction and stays
+outside it. Add an installation-wide `module_uninstalls` marker, independent of a receipt, committed in that
+transaction before DDL. A hook refusal rolls it back with the receipt changes. Only a successful reset,
+reconciliation of the current migration filenames with the ledger and checked marker deletion finish the
+uninstall. Process loss or a failed reset leaves the marker: install and all other lifecycle actions refuse,
+runtime and retained-data command registration decline even a planted enabled receipt, and status reports
+incomplete uninstall with a failing command exit even when no installed receipt remains. A missing/unreadable
+marker table fails closed; core migrations must precede module admission after this upgrade.
+
+The marker-table migration refuses rollback while any incomplete uninstall remains, so rollback/reapply cannot
+erase the admission guard. A failed guard read also refuses rollback. ADR-035's additive cache amendment keeps
+the pre-migration serving check and requires a final cache rebuild after migration; otherwise an upgrade could
+retain routes built while the new admission table was absent.
+
+The recovery decision is a complete consistent pre-uninstall backup restore with matching code/assets and
+quiescent writers, not automatic execution of arbitrary broken `down()` again. The marker has no force-clear
+command; manually removing it, planting a receipt or editing the migration ledger proves no repair. A
+disposable complete-database backup/restore experiment reproduces the failure and restores the same recovery
+point twice on every engine, comparing 42 physical tables, columns/indexes/foreign keys, row fingerprints,
+ledger and original disabled receipt. Backups exist only in process memory and are not retained as exports.
+This proves that synthetic database recovery point, not coordinated external-store recovery or universal DDL
+repair. Older unmarked damage is not discovered by adding the marker table. Modules whose hooks issue DDL or
+whose writes span other connections/stores remain subject to the transaction limits recorded above and need
+their own coordinated recovery procedure. [Module operations](module-operations.md) records the bounded steps,
+unsupported cases and the requirement to stop already-running processes; disabling does not unload them.
 
 The verifier's scope-attribute, trait and manifest checks also do not inspect migrated column nullability or
 scope-leading indexes. Such schema claims remain requirements on a module's migration and engine tests;
@@ -7994,9 +8120,55 @@ holds the name; only the dialog and the audit row stand in the way. A reader-tab
 `ReaderArea` carries Laravel's `userId` (ADR-037's residual). The staff route still uses `fpassthru()`, measured fatal at
 64 MiB under PHP-FPM after its 200 was sent. Pest cannot see the loop stop when a reader leaves; the FPM probe did.
 
+**Amendment — reader offers and sharing (#260, 2026-11-25).** A media file with an active reader offer
+must be withdrawn through **Stop offering** before its sharing can change. The withdrawal keeps its own audit
+record. The sharing writer checks the current offer under the file-custody lock so a newly added offer can
+refuse a stale confirmation. A file that has just become Site-only has no offer. An owner can offer it
+explicitly from that Site. Reader links remain subject to the existing Site and current-offer checks.
+
 **Owed.** The staff route onto `MediaStream`, with `filename*`; a "Your downloads" list, with the batch check; a warning
 when a site with offered files has its reader accounts switched off; offering a selection; a size check against
 `size_bytes` before streaming; a canonical lower-case prefix.
+
+**Amendment — offering a selection (#252, 2026-10-26 implementation choice).**
+
+The media list gains *Offer selected to readers*, for whoever may publish its type. This chooses the behavior
+left open above; it is not a further answer attributed to Adam. The earlier reasoning and *Owed* item remain
+visible while the implementation's independent qualification is pending.
+
+The operator enters one entitlement name and types it again to confirm the exact name. The modal says that
+it replaces any different name already offered by an eligible selected file, says that readers holding only the old
+name lose that download, and repeats decision 4's warning about the bytes as stored. A matching current name is
+unchanged and receives no invented audit event.
+Malformed or mismatched confirmation refuses the entire request before any writer runs, including a forged
+submission that bypasses the form.
+
+The selection uses `BulkSelection`'s existing fifty-record bound and request budget, at most fifteen seconds:
+take the deadline before fetching, fetch at most fifty plus one through the selected query, and refuse the whole
+selection above fifty rather than truncating it. An explicit key selection above fifty also refuses. Each file
+is attempted separately, the first always, with none started once the budget expires; an attempt in hand finishes.
+No transaction encloses the selection. Successful earlier offers remain when a later file refuses or cannot
+be confirmed. One escaped, persistent notification gives each result and identifies unavailable or unattempted
+selections without exposing foreign titles. The selection clears only when every selected file is as requested;
+otherwise the operator can adjust it and run again. Repeated matching offers are idempotent.
+
+Each attempt reloads its row within the current Org, Site and list type, and rechecks publish permission.
+The only writer remains `MediaVisibility::offer()`: it rechecks the stored row and permission under custody,
+refuses shared/public/trashed/missing files, and audits each new or changed offer in its own transaction.
+A stale or forged model's attributes cannot choose another type, scope or feedback title. After an
+unexpected error, a fresh scoped read may establish that the requested offer stands. The result counts that
+separately from newly written offers. If the read cannot confirm the offer, the result leaves it unconfirmed.
+The result describes each file's observed state at the time of the attempt.
+
+**Measured locally — selection (#252).** In the isolated SQLite browser fixture on the development Mac, fifty
+private files were offered and individually audited in 357 ms from submission to the visible result; the earlier
+measurement was 351 ms. Every stored checksum was unchanged, the other Site's file was untouched, and all fifty
+offers completed with zero retries. This measures that local request, not the 1 vCPU floor or a worst-case custody
+wait. The existing fifty-record/fifteen-second limits are unchanged. A first narrow-layout check found a 3,138-pixel
+notification at a 320-pixel viewport. The result list now has a named, keyboard-focusable scroll region capped at
+40vh, with the summary and close button outside it; Home/End reach the first and last result, and the current browser
+checks pass axe at the project's admin severity threshold. Mixed selections preserve successful offers, explain each
+refusal and stay selected. Full-suite and exact-head CI/review qualification remain owed.
 
 **Amendment — Your downloads (#250, 2026-10-21).** The individual landing/file door above remains the authority
 for bytes. The account now links to `{prefix}/account/downloads`, a list of current private offers whose live
@@ -8108,6 +8280,86 @@ The existing #249 measurements above remain visible. Synthetic Guzzle PSR-7 wrap
 stat/reset capability, unknown-size and nonseekable refusal, and correcting an already-consumed underlying object;
 they are not qualification of a deployed remote adapter. Successful reader file GETs remain bounded by fifteen SQL
 statements in the engine regression suite; the existing unauthorized eight-read comparisons remain unchanged.
+
+### Amendment — warn before reader accounts close offered links (#251, 2026-10-25)
+
+The original download amendment's *Owed* warning is implemented at the actual settings door:
+`kitsune:readers mode`, run by the installation operator (ADR-037). There is no admin settings page to attach a
+confirmation to. No new staff route or privilege is introduced; offering still requires the media type's existing
+publish permission and owner-only account/entitlement operations keep their existing fences.
+
+**Before a write.** A change to `off`, or `inherit` that resolves to `off`, counts offers only for sites changing
+from `sign-in` or `open` to `off`. An org change skips lower-level overrides; a site revert is previewed through
+`SettingsResolver`'s supported unsaved-Site input, with no id/memo and its own override removed. Preview never writes
+and rolls back a setting to discover its effect. Site rows and grouped counts are read in batches of at most 100;
+each entry count carries both the affected site keys and their owning org on the scope's own connection.
+
+**What is counted and said.** A recorded offer is a non-trashed, site-specific entry whose file row is private and
+holds a nonempty reader entitlement. Shared/public/trashed/unoffered and foreign-org rows do not contribute. This is
+a count of recorded offers, not a claim that each file is presently on disk, published by an enabled type or held by
+a reader. No file title, path, entitlement name, reader or grant is read for this count. The translated warning gives
+the file count and affected-site count as numeric labels, then says that reader sign-in, account pages and download
+links return 404 while accounts are off. Files, offers and entitlements remain stored; turning accounts back on
+restores the access they allow.
+
+**Acknowledgement.** With a positive count the command refuses before `SettingsWriter` unless `--force` was passed,
+even on an interactive terminal. The refusal names that remedy and says nothing was written; an acknowledged write
+still prints the warning before it changes the mode. No affected offer means the existing behavior, with no extra
+acknowledgement. Already-off sites and changes that keep sign-in available do not produce this warning. The existing
+writer remains the only audited settings write in this command; neither files nor grants are changed.
+
+**Residual and reach.** Counts are an advisory snapshot, not a lock on concurrent settings or offering changes. A
+later offer or override can change the count; `--force` acknowledges the consequence of closing reader pages, not an
+immutable list of files. Programmatic model/SettingsWriter writes do not acquire a console confirmation. A host
+that builds its own settings editor must provide the warning there. Browser coverage drives the real command and
+checks the reader links it leaves reachable or closes; it does not invent an admin screen to satisfy that test.
+
+---
+
+**Amendment — canonical lower-case Site prefixes (#254, 2026-10-26).** The earlier *Owed* item is answered by
+normalization of the claimed prefix and emitted addresses, with existing mixed-case addresses retained as aliases.
+`Site::path_prefix`, derived on every model save, is the canonical address component. `base_url` remains the
+operator's original configuration string; it is not an alternative routing key. This preserves ADR-021's address
+command and its distinction between the address typed and the claim actually served. No data migration or address
+move is required: the derived claims already lower-case the ASCII prefix, and the same host mutex, exact unique
+index and cross-org overlap guard remain authoritative. Refusing previously accepted spellings would break working
+bookmarks without removing a distinct claim; rewriting raw configuration would change the operator's record without
+changing that claim. Neither is selected.
+
+Public and reader requests keep accepting mixed- and upper-case prefix aliases without an extra redirect. Generated
+reader links, form actions and recovery mail use the lower-case claim. Existing recovery-link handling still removes
+the secret query before redirecting to its canonical, query-free form; this amendment adds no query-bearing redirect.
+Only the configured prefix is case-insensitive. Path segment boundaries, maximum depth, ASCII vocabulary and refusal
+of dot segments, escapes and malformed addresses remain as before. The panel keeps its own configured path and its
+own staff authentication; a public prefix is not prepended to it.
+
+The observed gap was a guest's intended return. Resolution and `ReaderArea` admitted `/NeWs/Fr/account/downloads`,
+but the strict stored-return fence rejected that spelling, so sign-in returned to the account root. `RequireReader`
+now asks `ReaderLinks::canonicalPath()` to replace only this Site's case-insensitive prefix, then applies the existing
+exact `isOwn()` fence. It stores `/news/fr/account/downloads`. The leaf is not lowercased, and nothing is decoded or
+resegmented. Foreign and nested-site paths, absolute and protocol-relative URLs, query strings, fragments and encoded
+separators remain refused. Sign-in still checks the stored path with strict `isOwn()`; accepting a prefix alias at
+the request boundary does not expand what the session may later redirect to.
+
+**Measured before implementation.** SQLite storage/HTTP characterization passed 5 tests / 37 assertions; public and
+recovery HTTP characterization passed 2 / 39. PostgreSQL 17.11 and MySQL 8.4.7 each passed the same 5 / 37 native
+cases. MariaDB 10.6.28 initially stopped in the temporary probe's driver-name guard before any characterization;
+adding its distinct `mariadb` name and running only that leg passed 5 / 37. The original failed matrix remains a
+failed measurement. A four-case browser characterization passed with zero retries: three public spellings returned
+200/French with the configured admin link, the sibling segment returned 404, real staff sign-in returned to the
+requested Site dashboard, and reader sign-in reproduced the canonical-versus-mixed downloads return difference.
+Two preceding browser harness failures remain recorded: an incorrect password selector and a nonwaiting URL check.
+The complete third probe, its owned resources and dependencies were audited and removed.
+
+**Implementation checks.** The new policy regression first failed on the missing canonical-path method and the
+lost intended return. The initial focused reader suite then passed 130 tests / 1,513 assertions. The implementation's
+native reader/address set passed 161 / 1,657 on PostgreSQL and 158 / 1,595 on each of MySQL and MariaDB. The latter two
+retain three existing DDL fault-case skips; all 24 new policy cases passed on every engine. The first native controller
+incorrectly expected the available test count to equal the passed count on MySQL and stopped after its successful
+workload. Its verifier failure is retained, the three skips were checked against the existing source, and only the
+not-yet-started MariaDB leg was then run. All owned engine tables were empty before their containers were removed.
+Browser and full-candidate qualification remain required before this candidate is ready; historical characterization
+is not qualification of the new implementation. Original reasoning and residuals above remain.
 
 ---
 
@@ -12303,13 +12555,35 @@ When it lands:
 > it matters only for a tile torn down between its bytes arriving and its image drawn, a window no browser test holds
 > open. The tile switched in place by *Make selected public* while a press was out is the abort's second test.
 
+
+**Amendment — changing media sharing (#260, 2026-11-25).** An Org owner can share a Site-only media file
+from its owning Site, or make an Org-shared file Site-only from the intended recipient Site. This action
+supports these two transitions within one Org. The current Site supplies the destination. The upload selector
+continues to set the initial sharing.
+
+The action keeps the file identity, stored path, visibility and bytes. Public files retain their direct URL.
+Sharing clears the Site slug because Org-shared entries have none. Restoring an older version of a shared
+file restores its content and keeps its slug empty. The confirmation explains the distinction between public delivery and which Sites can use the file in the
+library. Private staff links and media relations resolve through current Site scope. Relations keep their
+stored identities. A relation from a Site that loses access has an unavailable target while the file is
+Site-only, and can resolve again if the file is shared again.
+
+Both transitions require a current Org owner and no active reader offer, checked under the file-custody lock.
+A successful change and its audit record commit together. The audit action names the direction of the change.
+The existing actor, target and Site fields identify its owner, file and affected Site. An already completed
+transition records nothing again. Ordinary saves and bulk writes must
+refuse sharing changes to stored media files outside the custody writer. Other entry types keep their
+existing scope rules.
+
 ---
 
 ## Open questions
 
-- **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
+- ~~**Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
-  wrong everywhere it appears, and repointing it is an amendment rather than a sweep
+  wrong everywhere it appears, and repointing it is an amendment rather than a sweep~~
+  **Resolved by ADR-033's [citation amendment](#citation-amendment--2026-10-22-issue-258), 2026-10-22:** fourteen
+  active citations were present at the correction; the earlier count and rationale remain visible here.
 - **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
@@ -12321,6 +12595,7 @@ When it lands:
   shared file onto a site or share a site-only one today — `EnforcesScope` guards the move, and the slug rule refuses a
   shared row with a slug — but nothing in the admin does it, and nothing decides who may, how it is audited, or what
   happens to links from sites that lose sight of it. ADR-042 records it beside visibility rather than locking it.
+  The #260 amendments to ADR-041 and ADR-042 record the selected policy.
 - **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
   edited in place six times since #19 created it (#30, #35, #43, #45, #82, #102), and `deploy/release.sh` runs
   `migrate --force`, which skips a
@@ -12339,7 +12614,6 @@ When it lands:
   review, and the upload half of ADR-042's measurement waits on the first
 - [Storage benchmark at 10k / 100k / 1M entries](schema-scale-benchmark.md) has measured results. The portable end-to-end launcher remains open (#261)
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed. — and built: `kitsune:blueprint reverse` (ADR-039, the reverse, as built).
-- Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
 

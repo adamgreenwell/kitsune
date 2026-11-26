@@ -26,8 +26,20 @@ node tools/property-parity/measure.mjs  /tmp/names.json > /tmp/ecma.json
 php  tools/property-parity/compare.php  /tmp/pcre.json /tmp/ecma.json
 ```
 
-Exit 1 means a **publishable** name diverges — a defect in this repository. Exit 2 means the two dumps
-cover different names, which is a broken run rather than a finding.
+Both files use `kitsune-parity-v1`, the same [measurement envelope](../pattern-parity/README.md#result-format-and-coverage)
+as the pattern harness. Measure both engines from the same untouched `names.php` output.
+The file records the ICU version and the property names. The comparator regenerates the expected
+corpus from the current allowlist and its ICU installation. Run the comparator with the same
+corpus generator environment.
+
+Each name must appear exactly once. A row records a compile rejection or a scalar membership
+set as sorted, disjoint and maximal ranges. The comparator recalculates both the member count
+and the SHA-1 of the compact JSON ranges before comparing them. Ranges exclude surrogates.
+A runtime error during the sweep stops the measurement before it emits a dump.
+Keep older unbound dumps with the historical results they support.
+
+Exit 1 means the engines diverge on a publishable name or only one engine compiled a name.
+Exit 2 means at least one dump failed provenance, coverage or row validation.
 
 ## What the last sweep found
 

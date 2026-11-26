@@ -16,6 +16,7 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Module;
+use Kitsune\Core\Models\ModuleUninstall;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -237,7 +238,7 @@ it('rests on a discriminator no caller can arrange', function (): void {
      */
     $guarded = [
         Blueprint::class, BlueprintSeed::class, Entry::class, EntryType::class, Field::class,
-        Module::class, Org::class, Site::class, SiteGroup::class,
+        Module::class, ModuleUninstall::class, Org::class, Site::class, SiteGroup::class,
     ];
 
     foreach ($guarded as $class) {

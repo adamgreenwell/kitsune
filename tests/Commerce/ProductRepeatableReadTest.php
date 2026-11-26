@@ -21,13 +21,13 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
-use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\CommittedModuleReceipt;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
 
 /*
@@ -48,8 +48,9 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
     $rival = DB::connection('product-current-rival');
     $orgId = null;
     $ownerId = null;
+    $moduleReceipt = new CommittedModuleReceipt($rival);
     // Register before the first committed fixture, so failure during setup cannot leak rows to the next engine test.
-    $this->afterRollback(function () use ($rival, &$orgId, &$ownerId): void {
+    $this->afterRollback(function () use ($rival, &$orgId, &$ownerId, $moduleReceipt): void {
         if ($orgId !== null) {
             foreach (['commerce_listings', 'commerce_sellables'] as $table) {
                 $rival->table($table)->where('org_id', $orgId)->delete();
@@ -59,7 +60,7 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
         if ($ownerId !== null) {
             $rival->table('users')->where('id', $ownerId)->delete();
         }
-        $rival->table('modules')->where('handle', 'kitsune/commerce')->delete();
+        $moduleReceipt->remove();
         DB::purge('product-current-rival');
     });
     $now = now();
@@ -70,10 +71,10 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
     try {
         app(Context::class)->setOrg(Org::query()->findOrFail($orgId));
         $owner = Fx::owner('current-product-owner@example.test');
-        Module::create(['handle' => 'kitsune/commerce', 'version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => true, 'installed_at' => now()]);
+        $ownerId = $owner->getKey();
+        $module = $moduleReceipt->create(['handle' => 'kitsune/commerce', 'version' => ModuleDiscovery::version('kitsune/commerce'), 'is_enabled' => true, 'installed_at' => now()]);
         ModuleKernel::flush();
         ModuleKernel::boot(app());
-        $ownerId = $owner->getKey();
         $owner->setConnection($default);
     } finally {
         DB::setDefaultConnection($default);
@@ -119,7 +120,7 @@ it('keeps product writes current and atomic beneath an older host snapshot', fun
         $imageB = Entry::create(['entry_type_id' => $imageType->getKey(), 'site_id' => null, 'title' => 'Current image B'])->getKey();
         match ($failure) {
             'success' => null,
-            'module disabled' => $rival->table('modules')->where('handle', 'kitsune/commerce')->update(['is_enabled' => false]),
+            'module disabled' => $module->update(['is_enabled' => false]),
             'owner role revoked' => $rival->table('role_user')->where('user_id', $ownerId)->delete(),
             'membership revoked' => $rival->table('org_user')->where('user_id', $ownerId)->delete(),
             'type disabled' => EntryTypeAvailability::create(['entry_type_id' => $type->getKey(), 'scope_type' => 'site', 'scope_id' => $siteId, 'is_enabled' => false]),

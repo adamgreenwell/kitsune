@@ -1,4 +1,5 @@
 // @ts-check
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -259,4 +260,57 @@ test.describe('where a shared file must not reach', () => {
         await search(page, null, 'course', page.getByRole('dialog'));
         await expect(dropdownOptions(page).filter({ hasText: 'Shared course photo' })).toBeVisible({ timeout: 10_000 });
     });
+});
+
+test('an owner changes sharing and only authorised sites can use the private file', async ({ page, browser }) => {
+    const { courseMapId, rivalFileId } = media();
+    const title = `Media sharing ${randomUUID()}`;
+    const context = "$site = Kitsune\\Core\\Models\\Site::withoutScopeBecause('reading the owned browser fixture site', fn ($q) => $q->where('slug', 'golfdom')->firstOrFail());"
+        + ' $context = app(Kitsune\\Core\\Tenancy\\Context::class);'
+        + ' $context->setOrg(Kitsune\\Core\\Models\\Org::query()->findOrFail($site->org_id)); $context->setSite($site);'
+        + " auth()->setUser(App\\Models\\User::query()->where('email', 'alpha@kitsune.test')->firstOrFail());";
+    const id = tinker(context
+        + ` $source = Kitsune\\Core\\Media\\MediaDelivery::fileFor(Kitsune\\Core\\Models\\Entry::query()->findOrFail(${Number(courseMapId)}));`
+        + " $temp = tempnam(sys_get_temp_dir(), 'media-sharing-browser-');"
+        + ' try { file_put_contents($temp, Storage::disk($source->disk)->get($source->path));'
+        + ` echo Kitsune\\Core\\Media\\MediaLibrary::store($temp, 'scope.png', Kitsune\\Core\\Models\\EntryType::query()->findOrFail($source->entry->entry_type_id), title: '${title}', siteOnly: true)->id;`
+        + ' } finally { unlink($temp); }');
+    expect(id).toMatch(/^\d+$/);
+
+    const edit = `/admin/golfdom/c/image/${id}/edit`;
+    const ownerFile = `/admin/golfdom/media/${id}`;
+    const siblingFile = `/admin/golfdom-fr/media/${id}`;
+    const rival = await browser.newContext({ storageState: RIVAL_STATE });
+    const change = async (label, confirmation, success) => {
+        await page.locator('.fi-header').getByRole('button', { name: label, exact: true }).click();
+        const dialog = page.getByRole('alertdialog', { name: label, exact: true });
+        await expect(dialog).toContainText(confirmation);
+        await dialog.getByRole('button', { name: label, exact: true }).press('Enter');
+        await expect(page.locator('.fi-no-notification').filter({ hasText: success })).toBeVisible();
+    };
+
+    try {
+        expect((await page.goto('/admin/golfdom'))?.status()).toBe(200);
+        expect((await page.goto(edit))?.status()).toBe(200);
+        const original = await page.request.get(ownerFile);
+        expect(original.status()).toBe(200);
+        const bytes = await original.body();
+        expect((await page.request.get(siblingFile)).status()).toBe(404);
+
+        await change('Share with every site', 'its direct link stays public', 'File shared with every site');
+        const shared = await page.request.get(siblingFile);
+        expect(shared.status()).toBe(200);
+        expect(await shared.body()).toEqual(bytes);
+        expect((await rival.request.get(`/admin/rival-golfdom/media/${rivalFileId}`)).status()).toBe(200);
+        expect((await rival.request.get(`/admin/rival-golfdom/media/${id}`)).status()).toBe(404);
+
+        await change('Keep to this site', 'their private links and related previews stop working', 'File kept to this site');
+        expect((await page.request.get(siblingFile)).status()).toBe(404);
+        const kept = await page.request.get(ownerFile);
+        expect(kept.status()).toBe(200);
+        expect(await kept.body()).toEqual(bytes);
+    } finally {
+        await rival.close();
+        tinker(context + ` Kitsune\\Core\\Models\\Entry::query()->whereKey(${Number(id)})->where('title', '${title}')->firstOrFail()->forceDelete();`);
+    }
 });

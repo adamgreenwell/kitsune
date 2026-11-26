@@ -102,6 +102,7 @@ try {
             $table->id();
             $table->string('name');
         });
+        (require $root.'/packages/core/database/migrations/0001_01_01_000018_create_module_uninstalls.php')->up();
         ModuleLifecycle::install($app, 'kitsune/fixture-module');
         ModuleLifecycle::enable($app, 'kitsune/fixture-module');
         DB::table('fixture_dev_upgrade_rows')->insert(['name' => 'retained cold content']);

@@ -120,15 +120,20 @@ final class MediaCustody
      * @template TReturn
      *
      * @param  Closure(?stdClass, ?stdClass): TReturn  $work  given the entry's id and deleted_at, and its file's row
+     * @param  (Closure(): void)|null  $beforeEntryLock  for callers that must lock a parent before custody locks the entry
      * @return TReturn
      */
-    public static function locked(Connection $connection, int $entryId, Closure $work): mixed
+    public static function locked(Connection $connection, int $entryId, Closure $work, ?Closure $beforeEntryLock = null): mixed
     {
-        return TransactionRecovery::run($connection, static function (Connection $inside) use ($entryId, $work): mixed {
+        return TransactionRecovery::run($connection, static function (Connection $inside) use ($entryId, $work, $beforeEntryLock): mixed {
             if ($inside->getDriverName() === 'sqlite') {
                 $inside->table('media_files')
                     ->where('entry_id', $entryId)
                     ->update(['disk' => new Expression($inside->getQueryGrammar()->wrap('disk'))]);
+            }
+
+            if ($beforeEntryLock !== null) {
+                $beforeEntryLock();
             }
 
             $entry = $inside->table('entries')->where('id', $entryId)->lockForUpdate()->first(['id', 'deleted_at']);

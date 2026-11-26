@@ -71,7 +71,7 @@ final class SelfHostUpgradeJournal
         $this->file = $file;
     }
 
-    public static function open(string $directory, ?string $volumeIdentity = null): self
+    public static function open(string $directory, ?string $volumeIdentity = null, bool $readOnly = false): self
     {
         if ($volumeIdentity !== null) {
             self::requireDigest($volumeIdentity);
@@ -86,7 +86,10 @@ final class SelfHostUpgradeJournal
         if ($known !== false && (($known['mode'] & 0170000) !== 0100000 || $known['nlink'] !== 1)) {
             throw new InvalidArgumentException('The upgrade journal must be a regular single-link file.');
         }
-        $file = @fopen($path, 'c+be');
+        if ($readOnly && $known === false) {
+            throw new RuntimeException('The existing upgrade journal could not be read.');
+        }
+        $file = @fopen($path, $readOnly ? 'rbe' : 'c+be');
         if ($file === false) {
             throw new RuntimeException('The upgrade journal could not be opened.');
         }
@@ -97,7 +100,7 @@ final class SelfHostUpgradeJournal
                 || ($known !== false && ($opened['dev'] !== $known['dev'] || $opened['ino'] !== $known['ino']))) {
                 throw new RuntimeException('The upgrade journal file changed while opening.');
             }
-            if (! flock($file, LOCK_EX | LOCK_NB)) {
+            if (! flock($file, ($readOnly ? LOCK_SH : LOCK_EX) | LOCK_NB)) {
                 throw new RuntimeException('Another operation holds the upgrade journal.');
             }
             if ($known === false) {

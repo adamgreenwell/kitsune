@@ -176,7 +176,8 @@ Use `--approval` for the original payload, `--approval-signature` for the detach
 
 The native installer accepts the same upgrade phases with an `upgrade` prefix, for example
 `install.sh upgrade inspect --mode=native --installation=/opt/kitsune --state=/var/lib/kitsune`.
-A regular installer rerun verifies the requested release. An installed release returns success
+A regular installer rerun verifies the requested release. An interrupted upgrade blocks a regular
+installer rerun until the journal is resolved. An installed release returns success
 without rerunning package setup or migrations. A different release requires the signed upgrade
 path described above.
 

@@ -38,17 +38,23 @@
                 <label for="{{ $field }}">{{ $t($label) }}</label>
                 @if ($field === 'password')
                     <p class="hint" id="password-hint">{{ $t('password.hint', ['min' => $min]) }}</p>
+                    <p class="hint" id="password-requirements">{{ $t('password.requirements', ['max' => \Kitsune\Core\Auth\PasswordRules::MAX_BYTES]) }}</p>
                 @endif
                 @isset($problems[$field])
                     <p class="error" id="{{ $field }}-error"><span class="visually-hidden">{{ $t('title.error_prefix') }}</span> {{ $t($problems[$field][0], $problems[$field][1]) }}</p>
                 @endisset
-                @php($describedBy = trim(($field === 'password' ? 'password-hint ' : '').(isset($problems[$field]) ? $field.'-error' : '')))
+                @php($describedBy = trim(($field === 'password' ? 'password-hint password-requirements ' : '').(isset($problems[$field]) ? $field.'-error' : '')))
                 <input id="{{ $field }}" name="{{ $field }}" type="password" autocomplete="new-password"
                     @isset($problems[$field]) aria-invalid="true" @endisset
                     @if ($describedBy !== '') aria-describedby="{{ $describedBy }}" @endif>
+                @if ($field === 'password')
+                    @include('kitsune::readers.password-strength')
+                @endif
             </div>
         @endforeach
 
         <button type="submit">{{ $t($button) }}</button>
     </form>
+
+    <script>{!! \Kitsune\Core\Readers\PasswordStrength::script() !!}</script>
 @endsection

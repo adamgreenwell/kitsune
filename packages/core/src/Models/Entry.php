@@ -2847,11 +2847,12 @@ class Entry extends Model implements RequiresModelSave
     /**
      * How many revisions an entry keeps.
      *
-     * The decision log lists "revision storage growth — full-JSON snapshots
-     * get expensive; consider diffs" as an open question, and it is still
-     * open. Retention is the honest interim answer: a bound that is applied
-     * rather than a cost that accumulates silently while the question waits.
-     * Diffs remain the better fix and would raise this number, not remove it.
+     * ADR-020's 2026-10-23 growth measurement keeps full snapshots and this
+     * fifty-version cap. The bounded diff prototype saved logical bytes for
+     * mostly scalar histories, but demonstrated no need for a format change.
+     * A future representation proposal needs its own measured evidence; it
+     * does not imply raising or removing this bound. See the ADR amendment
+     * and docs/benchmarks/revision-growth.md for the findings and limitations.
      */
     public const KEEP_REVISIONS = 50;
 
@@ -3613,7 +3614,13 @@ class Entry extends Model implements RequiresModelSave
             // all, leaving the newest revision not describing the entry. Both
             // halves are one restore, so recording waits for both.
             RevisionWrites::suspend(function () use ($revision, $state): void {
-                $this->fill($revision->snapshot())->save();
+                $snapshot = $revision->snapshot();
+                // A media revision recorded before sharing may still carry its old Site slug.
+                if ($this->site_id === null && ($snapshot['slug'] ?? null) !== null
+                    && $this->getConnection()->table(MediaFile::TABLE)->where('entry_id', $this->getKey())->exists()) {
+                    $snapshot['slug'] = null;
+                }
+                $this->fill($snapshot)->save();
 
                 // `null` means the revision predates the column and says nothing
                 // about relations. `[]` means it says there were none.

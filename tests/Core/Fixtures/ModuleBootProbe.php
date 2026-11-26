@@ -30,6 +30,7 @@ foreach (['bootstrap/cache', 'storage/framework/views', 'storage/framework/sessi
 $database = $temporary.'/boot.sqlite';
 $pdo = new PDO('sqlite:'.$database);
 $pdo->exec('CREATE TABLE modules (id INTEGER PRIMARY KEY, handle TEXT, version TEXT, is_enabled INTEGER, installed_at TEXT)');
+$pdo->exec('CREATE TABLE module_uninstalls (handle TEXT PRIMARY KEY, version TEXT, started_at TEXT)');
 $insert = $pdo->prepare('INSERT INTO modules (handle, version, is_enabled) VALUES (?, ?, ?)');
 
 foreach (['kitsune/commerce', 'kitsune/fixture-module'] as $package) {
