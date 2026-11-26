@@ -39,6 +39,16 @@ return new class extends Migration
             throw new RuntimeException('Preserve reader erasure anchors before rolling this migration back.');
         }
 
+        if (in_array(Schema::getConnection()->getDriverName(), ['mysql', 'mariadb'], true)
+            && ! collect(Schema::getIndexes('entitlements'))->contains(
+                static fn (array $index): bool => ($index['columns'][0] ?? null) === 'org_id'
+                    && $index['columns'] !== ['org_id', 'erasure_anchor'],
+            )) {
+            // InnoDB can replace its implicit Org foreign-key index with the anchor index.
+            // Restore a supporting index before dropping the anchor instead of dropping the foreign key.
+            Schema::table('entitlements', static fn (Blueprint $table) => $table->index('org_id'));
+        }
+
         Schema::table('entitlements', function (Blueprint $table): void {
             $table->dropUnique(['org_id', 'erasure_anchor']);
             $table->dropColumn('erasure_anchor');
