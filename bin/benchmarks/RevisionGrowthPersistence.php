@@ -77,7 +77,7 @@ function revisionMeasurementPersistenceControls(string $out, string $key, array 
                 $interruptions++;
             }
         }
-        // Exit a child with an open transaction. This is process teardown recovery, not power-loss testing.
+        // Exit normally with an open transaction so PDO rolls the open write back during shutdown.
         unset($update, $insert, $store);
         $code = '$p=new PDO("sqlite:".$argv[1]);$p->beginTransaction();$p->exec("delete from history");exit(91);';
         $pipes = [];
@@ -95,7 +95,7 @@ function revisionMeasurementPersistenceControls(string $out, string $key, array 
         expect(revisionMeasurementStoredRows($store))->toEqual($rows);
         revisionMeasurementVerify($store, $key, $interval, $oracle);
         $controls[$interval] = ['corruption_refused' => true, 'missing_revision_refused' => true,
-            'recovery_checkpoint_sequence' => $rows[$nextCheckpoint]['sequence'], 'exception_rollbacks' => $interruptions, 'process_exit_rollback' => true,
+            'recovery_checkpoint_sequence' => $rows[$nextCheckpoint]['sequence'], 'exception_rollbacks' => $interruptions, 'pdo_shutdown_rollback' => true,
             'limits' => 'No power-loss, competing writer, malicious storage rewrite or server-database crash claim.'];
         unset($store);
 

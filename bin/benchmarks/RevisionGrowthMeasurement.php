@@ -282,14 +282,43 @@ it('measures the actual bounded writer and a disposable checkpoint/diff encoding
     $persistence = revisionMeasurementPersistenceControls($out, $key, $histories, $stores, $oracle);
     $db = DB::connection();
     $tablePages = $db->select('select name, sum(pgsize) as bytes from dbstat group by name order by name');
-    $result = ['stage' => 'storage-write-baseline-only', 'case' => $case, 'php' => PHP_VERSION, 'sqlite' => $db->selectOne('select sqlite_version() as v')->v, 'body_type' => 'rich_text', 'input_field_and_element_validation_passed' => true, 'validation_outside_write_timing' => true, 'body_input_bytes' => strlen($body), 'keep_revisions' => Entry::KEEP_REVISIONS, 'edits' => 1000, 'outer_commits_verified' => true, 'milestones' => $milestones, 'current_application_write_ms' => $currentTimes, 'prototype_encoding_and_sqlite_write_ms' => $writeTimes, 'prototype_bytes_written' => $bytesWritten, 'database_table_pages' => $tablePages, 'peak_php_bytes' => memory_get_peak_usage(true), 'resource_limits_applied' => false, 'remaining' => ['read and guarded-restore samples', 'actual erasure and prototype rewrite', 'persisted corruption/recovery and rollback controls', 'migration and transient storage costs', 'statistics and findings'], 'source_sha256' => array_combine(['Entry.php', 'EntryRevision.php', 'RevisionDiffPrototype.php', 'RevisionGrowthMeasurement.php'], array_map('hash_file', array_fill(0, 4, 'sha256'), [$root.'/packages/core/src/Models/Entry.php', $root.'/packages/core/src/Models/EntryRevision.php', __DIR__.'/RevisionDiffPrototype.php', __FILE__]))];
-    $result['stage'] = 'storage-write-read-restore-erasure';
+    $sources = [
+        'packages/core/src/Models/Entry.php',
+        'packages/core/src/Models/EntryRevision.php',
+        'bin/benchmarks/RevisionDiffPrototype.php',
+        'bin/benchmarks/RevisionGrowthMeasurement.php',
+        'bin/benchmarks/RevisionGrowthOperations.php',
+        'bin/benchmarks/RevisionGrowthPersistence.php',
+    ];
+    $sourceHashes = [];
+    foreach ($sources as $source) {
+        $sourceHashes[$source] = hash_file('sha256', $root.'/'.$source);
+    }
+    $result = [
+        'stage' => 'single-case-complete-measurement',
+        'case' => $case,
+        'php' => PHP_VERSION,
+        'sqlite' => $db->selectOne('select sqlite_version() as v')->v,
+        'body_type' => 'rich_text',
+        'input_field_and_element_validation_passed' => true,
+        'validation_outside_write_timing' => true,
+        'body_input_bytes' => strlen($body),
+        'keep_revisions' => Entry::KEEP_REVISIONS,
+        'edits' => 1000,
+        'outer_commits_verified' => true,
+        'milestones' => $milestones,
+        'current_application_write_ms' => $currentTimes,
+        'prototype_encoding_and_sqlite_write_ms' => $writeTimes,
+        'prototype_bytes_written' => $bytesWritten,
+        'database_table_pages' => $tablePages,
+        'peak_php_bytes' => memory_get_peak_usage(true),
+        'resource_limits_applied' => false,
+        'source_sha256' => $sourceHashes,
+    ];
     $result['operations'] = $operations;
     $result['persistence'] = $persistence;
     $result['prototype_physical_footprints'] = array_combine(array_keys($stores), array_map(fn (PDO $pdo, int $interval): array => revisionMeasurementFootprint($pdo, $out.'/prototype-'.$interval.'.sqlite'), array_values($stores), array_keys($stores)));
     $result['write_statistics'] = ['snapshot_application' => revisionMeasurementSummary($currentTimes), 'prototype_codec_sqlite' => array_map('revisionMeasurementSummary', $writeTimes)];
-    $result['stage'] = 'single-case-complete-measurement';
-    $result['remaining'] = ['all size/edit-pattern cases and findings'];
     file_put_contents($out.'/result.json', json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n");
     $context->forget();
 });

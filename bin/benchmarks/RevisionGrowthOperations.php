@@ -93,7 +93,7 @@ function revisionMeasurementVerify(PDO $store, string $key, int $interval, array
             $actual = revisionMeasurementWithoutRewriteTime($actual);
             $expected = revisionMeasurementWithoutRewriteTime($expected);
         }
-        expect($actual)->toEqual($expected);
+        expect(RevisionDiffPrototype::json($actual))->toBe(RevisionDiffPrototype::json($expected));
     }
 }
 
@@ -194,11 +194,13 @@ function revisionMeasurementOperations(string $out, int $entryId, string $key, a
     $erasure['snapshot'] = ['ms' => (hrtime(true) - $start) / 1e6, 'rewritten_counts' => $rewritten];
     expect(DB::connection()->transactionLevel())->toBe(0);
     $actualErased = $entry->revisions()->orderBy('id')->get()->map(fn (EntryRevision $r): array => revisionMeasurementState($r))->all();
-    expect(array_map('revisionMeasurementWithoutRewriteTime', $actualErased))->toEqual(array_map('revisionMeasurementWithoutRewriteTime', $erasedOracle));
+    expect(RevisionDiffPrototype::json(array_map('revisionMeasurementWithoutRewriteTime', $actualErased)))
+        ->toBe(RevisionDiffPrototype::json(array_map('revisionMeasurementWithoutRewriteTime', $erasedOracle)));
     // Preserve a replacement contact while restoring every erased version. Restore may prune source rows,
     // so use a fresh copy per target; the immutable oracle remains external to both readers.
     DB::disconnect('revision_benchmark');
     $erasedPath = $out.'/erasure-snapshot.sqlite';
+    $erasedRestoreChecks = 0;
     foreach (['snapshot', 1, 5, 10, 25, 50] as $representation) {
         if ($representation !== 'snapshot') {
             $copy = $out.'/erasure-prototype-'.$representation.'.sqlite';
@@ -211,7 +213,10 @@ function revisionMeasurementOperations(string $out, int $entryId, string $key, a
             $bytes = revisionMeasurementPersist($store, $rows, $history->rows());
             $erasure[$representation] = ['ms' => (hrtime(true) - $start) / 1e6, 'encoded_bytes_written' => $bytes];
             revisionMeasurementVerify($store, $key, $representation, $erasedOracle, true);
-            expect(RevisionDiffPrototype::json($history->rows()))->not->toContain('synthetic-private-marker', 'synthetic-private-slug', 'synthetic-private-original');
+            expect(RevisionDiffPrototype::json($history->rows()))
+                ->not->toContain('synthetic-private-marker')
+                ->not->toContain('synthetic-private-slug')
+                ->not->toContain('synthetic-private-original');
         }
         foreach ($erasedOracle as $index => $expected) {
             $path = $out.'/erased-restore-'.$representation.'-'.$index.'.sqlite';
@@ -230,8 +235,10 @@ function revisionMeasurementOperations(string $out, int $entryId, string $key, a
                 $revision->forceFill([...array_diff_key($decoded, ['metadata' => true]), ...$decoded['metadata']])->save();
             }
             $entry->restoreRevision($revision);
-            expect(revisionMeasurementLive($entry))->toEqual($expectedLive)
+            expect(RevisionDiffPrototype::json(revisionMeasurementLive($entry)))
+                ->toBe(RevisionDiffPrototype::json($expectedLive))
                 ->and(DB::connection()->transactionLevel())->toBe(0);
+            $erasedRestoreChecks++;
             DB::disconnect('revision_benchmark');
             unlink($path);
         }
@@ -244,7 +251,7 @@ function revisionMeasurementOperations(string $out, int $entryId, string $key, a
     return ['warm_reads' => array_map(fn (array $r): array => array_map('revisionMeasurementSummary', $r), $reads),
         'warm_history_lists' => array_map('revisionMeasurementSummary', $lists),
         'guarded_outer_commit_restores' => array_map(fn (array $r): array => array_map('revisionMeasurementSummary', $r), $restoreTimes),
-        'erasure' => $erasure, 'erased_restore_checks' => 300, 'replacement_relation_preserved' => true,
+        'erasure' => $erasure, 'erased_restore_checks' => $erasedRestoreChecks, 'replacement_relation_preserved' => true,
         'metadata_normalization' => 'Only revision metadata.updated_at ignored when comparing erasure rewrites; identity, created_at, schema, content and relation order compared.',
         'restore_scope' => 'Snapshot query+guarded restore. Prototype decode+temporary full-row materialization+same guarded restore+delete. Common current full-snapshot recorder retained. Copy setup excluded. Three samples per target, insufficient for reliable tails.',
         'list_scope' => 'Same id/title/author/created_at output. Candidate reconstructs all fifty rows: no unimplemented sidecar index assumed.',

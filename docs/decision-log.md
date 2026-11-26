@@ -795,7 +795,7 @@ sibling's (`/golfdom/account`) would make that sibling's reader pages 404: close
 
 ## ADR-020 — Privacy by design: classification, redactable revisions, payload-free audit
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
+**Status:** Decided · 2026-09-07 · **Amended 2026-10-23 (#262)** · **Amended 2026-09-24 by ADR-042 decision 5** — every audited update, delete, force-delete and arithmetic write opens its transaction on the write's own connection and repairs what a failed commit leaves, so work registered inside a write that never landed never runs; and each of those doors refuses a `from` that is not `entries`, a `deleted_at` qualified by another table, written through a JSON path or by arithmetic, and a `delete()` on a builder without the soft-delete scope. The insert path — `insertGetId`, which `Entry::create()` reaches — is not yet routed the same way
 **Not legal advice.** A privacy attorney should review before any compliance claim appears in marketing, a DPA, or a security questionnaire. What is settled here is which obligations are *architectural*.
 
 ### The category distinction that drives this
@@ -985,7 +985,7 @@ The [revision-growth experiment](benchmarks/revision-growth.md) compares nine va
 with a disposable checkpoint/object-key diff prototype. It includes media references, personal inline/promoted/
 relation data and retained originals; real guarded restores, erasure and replacement-link preservation;
 persisted corruption/interruption controls; and staged migration/restart/identity and storage observations.
-The [numeric record](benchmarks/revision-growth.json) preserves the exact source hashes, sample scopes,
+The [numeric record](benchmarks/revision-growth.json) preserves the historical source fingerprints, sample scopes,
 timings, descriptive intervals and limitations. Invalid earlier short-text pilot figures are excluded.
 
 **Keep full snapshots and the current fifty-version retention.** Mostly scalar histories can save logical
