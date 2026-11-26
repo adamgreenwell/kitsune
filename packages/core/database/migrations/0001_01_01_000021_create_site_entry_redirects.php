@@ -19,7 +19,7 @@ return new class extends Migration
     {
         // An entry can have no Site. The portable foreign key below looks up the target
         // with its Org key, and public entry lookups continue to use the Site-leading indexes.
-        Schema::table('entries', fn (Blueprint $table) => $table->unique(['org_id', 'id'], 'entries_org_identity'));
+        Schema::table('entries', fn (Blueprint $table) => $table->unique(['org_id', 'id']));
 
         Schema::create('site_entry_redirects', function (Blueprint $table): void {
             $table->id();
@@ -31,10 +31,11 @@ return new class extends Migration
             $table->char('source_key', 64);
             $table->timestamps();
 
-            $table->unique(['site_id', 'source_key'], 'site_entry_redirects_source');
+            $table->unique(['site_id', 'source_key']);
             // Supports foreign-key cleanup across Site moves.
-            $table->index(['org_id', 'target_entry_id'], 'site_entry_redirects_target_lookup');
-            $table->foreign(['org_id', 'target_entry_id'], 'site_entry_redirects_target_fk')
+            $table->index(['org_id', 'target_entry_id']);
+            // Blueprint names include the installation prefix when prefix_indexes is enabled.
+            $table->foreign(['org_id', 'target_entry_id'])
                 ->references(['org_id', 'id'])->on('entries')->cascadeOnDelete();
         });
     }
@@ -46,6 +47,6 @@ return new class extends Migration
         }
 
         Schema::drop('site_entry_redirects');
-        Schema::table('entries', fn (Blueprint $table) => $table->dropUnique('entries_org_identity'));
+        Schema::table('entries', fn (Blueprint $table) => $table->dropUnique(['org_id', 'id']));
     }
 };

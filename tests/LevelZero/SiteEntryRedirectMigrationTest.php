@@ -29,6 +29,7 @@ it('adds and removes redirect schema without losing existing entries or retained
     $entry = Entry::create(['entry_type_id' => $type->id, 'title' => 'Kept entry', 'slug' => 'current']);
 
     $migration->up();
+    expect(Schema::hasIndex('entries', ['org_id', 'id'], 'unique'))->toBeTrue();
     $redirect = SiteEntryRedirect::create([
         'source_type' => 'article', 'source_slug' => 'previous', 'source_key' => SiteEntryRedirect::sourceKey('article', 'previous'),
         'target_entry_id' => $entry->id,
@@ -40,6 +41,6 @@ it('adds and removes redirect schema without losing existing entries or retained
     $redirect->delete();
     $migration->down();
     expect(Schema::hasTable('site_entry_redirects'))->toBeFalse()
-        ->and(Schema::hasIndex('entries', 'entries_org_identity'))->toBeFalse()
+        ->and(Schema::hasIndex('entries', ['org_id', 'id'], 'unique'))->toBeFalse()
         ->and(DB::table('entries')->where('id', $entry->id)->value('slug'))->toBe('current');
 });
