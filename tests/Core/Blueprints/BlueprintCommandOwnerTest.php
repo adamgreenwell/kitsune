@@ -242,6 +242,27 @@ describe('creating the first owner', function (): void {
             ->and($out)->toContain('its first owner owner@example.test');
     });
 
+    it('provides one textual strength estimate between hidden prompts without echoing the answer', function (string $password, string $estimate): void {
+        [$status, $out] = applyThroughStream(ownerAtPrompt(), $password."\n".$password."\n");
+
+        expect($status)->toBe(0)
+            ->and($out)->toContain($estimate)
+            ->and($out)->not->toContain($password)
+            ->and(substr_count($out, $estimate))->toBe(1)
+            ->and(strpos($out, $estimate))->toBeLessThan(strpos($out, FirstOwnerCredentials::CONFIRM));
+    })->with([
+        'repeated pattern' => ['r4mXr4mXr4mXr4mX', 'This password has a weak pattern.'],
+        'fair length' => [OWNER_COMMAND_PASSWORD, 'This password has a fair strength estimate.'],
+        'longer passphrase' => ['four violet sunsets reach the bay', 'This password has a stronger estimate.'],
+    ]);
+
+    it('keeps strength feedback out of noninteractive password input', function (): void {
+        [$status, $out] = applyThroughStream(ownerOverStdin(), OWNER_COMMAND_PASSWORD."\n");
+
+        expect($status)->toBe(0)
+            ->and($out)->not->toContain('This password has a');
+    });
+
     /** The line ending is the terminal's, not the password's — on whichever path it arrives. */
     it('stores the password without its line ending, and only that', function (string $ending, bool $piped): void {
         [$status] = $piped

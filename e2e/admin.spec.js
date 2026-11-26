@@ -231,6 +231,60 @@ test.describe('isolation, from the attacker side', () => {
         await rival.close();
     });
 
+    for (const failure of ['HTTP 500', 'a dropped connection']) {
+        test(`recovers Select All after ${failure}`, async ({ page }) => {
+            await page.goto(`/admin/${SITE}/c/image`);
+
+            const checkbox = page.locator('.fi-ta-record-checkbox').first();
+            const selection = page.locator('.fi-ta-selection-indicator');
+            const selectAll = selection.getByRole('button', { name: /^Select all \d+$/i });
+            await checkbox.check();
+            await expect(selection).toContainText(/\b1 record selected\b/i);
+
+            const keysRequest = (url) => /\/livewire(?:-[^/]+)?\/update$/.test(url.pathname);
+            await page.route(keysRequest, async (route) => {
+                if (!route.request().postData()?.includes('"method":"getAllSelectableTableRecordKeys"')) {
+                    await route.fallback();
+                    return;
+                }
+
+                if (failure === 'HTTP 500') {
+                    await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+                } else {
+                    await route.abort();
+                }
+            });
+
+            const failed = failure === 'HTTP 500'
+                ? page.waitForResponse((response) => keysRequest(new URL(response.url())) && response.status() === 500)
+                : page.waitForEvent('requestfailed', (request) => keysRequest(new URL(request.url())));
+            await selectAll.click();
+            await failed;
+            await page.unroute(keysRequest);
+
+            const table = page.locator('[x-data^="filamentTable("]').filter({ has: selection });
+            await expect.poll(() => table.evaluate((element) => {
+                const alpine = /** @type {{ Alpine?: { $data: (node: Element) => { isLoading: boolean } } }} */ (window);
+                return alpine.Alpine?.$data(element).isLoading;
+            })).toBe(false);
+            await expect(checkbox).toBeChecked();
+            await expect(selection).toContainText(/\b1 record selected\b/i);
+
+            if (failure === 'HTTP 500') {
+                const errorDialog = page.locator('dialog#livewire-error');
+                await expect(errorDialog).toBeVisible();
+                await page.keyboard.press('Escape');
+                await expect(errorDialog).toBeHidden();
+            }
+
+            // Retry through the same control. The count in its label is the fixture's current total.
+            const total = (await selectAll.innerText()).match(/\d+/)?.[0];
+            expect(Number(total)).toBeGreaterThan(1);
+            await selectAll.click();
+            await expect(selection).toContainText(`${total} records selected`);
+        });
+    }
+
     test('does not offer another org\'s type in navigation', async ({ page }) => {
         await page.goto(`/admin/${SITE}`);
 
