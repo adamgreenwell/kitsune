@@ -23,6 +23,7 @@ use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Core\Auth\EntryListAuthorization;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
@@ -112,6 +113,7 @@ final class KitsuneServiceProvider extends ServiceProvider
 
         // Selected current witnesses exist only for the atomic write that opens their frame.
         $this->app->scoped(EntryWriteReads::class);
+        $this->app->scoped(EntryListAuthorization::class);
 
         /*
          * The entries whose files a rolled-back withdrawal moved, waiting to be put back — ADR-042 decision 5. Scoped
