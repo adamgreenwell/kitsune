@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -18,6 +19,8 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Schema\DriverFactory;
 use Kitsune\Core\Tenancy\Context;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Process\Process;
 
 /*
@@ -368,16 +371,18 @@ it('refuses a second run while another process holds the lock, and runs again on
     expect(benchmarkLockIsFree($command))->toBeTrue();
 })->with(['kitsune:benchmark-floor', 'kitsune:benchmark-storage', 'kitsune:benchmark-admin']);
 
-it('asks before writing to a production installation', function (string $command): void {
+it('refuses unconfirmed writes on a production installation', function (string $command): void {
     app()->detectEnvironment(static fn (): string => 'production');
 
     $before = benchmarkFootprint();
 
-    $this->artisan($command)
-        ->expectsConfirmation('Are you sure you want to run this command?', 'no')
-        ->assertFailed();
+    $input = new ArrayInput(['command' => $command, '--no-interaction' => true]);
+    $output = new BufferedOutput;
 
-    expect(benchmarkFootprint())->toBe($before);
+    expect(app(Kernel::class)->handle($input, $output))->toBe(1)
+        ->and($output->fetch())->toContain('Command cancelled.')
+        ->and(benchmarkFootprint())->toBe($before)
+        ->and(benchmarkLockIsFree($command))->toBeTrue();
 })->with(['kitsune:benchmark-floor', 'kitsune:benchmark-storage', 'kitsune:benchmark-admin']);
 
 it('runs in production when forced, the way Laravel\'s own destructive commands do', function (): void {

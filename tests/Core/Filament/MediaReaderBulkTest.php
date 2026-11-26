@@ -31,6 +31,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -65,7 +66,7 @@ beforeEach(function (): void {
     Route::get('/admin/{tenant:slug}/c/{type}/{record}', static fn (): string => '')->name('filament.admin.resources.c.view');
     Route::get('/admin/{tenant:slug}/c/{type}/{record}/edit', static fn (): string => '')->name('filament.admin.resources.c.edit');
     app('router')->getRoutes()->refreshNameLookups();
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -132,7 +133,7 @@ it('keeps successes and reports each refusal without claiming the selection all 
     $public = bulkReaderStored('Public', 'public');
     $two = bulkReaderStored('Bravo');
     MediaReaderBulk::offerEach($action, [$one, $public, $two], bulkReaderConfirmed());
-    $notices = array_values((array) session('filament.notifications', []));
+    $notices = FilamentNotices::snapshot();
     expect(bulkReaderName($one))->toBe('course.selected')
         ->and(bulkReaderName($two))->toBe('course.selected')
         ->and(bulkReaderName($public))->toBeNull()
@@ -248,7 +249,7 @@ it('reloads a forged sibling-site selection and exposes neither its title nor th
     MediaReaderBulk::offerEach($action, [$good, $forged], bulkReaderConfirmed());
     expect(bulkReaderName($good))->toBe('course.selected')
         ->and(bulkReaderName($sibling))->toBeNull()
-        ->and(json_encode(session('filament.notifications')))->not->toContain('SIBLING SECRET TITLE', 'FORGED TITLE')
+        ->and(json_encode(FilamentNotices::snapshot()))->not->toContain('SIBLING SECRET TITLE', 'FORGED TITLE')
         ->and($action->getStatus())->toBe(ActionStatus::Failure);
 });
 
@@ -270,7 +271,7 @@ it('refuses a forged other-org selection with no foreign title in its feedback',
     $forged->forceFill(['org_id' => $this->org->id, 'site_id' => $this->site->id, 'type_handle' => 'image', 'title' => 'FORGED TITLE']);
     MediaReaderBulk::offerEach($action, [$forged], bulkReaderConfirmed());
     expect(bulkReaderName($foreign))->toBeNull()
-        ->and(json_encode(session('filament.notifications')))->not->toContain('RIVAL SECRET TITLE', 'FORGED TITLE')
+        ->and(json_encode(FilamentNotices::snapshot()))->not->toContain('RIVAL SECRET TITLE', 'FORGED TITLE')
         ->and($action->getStatus())->toBe(ActionStatus::Failure);
 });
 
@@ -287,7 +288,7 @@ it('fences the list type even when the user can publish the forged record type t
     $forged->forceFill(['type_handle' => 'image', 'title' => 'FORGED TITLE']);
     MediaReaderBulk::offerEach($action, [$forged], bulkReaderConfirmed());
     expect(bulkReaderName($other))->toBeNull()
-        ->and(json_encode(session('filament.notifications')))->not->toContain('OTHER TYPE SECRET', 'FORGED TITLE')
+        ->and(json_encode(FilamentNotices::snapshot()))->not->toContain('OTHER TYPE SECRET', 'FORGED TITLE')
         ->and($action->getStatus())->toBe(ActionStatus::Failure);
 });
 
@@ -302,7 +303,7 @@ it('refuses with missing scope or identity rather than using the writer system b
     }
     MediaReaderBulk::offerEach($action, [$entry], bulkReaderConfirmed());
     expect(bulkReaderName($entry))->toBeNull()
-        ->and(json_encode(session('filament.notifications')))->not->toContain('PRIVATE TITLE')
+        ->and(json_encode(FilamentNotices::snapshot()))->not->toContain('PRIVATE TITLE')
         ->and($action->getStatus())->toBe(ActionStatus::Failure);
 })->with(['scope', 'identity']);
 
@@ -351,7 +352,7 @@ it('keeps unavailable keys visible as a generic refusal and preserves the select
     $action = bulkReaderAction();
     $one = bulkReaderStored('One');
     MediaReaderBulk::selected($action, Entry::query()->whereKey($one->id), bulkReaderConfirmed(), 2);
-    $notice = array_values((array) session('filament.notifications', []))[0];
+    $notice = FilamentNotices::snapshot()[0];
     expect(bulkReaderName($one))->toBe('course.selected')
         ->and($action->getStatus())->toBe(ActionStatus::Failure)
         ->and(Notification::fromArray($notice)->toHtml())->toContain('Unavailable selections: 1');

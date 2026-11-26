@@ -25,6 +25,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
 use Kitsune\Core\Tests\Fixtures\FailingCommitPdo;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
@@ -53,7 +54,7 @@ beforeEach(function (): void {
     app(Context::class)->setSite(Site::create(['handle' => 'main', 'slug' => 'removal-zero-main', 'name' => 'Main', 'locale' => 'en']));
     $this->image = EntryType::create(['org_id' => $this->org->id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true]);
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -90,7 +91,7 @@ function bulkRmZeroState(Entry $entry): array
 /** @return list<array<string, mixed>> */
 function bulkRmZeroNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /* Z1. Each entry commits on its own: one refused between two others leaves both trashed and itself on the web. */

@@ -29,6 +29,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -73,7 +74,7 @@ beforeEach(function (): void {
     $this->actingAs($user);
     PanelTenancy::enter($this->site);
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -107,7 +108,7 @@ function switchable(string $title, string $bytes = '', string $visibility = 'pri
 /** @return list<array<string, mixed>> */
 function switchNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 function switchVisibility(Entry $entry): string
@@ -230,7 +231,7 @@ describe('making a file public', function (): void {
             ->and(switchNotices()[0]['status'])->toBe('danger')
             ->and(switchNotices()[0]['body'])->toBe(e(__('kitsune::media.visibility.not_confirmed')));
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaVisibilityActions::publicOne($entry, ['public_confirmed' => true]);
 
         expect(switchVisibility($entry))->toBe('public')

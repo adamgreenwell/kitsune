@@ -33,6 +33,7 @@ use Kitsune\Core\Settings\SiteTimezone;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\ElsewhereReader;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\FoldingAccount;
 use Kitsune\Core\Tests\Fixtures\KeyNotIdentifierReader;
 use Kitsune\Core\Tests\Fixtures\MissingTableAccount;
@@ -82,7 +83,7 @@ beforeEach(function (): void {
     Route::get('/test-entitlements/{tenant:slug}', static fn (): string => '')->name('filament.admin.pages.entitlements');
     app('router')->getRoutes()->refreshNameLookups();
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
     $this->travelTo(CarbonImmutable::parse('2026-10-07 12:05:00', 'UTC'));
 });
 
@@ -687,7 +688,7 @@ it('leaves the page working when the names read is refused, and Revoke still rev
     Entitlements::revokeRow($row);
 
     expect($row->fresh()?->revoked_at)->not->toBeNull()
-        ->and(array_column((array) session('filament.notifications', []), 'status'))->toBe(['success']);
+        ->and(array_column(FilamentNotices::snapshot(), 'status'))->toBe(['success']);
 
     entitlementNamesNothingLogged();
     Exceptions::assertNothingReported();

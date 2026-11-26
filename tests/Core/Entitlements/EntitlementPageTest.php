@@ -45,6 +45,7 @@ use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Settings\SiteTimezone;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\TestReader;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -73,7 +74,7 @@ beforeEach(function (): void {
     Route::get('/test-entitlements/{tenant:slug}', static fn (): string => '')->name('filament.admin.pages.entitlements');
     app('router')->getRoutes()->refreshNameLookups();
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
     // 12:05 UTC is 08:05 in New York on this day.
     $this->travelTo(CarbonImmutable::parse('2026-10-07 12:05:00', 'UTC'));
 });
@@ -135,7 +136,7 @@ function pageEntitlementRowAction(Entitlements $page, string $name, Entitlement 
 /** @return list<array<string, mixed>> */
 function pageEntitlementNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** Nobody signed in, or a member who is not an owner — the two the page refuses. */
@@ -616,7 +617,7 @@ it('keeps the reader\'s id out of every address and out of the session', functio
     });
 
     // Filament's own, which mount an action from a link and carry no filter; nothing of the table's.
-    expect($urlBound)->toBe(['defaultAction', 'defaultActionArguments', 'defaultActionContext', 'defaultTableAction', 'defaultTableActionArguments', 'defaultTableActionRecord'])
+    expect($urlBound)->toBe(['defaultAction', 'defaultActionArguments', 'defaultActionComponent', 'defaultActionContext', 'defaultTableAction', 'defaultTableActionArguments', 'defaultTableActionRecord'])
         ->and($page->getTable()->persistsFiltersInSession())->toBeFalse()
         ->and(pageEntitlementRows($page))->toHaveCount(1)
         ->and(json_encode(session()->all()))->not->toContain('81234');
@@ -754,7 +755,7 @@ it('shows a refusal in the writer\'s own words, escaped, and keeps the form with
     // Another org's reader, with an id worth looking for.
     $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
     TestReader::withoutScopeBecause('a reader of another org, for the refusal', static fn ($query) => $query->create(['id' => 81234, 'org_id' => $rival->getKey(), 'email' => 'r@rival.test']));
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 
     expect(Entitlements::giveComp('81234', 'course.a', null))->toBeFalse()
         ->and(pageEntitlementNotices()[0]['body'])->toContain('no reader with that identifier belongs to this organisation')
@@ -829,7 +830,7 @@ it('revokes the row\'s own source and nothing else, and says so', function (): v
 
     // A second revoke of the same, from a page built before the first: nothing to say but that.
     $audits = AuditLog::query()->count();
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
     Entitlements::revokeRow(Entitlement::query()->where('entitlement', 'course.a')->where('source', 'test.order:1')->sole());
 
     expect(pageEntitlementNotices()[0]['title'])->toBe('Nothing was revoked: it had already been revoked.')
@@ -871,7 +872,7 @@ it('shows the writer\'s refusal of a revoke, escaped, rather than an error', fun
     Fx::declareReaders();
     Auth::guard('web')->setUser($this->owner);
     Fx::forget();
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
     Fx::plant($this->site, 'x"y', 'course.b', 'test.order:1');
     Entitlements::revokeRow(pageEntitlementRow(entitlementsPage(), 'course.b', 'test.order:1'));
 

@@ -34,6 +34,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\LocatedJpeg;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
@@ -86,7 +87,7 @@ beforeEach(function (): void {
     Route::get('/admin/{tenant:slug}/c/{type}/{record}/edit', static fn (): string => '')->name('filament.admin.resources.c.edit');
     app('router')->getRoutes()->refreshNameLookups();
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -124,7 +125,7 @@ function bulkRmStored(string $title, string $visibility = 'public', bool $trashe
 /** @return list<array<string, mixed>> */
 function bulkRmNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** Where an entry is: live, trashed or gone. */
@@ -357,7 +358,7 @@ describe('the actions', function (): void {
         $trashed->refresh()->delete();
         $deletedAt = DB::table('entries')->where('id', $trashed->id)->value('deleted_at');
         $this->travel(1)->minutes();
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $call('delete');
         expect(DB::table('entries')->where('id', $trashed->id)->value('deleted_at'))->toBe($deletedAt)
             ->and(bulkRmWhere($live))->toBe('trashed')
@@ -367,7 +368,7 @@ describe('the actions', function (): void {
 
         // Delete selected forever names a live one and leaves it, in decision 31's words.
         Entry::withTrashed()->findOrFail($live->id)->restore();
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $page = bulkRmPage(['trashed' => ['value' => '1']]);
         $page->selectedTableRecords = bulkRmKeys($live, $trashed);
         $erase = collect($page->getTable()->getToolbarActions()[0]->getActions())->first(static fn (Action $action): bool => $action->getName() === 'forceDelete');
@@ -406,7 +407,7 @@ describe('the bound', function (): void {
             ->and($action->getStatus()->name)->toBe('Failure')
             ->and($action->shouldDeselectRecordsAfterCompletion())->toBeFalse();
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaBulkRemoval::selected($action, Entry::withTrashed()->whereKey(array_slice($ids, 0, 50)), $verb);
 
         expect(collect(array_slice($entries, 0, 50))->map(fn (Entry $entry): string => bulkRmWhere($entry))->unique()->values()->all())->toBe([$after])
@@ -958,7 +959,7 @@ describe('what left the list', function (): void {
         MediaBulkRemoval::each($action, bulkRmListed(...$files), $verb, now()->subSecond(), $keys, bulkRmList());
 
         // What the list now holds of the selection: the first has left it, by the first run's own work.
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaBulkRemoval::each($action, bulkRmListed($files[1], $files[2]), $verb, null, $keys, bulkRmList());
 
         $already = match ($verb) {
@@ -1008,7 +1009,7 @@ describe('what left the list', function (): void {
         expect(bulkRmNotices()[0]['status'])->toBe('info')
             ->and(bulkRmNotices()[0]['title'])->toBe('The entry was already in the trash. Nothing was changed.');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $old = bulkRmStored('Old', 'private', trashed: true);
         MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed($old), MediaBulkRemoval::DELETE, keys: bulkRmKeys($old, $gone), list: bulkRmList());
 
@@ -1101,7 +1102,7 @@ describe('what left the list', function (): void {
         expect(bulkRmWhere($restoredSince))->toBe('trashed')
             ->and(bulkRmNotices()[0]['title'])->toBe('One entry was deleted');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $trashedSince = bulkRmStored('Trashed since', 'private');
         $records = bulkRmListed($trashedSince);
         Entry::query()->findOrFail($trashedSince->id)->delete();
@@ -1112,7 +1113,7 @@ describe('what left the list', function (): void {
             ->and(bulkRmNotices()[0]['title'])->toBe('One entry was restored');
 
         // Live when the list loaded it, and in the trash since: Delete forever takes it.
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $records = bulkRmListed($trashedSince);
         Entry::query()->findOrFail($trashedSince->id)->delete();
 
@@ -1136,7 +1137,7 @@ describe('what left the list', function (): void {
             ->and(bulkRmNotices()[0]['title'])->toBe("One entry was {$word}")
             ->and(bulkRmNotices()[0]['body'])->toBe('One of the selected entries is no longer on this list, and was left as it was.');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $records = bulkRmListed($b);
         Entry::withTrashed()->findOrFail($b->id)->forceDelete();
 
@@ -1196,13 +1197,13 @@ describe('through the page', function (): void {
             ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were deleted')
             ->and(bulkRmNotices()[0]['body'])->toBe('One was already in the trash, and was left as it was.');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $call('restore', bulkRmKeys($a, $b), ['trashed' => ['value' => '0']]);
 
         expect([bulkRmWhere($a), bulkRmWhere($b)])->toBe(['live', 'live'])
             ->and(bulkRmNotices()[0]['title'])->toBe('2 entries were restored');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $call('forceDelete', bulkRmKeys($c), ['trashed' => ['value' => '0']]);
 
         expect(bulkRmWhere($c))->toBe('gone')
@@ -1299,7 +1300,7 @@ describe('a list that holds no media (decision 36)', function (): void {
             ->and($action->getStatus()->name)->toBe('Failure')
             ->and($action->shouldDeselectRecordsAfterCompletion())->toBeFalse();
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         [, $action] = bulkRmPageAction($name, bulkRmKeys(...array_slice($articles, 0, 50)), ['trashed' => ['value' => '1']]);
 
         $action->call();
@@ -1341,7 +1342,7 @@ describe('a list that holds no media (decision 36)', function (): void {
             ->and($delete->getStatus()->name)->toBe('Failure')
             ->and($delete->shouldDeselectRecordsAfterCompletion())->toBeFalse();
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         $kept = array_slice($articles, 0, 5);
         $page = bulkRmPage();
         $page->isTrackingDeselectedTableRecords = true;
@@ -1523,7 +1524,7 @@ describe('the words', function (): void {
         expect(bulkRmNotices()[0]['title'])->toBe('&lt;b&gt;1&lt;/b&gt; deleted')
             ->and(bulkRmNotices()[0]['body'])->toBe('&lt;i&gt;1&lt;/i&gt; gone');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         BulkSelection::refuse(bulkRmAction('delete'), __('kitsune::media.removal.too_many_title'), 'x');
 
         expect(bulkRmNotices()[0]['title'])->toBe('&lt;u&gt;Too many&lt;/u&gt;');
@@ -1546,7 +1547,7 @@ describe('the words', function (): void {
 
         expect(bulkRmNotices()[0]['body'])->toBe('&lt;a&gt;&quot;P&quot;&lt;/a&gt;<br>&lt;b&gt;1&lt;/b&gt; restored.<br>&lt;i&gt;1&lt;/i&gt; live.');
 
-        session()->forget('filament.notifications');
+        FilamentNotices::clear();
         MediaBulkRemoval::each(bulkRmAction('delete'), bulkRmListed(bulkRmStored('A', 'private'), bulkRmStored('B', 'private')), MediaBulkRemoval::DELETE, now()->subSecond());
 
         expect(bulkRmNotices()[0]['body'])->toStartWith('&lt;s&gt;1&lt;/s&gt; not tried<br>');

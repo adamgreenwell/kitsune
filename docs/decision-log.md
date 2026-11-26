@@ -3069,6 +3069,11 @@ Measured against the skeleton's own bootstrap, that produced three failures:
 
 `skeleton/bootstrap/app.php` calls `trustProxies(at: ['127.0.0.1', '::1'], headers: Request::HEADER_X_FORWARDED_FOR)`.
 
+**Dependency refresh.** Symfony now also matches IPv4-mapped IPv6
+addresses against the IPv4 allowlist. The skeleton checks the literal
+connecting peer in its replacement for Laravel's global proxy middleware
+before letting Laravel apply the same allowlist and header policy.
+
 - **The list is a constant, not configuration.** A same-host proxy connects from loopback. A server with nothing in
   front of PHP sees a loopback peer only when a process on that host connects to it, and that process is trusted (see
   *Cost, stated*).
@@ -9192,6 +9197,9 @@ bulk paths both arrive, and restore likewise.
 >   transaction, which also undoes the host's earlier custody writes without their compensation running in-process;
 >   and a SQLite automatic rollback inside a nested write, which leaves Laravel's level one too high for the rest of the
 >   request. Each leaves a live file whose only copy is on the private disk — kept, listed, never exposed.
+>   Laravel 13.44 drops pending commit callbacks when the host's commit fails.
+>   Prune reports the kept copy and reconcile restores it. The old warning at
+>   an unrelated later commit no longer occurs.
 > - **Every door (review).** Every write door of the entries builder refuses a `from` that is not exactly `entries`,
 >   inside `withoutScopeBecause()` too; `deleted_at` qualified by another table, written through a JSON path, or written
 >   by arithmetic is refused; and a `delete()` on a builder without the soft-delete scope — `newModelQuery()`,
