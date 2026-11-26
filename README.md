@@ -101,6 +101,13 @@ php skeleton/artisan kitsune:readers status --org=myblog          # is the guard
 php skeleton/artisan kitsune:readers mode sign-in --org=myblog    # off, sign-in or open; --site=<handle> for one site
 ```
 
+Before a mode change closes reader access on a site with offered private files, the command counts the affected
+file offers and sites, explains that reader pages and download links will return 404, and refuses until the same
+command is run with `--force`. This also applies to `inherit` when reverting a setting switches accounts off.
+An organisation-level change respects each site's and site group's overrides. Files, offers and entitlements stay
+stored; switching reader accounts back on restores the access they allow. Sites with no affected offers need no
+acknowledgement. These are counts of recorded offers, without checking every file's disk or every reader's grants.
+
 An address is `https://` or `http://` and a host, with an optional path (`https://example.com/fr`). Moving a site that
 already answers somewhere needs `--force`, because every link to the old address breaks, and another organisation may
 then claim it, unless another of your sites still overlaps it.
@@ -263,15 +270,17 @@ npx playwright install chromium
 npx playwright test
 ```
 
-The four-engine matrix CI runs is reproducible locally with the containers in `compose.yaml`:
+The four-engine CI matrix can run locally with the optional containers in `compose.yaml`. They bind to
+`127.0.0.1` with development-fixture credentials. If you need remote access for a shared test environment,
+use a separate Compose configuration with an explicit bind address and environment-specific credentials.
 
 ```bash
 docker compose up -d
 
 vendor/bin/pest                                                    # SQLite, the default — no container
-DB_CONNECTION=pgsql   DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mysql   DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
-DB_CONNECTION=mariadb DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=pgsql DB_HOST=127.0.0.1 DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mariadb DB_HOST=127.0.0.1 DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
 ```
 
 ⚠️ **`DB_PORT` is not optional and its absence looks like a code regression.** The containers publish on
@@ -299,7 +308,7 @@ The **Kitsune name and logo are separate from the code license.** The code is yo
 
 ## Contributing
 
-Feature PRs aren't open yet — the extension API is deliberately unstable and undocumented until v1.2, and inviting plugin authors before it settles is the single most reliable way to wreck an ecosystem (see Standing Principle #1 in the decision log).
+Feature PRs aren't open yet — the extension API is deliberately unstable and undocumented until v1.2, and inviting plugin authors before it settles is the single most reliable way to wreck an ecosystem (see Standing Principle #2 in the decision log).
 
 **Issues and discussion are open, in any language.** Especially valuable right now: prior-art knowledge from anyone who has shipped a runtime schema engine or watched one fail, and holes in the reasoning — the decision log makes falsifiable claims, so falsify one.
 

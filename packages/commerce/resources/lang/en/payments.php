@@ -9,7 +9,7 @@
 declare(strict_types=1);
 
 return [
-    'credential_label' => 'Stripe secret key', 'credential_help' => 'Paste the key for this mode. Hosted Checkout currently supports test mode only. The key is never shown again.',
+    'credential_label' => 'Stripe secret key', 'credential_help' => 'Paste the Stripe key for this mode. The key is never shown again. New live checkouts require a current Org owner to verify the Stripe account and admit checkout on the Orders page. Recover existing checkouts with their original Stripe account and mode.',
     'webhook_credential_label' => 'Stripe webhook signing secret', 'webhook_credential_help' => 'Use the signing secret for this store’s snapshot webhook endpoint and this mode. It is never shown again.',
     'webhook_previous_label' => 'Previous Stripe webhook signing secret', 'webhook_previous_help' => 'Optional explicit overlap during a signing-secret rotation. Clear it when Stripe stops signing with that secret.',
     'updates' => 'Stripe updates', 'update_pending' => 'Waiting to check', 'update_processing' => 'Checking',

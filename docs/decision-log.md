@@ -635,7 +635,7 @@ entries
 
 ## ADR-018 — Product internationalization is a requirement, not a nice-to-have
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry · **Amended 2026-10-07** — a reader's pages are core's first public copy; see the end of this entry
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry · **Amended 2026-10-07** — a reader's pages are core's first public copy; see the end of this entry · **Amended 2026-10-25** — integer cardinal messages and the first build-failing UI-copy boundary, below
 
 Kitsune's own interface, errors and eventually docs are translatable from the first commit. *Open source means open to everyone, not open to everyone who reads English.*
 
@@ -692,6 +692,43 @@ site's when `kitsune::readers` exists in it, the application's fallback otherwis
 `<html lang="ar" dir="rtl">` around English copy marked `<main lang="en" dir="ltr">`, and follows by itself once a
 host adds `lang/vendor/kitsune/ar/readers.php`. Counted sentences use Laravel's choice syntax (`trans_choice`), the
 first in core — not the pluralization rules this entry leaves open.
+
+⚠️ **Amended 2026-10-25 — the two-form premise above is false; choose a format for the copy we actually render (#106).**
+The earlier reasoning stays visible. Laravel 13's selector is locale-dependent, not an English two-form
+selector: the committed fixtures exercise all six Arabic integer categories and Polish and Russian
+integer boundaries, including their different treatment of 21. Its
+[documented catalog format](https://laravel.com/framework/docs/localization#pluralization) already carries
+our reader and media copy. Retain that format: ordinary messages use `__()`, and **counted product messages
+use the internal `CountMessage::format()` boundary with a nonnegative integer cardinal count**. It rejects
+floats, numeric strings and other coercible values before selection; `:count` always comes from that count.
+Each new counted message needs whole-message fixtures for its relevant count boundaries. These fixtures
+prove the selected cases, not complete conformance for every language or a language expert's translation.
+
+This is an explicit boundary, not a claim that cardinal selection is a general message formatter.
+[CLDR distinguishes decimal operands and ordinal rules](https://unicode.org/reports/tr35/tr35-numbers.html#Language_Plural_Rules).
+The measured Polish 1.5 mismatch is why **fractions must not enter this integer selector**. A decimal
+quantity may be interpolated into a complete, count-independent translated message; it must not be rounded
+to pick a noun form. A finite semantic selection chooses a complete catalog key, not a concatenation of
+translated fragments. An ordinal must not use cardinal categories or append an English suffix: current
+rank copy must use a translated, ordinal-neutral label and number. If a feature needs fractional noun
+agreement or grammatical ordinals, it needs an explicitly tested formatter decision before that copy is
+introduced. Those capabilities are not silently supplied by `trans_choice` and are not implemented by
+this amendment. No mandatory `intl` extension, service or new runtime dependency is added to the floor.
+
+**Rule 1's build check was promised and absent.** The default Pest suite now runs `UiStringGuard` over
+core PHP for the eight UI entry points named in #106: `label`, `heading`, `description`, `placeholder`,
+`helperText`, `title`, `modalHeading`, `emptyStateHeading`. It follows rendered concatenations, conditional
+branches and callback returns, including escaped copy; it does not mistake translation keys or selector
+conditions for rendered words. Exact path/method/value exceptions carry a reason, and stale exceptions
+fail the build. Current exceptions are only nonverbal separators, absence and the empty-note dash.
+The scoped existing copy lives in `kitsune::admin`, in English with the host's normal catalog override
+and fallback. Dashboard headings, four column labels and counted status sentences use those catalogs;
+entry-type names and field labels stored by an Org remain runtime content, as decided above.
+
+The check is deliberately described by its real boundary: it is not whole-program taint analysis and
+does not prove that arbitrary helpers, implicit framework labels, every notification body or every Blade
+view is translated. Those paths still need rendering/translation tests when touched. A passing static
+check alone does not certify the whole interface, its RTL layout or translation quality.
 
 
 ---
@@ -813,6 +850,28 @@ A field that has not been classified does not save. Same discipline as the tenan
 > — `target_id` too, swept rather than waited for, because `role.assigned` names a host user on the other
 > half of the same row. Neither column ever carried a foreign key (erasing a user must not destroy the
 > trail), so the type was holding an assumption rather than a constraint.
+
+> **Amended 2026-10-22 — identity types must fit without changing their meaning (#136).**
+> The class-name rule above remains the default, but it did not account for PHP's anonymous class names:
+> they contain a NUL followed by a deployment path. Measured, PostgreSQL stored only the prefix before
+> the NUL, SQLite stored the whole value, and MySQL/MariaDB refused an overlong value. The same action
+> therefore either acquired a misleading identity or rolled back depending on its database.
+>
+> Both `actor_type` and `target_type` retain their nullable `varchar(255)` columns. A supplied type must
+> be nonempty valid UTF-8, contain no NUL, and fit in **255 Unicode characters**, rather than 255 bytes.
+> A Laravel integer morph alias is accepted as its decimal text. Other value shapes, including SQL
+> expressions whose result cannot be inspected before insertion, are refused. NULL still means the
+> system actor or an absent target; an invalid identity must never be converted to NULL.
+>
+> The audit builder checks every row before any insert, including bulk/ignore/returning inserts,
+> suppressed model events and suspended scope checks. A refusal names the column and constraint,
+> without copying the identity or deployment path into the exception. Through audited entry writes,
+> it rolls back the content write and audit together. Direct SQL remains outside this Eloquent guard.
+>
+> An anonymous Eloquent actor or target can use a host-declared bounded morph alias; a non-Eloquent
+> actor needs a named class that fits this contract. Widening the column would not fix the NUL problem.
+> Truncation, a basename or a hash would change what the existing polymorphic type identifies, so none
+> is an automatic fallback. Existing stored rows are not rewritten by this amendment.
 
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
@@ -1147,7 +1206,57 @@ The kernel enforces isolation at the write, and at the builder rather than in a 
 
 **And a key is the id the database stores, not the one `(int)` reads.** The same question, asked of a value rather than a name. `(int) '13.9'` is 13, and MySQL and MariaDB store `'13.9'` in an integer column as 14 — `'13.9e0'` and the float `13.9` too — so the scope-key comparison `(int) $value === $current`, in `ScopedBuilder`, `EnforcesScope` and `AppendOnlyBuilder` alike, passed a key the database then wrote into the next org. Measured on both, from org 1 with a key of `'1.9'`: a mass update, a save, a create, a hand-rolled insert and an audit append each stored org 2. A relation's storage key went the same way by another road: looked up as `'5.4'` it found no storage, so ownership, cardinality and target type each stood aside as though the storage were global, and the engine stored 5 — another org's. A key now counts only as an integer or its exact decimal string (`ReadsWrittenKeys`, `@internal`); a relation refuses any other shape for its four keys before it looks anything up; and a storage key that names no row is refused rather than read as global. SQLite and PostgreSQL refuse the fraction themselves, which was luck, not a guard.
 
+**Historical limit at 2026-09-19 — the promoted-column case is superseded by the following amendment.**
+
 **What it does not claim.** A builder guards the columns it names. A model hook that reads some *other* attribute by name is covered only where a builder refuses that column under another spelling — this amendment makes the comparisons the builders make agree with the database, not every attribute read in every model. One such read is known and left: `Entry::convertFieldValuesForWrite()` finds a promoted column such as `slug` by that name, so a save of `SLUG` stores the value unslugified — measured — as a bulk write of `slug` spelled correctly already does, since a bulk write has no entry type to convert against. That conversion normalises; no guard rests on it. And below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at this layer can stand, as every guard in the kernel already states.
+
+### Amendment — promoted field data requires a model save, 2026-10-22
+
+**Status:** Amended · issue #131
+
+The historical normalization gap above is closed by the same rule as `values`: **a promoted column is
+written through the entry's own model save, under its canonical column name**. A save of `slug` runs
+the field's conversion and records its promoted provenance; a save of `SLUG` or `entries.slug` is
+refused with the canonical name to use. Quiet saves retain the conversion, because it runs in the
+builder. A bulk update, including a query carrying a loaded model, cannot stand in for that save.
+Arithmetic columns and their extra assignments obey the same restriction.
+
+The save proof records date-cast attributes in their database date format, not as Carbon objects.
+Review found that a registered type promoting into `published_at` made legitimate date and slug saves
+fail once the date was populated: the generic proof deliberately refuses objects. Formatting dates
+when recording and checking the snapshot preserves valid saves while keeping a later date change
+detectable. Arbitrary objects remain refused; array key-order normalization and exact comparison of
+numeric-looking text remain unchanged.
+
+The date proof uses the scalar Eloquent has already prepared for a model date attribute. A raw
+object on a non-date attribute remains ineligible even when the model has a custom date format.
+
+Promoted provenance is also recorded by the builder while it converts each written column, using the
+same locked field definitions and the same SQL payload as the value. Review found that the `saving`
+listener alone missed a first `saveQuietly()`, `createQuietly()` or `withoutEvents()` write: conversion
+ran but `promoted_by` stayed empty, so erasure could not attribute and clear that value. Ordinary and
+quiet writes now record the same owner. A retype or unrelated save does not take ownership of a column
+it did not write, and no extra schema lookup is added to writes that need no conversion.
+
+The attribution map is merged with the database row under the builder's write lock, not with the
+caller's loaded copy. Review reproduced a stale instance writing a date after another instance had
+written a slug: replacing the map from the stale instance lost the slug's owner and stranded it at
+erasure. One locking read of the current map on the write connection preserves independent writers'
+attributions. Inserts and writes carrying no promoted column need no additional row read. The merged
+map is sent in the value's SQL payload and synchronized onto the caller's model.
+
+The columns come from the registered field types' `promotedColumn()`, rather than a second hardcoded
+list containing today's `slug`. Registry lookup needs no schema query. The restriction applies even
+when no field on the matched rows currently claims that column: a bulk statement has no one entry
+whose field configuration or provenance it can use. Updates to ordinary columns such as `title`
+remain available in bulk when no registered field type promotes into them.
+
+Folding only the conversion lookup would fix one spelling while leaving bulk writes unconverted,
+and would leave other model-side readers, including provenance, asking for a different attribute.
+Canonical spelling keeps those readers on the same value without inventing a model-wide attribute
+renaming policy. This is a normalization decision, not a new isolation boundary or disclosure.
+The existing explicit `ScopeWrites` maintenance suspension and direct SQL remain outside the
+per-model refusal; they gain no claim to field conversion. Existing stored slugs are not rewritten.
 
 ### Amendment — a site's address from the console, 2026-10-08
 
@@ -1307,6 +1416,14 @@ org; the switch is per site, so `open` on Golfdom and `sign-in` on Golfdom FR me
 
 `locked_keys`, this entry's open question, is still open; nothing in this key needs it.
 
+**Amendment — warning before reader downloads close (#251, 2026-10-25).** The existing installation-operator
+`kitsune:readers mode` command remains the human settings door. Before `off` or a revert to `inherit` would change a
+site's effective mode from `sign-in`/`open` to `off`, it previews recorded private file offers in the affected sites.
+An org-level write respects site and SiteGroup overrides; a site revert uses the stored parents and platform
+default. A positive count requires an explicit `--force` acknowledgement before the existing audited
+`SettingsWriter` runs, including interactive use. ADR-041's #251 amendment below defines the count, words and
+residual race. There is no new staff settings route or change to owner/publisher authorization.
+
 ### Amendment — a third platform key, `reader_addresses`, the organisation's alone, 2026-10-10
 
 **Status:** Amended · ADR-037 decision 1, as built
@@ -1429,6 +1546,22 @@ documented support that is never exercised is a claim, not a feature.
 
 > **Amended 2026-09-15:** the browser job now runs on PHP 8.4 and 8.5, because it is the only job that boots the skeleton (ADR-013 amendment) — two browser jobs, and thirteen jobs in all.
 
+**Amended 2026-10-23 — bounded browser diagnostics survive a successful retry (#278).** A green browser job can contain
+a failed first attempt: the reader-to-staff sign-in case once missed its expected rejection, then passed on retry, and
+the failure-only artifact upload kept no report. A controlled delayed password-component load now reproduces a visible
+input losing a value typed before binding; the fixture waits for the existing component readiness signal. This is a
+reproduced mechanism, not proof of the cause of that historical CI failure. The original boundary checks stay, beside
+a delayed-initialization regression, without a larger timeout or another retry.
+
+CI uploads a small diagnostic JSON on completion, including when retry succeeds: source file/line, attempt number,
+status, duration, a fixed normal/delayed-password variant and explicitly allowed reader/staff state booleans and
+HTTP statuses. The variant distinguishes generated cases that share one source line. It excludes titles, errors,
+console output, request bodies, cookies, passwords, arbitrary attachments and traces. Rows, arrays and bytes are bounded;
+retention remains seven days. Local HTML reports and traces remain available to the developer, as reasoned above, but
+are not exported by this workflow. Reporter privacy/bounds checks run in the browser job alone; the bare-clone suite
+still requires neither Node nor a service.
+The account-free documentation browser suite keeps its own result directory and artifact upload.
+
 ---
 
 ## ADR-025 — Laravel Boost: a development dependency, and Kitsune ships guidelines rather than the runtime
@@ -1492,6 +1625,14 @@ Supporting only one of the two costs a real constituency, so both ship.
 
 > **Amended 2026-09-15: the native path named a PPA that does not cover the current LTS.** The Launchpad PPA `ppa:ondrej/php` has no suite for Ubuntu 26.04 LTS — its `dists/resolute/Release` returns 404 — and describes itself as being merged into its maintainer's apt repository, [packages.sury.org/php](https://packages.sury.org/php/), which it names as the canonical source for 26.04. That repository publishes both 24.04 and 26.04 with PHP 8.4 and 8.5. 26.04 needs no third-party source at all: its own archive ships PHP 8.5, which satisfies `^8.4`, while 24.04 ships 8.3. The native path therefore uses the distribution's own PHP wherever it meets the floor, and packages.sury.org only where it does not. Found while provisioning the alpha's stage server, which runs PHP 8.5 from Ubuntu's archive.
 
+> **Native package preflight, 2026-11-25 (#215).** Ubuntu's own FPM packages are PHP 8.1 on Jammy, PHP 8.3 on Noble,
+> and PHP 8.5 on Resolute. The amd64 and arm64 package indexes from Ondřej Surý both include the PHP 8.4 CLI, FPM
+> and extensions selected for Jammy and Noble. The preflight reports that package plan without modifying APT. The
+> package indexes establish availability on the date checked. Repository trust, package activation and host
+> acceptance still belong to installer qualification. [Jammy](https://packages.ubuntu.com/jammy-updates/php8.1-fpm) ·
+> [Noble](https://packages.ubuntu.com/en/noble-updates/php/) · [Resolute](https://packages.ubuntu.com/resolute-updates/php/) ·
+> [Surý repository instructions](https://packages.sury.org/php/README.txt)
+
 ### Security posture, decided deliberately rather than by default
 
 `curl | bash` is the format users expect, and refusing it outright costs adoption that this project cannot afford to lose. But Kitsune's own stated highest-severity category is data isolation, and normalising "pipe an unverified URL into a shell" sits badly with that. The resolution:
@@ -1532,6 +1673,38 @@ settings and `KITSUNE_PASSWORD_MIN_CHARACTERS` — the first owner's minimum too
 never lowers it.
 
 **⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
+
+### Amendment — First-owner handoff starts in the operator's terminal, 2026-11-25 (#214)
+
+Both installer paths hand the operator to the existing first-owner command and then to the ordinary admin
+sign-in page. On an empty installation, the operator selects a first-party blueprint (Blog is the default),
+supplies the organisation and owner details, and types the password twice at the command's hidden prompt.
+The command owns the atomic creation of the first organisation, site and account. The installer prepares
+the application and schema without demo data, and uses the configured application URL for sign-in.
+
+The local operator is the only person who can start the claim. Possession of the public URL gives a visitor
+access to the sign-in page only. A piped installer reads interactive answers from the controlling terminal.
+If none exists, installation can leave the schema ready, report that owner setup is pending, and print the
+command to resume from an operator shell. It leaves the organisation and account tables empty. Automation
+may separately opt into the existing password-on-standard-input path. Passwords stay out of arguments,
+environment variables and logs in both cases.
+
+First-owner claims must serialize on the installation's database before rechecking that it is empty. The
+check before the password prompt gives early feedback and the one under the lock decides whether to write.
+On rerun, an existing organisation or account closes the first-owner path. If the account was committed
+before a later blueprint apply step was interrupted, the operator resumes the blueprint without the
+first-owner option, keeping the account and its authority. Native and Docker qualification must demonstrate
+the terminal handoff, empty-installation claim, interrupted and repeated setup, and sign-in at the reported
+URL. The browser check includes keyboard focus and readable sign-in feedback. The manual assistive-technology
+journey remains part of #41.
+
+**Measured on the development skeleton.** On a fresh migrated SQLite database, both password prompts disabled
+PTY echo, and the command printed the configured sign-in URL. With assets published from the skeleton's
+installed Filament version, browser focus began at email, Tab moved to password, Enter submitted the form,
+and the owner reached the new site's dashboard after correcting the password. Two overlapping CLI setup
+commands against a separate empty SQLite database committed one organisation, one site, one account and its
+memberships. These runs exercise the terminal and browser steps of the application. Installer handoff and
+restart still need qualification on the supported hosts.
 
 ### Amendment — Signed artifact verification format, 2026-10-26 (#213)
 
@@ -2127,7 +2300,7 @@ It is mature, audited, and adopting it would save real work — including a reso
 
 - **AGENTS.md invariant 2: every model declares its scope.** A vendor model cannot carry `#[OrgScoped]` and cannot `use EnforcesScope`. The package's `teams` feature models **one** scoping axis; Kitsune has two that scope data and one that does not (ADR-021). An authorization table with no declared scope is precisely the shape invariant 2 exists to refuse, and it would be the first one in the schema.
 - **Permissions here are derived from schema rather than enumerated by an operator.** Entry types are created at runtime through the admin, so the permission set changes when content modelling changes. A design whose mental model is a fixed list maintained in a seeder is fighting the flagship feature.
-- **Standing Principle #1.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
+- **Standing Principles #1 and #2.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
 - **ADR-025** already sets the bar: a runtime dependency of core gets argued for rather than assumed.
 
 ### Why a table rather than a JSON column on the role
@@ -2192,17 +2365,33 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 `architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.
 
-⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
+⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #2 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
 
 ⚠️ **Amended 2026-10-06 (ADR-040's admin):** owner-only in v1.0 now also covers setting, replacing and removing an
 org's credentials and switching it between test and live mode. Still no subject: `credential.manage` would be refused
-by `Permissions::allows()` even for an owner. The v1.2 clause this paragraph and the next cite as "Standing Principle
-#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.
+by `Permissions::allows()` even for an owner. **Historical citation notice (superseded 2026-10-22):** ~~The v1.2 clause this paragraph and the next cite as "Standing Principle
+#1" is Standing Principle **#2**; CONTRIBUTING records the misroute.~~
 
 ⚠️ **Amended 2026-10-07 (ADR-040's entitlements page):** owner-only in v1.0 also covers listing who holds what on a
 site, giving a comp, revoking one source and reading a row's history. Still no subject: `entitlement.manage` would be
 refused by the vocabulary even for an owner, and delegating a comp — the one act that gives back access a refund took —
 waits for v1.2's subjects.
+
+### Citation amendment — 2026-10-22 (issue #258)
+
+**The v1.2 gate belongs to [Standing Principle #2](#standing-principles).** This ADR previously cited
+"Standing Principle #1" beside the package rejection, owner-only schema/role administration, and the decision
+to keep role navigation in core. The reasoning stays visible above: a package can create an ecosystem obligation,
+a new permission subject broadens the surface, and a host navigation seam would open an extension point.
+Principle #1 is still the reason to avoid an ecosystem-breaking rewrite; Principle #2 sets the freeze at v1.2
+and the deprecation rule within a major. The package rejection now cites both, because it uses both reasons.
+ADR-025's combined reference to Principles #1 and #2 already does the same job and remains unchanged.
+
+The September record counted eleven misrouted references. At this amendment's source snapshot there are **fourteen
+active citations** to correct: three in this ADR, four PHP docblocks, two browser-test comments, two roadmap
+paragraphs, and one each in the README, CONTRIBUTING and architecture. Historical notices that identified the
+misroute are retained as historical notices; they do not prescribe the gate. The citations change, while the
+owner-only boundaries, named first-party exceptions, v1.2 date and public surface stay as decided.
 
 ### A policy is not a query scope
 
@@ -2364,7 +2553,7 @@ the correction and gains a second half — **name the id, withhold the person, a
 
 ⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
 
-The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
+The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #2 keeps shut until v1.2.
 
 **An org may not lose its last held owner role.** Refused by `Role` itself rather than by the form, because an org that loses its last owner cannot get one back: schema editing and role administration are both owner-only, so the only person who could restore the flag is the one who just removed it. The guard asks whether this change takes the **last held** one rather than whether the result has any — a fresh install mid-seed has an owner role nobody holds yet, and the second question would refuse to let a seeder correct one.
 
@@ -3871,6 +4060,8 @@ already states.
 `unique(['org_id', 'handle'])` and NULLs compare distinct on every engine, so a global row's handle is claimed
 install-wide. A module taking `name` or `email` unprefixed blocks every later module and every org that wanted them.
 
+**Historical observation — the claim is withdrawn by the following amendment.**
+
 ⚠️ **`is_system` is published as "undeletable" and is enforced nowhere** — it exists as a cast and a column in the
 admin, and `guardCascade()` counts entries and revisions without consulting it. The proving module's type does not
 rely on it; protection comes from `org_id IS NULL`, which `EntryTypeResource::ownsRecord()` already refuses to edit.
@@ -4048,6 +4239,40 @@ checks pending migrations or fingerprints arbitrary module source on a web reque
 An upgrade still leaves the enabled switch unchanged; the next ordinary process loads runtime against the schema
 that completed. A fresh-process regression proves old-source failure, successful migration, unchanged receipt and
 data, absent runtime/maintenance calls, repeat idempotency, and normal runtime boot after the migration.
+
+### Amendment — system identity is descriptive; deletion protects references, 2026-10-23
+
+**Status:** Amended · issue #256
+
+The earlier `architecture.md` claim that `is_system` means "undeletable" is **withdrawn**, not made into a new
+lock. The flag remains a descriptive system badge. Global visibility and schema-admin protection come from
+`org_id IS NULL`; schema deletion in that admin requires an owner and current-org ownership, for either flag
+value. The bulk action checks authority before reaching `deleteSelected()`, whose job is whole-selection
+ownership checking and atomic deletion, not independent role authorization.
+
+Measured on the default SQLite floor: an unused type with either flag can be deleted through model, quiet,
+eventless, destroy, model force-delete, builder delete/force-delete, projected queries and scope suspension.
+Every one of those doors refuses live or trashed entries and surviving revisions of retyped entries. A global
+type's references in another org are counted too. A mixed admin selection removes nothing if a later row is
+global, belongs to another org or has referenced data. An owner may delete an unused org-owned type regardless
+of the badge; the badge cannot grant a non-owner permission or make a global type org-owned.
+
+This contract preserves the module lifecycle rather than inventing an immutable flag and a second bypass:
+`kitsune/person` sets `is_system` and its supported uninstall removes its unused global type. Making that flag
+an unconditional lock would break uninstall; adding a way around it would need a separate authority contract
+and would not make "undeletable" true. The reference guard already protects what must survive. The flag is not
+added to blueprint declarations: those declare org-owned schema, not install-wide system identity.
+
+Permanent org teardown remains the deliberate database-cascade exception and removes its types, entries and
+revisions; soft-deleting the org retains them. `entry_revisions.entry_type_id` therefore uses CASCADE, not
+RESTRICT: the PHP reference count protects a standalone type delete. Direct SQL bypasses these PHP guards,
+and guarded builders refuse `truncate()`. No flag values or existing rows are migrated, no authorization or
+deletion behavior is changed, and no public API or resource-floor requirement is added. The historical
+observation above stays visible; this amendment answers its open question.
+
+`SystemTypeDeletionContractTest` pins the two flag values across those doors, reference states, admin
+predicates, atomic selections, cross-org references, teardown and direct-SQL boundary. `PersonModuleTest`
+continues to exercise the actual module uninstall rather than a substitute type deletion.
 
 ### Amendment — The built-in schema engine is outside the module lifecycle, 2026-10-23 (#257)
 
@@ -4823,6 +5048,63 @@ declarations as well as its types, fields and roles. This checks the applied dec
 the live decision the operator may have edited since apply. Seed takes the same organisation lock as schema apply
 and merge, after the schema receipt and before the site or type locks. At the command boundary the stored site
 handle must equal the supplied handle, even when the database collation treats another spelling as equal.
+
+---
+
+### Amendment — Existing-installation admin blueprint flow, 2026-10-26 (#206)
+
+The admin flow belongs with the owner's Structure screens. A blueprint changes **Org-wide** schema and roles even
+when the panel is opened through one Site. The page must say which Org it changes; the current authenticated Owner
+of that Org is the authority, checked at the page, every review and every submission. A client-supplied Org id,
+definition class, handle or stale modal is not authority. This is an existing-installation flow, not the first-owner
+claim or a package marketplace. Only definitions already registered by installed code are available to apply.
+
+Review presents the registered declaration and the current receipt separately: available and installed versions,
+an unfinished apply, types, fields and roles. Apply, additive upgrade and interrupted completion use the existing
+`BlueprintApplier::apply()`; the page must not reproduce its writes or imply that a declaration summary is a
+successful dry run. The kernel's named refusals remain visible, with unexpected storage failures mapped without
+exposing SQL or its bindings.
+
+Reverse needs a read-only obstacle review before concrete confirmation of the blueprint and Org. Its preview uses
+the **same manifest reader, lock order and obstacle planner** as the actual reverse, in a transaction containing
+locking reads only. It must never obtain a preview by performing reverse and rolling it back: reverse includes
+schema work outside its row transaction, and rollback would not make that safe on every engine. The preview
+reports what would be removed, kept or already gone, named obstacles, and receipt-only cleanup of an uncommitted or
+untrusted manifest. It performs no save, delete, audit or DDL and returns no planner model instances.
+
+This review is advisory. Locks end when it returns; another request may create content, assign a holder or change
+the receipt before confirmation. A submit rechecks current ownership and the reviewed identity, and the actual
+reverse takes its own locks and recomputes its plan. A previously clear preview never grants permission to delete
+past new content or authority. No purge option, storage unlock or first-owner shortcut is added.
+
+**Implementation status:** this candidate adds the owner-only Structure page, local declarations and receipt versions,
+concrete signed review identity, and the existing apply/reverse writers. A purpose-prefixed HMAC-SHA256 of current
+facts, keyed by the server's application key, binds the actor, Site, Org,
+operation, definition and exact receipt; the kernel checks the receipt again after the page recheck. The browser gets
+only the digest, not a receipt or a decryptable payload. A missing key refuses review and a rotated key invalidates it.
+The first full candidate used an encrypted token and failed the credential-surface guard: ADR-040 reserves core's
+encryption/decryption for its credential cipher. Signing authenticates these facts without opening another cipher
+door, and that guard remains unchanged. This token is not an
+ownership lease. Revocation before a submission is refused, and lifecycle row locks still govern concurrent writes.
+Wrong or stale confirmation errors belong to the mounted field's full state path so they are visible; a successful
+action performs a fresh page load so the owner sees the committed receipt rather than the pre-action schema cache.
+Focused SQLite and four browser journeys have passed, including dashboard navigation, content refusal, stale review,
+cross-org access refusal, keyboard/focus and RTL axe checks. Full/native and complete canonical browser qualification
+remain owed, as do the accessibility inventory's human checks. No delivery or conformance is claimed here. Earlier CLI and reverse
+reasoning above remains unchanged. Later availability/seed extensions must remain visible to this flow's kernel
+review when independently integrated; pending feature branches do not establish support on current main.
+
+**Availability review integration (2026-11-25).** The owner sees the declared availability decisions in
+the apply summary. The review token binds those declarations and the database identities of newly targeted
+sites or site groups. Confirmation verifies the current targets through the same preparation used by the
+kernel. The row transaction then locks and rechecks those captured targets before changing availability.
+An existing receipt keeps its recorded targets and operator edits.
+
+The reverse preview takes the same seed locks as reverse. If seed facts point to retained entries, revisions
+or relations, the preview names the refusal and offers no structure removal. A malformed or abandoned
+schema with seed facts cannot be advertised as safe to clear. Confirmation takes fresh locks and applies the
+same checks again. The token binds the displayed reverse plan. Under its own locks, reverse refuses if rows
+would be kept or removed differently or if the action has become receipt-only. Apply remains structure-only.
 
 ---
 
@@ -7776,6 +8058,12 @@ holds the name; only the dialog and the audit row stand in the way. A reader-tab
 `ReaderArea` carries Laravel's `userId` (ADR-037's residual). The staff route still uses `fpassthru()`, measured fatal at
 64 MiB under PHP-FPM after its 200 was sent. Pest cannot see the loop stop when a reader leaves; the FPM probe did.
 
+**Amendment — reader offers and sharing (#260, 2026-11-25).** A media file with an active reader offer
+must be withdrawn through **Stop offering** before its sharing can change. The withdrawal keeps its own audit
+record. The sharing writer checks the current offer under the file-custody lock so a newly added offer can
+refuse a stale confirmation. A file that has just become Site-only has no offer. An owner can offer it
+explicitly from that Site. Reader links remain subject to the existing Site and current-offer checks.
+
 **Owed.** The staff route onto `MediaStream`, with `filename*`; a "Your downloads" list, with the batch check; a warning
 when a site with offered files has its reader accounts switched off; offering a selection; a size check against
 `size_bytes` before streaming; a canonical lower-case prefix.
@@ -7890,6 +8178,86 @@ The existing #249 measurements above remain visible. Synthetic Guzzle PSR-7 wrap
 stat/reset capability, unknown-size and nonseekable refusal, and correcting an already-consumed underlying object;
 they are not qualification of a deployed remote adapter. Successful reader file GETs remain bounded by fifteen SQL
 statements in the engine regression suite; the existing unauthorized eight-read comparisons remain unchanged.
+
+### Amendment — warn before reader accounts close offered links (#251, 2026-10-25)
+
+The original download amendment's *Owed* warning is implemented at the actual settings door:
+`kitsune:readers mode`, run by the installation operator (ADR-037). There is no admin settings page to attach a
+confirmation to. No new staff route or privilege is introduced; offering still requires the media type's existing
+publish permission and owner-only account/entitlement operations keep their existing fences.
+
+**Before a write.** A change to `off`, or `inherit` that resolves to `off`, counts offers only for sites changing
+from `sign-in` or `open` to `off`. An org change skips lower-level overrides; a site revert is previewed through
+`SettingsResolver`'s supported unsaved-Site input, with no id/memo and its own override removed. Preview never writes
+and rolls back a setting to discover its effect. Site rows and grouped counts are read in batches of at most 100;
+each entry count carries both the affected site keys and their owning org on the scope's own connection.
+
+**What is counted and said.** A recorded offer is a non-trashed, site-specific entry whose file row is private and
+holds a nonempty reader entitlement. Shared/public/trashed/unoffered and foreign-org rows do not contribute. This is
+a count of recorded offers, not a claim that each file is presently on disk, published by an enabled type or held by
+a reader. No file title, path, entitlement name, reader or grant is read for this count. The translated warning gives
+the file count and affected-site count as numeric labels, then says that reader sign-in, account pages and download
+links return 404 while accounts are off. Files, offers and entitlements remain stored; turning accounts back on
+restores the access they allow.
+
+**Acknowledgement.** With a positive count the command refuses before `SettingsWriter` unless `--force` was passed,
+even on an interactive terminal. The refusal names that remedy and says nothing was written; an acknowledged write
+still prints the warning before it changes the mode. No affected offer means the existing behavior, with no extra
+acknowledgement. Already-off sites and changes that keep sign-in available do not produce this warning. The existing
+writer remains the only audited settings write in this command; neither files nor grants are changed.
+
+**Residual and reach.** Counts are an advisory snapshot, not a lock on concurrent settings or offering changes. A
+later offer or override can change the count; `--force` acknowledges the consequence of closing reader pages, not an
+immutable list of files. Programmatic model/SettingsWriter writes do not acquire a console confirmation. A host
+that builds its own settings editor must provide the warning there. Browser coverage drives the real command and
+checks the reader links it leaves reachable or closes; it does not invent an admin screen to satisfy that test.
+
+---
+
+**Amendment — canonical lower-case Site prefixes (#254, 2026-10-26).** The earlier *Owed* item is answered by
+normalization of the claimed prefix and emitted addresses, with existing mixed-case addresses retained as aliases.
+`Site::path_prefix`, derived on every model save, is the canonical address component. `base_url` remains the
+operator's original configuration string; it is not an alternative routing key. This preserves ADR-021's address
+command and its distinction between the address typed and the claim actually served. No data migration or address
+move is required: the derived claims already lower-case the ASCII prefix, and the same host mutex, exact unique
+index and cross-org overlap guard remain authoritative. Refusing previously accepted spellings would break working
+bookmarks without removing a distinct claim; rewriting raw configuration would change the operator's record without
+changing that claim. Neither is selected.
+
+Public and reader requests keep accepting mixed- and upper-case prefix aliases without an extra redirect. Generated
+reader links, form actions and recovery mail use the lower-case claim. Existing recovery-link handling still removes
+the secret query before redirecting to its canonical, query-free form; this amendment adds no query-bearing redirect.
+Only the configured prefix is case-insensitive. Path segment boundaries, maximum depth, ASCII vocabulary and refusal
+of dot segments, escapes and malformed addresses remain as before. The panel keeps its own configured path and its
+own staff authentication; a public prefix is not prepended to it.
+
+The observed gap was a guest's intended return. Resolution and `ReaderArea` admitted `/NeWs/Fr/account/downloads`,
+but the strict stored-return fence rejected that spelling, so sign-in returned to the account root. `RequireReader`
+now asks `ReaderLinks::canonicalPath()` to replace only this Site's case-insensitive prefix, then applies the existing
+exact `isOwn()` fence. It stores `/news/fr/account/downloads`. The leaf is not lowercased, and nothing is decoded or
+resegmented. Foreign and nested-site paths, absolute and protocol-relative URLs, query strings, fragments and encoded
+separators remain refused. Sign-in still checks the stored path with strict `isOwn()`; accepting a prefix alias at
+the request boundary does not expand what the session may later redirect to.
+
+**Measured before implementation.** SQLite storage/HTTP characterization passed 5 tests / 37 assertions; public and
+recovery HTTP characterization passed 2 / 39. PostgreSQL 17.11 and MySQL 8.4.7 each passed the same 5 / 37 native
+cases. MariaDB 10.6.28 initially stopped in the temporary probe's driver-name guard before any characterization;
+adding its distinct `mariadb` name and running only that leg passed 5 / 37. The original failed matrix remains a
+failed measurement. A four-case browser characterization passed with zero retries: three public spellings returned
+200/French with the configured admin link, the sibling segment returned 404, real staff sign-in returned to the
+requested Site dashboard, and reader sign-in reproduced the canonical-versus-mixed downloads return difference.
+Two preceding browser harness failures remain recorded: an incorrect password selector and a nonwaiting URL check.
+The complete third probe, its owned resources and dependencies were audited and removed.
+
+**Implementation checks.** The new policy regression first failed on the missing canonical-path method and the
+lost intended return. The initial focused reader suite then passed 130 tests / 1,513 assertions. The implementation's
+native reader/address set passed 161 / 1,657 on PostgreSQL and 158 / 1,595 on each of MySQL and MariaDB. The latter two
+retain three existing DDL fault-case skips; all 24 new policy cases passed on every engine. The first native controller
+incorrectly expected the available test count to equal the passed count on MySQL and stopped after its successful
+workload. Its verifier failure is retained, the three skips were checked against the existing source, and only the
+not-yet-started MariaDB leg was then run. All owned engine tables were empty before their containers were removed.
+Browser and full-candidate qualification remain required before this candidate is ready; historical characterization
+is not qualification of the new implementation. Original reasoning and residuals above remain.
 
 ---
 
@@ -12085,16 +12453,35 @@ When it lands:
 > it matters only for a tile torn down between its bytes arriving and its image drawn, a window no browser test holds
 > open. The tile switched in place by *Make selected public* while a press was out is the abort's second test.
 
+
+**Amendment — changing media sharing (#260, 2026-11-25).** An Org owner can share a Site-only media file
+from its owning Site, or make an Org-shared file Site-only from the intended recipient Site. This action
+supports these two transitions within one Org. The current Site supplies the destination. The upload selector
+continues to set the initial sharing.
+
+The action keeps the file identity, stored path, visibility and bytes. Public files retain their direct URL.
+Sharing clears the Site slug because Org-shared entries have none. Restoring an older version of a shared
+file restores its content and keeps its slug empty. The confirmation explains the distinction between public delivery and which Sites can use the file in the
+library. Private staff links and media relations resolve through current Site scope. Relations keep their
+stored identities. A relation from a Site that loses access has an unavailable target while the file is
+Site-only, and can resolve again if the file is shared again.
+
+Both transitions require a current Org owner and no active reader offer, checked under the file-custody lock.
+A successful change and its audit record commit together. The audit action names the direction of the change.
+The existing actor, target and Site fields identify its owner, file and affected Site. An already completed
+transition records nothing again. Ordinary saves and bulk writes must
+refuse sharing changes to stored media files outside the custody writer. Other entry types keep their
+existing scope rules.
+
 ---
 
 ## Open questions
 
-- **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
-  admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
-  to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
-- **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
+- ~~**Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
   clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
-  wrong everywhere it appears, and repointing it is an amendment rather than a sweep
+  wrong everywhere it appears, and repointing it is an amendment rather than a sweep~~
+  **Resolved by ADR-033's [citation amendment](#citation-amendment--2026-10-22-issue-258), 2026-10-22:** fourteen
+  active citations were present at the correction; the earlier count and rationale remain visible here.
 - **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
@@ -12106,6 +12493,7 @@ When it lands:
   shared file onto a site or share a site-only one today — `EnforcesScope` guards the move, and the slug rule refuses a
   shared row with a slug — but nothing in the admin does it, and nothing decides who may, how it is audited, or what
   happens to links from sites that lose sight of it. ADR-042 records it beside visibility rather than locking it.
+  The #260 amendments to ADR-041 and ADR-042 record the selected policy.
 - **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
   edited in place six times since #19 created it (#30, #35, #43, #45, #82, #102), and `deploy/release.sh` runs
   `migrate --force`, which skips a

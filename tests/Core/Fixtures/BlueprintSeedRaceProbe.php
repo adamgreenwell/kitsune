@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintSeeder;
+use Kitsune\Core\Blueprints\Declarations\AvailabilityDeclaration;
 use Kitsune\Core\Blueprints\Declarations\SeedEntryDeclaration;
 use Kitsune\Core\KitsuneServiceProvider;
 use Kitsune\Core\Models\Blueprint;
@@ -23,6 +24,7 @@ use Kitsune\Core\Models\BlueprintSeed;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
 use Kitsune\Core\Tests\Fixtures\SeedBlueprint;
 use Orchestra\Testbench\Foundation\Application as TestbenchApplication;
 
@@ -98,6 +100,8 @@ if ($db->transactionLevel() !== 0 || $db->getPdo()->inTransaction()) {
 $seeds = [new SeedEntryDeclaration('first', 'seed_article', 'First', 'first', ['seed_body' => 'First'], ['seed_related' => ['second']]),
     new SeedEntryDeclaration('second', 'seed_article', 'Second', 'second', relations: ['seed_related' => ['first']])];
 $definition = new SeedBlueprint($seeds);
+$separateReceipts = in_array($ordering, ['seed-vs-availability-reverse', 'availability-reverse-vs-seed'], true);
+$reverseFirst = in_array($ordering, ['reverse-first', 'availability-reverse-vs-seed'], true);
 $tables = static function () use ($db, $driver, $configuration): array {
     $all = $db->getSchemaBuilder()->getTableListing($driver === 'pgsql' ? $configuration['search_path'] : null, schemaQualified: false);
     $owned = $driver === 'pgsql' || $driver === 'sqlite' ? $all
@@ -128,6 +132,10 @@ if ($mode === 'init') {
     app(Context::class)->setOrg($org);
     Site::create(['org_id' => $org->id, 'handle' => 'main', 'slug' => 'seed-race', 'name' => 'Main', 'locale' => 'en']);
     BlueprintApplier::apply($definition);
+    if ($separateReceipts) {
+        FixtureBlueprint::$availability = [new AvailabilityDeclaration('dispatch', 'site', 'main', false)];
+        BlueprintApplier::apply(new FixtureBlueprint);
+    }
     seedRaceOutput($directory.'/initialized.json', [...$state(), 'tables' => $tables()]);
     exit(0);
 }
@@ -154,7 +162,9 @@ $site = Site::query()->where('handle', 'main')->sole();
 app(Context::class)->setSite($site);
 if ($mode === 'read') {
     seedRaceOutput($directory.'/'.$role.'-readback.json', [...$state(), 'counts' => $counts($db),
-        'version' => $db->table('blueprints')->value('version'), 'locks' => $db->table('field_storage')->where('is_locked', true)->count()]);
+        'version' => $db->table('blueprints')->value('version'),
+        'handles' => $db->table('blueprints')->orderBy('handle')->pluck('handle')->all(),
+        'availability' => $db->table('entry_type_availability')->count(), 'locks' => $db->table('field_storage')->where('is_locked', true)->count()]);
     exit(0);
 }
 if ($mode === 'atomic') {
@@ -205,20 +215,22 @@ if ($role === 'A') {
         seedRaceOutput($directory.'/A-paused.json', $state());
         seedRaceWait($directory.'/release-A');
     };
-    if ($ordering === 'reverse-first') {
+    if ($reverseFirst) {
         Blueprint::deleting($pause);
     } else {
         BlueprintSeed::saved($pause);
     }
 }
-$operation = $role === 'A' ? ($ordering === 'reverse-first' ? 'reverse' : 'seed') : match ($ordering) {
-    'seed-vs-merge' => 'merge', 'seed-vs-reverse' => 'reverse', default => 'seed',
+$operation = $role === 'A' ? ($reverseFirst ? 'reverse' : 'seed') : match ($ordering) {
+    'seed-vs-merge' => 'merge',
+    'seed-vs-reverse', 'seed-vs-availability-reverse' => 'reverse',
+    default => 'seed',
 };
-$run = function () use ($operation, $definition, $seeds, $site): void {
+$run = function () use ($operation, $definition, $seeds, $site, $separateReceipts): void {
     match ($operation) {
         'seed' => BlueprintSeeder::seed($definition, $site, 'en'),
         'merge' => BlueprintApplier::apply(new SeedBlueprint($seeds, '1.1.0')),
-        'reverse' => BlueprintApplier::reverse('seed_test'),
+        'reverse' => BlueprintApplier::reverse($separateReceipts ? 'fixture' : 'seed_test'),
     };
 };
 $attempt = function () use ($run, $state): array {

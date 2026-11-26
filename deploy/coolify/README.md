@@ -127,13 +127,19 @@ python3 deploy/coolify/qualify.py --image kitsune-development-profile:local \
     --receipt /tmp/kitsune-profile-proof/result.json
 ```
 
+Pass a receipt path whose immediate parent does not yet exist. The qualifier
+creates that run directory with private permissions before contacting Docker.
+Use a new directory each time to preserve earlier receipts and diagnostics.
+
 It starts only its random Compose project's app, certificate initializer and
 database, never the connector. Generated fixture credentials remain in a private
 temporary file. It replaces the front controller only inside that disposable
 container to measure actual FastCGI/kernel forwarding behavior, restores its bytes,
 recreates the app and database to check data, key and certificate persistence,
 and removes only its own labeled
-containers/volumes. The receipt distinguishes a failure from a cleanup failure.
+containers, volumes and networks. The receipt and final JSON summary distinguish qualification,
+cleanup and archival failures. Cleanup is attempted before copying diagnostics,
+and absence of each labeled resource type is verified independently.
 
 The local ARM64 qualification on 2026-10-19 passed all 30 transport, custody,
 restart and secret-free Compose parsing checks on PHP 8.5.10, with cleanup verified.

@@ -254,13 +254,23 @@ Absent at every level = enabled. `IdentifyEntryType` middleware 404s on a type d
 
 ⚠️ **An entry may only be typed by a global type or by its own org's — enforced since 2026-09-21, and independent before that.** Every scope guard asks about a row's own scope keys; none asked whether `entries.entry_type_id` named a type belonging to `entries.org_id`, so an entry could be created in one org's site carrying another org's type and pass. The skeleton seeder did it to itself, which is why nothing caught it: the row is a dead letter rather than a leak — `IdentifyEntryType` 404s it and `EntryType::visibleFor()` hides the type from the other org — so it broke no test while its values landed under another org's field definitions in a shared storage row. `Entry::guardEntryTypeOwnership()` refuses it on create and on retype (ADR-009).
 
+**Amended 2026-10-23 — system identity is not a deletion lock (ADR-038, issue #256).** The earlier row below
+called `is_system` "undeletable". That claim is withdrawn: the flag describes a system type and supplies an
+admin badge; it grants no authority and adds no deletion refusal. In the schema admin, only an owner may
+delete their current org's types, and global or other-org types cannot join a delete selection. Programmatic
+deletion of an unused type remains supported, including a module uninstalling its global type. Model,
+quiet/eventless and builder deletes (including force deletes, projections and scope suspension) refuse any
+live or trashed entries or surviving revisions that reference the type. A mixed admin selection is atomic.
+Permanent org teardown deliberately cascades its owned types and history; soft deletion does not. Direct SQL
+is outside these PHP guards; guarded builders refuse `truncate()`.
+
 ```
 entry_types
   id
   org_id             FK nullable          -- NULL = global
   handle             string               -- machine name, "product"
   name, plural_name, icon, description
-  is_system          bool                 -- undeletable
+  is_system          bool                 -- descriptive system badge; not a deletion lock (ADR-038)
   is_media           bool                 -- media type: set at creation — by the admin's toggle or a blueprint's isMedia (ADR-039) — locked; MediaLibrary::store() refuses any other type (ADR-042)
   ordering
   settings           json                 -- revisions on/off, sluggable, publishable; a media type's `accepts`, the formats it takes (ADR-042 decision 33)
@@ -438,7 +448,7 @@ One `Entry` model means one Eloquent policy for all types — neither routing de
 >
 > ⚠️ **A relation manager is its own route, so the schema gate has to be asked there too.** `FieldsRelationManager::canViewForRecord()` authorized on org ownership alone, so a non-owner correctly refused the entry-type edit page could still submit that Livewire component and create, edit or delete **fields** — rewriting the schema through the back of the page they had just been refused. Its own docblock already said why in its own words; the predicate was simply not asked. One `mayEditSchema()`, asked twice, rather than two predicates that agree until somebody edits one.
 >
-> ⚠️ **Schema editing is owner-only in v1.0, and RBAC existing is what made that a requirement.** Before permissions, every member of an org could do everything the tenancy scopes allowed, so an unguarded entry-type builder was consistent; afterwards a copy-editor could still create, rewrite and delete the org's schema while being refused `/c/product`. A permission system that governs the content and not the shape of the content governs the smaller half. There is no `schema.manage` to ask for — the vocabulary above is five actions on **entries** and nothing else, and inventing a subject widens the extension surface that Standing Principle #1 keeps shut until v1.2. **So an org cannot delegate schema editing without making somebody an owner**, which is a real limitation rather than an oversight.
+> ⚠️ **Schema editing is owner-only in v1.0, and RBAC existing is what made that a requirement.** Before permissions, every member of an org could do everything the tenancy scopes allowed, so an unguarded entry-type builder was consistent; afterwards a copy-editor could still create, rewrite and delete the org's schema while being refused `/c/product`. A permission system that governs the content and not the shape of the content governs the smaller half. There is no `schema.manage` to ask for — the vocabulary above is five actions on **entries** and nothing else, and inventing a subject widens the extension surface that Standing Principle #2 keeps shut until v1.2. **So an org cannot delegate schema editing without making somebody an owner**, which is a real limitation rather than an oversight.
 >
 > ⚠️ **A policy is not a query scope, and every place that LISTS entries needs the grant applied separately.** `EntryPolicy::view()` is asked about a record somebody already holds; Eloquent never consults it while *building* a query — so the relation picker, the related-records table and the attach dialog each named titles of types the same user is refused at the URL. `Permissions::constrainToViewable()` is that predicate, defined once and applied to all three, because a constraint written three times is two places for it to be forgotten. It hides relations that exist, deliberately: a title is the whole of what those views show, so failing closed is the direction.
 >

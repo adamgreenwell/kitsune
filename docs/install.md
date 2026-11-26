@@ -24,6 +24,12 @@ Native PHP-FPM and SQLite are the recommended default. The PHP requirement is `^
 actually meets it, checking the selected distribution and release instructions rather than assuming an old
 package source still covers your OS.
 
+For the native path, run `bash bin/native-install-preflight.sh` from a reviewed development checkout to
+see the package plan. On amd64 and arm64 it selects Ubuntu's own PHP 8.5 on 26.04 LTS and PHP 8.4 from
+Ondřej Surý's repository on 22.04 and 24.04 LTS. The preflight only reads the OS and package architecture.
+Repository configuration, package installation and native-host qualification are separate steps under #215.
+
+[The Docker install profile](../deploy/self-host/docker/README.md) describes verified image builds and a persistent SQLite deployment.
 Docker is an equally supported design path for reproducibility, scale or operator preference. It is optional;
 a separate database server, Redis, search daemon, Node runtime and always-on worker are not requirements for a
 default small installation. The [resource-floor decision](decision-log.md#adr-027--the-resource-floor-is-a-designed-constraint-with-a-number)
@@ -42,7 +48,9 @@ php artisan kitsune:blueprint apply blog --org=myblog --owner=you@example.test
 It asks for the password twice at a hidden prompt. For automation that already holds a secret,
 `--owner-password-stdin` reads its first line from standard input. Never place the password in an argument,
 environment variable or log. Passwords have a minimum of 15 characters; configuration may raise that floor.
-The Phase 6 choice between terminal and protected web onboarding is still open (#214).
+Phase 6 uses terminal-first setup followed by ordinary browser sign-in on native and Docker installs (#214).
+The installer handoff still needs qualification. If setup is interrupted after the first owner commits,
+resume the blueprint with the same organisation slug and without `--owner`.
 
 The README's `migrate --seed` path creates **development demonstration accounts with known passwords**. It is
 not the operator onboarding path and must not be exposed as a new public installation.

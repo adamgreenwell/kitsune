@@ -33,9 +33,9 @@ use Kitsune\Core\Blueprints\OnCollision;
  * way, and `Skip` refuses to adopt a type whose flag differs, because an adopted type keeps the flag it was created
  * with for good.
  *
- * ⚠️ NO `is_system`. Published as "undeletable" and enforced nowhere: `guardCascade()` never consults it.
- * ADR-038 declined to rely on it and used `org_id IS NULL` instead; a blueprint does not get to lean on it
- * either.
+ * ⚠️ NO `is_system`. ADR-038 withdraws the earlier "undeletable" claim: this flag is a descriptive badge,
+ * not a deletion lock. A blueprint declares org-owned schema, not install-wide system identity; its data
+ * and receipt lifecycle have their own guarded reverse path.
  */
 final readonly class EntryTypeDeclaration
 {

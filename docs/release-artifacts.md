@@ -85,6 +85,31 @@ a package absent from the source workflow's explicit package matrix. Do not sile
 or call a core-only archive a complete installation. Final package resolution/bundle contents need their own
 qualification before a release is signed.
 
+## Build the self-host runtime archive
+
+On a Linux build host with Git, Composer, PHP ^8.4 and the application's PHP extensions, GNU tar,
+GNU coreutils and gzip, build the app from an exact reviewed commit. The example assumes an existing
+output directory and a new archive filename.
+
+```sh
+bin/build-runtime-bundle.sh "$source_checkout" "$exact_source_commit" "$output_archive"
+```
+
+The builder resolves dependencies for PHP 8.4.0, installs production packages, copies required
+`kitsune/*` packages from the same commit, and generates the Laravel package index and Filament assets.
+It embeds the resulting `composer.lock` and reports both its SHA-256 and the archive SHA-256. The archive
+contains neither local configuration, an SQLite database, nor generated application logs. Installer
+qualification must verify the extracted archive on the supported hosts.
+
+For a release replay, retain the embedded lock as a build input alongside the commit and toolchain.
+Supply it as the fourth argument and compare the archive's hash before listing it in the build plan.
+
+```sh
+tar -xOzf "$output_archive" ./composer.lock > "$saved_runtime_lock"
+bin/build-runtime-bundle.sh "$source_checkout" "$exact_source_commit" "$replay_archive" "$saved_runtime_lock"
+cmp "$output_archive" "$replay_archive"
+```
+
 ## Build and offline signing
 
 The build plan is local JSON with exactly `artifacts` and `packages` members. Each artifact supplies a `path`,

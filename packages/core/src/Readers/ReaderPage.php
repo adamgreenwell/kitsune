@@ -13,6 +13,7 @@ namespace Kitsune\Core\Readers;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Lang;
 use Kitsune\Core\Kitsune;
+use Kitsune\Core\Localization\CountMessage;
 use Kitsune\Core\Models\Site;
 
 /**
@@ -66,7 +67,7 @@ final class ReaderPage
     public static function translator(string $locale): \Closure
     {
         return static fn (string $copy, array $replace = []): string => isset($replace['count']) && is_int($replace['count'])
-            ? trans_choice('kitsune::readers.'.$copy, $replace['count'], $replace, $locale)
+            ? CountMessage::format('kitsune::readers.'.$copy, $replace['count'], $replace, $locale)
             : (string) __('kitsune::readers.'.$copy, $replace, $locale);
     }
 }

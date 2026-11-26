@@ -20,6 +20,7 @@ use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisposal;
+use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Media\MediaWithdrawal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -1012,6 +1013,7 @@ class AuditedBuilder extends ScopedBuilder
                 return parent::increment($column, $amount, $extra);
             },
             [(string) $column => $amount, ...$extra],
+            arithmetic: true,
         );
     }
 
@@ -1041,6 +1043,7 @@ class AuditedBuilder extends ScopedBuilder
                 return parent::decrement($column, $amount, $extra);
             },
             [(string) $column => $amount, ...$extra],
+            arithmetic: true,
         );
     }
 
@@ -1075,6 +1078,7 @@ class AuditedBuilder extends ScopedBuilder
                 return parent::incrementEach($columns, $extra);
             },
             [...$columns, ...$extra],
+            arithmetic: true,
         );
     }
 
@@ -1104,6 +1108,7 @@ class AuditedBuilder extends ScopedBuilder
                 return parent::decrementEach($columns, $extra);
             },
             [...$columns, ...$extra],
+            arithmetic: true,
         );
     }
 
@@ -1211,12 +1216,12 @@ class AuditedBuilder extends ScopedBuilder
      * @param  callable(list<int|string>, array<int, \Illuminate\Database\Eloquent\Collection<int, Field>>): mixed  $write
      * @param  array<string, mixed>  $written
      */
-    private function auditing(string $action, callable $write, array $written = []): mixed
+    private function auditing(string $action, callable $write, array $written = [], bool $arithmetic = false): mixed
     {
         $model = $this->getModel();
         $connection = $this->auditedConnection();
 
-        return TransactionRecovery::run($connection, function (Connection $connection) use ($action, $write, $model, $written): mixed {
+        return TransactionRecovery::run($connection, function (Connection $connection) use ($action, $write, $model, $written, $arithmetic): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
             // joined to `entry_relations`, where several rows point at one
             // entry — yields that entry's key once per matching row. The
@@ -1245,6 +1250,7 @@ class AuditedBuilder extends ScopedBuilder
             $base->offset = null;
             $base->limit = null;
 
+            $sharingAction = $this->guardMediaSharing($connection, $keys, $written, $arithmetic);
             $fields = [];
             if (Entry::writesFieldData(array_map(fn (string $column): string => $this->bareColumn($column), array_keys($written)))) {
                 $types = $model->newQueryWithoutScopes()->useWritePdo()->whereKey($keys)
@@ -1273,7 +1279,7 @@ class AuditedBuilder extends ScopedBuilder
             // thing acted on, and the rest of the trail is written in those
             // terms.
             $auditor = app(Auditor::class);
-            $action = Str::snake(class_basename($model)).'.'.$action;
+            $action = $sharingAction ?? Str::snake(class_basename($model)).'.'.$action;
 
             foreach ($keys as $key) {
                 $target = $model->newInstance([], true);
@@ -1284,6 +1290,59 @@ class AuditedBuilder extends ScopedBuilder
 
             return $result;
         });
+    }
+
+    /**
+     * Refuse a stored file's scope change outside the authorised custody save, even with scope writes suspended.
+     *
+     * @param  list<int|string>  $keys
+     * @param  array<string, mixed>  $written
+     */
+    private function guardMediaSharing(Connection $connection, array $keys, array $written, bool $arithmetic): ?string
+    {
+        [$writesSite, $site] = $this->writtenColumn($written, 'site_id');
+        [$writesOrg, $org] = $this->writtenColumn($written, 'org_id');
+        if ((! $writesSite && ! $writesOrg) || $keys === []) {
+            return null;
+        }
+
+        $entry = $this->getModel();
+        if (! $arithmetic && ! $writesOrg && $entry->isPerformingModelSave($this) && count($keys) === 1
+            && (string) $keys[0] === (string) $entry->getKeyForAuthorization()) {
+            $action = MediaVisibility::sharingWriteAction($entry, $site);
+            if ($action !== null) {
+                return $action;
+            }
+        }
+
+        $files = $connection->table('entries')
+            ->join('media_files', 'media_files.entry_id', '=', 'entries.id')
+            ->whereIn('entries.id', $keys);
+
+        if (! $arithmetic) {
+            $keysWritten = $writesSite ? ['entries.site_id' => $site] : [];
+            if ($writesOrg) {
+                $keysWritten['entries.org_id'] = $org;
+            }
+            $files->where(function ($changed) use ($keysWritten): void {
+                foreach ($keysWritten as $column => $value) {
+                    if ($value === null) {
+                        $changed->orWhereNotNull($column);
+                    } elseif ((is_int($value) || is_string($value)) && (int) $value > 0 && (string) (int) $value === (string) $value) {
+                        $changed->orWhereNull($column)->orWhere($column, '!=', (int) $value);
+                    } else {
+                        // An assignment whose effective value depends on engine coercion may change scope.
+                        $changed->orWhereNotNull('entries.id');
+                    }
+                }
+            });
+        }
+
+        if ($files->sharedLock()->first(['entries.id']) !== null) {
+            throw new RuntimeException('A stored file changes sharing through the media sharing action (ADR-042).');
+        }
+
+        return null;
     }
 
     /** The connection this write runs on — the one its transaction, its locks and its files' custody belong to. */

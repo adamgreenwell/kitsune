@@ -246,7 +246,7 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
   ⚠️ **Two guarantees rest on argument rather than on a column, so both are asserted from the attacker's side.** Every read starts at `Role`, the only scoped model in the layer — `RoleIsolationTest` asserts that a direct `RolePermission` query sees every customer's grants, so the cost is visible rather than remembered. And **a role assignment is not membership**: `role_user` knows nothing about orgs, so resolution also asks membership through the user model's own scoped query. Removing that check fails a test.
 
-  ⚠️ **Two things the vocabulary cannot express are owner-only, and that is a limitation rather than an omission.** `architecture.md` publishes five actions on **entries**, so editing the schema and administering roles have no permission to ask for — review found the entry-type builder still open to a copy-editor after this landed. Adding a subject widens the extension surface that Standing Principle #1 keeps shut until v1.2, so an org cannot delegate either without making somebody an owner.
+  ⚠️ **Two things the vocabulary cannot express are owner-only, and that is a limitation rather than an omission.** `architecture.md` publishes five actions on **entries**, so editing the schema and administering roles have no permission to ask for — review found the entry-type builder still open to a copy-editor after this landed. Adding a subject widens the extension surface that Standing Principle #2 keeps shut until v1.2, so an org cannot delegate either without making somebody an owner.
 
   ✅ **Role administration landed 2026-09-13** ([#84](https://github.com/adamgreenwell/kitsune/issues/84)): a `RoleResource` in core defines a role, its grants and who holds it, owner-only and refused at the URL rather than merely unlinked. Grants and assignments are written through `Role::grant()` / `assignTo()` — the audited path — and as a **diff**, so the log records the change rather than the save.
 
@@ -334,7 +334,7 @@ They are *enforced* — [ADR-033](decision-log.md) and `EntryPolicy` landed with
 
 ⚠️ **The distance is not only a form.** `roles` is org-owned configuration and belongs in core; assignment writes `role_user` against the host application's `users` table, which core does not own — so the assignment UI belongs in the skeleton, and **neither half is useful alone**. #84 carries that decision.
 
-⚠️ **And that last sentence was wrong, which is recorded rather than edited out.** Core owns no user model and still does not — but it does not need one: `Permissions::userModel()` asks the PANEL's own auth provider, which cannot be wrong about the model it loads. So the screen lives in core after all, the skeleton keeps only the `role_user` migration, and no extension point had to be opened in core's navigation before the extension API exists (Standing Principle #1). ADR-033 carries the reversal and the evidence for it.
+⚠️ **And that last sentence was wrong, which is recorded rather than edited out.** Core owns no user model and still does not — but it does not need one: `Permissions::userModel()` asks the PANEL's own auth provider, which cannot be wrong about the model it loads. So the screen lives in core after all, the skeleton keeps only the `role_user` migration, and no extension point had to be opened in core's navigation before the extension API exists (Standing Principle #2). ADR-033 carries the reversal and the evidence for it.
 
 ⚠️ **This paragraph used to say three, and two of them were stale — [#80](https://github.com/adamgreenwell/kitsune/issues/80).** It called revisions "the last unchecked line of the checklist" after that line had been ticked, and it said the 100k-row measurement was missing because `benchmark-storage` only measured the ADR-027 floor — confusing it with `benchmark-floor`, while the 100k table sits twenty lines up this same document. Prose describing the state of something else, not derived from it.
 
@@ -531,13 +531,13 @@ a product can have one. The **DAM** starter is Phase 5's, and
       admission for retained pre-v1.0 data, chosen by Adam in #211. Support dates/transition terms, reviewer-approved
       publication and actual origin/path upgrade evidence remain separate open gates; no v1.0 release is implied.
 - [ ] Staffed security disclosure process
-- [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
+- [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, finish first-owner setup in the terminal, then sign in through the browser:
   - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, with the distribution's own PHP where it meets `^8.4` (26.04 ships 8.5) and packages.sury.org where it does not (ADR-026 amendment)
   - [ ] **Docker path**, fully supported and equal in quality, reusing the Phase 0 CI image — for scale, reproducibility, or anyone preferring a container to a system PHP
   - [ ] Defaults to **SQLite** — no database server, user, password or tuning
   - [ ] Versioned + **checksum-pinned** over HTTPS, signed releases, never served from a redirect
   - [ ] Docs lead with **download-inspect-run**; the `curl | bash` one-liner is offered alongside, not instead
-  - [ ] **Never creates a default admin account** — onboarding creates the first user interactively *(amended 2026-10-02 by ADR-026's amendment: `kitsune:blueprint apply --owner` may create the first owner with a password the operator types or pipes; the installer itself still creates none, and a web onboarding screen must defend the first-visitor window)*
+  - [ ] **Never creates a default admin account** — hand the operator to `kitsune:blueprint apply --owner` on an empty installation. Without a terminal, report owner setup as pending and give the command to resume from an operator shell (ADR-026, #214).
   - [ ] **Reports nothing**, including install-succeeded pings (GOVERNANCE commitment #7)
   - [ ] **Idempotent** — re-running upgrades rather than clobbers, and detects an existing install
 - [ ] Upgrade tooling

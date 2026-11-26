@@ -20,6 +20,7 @@ use Filament\Notifications\Notification;
 use Filament\Tables\Contracts\HasTable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Localization\CountMessage;
 use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
@@ -397,10 +398,10 @@ final class MediaBulkRemoval
 
         $title = match ($says) {
             'none' => __('kitsune::media.removal.none'),
-            'refused', 'not_tried' => trans_choice($key('not_done'), $notDone, ['count' => $notDone]),
-            'awaiting' => trans_choice('kitsune::media.removal.restore.awaiting', count($awaiting), ['count' => count($awaiting)]),
-            'done' => trans_choice($key('done'), $done, ['count' => $done]),
-            default => trans_choice($key('already'), $already, ['count' => $already]),
+            'refused', 'not_tried' => CountMessage::format($key('not_done'), $notDone, ['count' => $notDone]),
+            'awaiting' => CountMessage::format('kitsune::media.removal.restore.awaiting', count($awaiting), ['count' => count($awaiting)]),
+            'done' => CountMessage::format($key('done'), $done, ['count' => $done]),
+            default => CountMessage::format($key('already'), $already, ['count' => $already]),
         };
 
         match (true) {
@@ -414,15 +415,15 @@ final class MediaBulkRemoval
         $lines = $refused;
 
         if ($failed !== []) {
-            $lines[] = e(trans_choice($key('failed_line'), count($failed), ['titles' => BulkSelection::titles($failed)]));
+            $lines[] = e(CountMessage::format($key('failed_line'), count($failed), ['titles' => BulkSelection::titles($failed)]));
         }
 
         if ($notTried > 0) {
-            $lines[] = e(trans_choice('kitsune::media.removal.not_tried', $notTried, ['count' => $notTried]));
+            $lines[] = e(CountMessage::format('kitsune::media.removal.not_tried', $notTried, ['count' => $notTried]));
         }
 
         if ($awaiting !== []) {
-            $lines[] = e(trans_choice('kitsune::media.selection.awaiting_line', count($awaiting), [
+            $lines[] = e(CountMessage::format('kitsune::media.selection.awaiting_line', count($awaiting), [
                 'titles' => BulkSelection::titles(array_values($awaiting)),
                 'entries' => implode(' ', array_map(static fn (int $id): string => "--entry={$id}", array_keys($awaiting))),
             ]));
@@ -430,15 +431,15 @@ final class MediaBulkRemoval
 
         // Counted in the body wherever the title does not already say so.
         if ($done > 0 && $says !== 'done') {
-            $lines[] = e(trans_choice($key('done_count'), $done, ['count' => $done]));
+            $lines[] = e(CountMessage::format($key('done_count'), $done, ['count' => $done]));
         }
 
         if ($already > 0 && $says !== 'already') {
-            $lines[] = e(trans_choice($key('already_count'), $already, ['count' => $already]));
+            $lines[] = e(CountMessage::format($key('already_count'), $already, ['count' => $already]));
         }
 
         if ($gone > 0 && $says !== 'none') {
-            $lines[] = e(trans_choice('kitsune::media.removal.gone_line', $gone, ['count' => $gone]));
+            $lines[] = e(CountMessage::format('kitsune::media.removal.gone_line', $gone, ['count' => $gone]));
         }
 
         $notification->title(e($title));

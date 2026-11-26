@@ -346,5 +346,5 @@ it('puts both actions on a media entry\'s View and Edit pages', function (): voi
 
     // And the reader actions beside them (ADR-041 decision 1), pinned in `MediaOfferTest`.
     expect($names(ViewEntry::class))->toBe(['makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders', 'edit'])
-        ->and($names(EditEntry::class))->toBe(['makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders', 'delete']);
+        ->and($names(EditEntry::class))->toBe(['makePublic', 'makePrivate', 'offerToReaders', 'changeReaderOffer', 'stopOfferingToReaders', 'shareFileWithOrg', 'keepFileToSite', 'delete']);
 });

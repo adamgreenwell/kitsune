@@ -164,8 +164,8 @@
   {
     "id": "scoped-modifier-kelvin",
     "pattern": "^(?i:k)$",
-    "subject": "K",
-    "why": "Subject is U+212A KELVIN SIGN: scoped modifier group is PCRE2-valid and (unlike the bare form) is ES2025 syntax, so this measures both availability on the consumer's engine and whether Unicode simple case folding of K/k agrees (measured: PHP MATCH, Node 22 SyntaxError — a Node 24+ consumer would compile it and the folding comparison becomes the real result)."
+    "subject": "K",
+    "why": "Uses U+212A KELVIN SIGN to test Unicode simple case folding of k inside a scoped case-insensitive group. An engine that cannot compile the scoped modifier gives no folding verdict."
   },
   {
     "id": "bare-inline-free-spacing",
@@ -361,7 +361,7 @@
   },
   {
     "id": "class-u-escape-range",
-    "pattern": "^[A-Z]+$",
+    "pattern": "^[\\u0041-\\u005A]+$",
     "subject": "AZ",
     "why": "Proves the JS-idiomatic \\uXXXX range endpoint is ES-only: PCRE2 10.48 explicitly refuses \\u, so an author copying a JS pattern is blocked server-side rather than silently diverging."
   },
@@ -403,9 +403,9 @@
   },
   {
     "id": "bslash-u-four-hex",
-    "pattern": "^A$",
+    "pattern": "^\\u0041$",
     "subject": "A",
-    "why": "Reverses the usual strictness direction: ECMA-262 \\uHHHH is the canonical codepoint escape a JSON-Schema author would copy, but PCRE2 without ALT_BSUX refuses \\u outright — proves the grammar must ban the form that looks most native to the published side (verified: Node match, PHP compile error)."
+    "why": "Tests the ECMA-262 four-hex-digit Unicode escape for A. PCRE2 without ALT_BSUX refuses that spelling."
   },
   {
     "id": "bslash-u-brace-astral",

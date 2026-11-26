@@ -10,6 +10,7 @@ const { php, literal } = require('./storefront-fixture');
 const ORG = 'live-stripe-e2e';
 const SITE = 'live-stripe-main';
 const ORDERS = `/admin/${SITE}/storefront/orders`;
+const CREDENTIALS = `/admin/${SITE}/credentials`;
 
 function context() {
     return '$org=Kitsune\\Core\\Models\\Org::query()->where(\'slug\',' + literal(ORG) + ')->firstOrFail();'
@@ -55,6 +56,12 @@ test.beforeEach(reset);
 test('requires separate password-confirmed admission with actual server account verification', async ({ page }) => {
     await page.goto(ORDERS);
     await expect(page.getByText('New live checkouts have not been admitted.', { exact: true })).toBeVisible();
+    await expect(page.getByText(/then verify the account and admit new checkouts here/)).toBeVisible();
+    await page.goto(CREDENTIALS);
+    await expect(page.getByText('This organisation is set to use live credentials. Payment operations can move real money.', { exact: true })).toBeVisible();
+    await expect(page.getByText(/New live checkouts require a current Org owner to verify the Stripe account and admit checkout on the Orders page/).first()).toBeVisible();
+    await expect(page.getByText(/Recover existing checkouts with their original Stripe account and mode/).first()).toBeVisible();
+    await page.goto(ORDERS);
     expect(state()).toBeNull();
     await action(page, 'Verify account and admit live checkouts', 'incorrect');
     await expect(page.getByText('Admission could not be updated.', { exact: false })).toBeVisible();

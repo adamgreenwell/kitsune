@@ -49,7 +49,7 @@ use Kitsune\Core\Validation\Rule;
  *
  * ⚠️ OWNER-ONLY, AND THE LIMITATION IS THE SAME ONE THE SCHEMA BUILDER HAS. `architecture.md` publishes a
  * vocabulary of five actions on ENTRIES and nothing else, so there is no `role.manage` to ask for, and
- * inventing a subject widens the extension surface Standing Principle #1 keeps shut until v1.2. An org
+ * inventing a subject widens the extension surface Standing Principle #2 keeps shut until v1.2. An org
  * cannot delegate role administration without making somebody an owner.
  */
 class RoleResource extends Resource
@@ -122,9 +122,8 @@ class RoleResource extends Resource
                  * the API and the console.
                  */
                 Toggle::make('is_owner')
-                    ->label('Owner')
-                    ->helperText('Bypasses every permission check, including the ones protecting this page '
-                        .'and the entry type builder. Give it to people who administer the organisation.'),
+                    ->label(__('kitsune::admin.owner'))
+                    ->helperText(__('kitsune::admin.roles.owner_help')),
             ])->columns(2),
 
             /*
@@ -134,8 +133,7 @@ class RoleResource extends Resource
              * a list where it reads like the others.
              */
             Section::make('Every entry type, including ones added later')
-                ->description('A type created next month is covered by these the day it appears. Leave them '
-                    .'empty and grant per type below.')
+                ->description(__('kitsune::admin.roles.every_type_help'))
                 ->schema([
                     CheckboxList::make(self::ANY_TYPE_STATE)
                         ->hiddenLabel()
@@ -157,14 +155,14 @@ class RoleResource extends Resource
              * The alternative cost more than it bought: a resource in the skeleton would need a navigation
              * entry, navigation is supplied explicitly by `KitsunePanel` (ADR-012), and letting the host add
              * one means opening an extension point in core before the extension API exists — exactly what
-             * Standing Principle #1 keeps shut until v1.2.
+             * Standing Principle #2 keeps shut until v1.2.
              *
              * ⚠️ IT WRITES THROUGH `Role::assignTo()` / `removeFrom()`, which is the audited path. A page
              * that touched the pivot directly would record nothing, and ADR-033 names assignment as the
              * audited security event.
              */
             Section::make('Held by')
-                ->description('Everybody in this organisation who has this role. Assigning one is recorded.')
+                ->description(__('kitsune::admin.role_holders_help'))
                 ->schema([
                     Select::make(self::HOLDER_STATE)
                         ->hiddenLabel()
@@ -202,8 +200,7 @@ class RoleResource extends Resource
                         ->disabled(fn (): bool => ! self::holdersAreAdministrable())
                         ->helperText(fn (): ?string => self::holdersAreAdministrable()
                             ? null
-                            : 'Assignment is unavailable: this panel authenticates against a model that '
-                              .'role_user does not reference, so the ids here would name different people.')
+                            : __('kitsune::admin.roles.assignment_unavailable'))
                         ->dehydrated(false),
                 ]),
 
@@ -500,7 +497,7 @@ class RoleResource extends Resource
 
         return EntryType::visibleFor($site, app(Context::class)->orgId())
             ->map(fn (EntryType $type): Section => Section::make($type->plural_name)
-                ->description('Permissions named entry.'.$type->handle.'.{action}')
+                ->description(__('kitsune::admin.roles.permissions_named', ['type' => $type->handle]))
                 ->schema([
                     CheckboxList::make(self::PERMISSION_STATE.'.'.$type->handle)
                         ->hiddenLabel()
@@ -536,14 +533,14 @@ class RoleResource extends Resource
                 TextColumn::make('name')->searchable()->sortable()
                     ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('handle')->badge(),
-                IconColumn::make('is_owner')->label('Owner')->boolean(),
-                TextColumn::make('permissions_count')->counts('permissions')->label('Grants'),
+                IconColumn::make('is_owner')->label(__('kitsune::admin.owner'))->boolean(),
+                TextColumn::make('permissions_count')->counts('permissions')->label(__('kitsune::admin.grants')),
 
                 /*
                  * ⚠️ Counted through the pivot rather than a relation, because `role_user` is the
                  * skeleton's table and core declares no relation to a user model it does not own.
                  */
-                TextColumn::make('holders')->label('Held by')
+                TextColumn::make('holders')->label(__('kitsune::admin.held_by'))
                     ->state(fn (Role $record): int => DB::table('role_user')
                         ->where('role_id', $record->getKey())->count()),
             ])

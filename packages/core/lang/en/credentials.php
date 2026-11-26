@@ -25,7 +25,7 @@ return [
         'test' => 'Test mode',
         'live' => 'Live mode',
         'test_meaning' => 'Test credentials are in use. No real money moves.',
-        'live_meaning' => 'Live credentials are in use. Real money moves.',
+        'live_meaning' => 'This organisation is set to use live credentials. Payment operations can move real money.',
     ],
     'line' => [
         'moded' => ':label (:mode)',
@@ -97,7 +97,7 @@ return [
         'to_live' => 'Switch to live mode',
         'to_test' => 'Switch to test mode',
         'to_live_heading' => 'Switch :org to live mode?',
-        'to_live_description' => 'From now on every credential kept for test and live mode is read from its live line. With a payment provider, real money moves.',
+        'to_live_description' => 'Modules will use the live value for credentials with separate test and live values. Payment operations can move real money. A module may require additional approval.',
         'missing' => 'These have no usable live value yet, and will refuse to work until one is set: :labels.',
         'to_test_heading' => 'Switch :org to test mode?',
         'to_test_description' => 'From now on every credential kept for test and live mode is read from its test line, and no real money moves.',

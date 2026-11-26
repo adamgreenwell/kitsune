@@ -38,6 +38,21 @@ written. Both readers use a standard JSON parser, which is what actually removes
 nothing was ever wrong except the sentence. It is corrected rather than made true, because
 escaping 162 cases to satisfy a README would make them unreadable for no gain.
 
+### Corpus correction (issue #352)
+
+Three case IDs previously measured ASCII inputs despite their rationales naming Unicode escapes
+or a Unicode case fold. Keep older results tied to those original inputs. The corrected cases
+were rerun on PHP 8.5.12 / PCRE2 10.49 and Node 26.13.1 / V8 14.6.202.34-node.40 / Unicode 18.0.
+
+| Case | Original input | Corrected input | PCRE2 | V8 in Unicode mode |
+| --- | --- | --- | --- | --- |
+| `class-u-escape-range` | `^[A-Z]+$` | `^[\u0041-\u005A]+$` on `AZ` | Compile error | Match |
+| `bslash-u-four-hex` | `^A$` | `^\u0041$` on `A` | Compile error | Match |
+| `scoped-modifier-kelvin` | ASCII `K` | U+212A on `^(?i:k)$` | Match | Match |
+
+Both engines matched all three original inputs on this same pair. This replay covers the
+three corrected rows. The two PCRE2 compile errors give no match verdict.
+
 ## ⚠️ An incomplete result set is refused, not compared
 
 `compare.php` exits **2** rather than comparing when either result file's case IDs are not exactly

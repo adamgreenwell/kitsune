@@ -13,8 +13,11 @@ namespace Kitsune\Core\Auth;
 use RuntimeException;
 use Symfony\Component\Console\Exception\MissingInputException;
 use Symfony\Component\Console\Exception\RuntimeException as ConsoleRuntimeException;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Helper\TerminalInputHelper;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\Console\Terminal;
 
 /**
  * The first owner's address and password, read and checked before anything is written — ADR-026, as amended.
@@ -87,15 +90,40 @@ final class FirstOwnerCredentials
     /**
      * Ask twice, hidden: the first answer is checked before the second is asked for, so a refused password is never typed twice.
      *
+     * @param  resource  $stream
+     *
      * @throws RuntimeException
      */
-    public static function ask(SymfonyStyle $io, string $email): string
+    public static function ask(SymfonyStyle $io, string $email, $stream): string
     {
+        self::refuseUnlessPromptable($stream);
+        $lockEcho = DIRECTORY_SEPARATOR === '/' && (stream_get_meta_data($stream)['uri'] ?? null) === 'php://stdin';
+        $terminal = null;
+
         try {
-            $first = self::answered($io->askQuestion(self::question(sprintf(self::PROMPT, $email, PasswordRules::minCharacters()))));
+            if ($lockEcho) {
+                if (! Terminal::hasSttyAvailable()) {
+                    throw new ConsoleRuntimeException;
+                }
+
+                try {
+                    $terminal = new TerminalInputHelper($stream);
+                } catch (RuntimeException $e) {
+                    throw new ConsoleRuntimeException(previous: $e);
+                }
+
+                // Symfony prints the prompt before turning echo off. Keep it off across both prompts,
+                // including the interval between the first answer and the confirmation question.
+                if (shell_exec('stty -echo 2>/dev/null && printf %s ready') !== 'ready') {
+                    throw new ConsoleRuntimeException;
+                }
+            }
+
+            $prompt = sprintf(self::PROMPT, $email, PasswordRules::minCharacters());
+            $first = self::readQuestion($io, $prompt, $stream, $terminal);
             self::refuse(self::passwordRefusal($first, $email));
 
-            $second = self::answered($io->askQuestion(self::question(self::CONFIRM)));
+            $second = self::readQuestion($io, self::CONFIRM, $stream, $terminal);
         } catch (MissingInputException) {
             /* First: it is a console RuntimeException too, and an answer that never came is not a terminal that cannot hide one. */
             throw new RuntimeException('No password was entered. Nothing was written.');
@@ -104,6 +132,8 @@ final class FirstOwnerCredentials
                 'Refusing to ask for the password: this terminal cannot hide what is typed, so it would be shown. Pipe it in '
                 .'with `--owner-password-stdin` instead. Nothing was written.'
             );
+        } finally {
+            $terminal?->finish();
         }
 
         if (! hash_equals($first, $second)) {
@@ -187,6 +217,33 @@ final class FirstOwnerCredentials
         return EmailAddress::isAccepted($email) ? null : 'Refusing `--owner`: that is not an email address the sign-in form accepts — both the '
             .'browser\'s check and the server\'s — so its owner could never sign in. The value is not repeated here, in '
             .'case it was something other than an address. Nothing was written.';
+    }
+
+    /** @param resource $stream */
+    private static function readQuestion(SymfonyStyle $io, string $prompt, $stream, ?TerminalInputHelper $terminal): string
+    {
+        if ($terminal === null) {
+            return self::answered($io->askQuestion(self::question($prompt)));
+        }
+
+        $io->write(' <info>'.OutputFormatter::escape($prompt).'</info>: ');
+        $answer = '';
+        do {
+            // Use the same signal-aware helper that owns the echo setting for every terminal read.
+            $terminal->waitForInput();
+            $character = fread($stream, 1);
+            if ($character === false || $character === '') {
+                throw new MissingInputException('Aborted.');
+            }
+
+            if (strlen($answer) < self::READ_BOUND) {
+                $answer .= $character;
+            }
+        } while ($character !== "\n");
+
+        $io->newLine(2);
+
+        return self::answered($answer);
     }
 
     private static function answered(#[\SensitiveParameter] mixed $answer): string

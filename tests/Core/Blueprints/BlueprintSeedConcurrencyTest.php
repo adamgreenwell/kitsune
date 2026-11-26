@@ -117,13 +117,17 @@ function withSeedRace(string $ordering, callable $exercise): void
     }
 }
 
-it('serializes seed receipt authority against a rival seed merge or reverse at real level zero', function (string $ordering): void {
+it('serializes a seed against rival seed, merge and reverse operations at real level zero', function (string $ordering): void {
     withSeedRace($ordering, function (callable $child, string $directory) use ($ordering): void {
         $first = $child('worker', 'A');
         $first->start();
         expect(seedRaceBarrier($directory.'/A-paused.json', [$first]))->toBe(['level' => 1, 'pdo' => true]);
         $child('read', 'paused')->mustRun();
         $paused = seedRaceBarrier($directory.'/paused-readback.json', []);
+        $separateReceipts = in_array($ordering, ['seed-vs-availability-reverse', 'availability-reverse-vs-seed'], true);
+        if ($separateReceipts) {
+            expect($paused['handles'])->toBe(['fixture', 'seed_test'])->and($paused['availability'])->toBe(1);
+        }
         foreach (['blueprint_seeds', 'entries', 'entry_relations', 'entry_revisions', 'locks'] as $table) {
             expect($paused['counts'][$table])->toBe(0);
         }
@@ -150,6 +154,9 @@ it('serializes seed receipt authority against a rival seed merge or reverse at r
         $child('read', 'read')->mustRun();
         $stored = seedRaceBarrier($directory.'/read-readback.json', []);
         expect($stored['level'])->toBe(0)->and($stored['pdo'])->toBeFalse();
+        if ($separateReceipts) {
+            expect($stored['handles'])->toBe(['seed_test'])->and($stored['availability'])->toBe(0);
+        }
         if ($ordering === 'reverse-first') {
             foreach (['blueprints', 'blueprint_seeds', 'entries', 'entry_relations', 'entry_revisions'] as $table) {
                 expect($stored['counts'][$table])->toBe(0);
@@ -160,7 +167,8 @@ it('serializes seed receipt authority against a rival seed merge or reverse at r
                 ->and($stored['locks'])->toBe(2)->and($stored['version'])->toBe($ordering === 'seed-vs-merge' ? '1.1.0' : '1.0.0');
         }
     });
-})->with(['seed-vs-seed', 'seed-vs-merge', 'seed-vs-reverse', 'reverse-first']);
+})->with(['seed-vs-seed', 'seed-vs-merge', 'seed-vs-reverse', 'reverse-first',
+    'seed-vs-availability-reverse', 'availability-reverse-vs-seed']);
 
 it('commits and rolls seed facts content history and locks at level zero on an independent PDO', function (): void {
     withSeedRace('atomic-commit', function (callable $child, string $directory): void {
