@@ -24,11 +24,11 @@ function sha256(bytes) {
     return createHash('sha256').update(bytes).digest('hex');
 }
 
-function preparedFixture(application, fixture, rows, requirePair) {
+function preparedFixture(application, fixture, rows, requirePair, engine) {
     const bytes = fs.readFileSync(fixtureFile(fixture, 'result.json'));
     const result = JSON.parse(bytes);
     assert.equal(result.rows, rows);
-    assert.equal(result.engine, 'sqlite');
+    assert.equal(result.engine, engine);
     assert(Number.isSafeInteger(result.checks_passed) && result.checks_passed > 0, 'Expected a completed seed workload');
     const provenance = {
         seed_result_sha256: sha256(bytes),
@@ -65,6 +65,46 @@ function preparedFixture(application, fixture, rows, requirePair) {
     }
 
     return provenance;
+}
+
+function nativeDatabase(marker, fixture) {
+    const native = marker.native;
+    assert.deepEqual(Object.keys(native).sort(), ['container_id', 'database', 'driver', 'host', 'nonce', 'port']);
+    const internalPorts = { pgsql: '5432/tcp', mysql: '3306/tcp', mariadb: '3306/tcp' };
+    assert(Object.hasOwn(internalPorts, native.driver));
+    assert.equal(native.host, '127.0.0.1');
+    assert(Number.isInteger(native.port) && native.port >= 1024 && native.port <= 65535);
+    assert(/^[a-f0-9]{64}$/.test(native.container_id));
+    assert(/^[a-f0-9]{24}$/.test(native.nonce));
+    assert.equal(native.database, 'kitsune_scale_' + native.nonce);
+
+    const [context, recordedEndpoint] = fs.readFileSync(fixtureFile(fixture, 'docker-context.txt'), 'utf8').trimEnd().split('\n');
+    assert.equal(context, process.env.KITSUNE_SCALE_DOCKER_CONTEXT, 'The launcher context has changed');
+    assert(context && /^[a-zA-Z0-9_.-]+$/.test(context), 'Use the native launcher context');
+    const docker = (args) => execFileSync('docker', ['--context', context, ...args], {
+        encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    }).trim();
+    const endpoint = docker(['context', 'inspect', context, '--format', '{{.Endpoints.docker.Host}}']);
+    assert(endpoint.startsWith('unix://'), 'Use a local Docker socket');
+    assert.equal(endpoint, recordedEndpoint, 'The launcher endpoint has changed');
+    const format = [
+        '{{json .Id}}', '{{json .State.Running}}',
+        '{{json (index .Config.Labels "io.kitsune.scale.native")}}', '{{json .NetworkSettings.Ports}}',
+    ].join('\n');
+    const [id, running, nonce, ports] = docker(['container', 'inspect', native.container_id, '--format', format])
+        .split('\n').map((line) => JSON.parse(line));
+    assert.equal(id, native.container_id);
+    assert.equal(running, true);
+    assert.equal(nonce, native.nonce);
+    assert.deepEqual(ports[internalPorts[native.driver]], [{ HostIp: native.host, HostPort: String(native.port) }]);
+
+    return {
+        DB_CONNECTION: native.driver,
+        DB_HOST: native.host,
+        DB_PORT: String(native.port),
+        DB_DATABASE: native.database,
+        DB_SOCKET: '',
+    };
 }
 
 function listen(server) {
@@ -131,19 +171,22 @@ async function measure(origin, credentials) {
 async function main() {
     const args = process.argv.slice(2);
     const requirePair = args[0] === '--paired';
-    if (requirePair) args.shift();
-    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired] PHP APPLICATION FIXTURE');
+    const native = args[0] === '--native';
+    if (requirePair || native) args.shift();
+    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired|--native] PHP APPLICATION FIXTURE');
     const [php, application, fixture] = args.map((name) => fs.realpathSync(name));
     const marker = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'owned-experiment.json'), 'utf8'));
     assert.equal(marker.purpose, 'kitsune-schema-scale');
     assert.equal(marker.root, path.dirname(__dirname));
     assert([10_000, 100_000, 1_000_000].includes(marker.rows));
-    const provenance = preparedFixture(application, fixture, marker.rows, requirePair);
+    const database = native ? nativeDatabase(marker, fixture) : {
+        DB_CONNECTION: 'sqlite', DB_DATABASE: fixtureFile(fixture, 'scale.sqlite'),
+    };
+    const provenance = preparedFixture(application, fixture, marker.rows, requirePair, database.DB_CONNECTION);
     fixtureFile(fixture, '.env');
     for (const directory of ['storage', 'storage/framework', 'storage/framework/sessions']) {
         assert(fs.lstatSync(path.join(fixture, directory)).isDirectory(), 'Expected private fixture storage');
     }
-    const database = fixtureFile(fixture, 'scale.sqlite');
     const credentials = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'panel-credentials.json'), 'utf8'))['owner-1'];
     assert(! fs.existsSync(path.join(application, 'bootstrap/cache/config.php')), 'The built application has cached configuration');
     const output = path.join(fixture, 'relation-picker-browser.json');
@@ -158,8 +201,7 @@ async function main() {
         env: {
             KITSUNE_SCALE_APPLICATION: application,
             KITSUNE_SCALE_FIXTURE: fixture,
-            DB_CONNECTION: 'sqlite',
-            DB_DATABASE: database,
+            ...database,
             DB_URL: '',
             DB_FOREIGN_KEYS: 'true',
             SESSION_DRIVER: 'file',
@@ -186,6 +228,7 @@ async function main() {
         complete: true,
         case: 'owner_site1_broad_relation_picker',
         rows: marker.rows,
+        ...(native ? { engine: database.DB_CONNECTION } : {}),
         observations: samples.length,
         options_each: 50,
         includes_debounce: true,

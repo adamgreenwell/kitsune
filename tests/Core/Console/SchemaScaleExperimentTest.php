@@ -19,6 +19,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Process\Process;
 
 require_once dirname(__DIR__, 3).'/bin/benchmarks/SchemaScaleExperiment.php';
 
@@ -64,5 +65,36 @@ it('refuses an ambient host database and storage even when a new output has an o
             ->and(filesize($out.'/scale.sqlite'))->toBe(0);
     } finally {
         File::deleteDirectory($out);
+    }
+});
+
+it('requires a private native fixture before loading the supplied application', function (): void {
+    $temporary = sys_get_temp_dir().'/kitsune-scale-native-launch-'.bin2hex(random_bytes(8));
+    mkdir($temporary, 0700);
+    $temporary = realpath($temporary);
+    $application = $temporary.'/application';
+    $out = $temporary.'/experiment';
+    mkdir($application.'/vendor', 0700, true);
+    mkdir($application.'/bootstrap', 0700, true);
+    mkdir($out, 0700);
+
+    file_put_contents($application.'/vendor/autoload.php', '<?php exit(22);');
+    touch($application.'/bootstrap/app.php');
+    touch($application.'/composer.lock');
+    file_put_contents($out.'/.env', 'DB_CONNECTION=mysql');
+    chmod($out.'/.env', 0600);
+    file_put_contents($out.'/owned-experiment.json', '{}');
+    chmod($out.'/owned-experiment.json', 0644);
+
+    try {
+        $process = new Process(['env', '-i', 'PATH='.getenv('PATH'), PHP_BINARY,
+            dirname(__DIR__, 3).'/bin/benchmark-schema-scale.php', '--native', $application, '10000', $out]);
+        $process->run();
+
+        expect($process->getExitCode())->toBe(1)
+            ->and($process->getErrorOutput())->toContain('Use the private files prepared by the native launcher.')
+            ->and(is_file($out.'/scale.sqlite'))->toBeFalse();
+    } finally {
+        File::deleteDirectory($temporary);
     }
 });
