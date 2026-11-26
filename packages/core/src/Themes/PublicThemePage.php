@@ -113,6 +113,7 @@ final class PublicThemePage
     /** @param array<string, mixed> $data */
     private function response(string $template, array $data): Response
     {
-        return response()->make(View::file($template, $data)->render());
+        // The host's Blade can read the current request, reader guard or session.
+        return response()->make(View::file($template, $data)->render(), headers: ['Cache-Control' => 'private, no-store']);
     }
 }
