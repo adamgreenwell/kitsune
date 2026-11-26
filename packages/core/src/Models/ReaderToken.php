@@ -51,11 +51,20 @@ final class ReaderToken extends Model
     protected $guarded = ['*'];
 
     /** Never in an array or a JSON dump: the subject is an address or a reader's key, and the hash is the link's. */
-    protected $hidden = ['subject', 'token_hash'];
+    protected $hidden = ['subject', 'token_hash', 'erasure_anchor'];
 
     /** @return array<string, string> */
     protected function casts(): array
     {
         return ['expires_at' => UtcInstant::class];
+    }
+
+    /** Stable across snapshots taken before the anchor column existed. The link hash itself stays in its original row. */
+    public static function anchorForHash(#[\SensitiveParameter] string $hash): string
+    {
+        $encoded = hash('sha256', 'kitsune.reader-link-erasure.v1:'.$hash);
+
+        return substr($encoded, 0, 8).'-'.substr($encoded, 8, 4).'-4'.substr($encoded, 12, 3)
+            .'-8'.substr($encoded, 15, 3).'-'.substr($encoded, 18, 12);
     }
 }

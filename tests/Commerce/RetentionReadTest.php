@@ -13,6 +13,7 @@ use App\Providers\AppServiceProvider;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Commerce\Carts\CartOwner;
 use Kitsune\Commerce\Models\Cart;
 use Kitsune\Commerce\Models\CartLine;
@@ -193,7 +194,7 @@ it('never rediscovers a minimized invoice when a host improperly reuses the old 
     $order = retentionReaderPurchase($this->site, $key);
     app(ReaderErasure::class)->erase($key);
     // The host contract prohibits re-issued keys; retained commerce still fails closed if a host violates it.
-    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'different-person@example.test',
+    DB::table('readers')->insert(['id' => $key, 'org_id' => $this->org->id, 'email' => 'different-person@example.test', 'erasure_anchor' => Str::uuid()->toString(),
         'password' => null, 'email_verified_at' => null, 'created_at' => now(), 'updated_at' => now()]);
     expect(app(ReaderExport::class)->for($key)['module_data']['kitsune/commerce']['orders'])->toBe([]);
     app(ReaderErasure::class)->erase($key);

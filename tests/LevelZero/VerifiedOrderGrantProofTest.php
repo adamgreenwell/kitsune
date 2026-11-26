@@ -32,7 +32,9 @@ beforeEach(function (): void {
     ModuleKernel::flush();
     ModuleLifecycle::install(app(), 'kitsune/commerce');
     ModuleLifecycle::enable(app(), 'kitsune/commerce');
-    (require TestCase::READERS_MIGRATION)->up();
+    foreach (TestCase::READERS_MIGRATIONS as $migration) {
+        (require $migration)->up();
+    }
     $this->org = Org::create(['slug' => 'verified-grant-proof', 'name' => 'Verified grant proof', 'currency' => 'USD']);
     app(Context::class)->setOrg($this->org);
     $this->site = Site::create(['handle' => 'main', 'slug' => 'verified-grant-proof-main', 'name' => 'Main', 'base_url' => 'https://grant-proof.example.test']);

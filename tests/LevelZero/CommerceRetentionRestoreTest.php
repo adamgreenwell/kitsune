@@ -37,6 +37,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Modules\ModuleLifecycle;
 use Kitsune\Core\Readers\ReaderErasure;
+use Kitsune\Core\Readers\ReaderErasureJournal;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture;
 use Kitsune\Core\Tests\Fixtures\EntitlementFixture;
@@ -50,12 +51,15 @@ use Kitsune\Core\Tests\TestCase;
 beforeEach(function (): void {
     EntitlementFixture::boot();
     config(AppServiceProvider::readerConfig());
-    config(['hashing.bcrypt.rounds' => 4, 'app.key' => 'base64:'.base64_encode(str_repeat('b', 32))]);
+    config([
+        'hashing.bcrypt.rounds' => 4, 'app.key' => 'base64:'.base64_encode(str_repeat('b', 32)),
+        'app.maintenance.driver' => 'cache', 'app.maintenance.store' => 'array',
+    ]);
     CarbonImmutable::setTestNow('2026-10-15 12:00:00 UTC');
     ModuleKernel::flush();
     ModuleLifecycle::install(app(), 'kitsune/commerce');
     ModuleLifecycle::enable(app(), 'kitsune/commerce');
-    Artisan::call('migrate', ['--database' => 'custody', '--path' => TestCase::READERS_MIGRATION, '--realpath' => true, '--force' => true]);
+    Artisan::call('migrate', ['--database' => 'custody', '--path' => TestCase::READERS_MIGRATIONS, '--realpath' => true, '--force' => true]);
     $this->org = Org::create(['slug' => 'retention-restore', 'name' => 'Restore drill', 'currency' => 'USD']);
     app(Context::class)->setOrg($this->org);
     $this->site = Site::create(['handle' => 'main', 'slug' => 'retention-restore-main', 'name' => 'Main', 'base_url' => 'https://retention-restore.example.test']);
@@ -90,6 +94,7 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
+    app()->maintenanceMode()->deactivate();
     DB::setDefaultConnection('custody');
     CarbonImmutable::setTestNow();
     ReaderFixture::forget();
@@ -143,7 +148,7 @@ it('reapplies a separately recorded erasure to a quarantined physical backup bef
         'client_reference_id' => $order->reference, 'metadata' => ['kitsune_order' => $order->reference, 'kitsune_attempt' => $attempt->reference]];
     [$event, $raw] = retentionRestoreEvent('evt_BeforeBackup', 'checkout.session.completed', $session);
     app(StripeEventInbox::class)->capture($this->org->id, $event, $raw, CarbonImmutable::now('UTC'));
-    // This request is recorded outside the backup. There is deliberately no automatic core erasure-log replay.
+    // These structural IDs only set up the fixture. The replay operation receives the sealed account receipt.
     $recordedRequest = ['org' => $this->org->id, 'site' => $this->site->id, 'reader' => (string) $this->reader->id, 'owner' => $this->owner->id];
     $grant = (array) DB::table('entitlements')->sole();
     $payment = (array) DB::table(PaidOrders::RECEIPTS)->sole();
@@ -159,11 +164,12 @@ it('reapplies a separately recorded erasure to a quarantined physical backup bef
         ->and((int) $backup->query('select count(*) from entitlements')->fetchColumn())->toBe(1)
         ->and($backup->query('select raw_payload from commerce_stripe_events')->fetchColumn())->toBe($raw);
     $backup = null;
-    expect(app(ReaderErasure::class)->erase($recordedRequest['reader']))->toBe(['grants' => 1, 'links' => 0, 'account' => true]);
+    expect(app(ReaderErasure::class)->erase($recordedRequest['reader'], requireReceipt: true))->toBe(['grants' => 1, 'links' => 0, 'account' => true]);
+    $journal = app(ReaderErasureJournal::class)->export();
     expect(DB::table('readers')->count())->toBe(0)->and(DB::table('entitlements')->count())->toBe(0)
         ->and(DB::table(StripeEventInbox::TABLE)->value('raw_payload'))->toBeNull();
 
-    // Restore to the separate quarantined file. No runtime work is admitted between restoration and manual reapply.
+    // Restore to the separate quarantined file. No runtime work is admitted between restoration and journal replay.
     DB::purge('secondary');
     expect(copy($this->retentionBackup, $this->secondaryFile))->toBeTrue();
     DB::setDefaultConnection('secondary');
@@ -178,7 +184,23 @@ it('reapplies a separately recorded erasure to a quarantined physical backup bef
         ->and(DB::table(StripeEventInbox::TABLE)->value('raw_payload'))->toBe($raw);
 
     CarbonImmutable::setTestNow('2026-10-16 12:00:00 UTC');
-    expect(app(ReaderErasure::class)->erase($recordedRequest['reader']))->toBe(['grants' => 1, 'links' => 0, 'account' => true]);
+    app()->maintenanceMode()->activate([]);
+    $missing = 'kitsune/unavailable-reader-store-fixture';
+    DB::table('modules')->insert(['handle' => $missing, 'version' => '1.0.0', 'is_enabled' => false, 'installed_at' => now()]);
+    expect(app(ReaderErasureJournal::class)->replay($journal))->toBe([
+        'replayed' => 0, 'already_erased' => 0, 'unavailable' => 0, 'module_unavailable' => 1, 'failed' => 0,
+    ])->and(DB::table('readers')->count())->toBe(1)
+        ->and(DB::table('entitlements')->count())->toBe(1)
+        ->and(DB::table('reader_erasure_receipts')->whereNull('erased_at')->count())->toBe(1)
+        ->and(DB::table('reader_erasure_receipts')->whereNotNull('erased_at')->count())->toBe(0)
+        ->and(DB::table(StripeEventInbox::TABLE)->value('raw_payload'))->toBe($raw);
+    DB::table('modules')->where('handle', $missing)->delete();
+    expect(app(ReaderErasureJournal::class)->replay($journal))->toBe([
+        'replayed' => 1, 'already_erased' => 0, 'unavailable' => 0, 'module_unavailable' => 0, 'failed' => 0,
+    ]);
+    expect(app(ReaderErasureJournal::class)->replay($journal))->toBe([
+        'replayed' => 0, 'already_erased' => 1, 'unavailable' => 0, 'module_unavailable' => 0, 'failed' => 0,
+    ]);
     $restored = DB::table('commerce_orders')->where('id', $order->id)->sole();
     $record = app(OrderReaderData::class)->record(DB::connection(), $restored);
     expect($record['privacy']['subject_erased'])->toBeTrue()->and($record['contact_email'])->toBeNull()->and($record['delivery'])->toBeNull()

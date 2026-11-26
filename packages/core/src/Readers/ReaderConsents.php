@@ -188,7 +188,8 @@ final class ReaderConsents
         }
 
         $ids = ReaderAccounts::mapped(fn (): array => $this->subject($key)->where('org_id', $org)->lockForUpdate()->pluck('id')->all());
-        if ($ids !== [] && $accountConnection !== null && $accountConnection !== $connection) {
+        if ($ids !== [] && $accountConnection !== null && $accountConnection !== $connection
+            && ($accountConnection->transactionLevel() < 1 || ! $accountConnection->getPdo()->inTransaction())) {
             throw new ReaderModuleDataUnavailable('erase');
         }
 

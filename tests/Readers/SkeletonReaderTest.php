@@ -98,12 +98,12 @@ it('holds one reader per address in each org, and the same address in two', func
     expect(static fn () => Reader::createReader('same@kitsune.test', null, null))->toThrow(QueryException::class);
 });
 
-it('exports every column but its secrets — a column added without a decision fails here', function (): void {
+it('accounts for every column and exports only the classified account projection', function (): void {
     $reader = ReaderFixture::reader($this->world['golfdom'], 'subscriber@kitsune.test');
     app(Context::class)->setOrg($this->world['golfdom']);
     $export = Reader::findByEmail('subscriber@kitsune.test')?->exportAccount() ?? [];
 
-    $covered = ['id', 'org_id', 'password', 'remember_token', 'email', 'email_verified_at', 'created_at', 'updated_at'];
+    $covered = ['id', 'org_id', 'password', 'remember_token', 'email', 'email_verified_at', 'created_at', 'updated_at', 'erasure_anchor'];
     $columns = Schema::getColumnListing('readers');
     sort($columns);
     sort($covered);
@@ -112,7 +112,7 @@ it('exports every column but its secrets — a column added without a decision f
         ->and(array_keys($export))->toBe(['reader', 'email', 'email_verified_at', 'has_password', 'created_at', 'updated_at'])
         ->and($export['reader'])->toBe((string) $reader->getKey())
         ->and($export['has_password'])->toBeTrue()
-        ->and((string) json_encode($export))->not->toContain('$2y$');
+        ->and((string) json_encode($export))->not->toContain('$2y$', $reader->getRawOriginal('erasure_anchor'));
 });
 
 it('erases its row and nothing else', function (): void {

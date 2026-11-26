@@ -914,6 +914,28 @@ A field that has not been classified does not save. Same discipline as the tenan
 
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
+**Revision replay under qualification (issue #233).** A subject erasure acts on the specific witnessed revision.
+The journal records the Org, Site, entry, revision, storage and representation identities, plus the random witness
+that was written with that revision. It contains no prior field value or digest of a person's identifier.
+A revision whose attribution cannot be proved is refused. The current entry and other revisions keep their own values.
+
+```bash
+php artisan kitsune:revision-erasure redact --org=example --site=magazine --entry=12 --revision=48 --storage=7 --force
+php artisan kitsune:revision-erasure export-journal --org=example --site=magazine > revision-erasure.journal
+php artisan kitsune:revision-erasure replay --org=example --site=magazine --force < revision-erasure.journal
+```
+
+The redact command reads a typed JSON identifier on standard input. Store the separately authenticated journal
+with the installation's restore materials, independent of the database snapshot it may need to repair. Restore
+the backup in quarantine, bring up the isolated application in maintenance mode using its trusted application key,
+and replay before reopening it. A journal authenticated by a different installation key or scoped to a different
+Site is refused. Replay also checks the original witness before each write, records successful receipts in the
+restored database, and reports unavailable targets separately. Replaying the same journal twice leaves the earlier
+erasure in place.
+
+This step covers classified revision fields. The reader, module and live-content replay paths have separate work
+under [issue #233](https://github.com/adamgreenwell/kitsune/issues/233).
+
 **6. Encryption at rest for `sensitive`-classified fields**, and retention policies that attach to classified fields.
 
 **7. No telemetry, or opt-in only with visible disclosure.** A CMS that phones home by default creates a processing relationship the self-hoster never agreed to and cannot document.
@@ -3619,6 +3641,22 @@ handles or `--all-sites`, and include a typed `identifier` in the JSON. The read
 are explicit choices even when their values look alike. The command includes a coverage report. Older hosts
 without a column declaration keep their declared legacy account projection and report that its coverage is limited.
 
+### Replayable reader erasure (v1.1, issue #233)
+
+The first-party host exception adds the optional `AnchorsReaderErasure` contract. It uses the same
+column classification as subject export. A host declares one randomly generated, immutable, lowercase
+UUID v4 per account, unique within the Org. It is operational metadata with no export key. The core
+reader contract stays frozen. The marker identifies one account incarnation even if an operator later
+restores a different account using the same primary key.
+
+An authenticated journal holds opaque receipts for anchored accounts, exact signup links and exact
+entitlement grants. Restore runs under maintenance mode and rechecks Org authority and the stored
+identity. Local proofs cover the host's readback, grants, consent, links and participating modules.
+An unavailable store leaves receipts pending for retry. Hosts with a separate reader connection restore
+the corresponding database pair. Core commits first, then the host commits, then the receipt becomes
+complete after primary readback. This preserves ordered recovery across both stores. The host contract
+adds no third-party stability promise before v1.2.
+
 ### Enforced by
 
 ~~**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.~~ *As built
@@ -5430,6 +5468,13 @@ ability to state and enforce one — "the CMS would not let me" is not an answer
 is an ethical requirement rather than a feature: *"Always ship a data export path. Never trap users."* A
 platform that can take a buyer's money and cannot hand back their order history has trapped the operator as
 well as the buyer, and commerce is the one place where being unable to leave has a bill attached.
+
+**Amendment for v1.1 erasure journals (#233).** The credential store keeps its exclusive cipher and reader.
+The erasure journals are a separate backup artifact used only by the scoped operator restore tools. Their
+own AES-256-GCM cipher derives a key under `kitsune/erasure-journal/v1` from the installation application
+key. Previous application keys are derived under that same label for authorized restores. Neither the
+credential cipher nor Laravel's application cipher can open an erasure journal. The architecture test
+pins the two allowed cipher files and the two internal erasure journal callers.
 
 ### What this costs, stated rather than discovered
 
