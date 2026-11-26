@@ -7,11 +7,25 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
 const { chromium } = require('playwright');
 const { openSelect, selectField, callsMethod } = require('../../e2e/select-control');
 const { openPanelPage } = require('./schema-scale-panel-reads.cjs');
 
 const entries = [{ id: 1, bodyBytes: 32768 }, { id: 3, bodyBytes: 4096 }, { id: 11, bodyBytes: 768 }];
+
+function isSave(request) {
+    if (request.method() !== 'POST' || ! /^\/livewire(?:-[a-f0-9]{8})?\/update$/.test(new URL(request.url()).pathname)) {
+        return false;
+    }
+    try {
+        const components = request.postDataJSON()?.components;
+        const calls = components?.length === 1 ? components[0].calls : null;
+        return calls?.length === 1 && calls[0].method === 'save';
+    } catch {
+        return false;
+    }
+}
 
 function inspectWriteState(php, application, fixture, id, after = null) {
     const args = [path.join(__dirname, 'schema-scale-write-state.php'), application, fixture, String(id)];
@@ -112,9 +126,9 @@ function checkWrite(stored, before, expected, id) {
 
 class PanelWriteCaseError extends Error {}
 
-async function measurePanelWrites(origin, account, { php, application, fixture, media, repetitions }) {
-    const browser = await chromium.launch({ headless: true });
+async function measurePanelWrites(origin, account, { php, application, fixture, media, repetitions, captureSql = false }) {
     const initialAudit = Number(inspectWriteState(php, application, fixture, entries[0].id).audit.count);
+    const browser = await chromium.launch({ headless: true });
     const results = [];
     const sharedTargets = [media.shared, media.shared + 1];
 
@@ -122,26 +136,67 @@ async function measurePanelWrites(origin, account, { php, application, fixture, 
         const context = await browser.newContext({ baseURL: origin, viewport: { width: 1280, height: 900 } });
         const page = await openPanelPage(context, origin, account);
 
+        let activeTag = null;
+        let sequence = 0;
+        if (captureSql) {
+            await page.route((url) => url.origin === origin && /^\/livewire(?:-[a-f0-9]{8})?\/update$/.test(url.pathname), async (route) => {
+                const request = route.request();
+                if (activeTag !== null && isSave(request)) {
+                    const tag = activeTag;
+                    activeTag = null;
+                    await route.continue({ headers: { ...await request.allHeaders(), 'x-kitsune-scale-action': tag } });
+                } else {
+                    await route.fallback();
+                }
+            });
+        }
+
         async function save(id, expected, before, edit) {
             const route = '/admin/scale-site-1/c/article/' + id + '/edit';
             const opened = await page.goto(route);
             assert.equal(opened.status(), 200);
             assert.equal(opened.url(), new URL(route, origin).href);
             await page.getByRole('button', { name: 'Save changes' }).waitFor();
+            if (captureSql) {
+                // The history table is intersection-loaded. Finish it before timing the save.
+                await page.evaluate(() => {
+                    for (const component of document.querySelectorAll('[wire\\:snapshot]')) {
+                        const { memo } = JSON.parse(component.getAttribute('wire:snapshot'));
+                        if (memo.name.endsWith('RevisionsRelationManager')) {
+                            component.scrollIntoView();
+                            break;
+                        }
+                    }
+                });
+                await page.locator('.fi-ta-table .fi-ta-row').first().waitFor();
+            }
             await edit.fill(page, expected);
 
-            const response = page.waitForResponse((item) => callsMethod(item, 'save'));
+            const tag = captureSql ? 'a' + String(++sequence).padStart(5, '0') : null;
+            activeTag = tag;
             const start = performance.now();
-            await page.getByRole('button', { name: 'Save changes' }).click();
-            const saved = await response;
+            const [saved] = await Promise.all([
+                page.waitForResponse((item) => captureSql ? isSave(item.request()) : callsMethod(item, 'save')),
+                page.getByRole('button', { name: 'Save changes' }).click(),
+            ]);
+            assert.equal(activeTag, null);
             assert.equal(saved.status(), 200);
             const payload = await saved.json();
             assert(Array.isArray(payload.components) && payload.components.length > 0);
+            if (captureSql) assert.equal(payload.components.length, 1);
             const elapsed = performance.now() - start;
 
             const stored = inspectWriteState(php, application, fixture, id, Number(before.audit.latest));
             checkWrite(stored, before, expected, id);
-            return { elapsed, stored };
+            if (tag !== null) {
+                const expectedProfile = path.join(fixture, 'action-sql', tag + '.json');
+                const deadline = performance.now() + 5000;
+                while (! fs.existsSync(expectedProfile) && performance.now() < deadline) {
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                assert(fs.existsSync(expectedProfile), 'The timed save is missing its SELECT profile');
+            }
+            return { elapsed, stored, tag };
         }
 
         for (const entry of entries) {
@@ -151,13 +206,14 @@ async function measurePanelWrites(origin, account, { php, application, fixture, 
                 assert.equal(Buffer.byteLength(original.data.body), entry.bodyBytes);
                 const candidate = structuredClone(original);
                 edit.change(candidate, sharedTargets);
-                const changes = [], restores = [];
+                const changes = [], restores = [], tags = [];
                 for (let i = 0; i < repetitions; i++) {
                     try {
                         const changed = await save(entry.id, candidate, before, edit);
                         const restored = await save(entry.id, original, changed.stored, edit);
                         changes.push(changed.elapsed);
                         restores.push(restored.elapsed);
+                        if (captureSql) tags.push({ change: changed.tag, restore: restored.tag });
                         before = restored.stored;
                     } catch (error) {
                         throw new PanelWriteCaseError(edit.name + ' with ' + entry.bodyBytes + ' body bytes failed (' + error.name + ')');
@@ -165,7 +221,10 @@ async function measurePanelWrites(origin, account, { php, application, fixture, 
                 }
 
                 results.push({ entry: entry.id, body_bytes: entry.bodyBytes, name: edit.name,
-                    edit_response_ms: changes, restore_response_ms: restores, history_rows: before.history });
+                    ...(captureSql
+                        ? { instrumented_edit_response_ms: changes, instrumented_restore_response_ms: restores, tags }
+                        : { edit_response_ms: changes, restore_response_ms: restores }),
+                    history_rows: before.history });
             }
         }
 

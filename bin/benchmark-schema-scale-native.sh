@@ -13,22 +13,27 @@ refuse() {
 }
 
 read_stage=
-panel_writes=
+control_stage=
+write_stage=
 while [[ "${1-}" == --panel-* ]]; do
     case "$1" in
         --panel-reads|--panel-sql)
             [[ -z "$read_stage" ]] || refuse 'select one panel read mode'
             read_stage=$1
             ;;
-        --panel-writes)
-            [[ -z "$panel_writes" ]] || refuse 'give --panel-writes only once'
-            panel_writes=1
+        --panel-controls|--panel-control-sql)
+            [[ -z "$control_stage" ]] || refuse 'select one panel control mode'
+            control_stage=$1
+            ;;
+        --panel-writes|--panel-write-sql)
+            [[ -z "$write_stage" ]] || refuse 'select one panel write mode'
+            write_stage=$1
             ;;
         *) refuse 'unsupported panel mode' ;;
     esac
     shift
 done
-(( $# == 5 )) || refuse 'usage: benchmark-schema-scale-native.sh [--panel-reads|--panel-sql] [--panel-writes] DRIVER IMAGE_ID APPLICATION ROWS ABSOLUTE_NEW_OUTPUT'
+(( $# == 5 )) || refuse 'usage: benchmark-schema-scale-native.sh [--panel-reads|--panel-sql] [--panel-controls|--panel-control-sql] [--panel-writes|--panel-write-sql] DRIVER IMAGE_ID APPLICATION ROWS ABSOLUTE_NEW_OUTPUT'
 driver=$1
 image=$2
 application=$(cd -- "$3" && pwd -P) || refuse 'the built application is unavailable'
@@ -207,7 +212,7 @@ source_clean=yes
 [[ -z "$(git -C "$root" --no-replace-objects status --porcelain=v1)" ]] || source_clean=no
 printf 'source_head=%s\ncheckout_matches_source_head=%s\ndriver=%s\nrows=%s\n' "$source_sha" "$source_clean" "$driver" "$rows" > "$out/native.txt"
 seed_args=(--native)
-if [[ "$panel_writes" == 1 ]]; then seed_args+=(--panel-writes); fi
+if [[ -n "$write_stage" ]]; then seed_args+=(--panel-writes); fi
 env -i PATH="$PATH" "$php_bin" -d memory_limit=128M "$root/bin/benchmark-schema-scale.php" "${seed_args[@]}" "$application" "$rows" "$out" > "$out/seed.log" 2>&1 \
     || refuse "seed failed; see $out/seed.log"
 env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native "$php_bin" "$application" "$out" > "$out/browser.log" 2>&1 \
@@ -216,8 +221,12 @@ if [[ -n "$read_stage" ]]; then
     env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native "$read_stage" "$php_bin" "$application" "$out" > "$out/panel-reads.log" 2>&1 \
         || refuse "panel reads failed; see $out/panel-reads.log"
 fi
-if [[ "$panel_writes" == 1 ]]; then
-    env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native --panel-writes "$php_bin" "$application" "$out" > "$out/panel-writes.log" 2>&1 \
+if [[ -n "$control_stage" ]]; then
+    env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native "$control_stage" "$php_bin" "$application" "$out" > "$out/panel-controls.log" 2>&1 \
+        || refuse "panel controls failed; see $out/panel-controls.log"
+fi
+if [[ -n "$write_stage" ]]; then
+    env -i PATH="$PATH" HOME="$HOME" KITSUNE_SCALE_DOCKER_CONTEXT="$context" node "$root/bin/benchmark-schema-relations.cjs" --native "$write_stage" "$php_bin" "$application" "$out" > "$out/panel-writes.log" 2>&1 \
         || refuse "panel writes failed; see $out/panel-writes.log"
 fi
 printf 'Native schema benchmark completed: %s\n' "$out"

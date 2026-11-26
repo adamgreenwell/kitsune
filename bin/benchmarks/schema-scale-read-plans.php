@@ -8,8 +8,10 @@
 
 declare(strict_types=1);
 
+use Kitsune\Benchmarks\SchemaScaleEstimatedPlans;
 use Kitsune\Benchmarks\SchemaScaleOwnedReadConnection;
 
+require_once __DIR__.'/SchemaScaleEstimatedPlans.php';
 require_once __DIR__.'/SchemaScaleOwnedReadConnection.php';
 
 try {
@@ -20,14 +22,9 @@ try {
         throw new RuntimeException('Replay read plans before starting panel writes.');
     }
     $connection = SchemaScaleOwnedReadConnection::open(dirname(__DIR__, 2), $application, $fixture);
-    $pdo = $connection->pdo;
     $driver = $connection->driver;
     $rows = $connection->rows;
-    $prefix = match ($driver) {
-        'sqlite' => 'EXPLAIN QUERY PLAN ',
-        'pgsql' => 'EXPLAIN (FORMAT JSON) ',
-        'mysql', 'mariadb' => 'EXPLAIN FORMAT=JSON ',
-    };
+    $plans = new SchemaScaleEstimatedPlans($connection->pdo, $driver);
 
     $browser = json_decode(file_get_contents(SchemaScaleOwnedReadConnection::privateFile($fixture, 'schema-scale-panel-sql.partial.json')), true, flags: JSON_THROW_ON_ERROR);
     $observations = $browser['observations_per_case'] ?? null;
@@ -60,8 +57,6 @@ try {
         throw new RuntimeException('The benchmark needs a bounded set of read profiles.');
     }
 
-    $plans = [];
-    $occurrences = 0;
     foreach ($files as $index => $file) {
         $tag = sprintf('p%05d', $index + 1);
         $profileFile = SchemaScaleOwnedReadConnection::privateFile($directory, $tag.'.json');
@@ -77,37 +72,11 @@ try {
             unset($timedSites[$tag]);
         }
 
-        if (basename($file) !== $profile['tag'].'.json' || $profile['status'] !== 200 || $profile['overflow'] !== false
+        if (($profile['version'] ?? null) !== 1 || basename($file) !== $profile['tag'].'.json' || $profile['status'] !== 200 || $profile['overflow'] !== false
             || ! is_array($profile['selects']) || $profile['selects'] === []) {
             throw new RuntimeException('A completed read profile is missing.');
         }
-        foreach ($profile['selects'] as $query) {
-            if (! preg_match('/\A\s*select\b/i', $query['sql']) || ! array_is_list($query['bindings'])) {
-                throw new RuntimeException('Only captured SELECT statements are planned.');
-            }
-            $occurrences++;
-            $id = hash('sha256', json_encode([$query['sql'], $query['bindings']], JSON_THROW_ON_ERROR));
-            if (isset($plans[$id])) {
-                continue;
-            }
-
-            $statement = $pdo->prepare($prefix.$query['sql']);
-            foreach ($query['bindings'] as $position => $binding) {
-                $type = match (true) {
-                    $binding === null => PDO::PARAM_NULL,
-                    is_int($binding) => PDO::PARAM_INT,
-                    is_float($binding), is_string($binding) => PDO::PARAM_STR,
-                    default => throw new RuntimeException('Unsupported SELECT binding.'),
-                };
-                $statement->bindValue($position + 1, $binding, $type);
-            }
-            $statement->execute();
-            $plan = $statement->fetchAll(PDO::FETCH_ASSOC);
-            if ($plan === []) {
-                throw new RuntimeException('The database did not return an estimated plan.');
-            }
-            $plans[$id] = hash('sha256', json_encode($plan, JSON_THROW_ON_ERROR));
-        }
+        $plans->record($profile['selects']);
     }
 
     if ($timedSites !== []) {
@@ -119,9 +88,9 @@ try {
         'engine' => $driver,
         'rows' => $rows,
         'profiles' => count($files),
-        'select_occurrences' => $occurrences,
-        'pairs_with_plans' => count($plans),
-        'plan_digests' => $plans,
+        'select_occurrences' => $plans->occurrences,
+        'pairs_with_plans' => count($plans->digests),
+        'plan_digests' => $plans->digests,
     ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n";
 } catch (Throwable $error) {
     // Connection and statement errors may include private fixture bindings.

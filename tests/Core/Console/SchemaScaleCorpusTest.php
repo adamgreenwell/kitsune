@@ -51,6 +51,17 @@ it('supplies live panel read targets in each Site at the three scales', function
                 ->and($row['deleted_at'])->toBeNull();
         }
 
+        // Another title cannot extend a search ID with more digits at these corpus sizes.
+        expect($media['shared'] * 10)->toBeGreaterThan($size)
+            ->and($targets[0]['selective_article'] * 10)->toBeGreaterThan($size)
+            ->and($targets[2]['selective_article'] * 10)->toBeGreaterThan($size);
+
+        $siteOnly = $corpus->row($media['site_only']);
+        expect($siteOnly['org'])->toBe(1)
+            ->and($siteOnly['kind'])->toBe('asset')
+            ->and($siteOnly['site'])->toBe(1)
+            ->and($siteOnly['deleted_at'])->toBeNull();
+
         foreach ($targets as $target) {
             foreach ([$target['article'], $target['selective_article']] as $id) {
                 $row = $corpus->row($id);
