@@ -41,6 +41,30 @@ directory. The command verifies the checkout revision, profile receipt, seed res
 lock before starting PHP. The profile identifies where the fixture was prepared. The browser command
 launches its own server, so its timing does not inherit the seed container's cgroup limits.
 
+## Measure panel reads
+
+Add `--panel-reads` to the browser command before the PHP path. For a paired
+fixture, put `--paired` first.
+
+~~~sh
+node bin/benchmark-schema-relations.cjs --panel-reads "$(command -v php)" "$unpacked_application" "$new_output_directory"
+~~~
+
+The seed supplies five Sites and their known article IDs for the browser. The browser signs
+in as each Site's owner and measures nine navigations per Site. It verifies dashboard, first
+and last article pages, broad and selective article search, view, edit, related records and the
+asset list. Each Site gets one warmup pass and 25 further passes with all nine cases interleaved.
+Navigation timing stops when the expected page element renders. Result assertions run separately.
+The last page is derived from
+the actual pagination summary, then independently checked after navigation. The report
+`schema-scale-panel-reads.json` includes every sample and the seed and lock digests. It also records 25 fetch-and-decode
+observations for a 70-byte private PNG shared within the Org, plus two denial checks across
+the Org and editor-grant boundaries.
+
+This measures read navigation to the requested page state. The historical matrix also profiled
+original SQL, additional permission controls and audited browser writes.
+Those observations have their own measurement boundaries.
+
 ## Run the seed and broad browser case on a native database
 
 Use a local Docker socket and the same built application. Install the checkout's browser dependencies
@@ -55,7 +79,8 @@ bin/benchmark-schema-scale-native.sh "$engine" "$image_id" "$unpacked_applicatio
 
 Use `pgsql`, `mysql` or `mariadb`, and the same three corpus sizes as the SQLite runner. Each run
 creates a fresh database, maps one port on IPv4 loopback, and verifies database ownership before
-migrations. The launcher runs the application seed and the 25-search owner browser case. It
+migrations. The launcher runs the application seed and the 25-search owner browser case. Add
+`--panel-reads` before the engine argument to run the 45 navigation cases as well. It
 stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
 confirm teardown and keep the output private because it includes disposable fixture credentials.
 

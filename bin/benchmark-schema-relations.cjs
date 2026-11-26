@@ -10,8 +10,8 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { waitForAdminPassword } = require('../e2e/admin-sign-in');
 const { openSelect, callsMethod } = require('../e2e/select-control');
+const { measurePanelReads, openPanelPage, PanelReadCaseError } = require('./benchmarks/schema-scale-panel-reads.cjs');
 
 function fixtureFile(fixture, name) {
     const file = path.join(fixture, name);
@@ -24,7 +24,7 @@ function sha256(bytes) {
     return createHash('sha256').update(bytes).digest('hex');
 }
 
-function preparedFixture(application, fixture, rows, requirePair, engine) {
+function preparedFixture(application, fixture, rows, requirePair, engine, includeReads) {
     const bytes = fs.readFileSync(fixtureFile(fixture, 'result.json'));
     const result = JSON.parse(bytes);
     assert.equal(result.rows, rows);
@@ -64,7 +64,25 @@ function preparedFixture(application, fixture, rows, requirePair, engine) {
         provenance.paired_profile = profile;
     }
 
-    return provenance;
+    const targets = result.panel_read_targets;
+    const media = result.panel_media_targets;
+    if (includeReads) {
+        assert(Array.isArray(targets) && targets.length === 5, 'Expected five Site targets from the seed');
+        const sites = [...targets].map((target) => target.site).sort((a, b) => a - b);
+        assert.deepEqual(sites, [1, 2, 3, 4, 5]);
+        assert(media && media.shared !== media.other_org, 'Expected distinct media targets');
+        for (const id of [media.shared, media.other_org]) {
+            assert(Number.isSafeInteger(id) && id > 0 && id <= rows);
+        }
+        for (const target of targets) {
+            assert([1, 2, 3].includes(target.owner));
+            for (const id of [target.article, target.selective_article]) {
+                assert(Number.isSafeInteger(id) && id > 0 && id <= rows);
+            }
+        }
+    }
+
+    return { provenance, targets, media };
 }
 
 function nativeDatabase(marker, fixture) {
@@ -130,17 +148,7 @@ async function measure(origin, credentials) {
     const browser = await chromium.launch({ headless: true });
     try {
         const context = await browser.newContext({ baseURL: origin, viewport: { width: 1280, height: 900 } });
-        await context.route('**/*', (route) => new URL(route.request().url()).origin === origin
-            ? route.continue()
-            : route.abort());
-        const page = await context.newPage();
-        page.setDefaultTimeout(30_000);
-        assert.equal((await page.goto('/admin/login')).status(), 200);
-        await waitForAdminPassword(page);
-        await page.locator('input[type=email]').fill(credentials.email);
-        await page.locator('input[type=password]').fill(credentials.password);
-        await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
-        await page.waitForURL((url) => url.pathname.startsWith('/admin/') && ! url.pathname.endsWith('/login'));
+        const page = await openPanelPage(context, origin, credentials);
         assert.equal((await page.goto('/admin/scale-site-1/c/article/1/edit')).status(), 200);
         await page.locator('[contenteditable=true]').first().waitFor();
 
@@ -173,7 +181,9 @@ async function main() {
     const requirePair = args[0] === '--paired';
     const native = args[0] === '--native';
     if (requirePair || native) args.shift();
-    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired|--native] PHP APPLICATION FIXTURE');
+    const panelReads = args[0] === '--panel-reads';
+    if (panelReads) args.shift();
+    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired|--native] [--panel-reads] PHP APPLICATION FIXTURE');
     const [php, application, fixture] = args.map((name) => fs.realpathSync(name));
     const marker = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'owned-experiment.json'), 'utf8'));
     assert.equal(marker.purpose, 'kitsune-schema-scale');
@@ -182,15 +192,21 @@ async function main() {
     const database = native ? nativeDatabase(marker, fixture) : {
         DB_CONNECTION: 'sqlite', DB_DATABASE: fixtureFile(fixture, 'scale.sqlite'),
     };
-    const provenance = preparedFixture(application, fixture, marker.rows, requirePair, database.DB_CONNECTION);
+    const { provenance, targets, media } = preparedFixture(application, fixture, marker.rows, requirePair, database.DB_CONNECTION, panelReads);
     fixtureFile(fixture, '.env');
     for (const directory of ['storage', 'storage/framework', 'storage/framework/sessions']) {
         assert(fs.lstatSync(path.join(fixture, directory)).isDirectory(), 'Expected private fixture storage');
     }
-    const credentials = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'panel-credentials.json'), 'utf8'))['owner-1'];
+    const credentials = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'panel-credentials.json'), 'utf8'));
+    const accounts = panelReads ? ['owner-1', 'owner-2', 'owner-3', 'editor'] : ['owner-1'];
+    for (const account of accounts) {
+        const user = credentials[account];
+        assert(user && typeof user.email === 'string' && typeof user.password === 'string',
+            'Expected the synthetic accounts from the seed');
+    }
     assert(! fs.existsSync(path.join(application, 'bootstrap/cache/config.php')), 'The built application has cached configuration');
-    const output = path.join(fixture, 'relation-picker-browser.json');
-    assert(! fs.existsSync(output), 'The fixture already has a relation-picker report');
+    const output = path.join(fixture, panelReads ? 'schema-scale-panel-reads.json' : 'relation-picker-browser.json');
+    assert(! fs.existsSync(output), 'The fixture already has the selected browser report');
 
     const measuredPhp = execFileSync(php, ['-r', 'echo PHP_VERSION;'], { encoding: 'utf8', env: {} });
     const server = spawn(php, [
@@ -215,12 +231,33 @@ async function main() {
     process.once('SIGTERM', stop);
     let samples;
     try {
-        samples = await measure(await listen(server), credentials);
+        const origin = await listen(server);
+        samples = panelReads ? await measurePanelReads(origin, credentials, targets, media) : await measure(origin, credentials['owner-1']);
     } finally {
         stop();
         await closed;
         process.removeListener('SIGINT', stop);
         process.removeListener('SIGTERM', stop);
+    }
+
+    if (panelReads) {
+        const { navigation, privateMedia } = samples;
+        assert.equal(navigation.length, 45);
+        assert(navigation.every((test) => test.elapsed_ms.length === 25));
+        assert.equal(privateMedia.decoded_ms.length, 25);
+        const receipt = {
+            complete: true,
+            engine: database.DB_CONNECTION,
+            rows: marker.rows,
+            cases: navigation.length,
+            observations_per_case: 25,
+            fixture: provenance,
+            measurement: { php: measuredPhp, node: process.version, resource_limits_applied: null },
+        };
+        fs.writeFileSync(output, JSON.stringify({ ...receipt, observations: navigation, private_media: privateMedia }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        console.log(JSON.stringify({ ...receipt, result: output }));
+
+        return;
     }
 
     const ordered = [...samples].sort((a, b) => a - b);
@@ -249,6 +286,6 @@ async function main() {
 
 main().catch((error) => {
     // Playwright errors can contain credential-bearing form actions.
-    console.error('Relation-picker benchmark failed: ' + error.name);
+    console.error('Schema-scale browser benchmark failed: ' + (error instanceof PanelReadCaseError ? error.message : error.name));
     process.exitCode = 1;
 });
