@@ -327,8 +327,11 @@ final class ShippoRatesTest extends TestCase
 
     public function test_transport_failure_is_not_chained_and_sensitive_arguments_do_not_enter_its_trace(): void
     {
-        $before = ini_get('zend.exception_ignore_args');
+        $ignoreArgs = ini_get('zend.exception_ignore_args');
+        $maxStringLength = ini_get('zend.exception_string_param_max_len');
         ini_set('zend.exception_ignore_args', '0');
+        // Keep the entire synthetic token visible if a raw argument reaches the trace.
+        ini_set('zend.exception_string_param_max_len', '64');
 
         try {
             foreach ([new ConnectException(self::PROVIDER_CANARY.' transport failure', new Request('POST', 'https://api.goshippo.com/'.self::PROVIDER_CANARY)),
@@ -346,7 +349,8 @@ final class ShippoRatesTest extends TestCase
                 }
             }
         } finally {
-            ini_set('zend.exception_ignore_args', (string) $before);
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+            ini_set('zend.exception_string_param_max_len', (string) $maxStringLength);
         }
     }
 
