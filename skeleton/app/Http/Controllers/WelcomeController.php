@@ -11,38 +11,28 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use Filament\Facades\Filament;
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Themes\PublicThemePage;
 
-/**
- * The public placeholder, for `/` and for any path that resolves a site.
- *
- * Kitsune's first release is the admin. A public site that renders entries is theming, which ADR-011 moved to
- * v1.1 — so both routes render one page that says so and links to the admin. Nothing public renders an entry yet; a
- * reader's account pages (`ReaderRoutes`, ADR-037) are the only other public pages.
- *
- * ⚠️ ONE PLACE BUILDS IT, BECAUSE TWO DID AND BOTH WENT STALE THE SAME WAY. Each route closure typed
- * `'phase' => 'Phase 0 — foundations'`, and the page went on telling a visitor "there is no admin panel yet"
- * for three phases after the admin shipped — while the README sent the same visitor to `/admin`. The page
- * names no phase now, and the admin link is the panel's own path rather than a second copy of it.
- */
+/** Dispatches public Site themes and the default welcome page. */
 final class WelcomeController
 {
-    public function home(): Response
+    public function home(Request $request, Context $context, PublicThemePage $themes): Response
     {
-        return $this->render();
+        $site = $context->site();
+
+        return ($site === null ? null : $themes->render($request, $site)) ?? $this->render();
     }
 
-    public function site(Context $context): Response
+    public function site(Request $request, Context $context, PublicThemePage $themes): Response
     {
-        // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
-        // reports absence by leaving Context empty, because most public routes are not
-        // site-scoped and it must be attachable to them. A route that REQUIRES a site is
-        // the thing entitled to refuse.
-        abort_if($context->site() === null, 404);
+        $site = $context->site();
+        abort_if($site === null, 404);
 
-        return $this->render();
+        return $themes->render($request, $site) ?? $this->render();
     }
 
     private function render(): Response

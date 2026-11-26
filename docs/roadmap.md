@@ -567,7 +567,7 @@ tooling stay here. The 4–6 months is re-estimated once the v1.0 slice has size
 
 - [ ] REST API generated from schema, site-scoped, per-entity permissions
 - [ ] Token auth + scopes (Sanctum); consider Laravel 13's first-party JSON:API resources [Operator guide](api-tokens.md)
-- [ ] Blade theme layer: template hierarchy, theme discovery, per-site selection
+- [ ] [Blade theme layer](blade-themes.md): template hierarchy, theme discovery, per-site selection
 - [ ] Menus, routing, slugs, redirects
 - [ ] Remote disks through Flysystem (S3 and similar), with the per-driver signed delivery ADR-041 left out. *The media library moved into v1.0 with [ADR-040](decision-log.md); [ADR-041](decision-log.md) and [ADR-042](decision-log.md) decide it.*
 - [ ] Caching, correctly scope-keyed (org and site)

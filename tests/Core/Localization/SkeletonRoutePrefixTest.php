@@ -88,5 +88,5 @@ it('refuses the request itself when no site matches', function () use ($routeSou
     $controller = (string) file_get_contents(__DIR__.'/../../../skeleton/app/Http/Controllers/WelcomeController.php');
 
     expect($routeSource())->toContain("Route::fallback([WelcomeController::class, 'site'])")
-        ->and($controller)->toContain('abort_if($context->site() === null, 404)');
+        ->and($controller)->toContain('abort_if($site === null, 404)');
 });

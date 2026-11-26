@@ -51,6 +51,7 @@ use Kitsune\Core\Console\ReadersCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Console\SiteApiTokenCommand;
 use Kitsune\Core\Console\SiteCommand;
+use Kitsune\Core\Console\SiteThemeCommand;
 use Kitsune\Core\Console\SubjectExportCommand;
 use Kitsune\Core\Credentials\CredentialCipher;
 use Kitsune\Core\Credentials\CredentialReader;
@@ -338,6 +339,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 SchemaSyncCommand::class,
                 SiteApiTokenCommand::class,
                 SiteCommand::class,
+                SiteThemeCommand::class,
                 SubjectExportCommand::class,
             ]);
         }
