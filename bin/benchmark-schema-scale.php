@@ -19,8 +19,12 @@ try {
     if ($native) {
         array_splice($argv, 1, 1);
     }
+    $panelWrites = ($argv[1] ?? null) === '--panel-writes';
+    if ($panelWrites) {
+        array_splice($argv, 1, 1);
+    }
     if (count($argv) !== 4 || ! in_array($argv[2], ['10000', '100000', '1000000'], true)) {
-        throw new InvalidArgumentException('Use: php bin/benchmark-schema-scale.php [--native] APPLICATION 10000|100000|1000000 ABSOLUTE_NEW_OUTPUT');
+        throw new InvalidArgumentException('Use: php bin/benchmark-schema-scale.php [--native] [--panel-writes] APPLICATION 10000|100000|1000000 ABSOLUTE_NEW_OUTPUT');
     }
 
     $root = dirname(__DIR__);
@@ -92,6 +96,34 @@ try {
     }
 
     $result = (new SchemaScaleExperiment($root, $out, $rows))->run();
+    if ($panelWrites) {
+        $database = $native ? ['nonce' => $marker['native']['nonce']] : (static function () use ($out): array {
+            $stat = stat($out.'/scale.sqlite');
+            if ($stat === false) {
+                throw new RuntimeException('The SQLite fixture is missing.');
+            }
+
+            return ['device' => (string) $stat['dev'], 'inode' => (string) $stat['ino']];
+        })();
+        $endorsement = json_encode([
+            'fixture' => $out,
+            'engine' => $result['engine'],
+            'seed_sha256' => hash_file('sha256', $out.'/result.json'),
+            'composer_lock_sha256' => hash_file('sha256', $application.'/composer.lock'),
+            'database' => $database,
+        ], JSON_THROW_ON_ERROR)."\n";
+        $file = fopen($out.'/panel-writes-authority.json', 'xb');
+        if ($file === false) {
+            throw new RuntimeException('Could not create the write authority receipt.');
+        }
+        try {
+            if (fwrite($file, $endorsement) !== strlen($endorsement)) {
+                throw new RuntimeException('Could not finish the write authority receipt.');
+            }
+        } finally {
+            fclose($file);
+        }
+    }
     echo json_encode([
         'complete' => true,
         'rows' => $rows,

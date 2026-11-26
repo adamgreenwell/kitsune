@@ -81,19 +81,28 @@ async function measurePrivateMedia(browser, origin, credentials, media) {
 
 class PanelReadCaseError extends Error {}
 
-async function measurePanelReads(origin, credentials, targets, media) {
+async function measurePanelReads(origin, credentials, targets, media, captureSql = false) {
     const browser = await chromium.launch({ headless: true });
     const results = [];
     const sessions = new Map();
+    let sequence = 0;
 
     async function navigate(page, route, ready) {
+        const tag = captureSql ? 'p' + String(++sequence).padStart(5, '0') : null;
+        if (tag !== null) {
+            await page.setExtraHTTPHeaders({ 'X-Kitsune-Scale-Read': tag });
+        }
         const start = performance.now();
-        const response = await page.goto(route, { waitUntil: 'domcontentloaded' });
-        assert.equal(response.status(), 200);
-        assert.equal(response.url(), new URL(route, origin).href);
-        await ready();
+        try {
+            const response = await page.goto(route, { waitUntil: 'domcontentloaded' });
+            assert.equal(response.status(), 200);
+            assert.equal(response.url(), new URL(route, origin).href);
+            await ready();
 
-        return performance.now() - start;
+            return { ms: performance.now() - start, tag };
+        } finally {
+            if (tag !== null) await page.setExtraHTTPHeaders({});
+        }
     }
 
     async function summary(page) {
@@ -154,14 +163,17 @@ async function measurePanelReads(origin, credentials, targets, media) {
                 ['article related records', entry + '/related', () => page.locator('.fi-ta-row').first().waitFor()],
                 ['asset first page', root + '/c/asset',
                     () => page.locator(target.site === 5 ? '.fi-ta-empty-state' : '.fi-ta-record').first().waitFor()],
-            ].map(([name, route, ready, check]) => ({ name, route, ready, check, elapsed: [] }));
+            ].map(([name, route, ready, check]) => ({ name, route, ready, check, elapsed: [], tags: [] }));
 
             for (let pass = 0; pass <= 25; pass++) {
                 for (const test of cases) {
                     try {
                         const ms = await navigate(page, test.route, test.ready);
                         await test.check?.();
-                        if (pass > 0) test.elapsed.push(ms);
+                        if (pass > 0) {
+                            test.elapsed.push(ms.ms);
+                            if (ms.tag !== null) test.tags.push(ms.tag);
+                        }
                     } catch (error) {
                         throw new PanelReadCaseError('Site ' + target.site + ' ' + test.name + ' failed (' + error.name + ')');
                     }
@@ -170,6 +182,7 @@ async function measurePanelReads(origin, credentials, targets, media) {
             for (const test of cases) {
                 const ordered = [...test.elapsed].sort((a, b) => a - b);
                 results.push({ site: target.site, name: test.name, elapsed_ms: test.elapsed,
+                    ...(captureSql ? { sample_tags: test.tags } : {}),
                     median_ms: ordered[12], observed_p95_ms: ordered[23] });
             }
         }

@@ -12,6 +12,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const { openSelect, callsMethod } = require('../e2e/select-control');
 const { measurePanelReads, openPanelPage, PanelReadCaseError } = require('./benchmarks/schema-scale-panel-reads.cjs');
+const { measurePanelWrites, PanelWriteCaseError } = require('./benchmarks/schema-scale-panel-writes.cjs');
 
 function fixtureFile(fixture, name) {
     const file = path.join(fixture, name);
@@ -176,23 +177,60 @@ async function measure(origin, credentials) {
     }
 }
 
+function reservePanelWrites(fixture, marker, engine, native, provenance) {
+    const authority = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'panel-writes-authority.json'), 'utf8'));
+    let database;
+    if (native) {
+        database = { nonce: marker.native.nonce };
+    } else {
+        const stat = fs.statSync(fixtureFile(fixture, 'scale.sqlite'), { bigint: true });
+        database = { device: String(stat.dev), inode: String(stat.ino) };
+    }
+    assert.deepStrictEqual(authority, {
+        fixture,
+        engine,
+        seed_sha256: provenance.seed_result_sha256,
+        composer_lock_sha256: provenance.composer_lock_sha256,
+        database,
+    }, 'The seed did not authorize writes on this fixture');
+
+    fs.closeSync(fs.openSync(path.join(fixture, 'panel-writes.started'), 'wx', 0o600));
+}
+
 async function main() {
     const args = process.argv.slice(2);
     const requirePair = args[0] === '--paired';
     const native = args[0] === '--native';
     if (requirePair || native) args.shift();
-    const panelReads = args[0] === '--panel-reads';
-    if (panelReads) args.shift();
-    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired|--native] [--panel-reads] PHP APPLICATION FIXTURE');
+    const stage = ['--panel-reads', '--panel-sql', '--panel-writes'].includes(args[0]) ? args.shift() : null;
+    const panelSql = stage === '--panel-sql';
+    const panelReads = panelSql || stage === '--panel-reads';
+    const panelWrites = stage === '--panel-writes';
+    assert.equal(args.length, 3, 'Use: node bin/benchmark-schema-relations.cjs [--paired|--native] [--panel-reads|--panel-sql|--panel-writes] PHP APPLICATION FIXTURE');
+    assert(! (panelWrites && requirePair), 'Start panel writes on a new fixture that explicitly permits writes');
     const [php, application, fixture] = args.map((name) => fs.realpathSync(name));
     const marker = JSON.parse(fs.readFileSync(fixtureFile(fixture, 'owned-experiment.json'), 'utf8'));
     assert.equal(marker.purpose, 'kitsune-schema-scale');
     assert.equal(marker.root, path.dirname(__dirname));
     assert([10_000, 100_000, 1_000_000].includes(marker.rows));
+    const lease = path.join(fixture, 'browser-stage.active');
+    fs.closeSync(fs.openSync(lease, 'wx', 0o600));
+    try {
+        await runStage(php, application, fixture, marker, { stage, native, requirePair, panelReads, panelSql, panelWrites });
+    } finally {
+        fs.unlinkSync(lease);
+    }
+}
+
+async function runStage(php, application, fixture, marker, { stage, native, requirePair, panelReads, panelSql, panelWrites }) {
+    if (! panelWrites) {
+        assert(! fs.existsSync(path.join(fixture, 'panel-writes.started')),
+            'Run read stages before starting panel writes on a fixture');
+    }
     const database = native ? nativeDatabase(marker, fixture) : {
         DB_CONNECTION: 'sqlite', DB_DATABASE: fixtureFile(fixture, 'scale.sqlite'),
     };
-    const { provenance, targets, media } = preparedFixture(application, fixture, marker.rows, requirePair, database.DB_CONNECTION, panelReads);
+    const { provenance, targets, media } = preparedFixture(application, fixture, marker.rows, requirePair, database.DB_CONNECTION, panelReads || panelWrites);
     fixtureFile(fixture, '.env');
     for (const directory of ['storage', 'storage/framework', 'storage/framework/sessions']) {
         assert(fs.lstatSync(path.join(fixture, directory)).isDirectory(), 'Expected private fixture storage');
@@ -205,8 +243,15 @@ async function main() {
             'Expected the synthetic accounts from the seed');
     }
     assert(! fs.existsSync(path.join(application, 'bootstrap/cache/config.php')), 'The built application has cached configuration');
-    const output = path.join(fixture, panelReads ? 'schema-scale-panel-reads.json' : 'relation-picker-browser.json');
+    const reportName = {
+        '--panel-reads': 'schema-scale-panel-reads.json',
+        '--panel-sql': 'schema-scale-panel-sql.json',
+        '--panel-writes': 'schema-scale-panel-writes.json',
+    }[stage] ?? 'relation-picker-browser.json';
+    const output = path.join(fixture, reportName);
     assert(! fs.existsSync(output), 'The fixture already has the selected browser report');
+    if (panelWrites) reservePanelWrites(fixture, marker, database.DB_CONNECTION, native, provenance);
+    if (panelSql) fs.mkdirSync(path.join(fixture, 'read-sql'), { mode: 0o700 });
 
     const measuredPhp = execFileSync(php, ['-r', 'echo PHP_VERSION;'], { encoding: 'utf8', env: {} });
     const server = spawn(php, [
@@ -217,6 +262,7 @@ async function main() {
         env: {
             KITSUNE_SCALE_APPLICATION: application,
             KITSUNE_SCALE_FIXTURE: fixture,
+            ...(panelSql ? { KITSUNE_SCALE_CAPTURE_READ_SQL: '1' } : {}),
             ...database,
             DB_URL: '',
             DB_FOREIGN_KEYS: 'true',
@@ -232,7 +278,13 @@ async function main() {
     let samples;
     try {
         const origin = await listen(server);
-        samples = panelReads ? await measurePanelReads(origin, credentials, targets, media) : await measure(origin, credentials['owner-1']);
+        if (panelReads) {
+            samples = await measurePanelReads(origin, credentials, targets, media, panelSql);
+        } else if (panelWrites) {
+            samples = await measurePanelWrites(origin, credentials['owner-1'], { php, application, fixture, media, repetitions: 25 });
+        } else {
+            samples = await measure(origin, credentials['owner-1']);
+        }
     } finally {
         stop();
         await closed;
@@ -254,9 +306,34 @@ async function main() {
             fixture: provenance,
             measurement: { php: measuredPhp, node: process.version, resource_limits_applied: null },
         };
-        fs.writeFileSync(output, JSON.stringify({ ...receipt, observations: navigation, private_media: privateMedia }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        const report = { ...receipt, capture_sql: panelSql, observations: navigation, private_media: privateMedia };
+        if (panelSql) {
+            const preliminary = path.join(fixture, 'schema-scale-panel-sql.partial.json');
+            fs.writeFileSync(preliminary, JSON.stringify({ ...report, complete: false }, null, 2) + '\n',
+                { flag: 'wx', mode: 0o600 });
+            const plansPath = path.join(fixture, 'schema-scale-read-plans.json');
+            const bytes = execFileSync(php, [path.join(__dirname, 'benchmarks/schema-scale-read-plans.php'), application, fixture], { env: {} });
+            const plans = JSON.parse(bytes);
+            assert.equal(plans.complete, true);
+            fs.writeFileSync(plansPath, bytes, { flag: 'wx', mode: 0o600 });
+            report.plans = { file: path.basename(plansPath), sha256: sha256(bytes) };
+        }
+        fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        if (panelSql) fs.unlinkSync(path.join(fixture, 'schema-scale-panel-sql.partial.json'));
         console.log(JSON.stringify({ ...receipt, result: output }));
 
+        return;
+    }
+
+    if (panelWrites) {
+        assert.equal(samples.cases.length, 12);
+        assert.equal(samples.audited_writes, samples.cases.length * samples.pairs_per_case * 2);
+        const receipt = {
+            complete: true, rows: marker.rows, engine: database.DB_CONNECTION,
+            fixture: provenance, measurement: { php: measuredPhp, node: process.version, resource_limits_applied: null },
+        };
+        fs.writeFileSync(output, JSON.stringify({ ...samples, ...receipt }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        console.log(JSON.stringify({ ...receipt, cases: samples.cases.length, audited_writes: samples.audited_writes, result: output }));
         return;
     }
 
@@ -286,6 +363,6 @@ async function main() {
 
 main().catch((error) => {
     // Playwright errors can contain credential-bearing form actions.
-    console.error('Schema-scale browser benchmark failed: ' + (error instanceof PanelReadCaseError ? error.message : error.name));
+    console.error('Schema-scale browser benchmark failed: ' + (error instanceof PanelReadCaseError || error instanceof PanelWriteCaseError ? error.message : error.name));
     process.exitCode = 1;
 });
