@@ -174,9 +174,13 @@ $http = static function (RequestInterface $outbound) use (&$requests, &$creates,
         'key' => $outbound->getHeaderLine('Idempotency-Key'), 'version' => $outbound->getHeaderLine('Stripe-Version'),
         'level' => DB::connection()->transactionLevel(), 'pdo' => DB::connection()->getPdo()->inTransaction()];
     if ($path === '/v1/account') {
-        if ($role !== null && ! is_file($directory.'/account-'.$role.'.json')) {
-            file_put_contents($directory.'/account-'.$role.'.json', json_encode(['pid' => getmypid(),
-                'level' => DB::connection()->transactionLevel(), 'pdo' => DB::connection()->getPdo()->inTransaction()], JSON_THROW_ON_ERROR));
+        $receipt = $directory.'/account-'.$role.'.json';
+        if ($role !== null && ! is_file($receipt)) {
+            $json = json_encode(['pid' => getmypid(), 'level' => DB::connection()->transactionLevel(),
+                'pdo' => DB::connection()->getPdo()->inTransaction()], JSON_THROW_ON_ERROR);
+            if (file_put_contents($receipt.'.tmp', $json) !== strlen($json) || ! rename($receipt.'.tmp', $receipt)) {
+                throw new RuntimeException('Checkout account race receipt could not be published.');
+            }
             $deadline = microtime(true) + 15;
             while (! is_file($directory.'/release-'.$role)) {
                 if (microtime(true) > $deadline) {
