@@ -331,17 +331,15 @@ describe('a date', function (): void {
             ->and($form->getState()['values']['runs_on'])->toBe('2026-09-18');
     });
 
-    it('would move if a picker were handed a timezone, which is why none is', function (): void {
-        /*
-         * ⚠️ FILAMENT CONVERTS A DATE-ONLY PICKER THAT IS GIVEN A TIMEZONE — having a time decides only the default.
-         * So a date stays put because nothing hands it the site's zone, and this is the measurement that says so.
-         */
+    it('keeps the day even when Filament receives an explicit timezone', function (): void {
         Carbon::setTestNow(Carbon::parse('2026-09-18 02:00:00', 'UTC'));
 
         $host = timezoneHost();
-        timezoneForm($host, DatePicker::make('runs_on')->timezone('America/New_York'))->fill(['runs_on' => '2026-09-18']);
+        $form = timezoneForm($host, DatePicker::make('runs_on')->timezone('America/New_York'));
+        $form->fill(['runs_on' => '2026-09-18']);
 
-        expect($host->data['runs_on'])->toBe('2026-09-17');
+        expect($host->data['runs_on'])->toBe('2026-09-18')
+            ->and($form->getState()['runs_on'])->toBe('2026-09-18');
     });
 
     it('is not resolved through the site at all', function (): void {

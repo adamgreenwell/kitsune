@@ -20,6 +20,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Readers\Contracts\ReaderAccount;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
+use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use PDOException;
 use RuntimeException;
 
@@ -36,6 +37,8 @@ use RuntimeException;
  */
 final class ReaderAccounts
 {
+    use ReadsWrittenKeys;
+
     public function __construct(
         private readonly ReaderGuard $guard,
         private readonly SettingsResolver $settings,
@@ -73,6 +76,17 @@ final class ReaderAccounts
         [$fault, , $model] = $this->inspect();
 
         return $fault === null && is_subclass_of($model, ReaderAccount::class) ? $model : null;
+    }
+
+    /** Verify a record returned by a host provider against its written Org key. */
+    public static function readerInOrg(mixed $record, int $orgId): (Model&Authenticatable&ReaderAccount)|null
+    {
+        return $record instanceof Model
+            && $record instanceof Authenticatable
+            && $record instanceof ReaderAccount
+            && self::writtenKey($record->getAttributes()['org_id'] ?? null) === $orgId
+            ? $record
+            : null;
     }
 
     /** The site's mode: `sign-in` or `open` as stored or inherited, and `off` for anything else. */

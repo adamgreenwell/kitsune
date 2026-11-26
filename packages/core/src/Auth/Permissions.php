@@ -814,15 +814,11 @@ final class Permissions
     {
         return once(function (): ?string {
             foreach (Schema::getForeignKeys('role_user') as $key) {
-                if (! in_array('user_id', (array) ($key['columns'] ?? []), true)) {
+                if (! in_array('user_id', $key['columns'], true)) {
                     continue;
                 }
 
-                $table = $key['foreign_table'] ?? null;
-
-                if (! is_string($table)) {
-                    return null;
-                }
+                $table = $key['foreign_table'];
 
                 $prefix = DB::connection()->getTablePrefix();
 

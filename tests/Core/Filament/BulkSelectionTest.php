@@ -17,6 +17,7 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 
 /*
  * What every bounded selection shares — ADR-042 decisions 34, 35 and 36. Each part on its own; the actions that use them
@@ -28,7 +29,7 @@ beforeEach(function (): void {
     app(Context::class)->setOrg($org);
     app(Context::class)->setSite(Site::create(['handle' => 'main', 'slug' => 'shared-rules-main', 'name' => 'Main', 'locale' => 'en']));
     $this->type = EntryType::create(['org_id' => $org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(fn () => app(Context::class)->forget());
@@ -81,7 +82,7 @@ it('refuses with one persistent danger notice, escaped, and a failure', function
 
     BulkSelection::refuse($action, '<b>Title</b>', '<i>Body</i>');
 
-    $notices = array_values((array) session('filament.notifications', []));
+    $notices = FilamentNotices::snapshot();
 
     expect($notices)->toHaveCount(1)
         ->and($notices[0]['status'])->toBe('danger')

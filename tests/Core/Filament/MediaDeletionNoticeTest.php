@@ -18,6 +18,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
@@ -52,7 +53,7 @@ beforeEach(function (): void {
         return $entry;
     };
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -66,7 +67,7 @@ afterEach(function (): void {
 /** @return list<array<string, mixed>> */
 function sentNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 function stillLive(Entry $entry): bool

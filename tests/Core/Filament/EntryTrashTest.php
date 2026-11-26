@@ -29,6 +29,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AuditorStandIn;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -68,7 +69,7 @@ beforeEach(function (): void {
     };
     $this->write = fn (string $title): Entry => Entry::create(['entry_type_id' => $this->article->id, 'title' => $title, 'status' => 'draft']);
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(function (): void {
@@ -82,7 +83,7 @@ afterEach(function (): void {
 /** @return list<array<string, mixed>> */
 function trashNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** Where an entry is: live, trashed, or gone. */

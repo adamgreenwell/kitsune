@@ -12,6 +12,7 @@ namespace Kitsune\Core\Filament\Resources\Entries;
 
 use BackedEnum;
 use Closure;
+use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -500,6 +501,8 @@ class EntryResource extends Resource
                     ->trueLabel(__('kitsune::trash.with'))
                     ->falseLabel(__('kitsune::trash.only')),
             ])
+            // Include the filter count and label in the same accessible name.
+            ->filtersTriggerAction(static fn (Action $action): Action => $action->button())
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([
                 ViewAction::make()->hidden(static fn (Entry $record): bool => $record->trashed()),

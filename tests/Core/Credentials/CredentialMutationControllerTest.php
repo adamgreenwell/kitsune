@@ -25,6 +25,7 @@ use Kitsune\Core\Http\Controllers\CredentialSetController;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 
 beforeEach(function (): void {
@@ -82,7 +83,7 @@ function nativeCredentialClean(TestResponse $response, string $secret): void
 /** @return array<string, mixed> */
 function nativeCredentialNotice(): array
 {
-    return (array) collect((array) session('filament.notifications', []))->last();
+    return (array) collect(FilamentNotices::snapshot())->last();
 }
 
 it('refuses missing, wrong and array fresh passwords on every live mutation', function (string $action, string $case): void {

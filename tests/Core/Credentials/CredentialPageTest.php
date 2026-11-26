@@ -36,6 +36,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\CredentialFixture as Fx;
+use Kitsune\Core\Tests\Fixtures\FilamentNotices;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
@@ -62,7 +63,7 @@ beforeEach(function (): void {
     Route::post('/test-credentials/{tenant:slug}/mode', CredentialModeController::class)->name('filament.admin.credentials.mode');
     app('router')->getRoutes()->refreshNameLookups();
 
-    session()->forget('filament.notifications');
+    FilamentNotices::clear();
 });
 
 afterEach(fn () => Fx::tearDown());
@@ -70,7 +71,7 @@ afterEach(fn () => Fx::tearDown());
 /** @return list<array<string, mixed>> */
 function credentialNotices(): array
 {
-    return array_values((array) session('filament.notifications', []));
+    return FilamentNotices::snapshot();
 }
 
 /** The line for one credential at one mode, as the page builds it. */

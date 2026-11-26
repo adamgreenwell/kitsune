@@ -13,6 +13,7 @@ namespace Kitsune\Core\Tests;
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
 use Closure;
+use Filament\Notifications\NotificationMailbox;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\DB;
@@ -238,6 +239,9 @@ abstract class TestCase extends Orchestra
      */
     protected function defineEnvironment($app): void
     {
+        // Testbench deliberately omits Filament's HTTP providers. Keep the same mailbox lifecycle.
+        $app->scoped(NotificationMailbox::class);
+
         $connection = env('DB_CONNECTION', 'testing');
         $app['config']->set('database.default', $connection);
 

@@ -321,10 +321,9 @@ class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadin
      * fresh install showed a warning on every type — false alarms beside the one hole ADR-020 means. Written twice,
      * "holds personal data" would drift between the two; asked here, it means one thing.
      *
-     * Typed on `Model` because both callers hand it the query Laravel passes a `whereHas()` closure, which carries
-     * no narrower model type; the builder's generic is invariant, so the narrower annotation refused both of them.
+     * @template TModel of Model
      *
-     * @param  Builder<Model>  $query
+     * @param  Builder<TModel>  $query
      */
     public static function constrainToPersonalData(Builder $query): void
     {
