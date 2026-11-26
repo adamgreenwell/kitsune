@@ -1,4 +1,4 @@
-# Prepare a schema-scale SQLite fixture
+# Reproduce schema-scale benchmarks
 
 The in-process runner builds the synthetic schema and data, checks scoped queries, captures estimated
 plans and exercises actual entry and media writes. Its results cover application calls. The relation-picker browser case has its own command below. The full browser matrix and paired
@@ -40,6 +40,30 @@ For a fixture under a completed Linux pair, add `--paired` and pass the pair's `
 directory. The command verifies the checkout revision, profile receipt, seed result and application dependency
 lock before starting PHP. The profile identifies where the fixture was prepared. The browser command
 launches its own server, so its timing does not inherit the seed container's cgroup limits.
+
+## Run the seed and broad browser case on a native database
+
+Use a local Docker socket and the same built application. Install the checkout's browser dependencies
+and Chromium, and use PHP with the PDO extension for the selected engine. Pass the full ID of a
+reviewed local Linux image for PostgreSQL, MySQL, or MariaDB.
+
+~~~sh
+engine=mysql
+image_id=$(docker image inspect --format '{{.Id}}' mysql:8.4)
+bin/benchmark-schema-scale-native.sh "$engine" "$image_id" "$unpacked_application" 10000 "$new_output_directory"
+~~~
+
+Use `pgsql`, `mysql` or `mariadb`, and the same three corpus sizes as the SQLite runner. Each run
+creates a fresh database, maps one port on IPv4 loopback, and verifies database ownership before
+migrations. The launcher runs the application seed and the 25-search owner browser case. It
+stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
+confirm teardown and keep the output private because it includes disposable fixture credentials.
+
+`database-runtime.txt` records the database container's configured limits of two CPUs, 2 GiB and
+256 processes. PHP and Chromium run on the host. Compare these results as a native database control,
+with the SQLite pair below providing separate app resource-floor evidence. The launcher measures
+the broad picker case. The full panel read, write and permission matrix has its own qualification
+record in [issue #261](https://github.com/adamgreenwell/kitsune/issues/261).
 
 ## Compare Linux app resource profiles
 
