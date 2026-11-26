@@ -65,6 +65,37 @@ This measures read navigation to the requested page state. The historical matrix
 original SQL, additional permission controls and audited browser writes.
 Those observations have their own measurement boundaries.
 
+## Capture read SQL and replay its estimated plans
+
+Use `--panel-sql` in place of `--panel-reads`. The browser records a private SELECT profile for
+each navigation, warmup and pagination calibration. After the browser exits, a separate
+query-only PDO connection obtains estimated plans using the captured statements and bindings.
+Instrumentation adds work to the timed navigation. The final `schema-scale-panel-sql.json` binds
+the digest of `schema-scale-read-plans.json`, which reports profile and statement counts and
+nonempty estimated plan digests. Both receipts are needed for a completed SQL run.
+The raw profiles are private and can include bound values from the synthetic fixture. This
+mode profiles the panel page requests. Private-image fetch and write timing retain their own
+boundaries.
+
+## Measure panel writes on a fresh fixture
+
+Pass `--panel-writes` when preparing a fresh SQLite seed and when starting its browser stage.
+
+~~~sh
+env -i PATH="$PATH" php -d memory_limit=128M bin/benchmark-schema-scale.php --panel-writes \
+  "$unpacked_application" 10000 "$new_output_directory"
+node bin/benchmark-schema-relations.cjs --panel-writes "$(command -v php)" "$unpacked_application" "$new_output_directory"
+~~~
+
+The seed records write authority for that output directory, database and dependency lock.
+Finish all read stages first. A fixture accepts one browser stage at a time and refuses further
+reads or writes once its write stage starts. It writes 25 change-and-restore pairs across 12 cases,
+covering three rich-text sizes and four operations. It checks persisted values, link order,
+revision retention and the signed-in actor's audit row after every save. The timer stops at
+the returned save response. Database verification runs outside the timed interval. See
+`schema-scale-panel-writes.json` for the 600 samples. The paired SQLite fixtures are for
+read stages.
+
 ## Run the seed and broad browser case on a native database
 
 Use a local Docker socket and the same built application. Install the checkout's browser dependencies
@@ -80,15 +111,14 @@ bin/benchmark-schema-scale-native.sh "$engine" "$image_id" "$unpacked_applicatio
 Use `pgsql`, `mysql` or `mariadb`, and the same three corpus sizes as the SQLite runner. Each run
 creates a fresh database, maps one port on IPv4 loopback, and verifies database ownership before
 migrations. The launcher runs the application seed and the 25-search owner browser case. Add
-`--panel-reads` before the engine argument to run the 45 navigation cases as well. It
-stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
+`--panel-reads` or `--panel-sql` before the engine to include navigation. Add `--panel-writes`
+to include audited writes after any read stage. The launcher stops its own database and checks that its temporary volume is gone. Use `cleanup-result.txt` to
 confirm teardown and keep the output private because it includes disposable fixture credentials.
 
 `database-runtime.txt` records the database container's configured limits of two CPUs, 2 GiB and
 256 processes. PHP and Chromium run on the host. Compare these results as a native database control,
-with the SQLite pair below providing separate app resource-floor evidence. The launcher measures
-the broad picker case. The full panel read, write and permission matrix has its own qualification
-record in [issue #261](https://github.com/adamgreenwell/kitsune/issues/261).
+with the SQLite pair below providing separate app resource-floor evidence. The historical
+panel, write and permission matrix has its own qualification record in [issue #261](https://github.com/adamgreenwell/kitsune/issues/261).
 
 ## Compare Linux app resource profiles
 
