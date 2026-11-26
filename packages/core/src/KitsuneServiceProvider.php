@@ -367,6 +367,7 @@ final class KitsuneServiceProvider extends ServiceProvider
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
                 ->loadedOnRequest(),
             Js::make('kitsune-select-value-direction', __DIR__.'/../resources/js/select-value-direction.js'),
+            Js::make('kitsune-chart-decimation-cleanup', __DIR__.'/../resources/js/chart-decimation-cleanup.js'),
         ], BlockDirectionPlugin::PACKAGE);
 
     }
