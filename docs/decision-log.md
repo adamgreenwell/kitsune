@@ -1593,6 +1593,14 @@ Supporting only one of the two costs a real constituency, so both ship.
 
 > **Amended 2026-09-15: the native path named a PPA that does not cover the current LTS.** The Launchpad PPA `ppa:ondrej/php` has no suite for Ubuntu 26.04 LTS — its `dists/resolute/Release` returns 404 — and describes itself as being merged into its maintainer's apt repository, [packages.sury.org/php](https://packages.sury.org/php/), which it names as the canonical source for 26.04. That repository publishes both 24.04 and 26.04 with PHP 8.4 and 8.5. 26.04 needs no third-party source at all: its own archive ships PHP 8.5, which satisfies `^8.4`, while 24.04 ships 8.3. The native path therefore uses the distribution's own PHP wherever it meets the floor, and packages.sury.org only where it does not. Found while provisioning the alpha's stage server, which runs PHP 8.5 from Ubuntu's archive.
 
+> **Native package preflight, 2026-11-25 (#215).** Ubuntu's own FPM packages are PHP 8.1 on Jammy, PHP 8.3 on Noble,
+> and PHP 8.5 on Resolute. The amd64 and arm64 package indexes from Ondřej Surý both include the PHP 8.4 CLI, FPM
+> and extensions selected for Jammy and Noble. The preflight reports that package plan without modifying APT. The
+> package indexes establish availability on the date checked. Repository trust, package activation and host
+> acceptance still belong to installer qualification. [Jammy](https://packages.ubuntu.com/jammy-updates/php8.1-fpm) ·
+> [Noble](https://packages.ubuntu.com/en/noble-updates/php/) · [Resolute](https://packages.ubuntu.com/resolute-updates/php/) ·
+> [Surý repository instructions](https://packages.sury.org/php/README.txt)
+
 ### Security posture, decided deliberately rather than by default
 
 `curl | bash` is the format users expect, and refusing it outright costs adoption that this project cannot afford to lose. But Kitsune's own stated highest-severity category is data isolation, and normalising "pipe an unverified URL into a shell" sits badly with that. The resolution:

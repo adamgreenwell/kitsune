@@ -24,6 +24,11 @@ Native PHP-FPM and SQLite are the recommended default. The PHP requirement is `^
 actually meets it, checking the selected distribution and release instructions rather than assuming an old
 package source still covers your OS.
 
+For the native path, run `bash bin/native-install-preflight.sh` from a reviewed development checkout to
+see the package plan. On amd64 and arm64 it selects Ubuntu's own PHP 8.5 on 26.04 LTS and PHP 8.4 from
+Ondřej Surý's repository on 22.04 and 24.04 LTS. The preflight only reads the OS and package architecture.
+Repository configuration, package installation and native-host qualification are separate steps under #215.
+
 [The Docker install profile](../deploy/self-host/docker/README.md) describes verified image builds and a persistent SQLite deployment.
 Docker is an equally supported design path for reproducibility, scale or operator preference. It is optional;
 a separate database server, Redis, search daemon, Node runtime and always-on worker are not requirements for a
