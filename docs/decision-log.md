@@ -10963,6 +10963,34 @@ orphan, about 5 ms each.
 installed — the synthetic column stands in and says so; a media disk on a second filesystem; and the numbers on stage,
 which wait on stage.
 
+### Direct Amazon S3 profile under qualification (issue #229)
+
+For a rehearsal, use the optional `league/flysystem-aws-s3-v3` adapter with general-purpose Amazon S3 buckets.
+Keep upload intake local. Use separate buckets when both media disks use S3. Configure the private bucket with
+Block Public Access enabled and leave its disk URL unset. Staff and reader downloads use the existing
+authorization-protected Kitsune routes. Public media uses the bucket origin and an anonymous object-read policy
+limited to the configured media prefix. The public disk URL is the origin before the disk root.
+This profile does not issue presigned media links.
+
+Set Bucket owner enforced on each bucket and set its disk option `ACL` to `bucket-owner-full-control`. Set the
+public disk option `CacheControl` to `no-store` and preserve the header at the origin. Use never-versioned buckets
+without Object Lock or replication. Add an enabled `AbortIncompleteMultipartUpload` lifecycle rule covering the
+entire media key prefix on each S3 bucket. With a disk root of `kitsune`, the prefix is `kitsune/media/`.
+[Amazon S3 object ownership](https://docs.aws.amazon.com/AmazonS3/latest/userguide/about-object-ownership.html) ·
+[Amazon S3 multipart cleanup](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html)
+
+Run `php artisan kitsune:media-s3-diagnose` with the app's configured disk credentials. It reads bucket metadata
+and reports mismatches, denied calls and unknown responses. It requests no changes to buckets or objects. A
+local installation without configured S3 disks skips the check and needs no AWS adapter. Grant the diagnostic
+only the read-only permissions for `HeadBucket`, ownership controls, versioning, Object Lock, replication,
+lifecycle, bucket public access block and bucket policy status. The diagnostic does not fetch policy documents.
+[Amazon S3 operation permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html)
+
+Provider qualification still requires verifying the effective disk permissions, private and public delivery,
+withdrawal and retention with a designated bucket. Bucket metadata alone cannot establish what anonymous
+callers or a CDN receive, when lifecycle cleanup runs, or whether another system retains copies. See
+[issue #229](https://github.com/adamgreenwell/kitsune/issues/229) for the loopback evidence.
+
 ### Measured — decision 5, slice 5b, 2026-09-25
 
 `php bin/benchmark-media-withdrawal.php`, as *Measured — decision 5* ran it: a database named exactly
