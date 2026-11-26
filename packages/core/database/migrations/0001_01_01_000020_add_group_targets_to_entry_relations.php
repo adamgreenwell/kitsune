@@ -17,12 +17,15 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('entry_relations', function (Blueprint $table): void {
+        $foreign = $this->physicalName('entry_relations_group_foreign');
+        $index = $this->physicalName('entry_relations_group_index');
+
+        Schema::table('entry_relations', function (Blueprint $table) use ($foreign, $index): void {
             $table->unsignedBigInteger('target_entry_id')->nullable()->change();
             $table->foreignId('target_group_id')->nullable();
-            $table->foreign(['org_id', 'target_group_id'], 'entry_relations_group_foreign')
+            $table->foreign(['org_id', 'target_group_id'], $foreign)
                 ->references(['org_id', 'id'])->on('entry_translation_groups')->cascadeOnDelete();
-            $table->index(['org_id', 'target_group_id'], 'entry_relations_group_index');
+            $table->index(['org_id', 'target_group_id'], $index);
         });
     }
 
@@ -36,18 +39,29 @@ return new class extends Migration
         $driver = DB::connection()->getDriverName();
         // InnoDB may replace its implicit Org foreign-key index with the group index.
         if (in_array($driver, ['mysql', 'mariadb'], true) && ! Schema::hasIndex('entry_relations', ['org_id'])) {
-            Schema::table('entry_relations', fn (Blueprint $table) => $table->index('org_id', 'entry_relations_org_lookup'));
+            $orgLookup = $this->physicalName('entry_relations_org_lookup');
+            Schema::table('entry_relations', fn (Blueprint $table) => $table->index('org_id', $orgLookup));
         }
 
         $groupKey = $driver === 'sqlite'
             ? ['org_id', 'target_group_id']
-            : 'entry_relations_group_foreign';
+            : $this->physicalName('entry_relations_group_foreign');
+        $index = $this->physicalName('entry_relations_group_index');
 
-        Schema::table('entry_relations', function (Blueprint $table) use ($groupKey): void {
+        Schema::table('entry_relations', function (Blueprint $table) use ($groupKey, $index): void {
             $table->dropForeign($groupKey);
-            $table->dropIndex('entry_relations_group_index');
+            $table->dropIndex($index);
             $table->dropColumn('target_group_id');
             $table->unsignedBigInteger('target_entry_id')->nullable(false)->change();
         });
+    }
+
+    private function physicalName(string $name): string
+    {
+        $prefix = Schema::getConnection()->getTablePrefix();
+
+        // Constraints and indexes can share a database namespace across installations. A short ASCII suffix keeps
+        // their names distinct even when prefixes contain Unicode or punctuation.
+        return $prefix === '' ? $name : $name.'_'.substr(hash('sha256', $prefix), 0, 24);
     }
 };
