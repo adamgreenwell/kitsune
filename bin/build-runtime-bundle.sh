@@ -143,6 +143,10 @@ APP_ENV=production LOG_CHANNEL=stderr php artisan filament:assets --no-interacti
 [[ ! -e .env && ! -e database/database.sqlite ]] || refuse 'the build created runtime state'
 [[ -z "$(find . ! -type f ! -type d -print -quit)" ]] || refuse 'the app contains a non-regular archive entry'
 
+# The saved lock may be kept with private permissions. Normalize the bundled copy
+# so those permissions do not change the runtime archive on replay.
+chmod 0644 composer.lock
+
 # Archive ordering, timestamps and ownership must be stable across fresh builds.
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --exclude='./storage/logs/*.log' -cf - . | gzip -n > "$work/application.tar.gz"
