@@ -22,6 +22,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /**
@@ -140,6 +141,69 @@ it('limits returned options without splitting the follow and pin choices for one
         ->and(array_slice($translatedOptions, -2))->toBe(['follow:'.$translated[25], 'pin:'.$translated[25]]);
 });
 
+it('can read Site entries and shared media in order through the Org index', function (): void {
+    $image = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images',
+        'is_media' => true,
+    ]);
+    Entry::create(['entry_type_id' => $image->id, 'site_id' => null, 'title' => 'Course illustration']);
+    PanelTenancy::enter($this->site);
+
+    $component = picker($this->org);
+    $connection = DB::connection();
+    $connection->enableQueryLog();
+
+    try {
+        expect(array_values($component->getSearchResults('course')))->toBe([
+            'Course illustration',
+            'Course maintenance in week 3',
+            'Course notes, private',
+        ]);
+        $queries = $connection->getQueryLog();
+    } finally {
+        $connection->disableQueryLog();
+        $connection->flushQueryLog();
+    }
+
+    $search = collect($queries)->sole(fn (array $query): bool => in_array('%course%', $query['bindings'], true));
+    $sql = $search['query'];
+    $bindings = $search['bindings'];
+    $orderedColumns = ['org_id', 'title', 'id', 'deleted_at', 'site_id', 'type_handle', 'translation_group'];
+    $index = collect($connection->getSchemaBuilder()->getIndexes('entries'))
+        ->sole(fn (array $index): bool => $index['columns'] === $orderedColumns)['name'];
+    $driver = $connection->getDriverName();
+
+    // Tiny fixtures can favor a table scan. Ask native engines whether this index can provide the order.
+    if ($driver === 'pgsql') {
+        $connection->statement('SET LOCAL enable_seqscan = off');
+        $connection->statement('SET LOCAL enable_bitmapscan = off');
+        $connection->statement('SET LOCAL enable_sort = off');
+        $plan = (string) $connection->selectOne('EXPLAIN (FORMAT JSON) '.$sql, $bindings)->{'QUERY PLAN'};
+
+        expect($plan)->toContain($index)->not->toContain('"Node Type": "Sort"');
+
+        return;
+    }
+
+    if ($driver === 'mysql' || $driver === 'mariadb') {
+        $grammar = $connection->getQueryGrammar();
+        $table = 'from '.$grammar->wrapTable('entries');
+        $sql = str_replace($table, $table.' force index ('.$grammar->wrap($index).')', $sql);
+        $plan = collect($connection->select('EXPLAIN '.$sql, $bindings));
+
+        expect($plan->contains(fn ($row): bool => ($row->key ?? null) === $index))->toBeTrue()
+            ->and(strtolower($plan->pluck('Extra')->implode(' | ')))
+            ->not->toContain('filesort')
+            ->not->toContain('temporary');
+
+        return;
+    }
+
+    $plan = collect($connection->select('EXPLAIN QUERY PLAN '.$sql, $bindings))->pluck('detail')->implode(' | ');
+
+    expect($plan)->toContain($index)->not->toContain('TEMP B-TREE');
+});
+
 it('offers only the entry types the field targets', function (): void {
     /*
      * The picker mirrors `RelationType::elementValidationRules()` rather than restating it: a
@@ -205,6 +269,11 @@ it('does not offer another org\'s entries', function (): void {
         'name' => 'Article', 'plural_name' => 'Articles',
     ]);
     Entry::create(['entry_type_id' => $rivalType->id, 'title' => 'Course secrets of a rival']);
+    $rivalImage = EntryType::create([
+        'org_id' => $rival->id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images',
+        'is_media' => true,
+    ]);
+    Entry::create(['entry_type_id' => $rivalImage->id, 'site_id' => null, 'title' => 'Course illustration of a rival']);
 
     app(Context::class)->setOrg($this->org);
     app(Context::class)->setSite($this->site);
@@ -212,7 +281,8 @@ it('does not offer another org\'s entries', function (): void {
     $found = array_values(picker($this->org)->getSearchResults('course'));
 
     expect($found)->toContain('Course maintenance in week 3')
-        ->and($found)->not->toContain('Course secrets of a rival');
+        ->and($found)->not->toContain('Course secrets of a rival')
+        ->and($found)->not->toContain('Course illustration of a rival');
 });
 
 it('states a finite cardinality as a bound on the control', function (): void {

@@ -11008,6 +11008,69 @@ accepted all three as carried costs, 2026-09-23**, rather than pursue indexes fo
 things here to revisit. The soft-delete lock time is decision 5's measurement and lands with its code — decided by
 Adam, 2026-09-23.
 
+### Revisited — decision 2 and issue #331, 2026-11-26
+
+The picker now names the current Org within the search callback and can read an index ordered
+by Org, title and entry ID. The Site scope, type and view grants, case-insensitive
+substring predicate and title/ID order still determine which options it offers. The same Org
+can own both Site entries and shared media rows, so the existing Site-leading indexes stay for
+Site-only reads. Retained labels and submitted choices still use their existing resolution and
+validation callbacks.
+
+The prior [MySQL million-entry run](https://github.com/adamgreenwell/kitsune/issues/331) measured a
+23.03 s browser median and a 21.97 s median SELECT under its original protocol. The new million-entry
+comparisons kept the fixture and dependency lock fixed and compared all 50 ordered choices over
+25 measured searches per arm. The MySQL case ran one excluded warmup. Browser timings include
+a one-second debounce.
+
+| Million-entry application case | Browser median, ms | Picker SELECT median, ms |
+| --- | ---: | ---: |
+| MySQL owner, broad search | 14990.9 → 1061.1 | 13927.90 → 0.72 |
+| SQLite owner, broad search | 1773.2 → 1037.9 | 727.78 → 0.09 |
+| SQLite article editor, broad search | 1220.2 → 1039.4 | 179.88 → 0.09 |
+
+The article editor's asset-only term returned no choices in either SQLite arm. Its first
+navigation attempt timed out. A diagnostic repeat completed with the same role and code.
+Other benchmark work shared the host during the editor run, which limits comparison of
+its tail timings. For the million-entry MySQL broad owner case, use a 1.3 s browser
+median and a 200 ms SELECT median as ceilings under the same local protocol. The
+plan test checks the ability to read the result in index order. The MySQL database
+had two CPUs and 2 GiB.
+PHP and Chromium ran on the host, as did SQLite. These serial synthetic tests leave the
+default hosting floor, concurrent throughput and production response tails unmeasured.
+
+The 100,000-entry application controls completed the same 25 broad owner searches on
+PostgreSQL 17 and MariaDB 10.6. Both returned the same 50 ordered choices on every
+request. The local results measure the PHP app and native database together.
+
+| 100,000-entry case | Browser median, ms | Picker SELECT median, ms |
+| --- | ---: | ---: |
+| PostgreSQL 17 | 1113.39 → 1089.15 | 21.68 → 1.01 |
+| MariaDB 10.6 | 1102.26 → 1057.67 | 45.12 → 0.79 |
+
+The compact million-row tests on all four engines also included sparse, missing and tied titles.
+The index preserved the result order in every case. On MySQL a missing term improved from
+368 ms to 129 ms and on PostgreSQL from 185 ms to 102 ms, both still far slower than a broad hit.
+A rare or missing substring can require a scan of the Org's range. In the million-entry
+SQLite panel, seven measured requests per term preserved the exact Site article and shared
+asset matches and the empty result. SELECT medians for these terms moved from 733 to 49 ms,
+731 to 47 ms and 718 to 36 ms, respectively. The real panel checks entry-type IDs when it
+admits shared media, which can require a table read.
+The plan test asks SQLite directly, uses PostgreSQL planner settings, and uses index
+hints on MySQL and MariaDB to verify that the actual panel query can return the order
+without sorting. The larger probes are unforced.
+
+The extra index occupied 52.8 MiB on the SQLite application fixture and 86.2 MiB on the compact
+PostgreSQL fixture. On the compact PostgreSQL write test, the median for 10,000 inserts rose
+26%; retitling 1,000 rows rose 26% and soft-deleting 1,000 rose 33%. On the separate 10,000-entry
+SQLite fixture, create-and-relate medians were 7.20 ms before and 7.64 ms with the index.
+Revision-cap updates were 1.98 ms and 2.25 ms. The portable migration's
+standard PostgreSQL build completed in 652 ms on the compact million-row fixture, excluding a
+deliberate lock hold. A separate writer hit its 150 ms lock timeout during that hold. The
+PostgreSQL migration can block concurrent writers while it builds. On MySQL and MariaDB,
+metadata-lock waits can affect the upgrade. Time the migration against a representative copy and
+schedule a write maintenance window for large installations.
+
 ### Measured — decision 5, 2026-09-24
 
 `php bin/benchmark-media-withdrawal.php`, pointed at a database named exactly `kitsune_bench_withdrawal` on each engine —
