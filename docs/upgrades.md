@@ -15,6 +15,10 @@ the target release notes and migration requirements, and rehearse the exact chan
 Record the actual PHP, database and dependency versions. Check separately whether the host skeleton needs edits:
 it is copied at installation, not rewritten by a core Composer update.
 
+Kitsune now requires Filament `^5.12`. If your application constrains Filament below 5.12, update the
+constraint and resolve a new application lockfile with the target Core before upgrading. Publish the
+assets from the resolved Filament version as part of the upgrade.
+
 ## Inspect a self-host installation
 
 Run the inspection from a trusted Kitsune checkout. Use the filesystem paths for the actual installation.

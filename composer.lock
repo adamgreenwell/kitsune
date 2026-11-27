@@ -2906,7 +2906,7 @@
         },
         {
             "name": "kitsune/commerce",
-            "version": "dev-feat/refresh-platform-dependencies",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "packages/commerce",
@@ -2942,11 +2942,11 @@
         },
         {
             "name": "kitsune/core",
-            "version": "dev-feat/refresh-platform-dependencies",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
-                "reference": "7555fa6ec9a114f29b5478908f2f02c79ec63c8a"
+                "reference": "07ae1a950deb6b2d9daf3e446d3b1f18ad927583"
             },
             "require": {
                 "blade-ui-kit/blade-icons": "^1.6",
@@ -2954,7 +2954,7 @@
                 "ext-dom": "*",
                 "ext-fileinfo": "*",
                 "ext-libxml": "*",
-                "filament/filament": "^5.6",
+                "filament/filament": "^5.12",
                 "laravel/framework": "^13.0",
                 "livewire/livewire": "^4.1",
                 "php": "^8.4",
@@ -2997,7 +2997,7 @@
         },
         {
             "name": "kitsune/fixture-module",
-            "version": "dev-feat/refresh-platform-dependencies",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "tests/Core/Fixtures/Packages/module-fixture",
@@ -3028,7 +3028,7 @@
         },
         {
             "name": "kitsune/person",
-            "version": "dev-feat/refresh-platform-dependencies",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "packages/person",
@@ -3061,7 +3061,7 @@
         },
         {
             "name": "kitsune/svg-sanitizer",
-            "version": "dev-feat/refresh-platform-dependencies",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "packages/svg-sanitizer",
