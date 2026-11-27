@@ -267,6 +267,15 @@ upgrade policy or a claim to reconstruct historical field definitions (#217).
 - **The real blocker:** ACF field-group definitions and CPT registrations usually live in **PHP code or `acf-json/`, not the database.** Neither WXR nor a DB dump reliably yields the *schema* — only the values
 - Direct-DB import is meaningfully better but costs self-service file upload
 
+**Amended 2026-11-27 — Scope and identity for a retry.** Each migration belongs to one destination Site and its
+Org, even when an Org operates several Sites. Bind that migration to a stable source identity. An approved
+execution is one version of the dry-run plan, while the mapping survives multiple executions. Otherwise an
+interrupted execution can resume, yet a later approved import will create duplicates because it has a fresh
+execution ID. Two source formats can reuse mappings only when the operator explicitly identifies them as the same
+source and the adapter can prove how their typed IDs correspond. Ambiguous identities are reported as conflicts.
+The bounded existing-site scripts remain a separate track. This is a design decision for v1.3, with the storage and
+write behavior outlined in [architecture §6](architecture.md#6-migration-adapters--source-agnostic).
+
 ---
 
 ## ADR-008 — Build on full Filament v5 panels
