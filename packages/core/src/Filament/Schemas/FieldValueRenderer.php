@@ -411,7 +411,9 @@ final class FieldValueRenderer
              * about, found by review. Laravel emits `ILIKE` on Postgres and folds case
              * elsewhere, so one expression means one thing on all three.
              */
+            // The Org key lets Site and shared rows use the same ordered index (ADR-042).
             $query = Permissions::constrainToViewable(self::relationScope($targets), $user)
+                ->where('entries.org_id', app(Context::class)->orgId())
                 ->whereLike('title', '%'.$search.'%', caseSensitive: false);
 
             $optionLimit = 50;
