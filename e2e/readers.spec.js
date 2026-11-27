@@ -4,7 +4,7 @@ const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const { READERS } = require('./accounts');
-const { waitForAdminPassword } = require('./admin-sign-in');
+const { waitForAdminPassword, staffThrottleToast } = require('./admin-sign-in');
 const { callsMethod } = require('./select-control');
 
 /*
@@ -210,6 +210,7 @@ for (const delayed of [false, true]) {
     test(`cannot reach a panel as a reader, from the reader's side${delayed ? ' with delayed password initialization' : ''}`, async ({ page }, testInfo) => {
         // No error text, credential values, URLs with query strings or request bodies enter this attachment.
         const diagnostic = { stage: 'navigation', variant: delayed ? 'delayed-password' : 'normal', panel_redirects: [], component_ready: false, update_statuses: [], rejection_visible: false, reader_account_accessible: false };
+        let throttleObservation;
         page.on('response', (response) => {
             if (diagnostic.update_statuses.length < 16 && callsMethod(response, 'authenticate')) diagnostic.update_statuses.push(response.status());
         });
@@ -235,6 +236,11 @@ for (const delayed of [false, true]) {
             diagnostic.stage = 'credentials';
             await page.locator('input[type="email"]').fill(GOLFDOM.email);
             await page.locator('input[type="password"]').fill(GOLFDOM.password);
+
+            // A throttle can still return HTTP 200. Watch the toast from before submission.
+            throttleObservation = staffThrottleToast(page).waitFor({ timeout: 8_000 })
+                .then(() => true, () => undefined);
+
             await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
             diagnostic.stage = 'rejection';
             await expect(page.getByText('These credentials do not match our records.')).toBeVisible();
@@ -248,9 +254,15 @@ for (const delayed of [false, true]) {
             diagnostic.reader_account_accessible = true;
             diagnostic.stage = 'complete';
         } finally {
+            // Leave the rejection assertion's timeout alone. On a failed rejection, allow the
+            // already-running observation to finish before retaining positive evidence.
+            const throttleVisible = diagnostic.rejection_visible ? undefined : await throttleObservation;
             const pathname = new URL(page.url()).pathname;
             diagnostic.page = pathname === '/admin/login' ? 'staff-login' : pathname === '/golfdom/account' ? 'reader-account' : 'other';
-            await testInfo.attach('reader-staff-boundary', { body: JSON.stringify(diagnostic), contentType: 'application/json' });
+            await testInfo.attach('reader-staff-boundary', {
+                body: JSON.stringify({ ...diagnostic, throttle_visible: throttleVisible }),
+                contentType: 'application/json',
+            });
         }
     });
 }

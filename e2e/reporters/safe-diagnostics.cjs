@@ -29,6 +29,7 @@ function boundary(attachments = []) {
             for (const key of ['component_ready', 'rejection_visible', 'reader_account_accessible']) {
                 if (typeof value[key] === 'boolean') safe[key] = value[key];
             }
+            if (value.throttle_visible === true) safe.throttle_visible = true;
             if (Array.isArray(value.panel_redirects)) safe.panel_redirects = value.panel_redirects.slice(0, 3).filter((v) => typeof v === 'boolean');
             if (Array.isArray(value.update_statuses)) safe.update_statuses = httpStatuses(value.update_statuses);
             return safe;

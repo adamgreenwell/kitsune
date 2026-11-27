@@ -16,6 +16,11 @@ async function waitForAdminPassword(page) {
     });
 }
 
+/** @param {import('@playwright/test').Page} page */
+function staffThrottleToast(page) {
+    return page.getByText('Too many login attempts', { exact: true }).first();
+}
+
 /**
  * Classify the normal staff setup response while a short-lived refusal is visible.
  * @param {import('@playwright/test').Page} page
@@ -36,8 +41,7 @@ async function submitStaffSetupSignIn(page, testInfo) {
         const result = Promise.any([
             page.waitForURL((url) => url.pathname.startsWith('/admin/') && !url.pathname.endsWith('/login'), { timeout })
                 .then(() => 'signed-in'),
-            page.getByText('Too many login attempts', { exact: true }).first()
-                .waitFor({ timeout }).then(() => 'throttled'),
+            staffThrottleToast(page).waitFor({ timeout }).then(() => 'throttled'),
             page.getByText('These credentials do not match our records.', { exact: true }).first()
                 .waitFor({ timeout }).then(() => 'rejected'),
         ]).catch(() => 'no-completion');
@@ -56,4 +60,4 @@ async function submitStaffSetupSignIn(page, testInfo) {
     }
 }
 
-module.exports = { waitForAdminPassword, submitStaffSetupSignIn };
+module.exports = { waitForAdminPassword, staffThrottleToast, submitStaffSetupSignIn };

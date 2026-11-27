@@ -158,3 +158,22 @@ test('does not discard a throttle result when another setup observation rejects 
     });
     assert.equal(events.size, 0);
 });
+
+test('retains only a positively observed reader throttle', () => {
+    const canary = 'reader-refusal-detail-do-not-retain';
+    const text = run((reporter) => {
+        for (const throttle_visible of [true, false, canary]) {
+            reporter.onTestEnd({ location }, {
+                retry: 0, status: 'failed', duration: 100, attachments: [{
+                    name: 'reader-staff-boundary',
+                    contentType: 'application/json',
+                    body: Buffer.from(JSON.stringify({ stage: 'rejection', update_statuses: [200], throttle_visible })),
+                }],
+            });
+        }
+    });
+    const rows = JSON.parse(text).attempts;
+    assert.deepEqual(rows.map((row) => row.boundary.throttle_visible), [true, undefined, undefined]);
+    assert.deepEqual(rows.map((row) => row.boundary.update_statuses), [[200], [200], [200]]);
+    assert.equal(text.includes(canary), false);
+});
