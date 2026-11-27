@@ -1,7 +1,7 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
-const { waitForAdminPassword } = require('./admin-sign-in');
+const { waitForAdminPassword, submitStaffSetupSignIn } = require('./admin-sign-in');
 
 const authFile = path.join(__dirname, '..', '.playwright', 'admin-rtl-auth.json');
 
@@ -18,18 +18,13 @@ const authFile = path.join(__dirname, '..', '.playwright', 'admin-rtl-auth.json'
  * RTL admin — and a fixture built on one would prove something Kitsune no longer does.
  * Two users on one server is the mechanism as shipped.
  */
-setup('authenticate as the Arabic-preferring editor', async ({ page }) => {
+setup('authenticate as the Arabic-preferring editor', async ({ page }, testInfo) => {
     await page.goto('/admin/login');
     await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill('alpha-rtl@kitsune.test');
     await page.locator('input[type="password"]').fill('password');
-    await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
-
-    await page.waitForURL(
-        (url) => url.pathname.startsWith('/admin/') && ! url.pathname.endsWith('/login'),
-        { timeout: 30_000 },
-    );
+    await submitStaffSetupSignIn(page, testInfo);
 
     await expect(page.locator('body')).not.toContainText('Sign in');
 

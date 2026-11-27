@@ -1,6 +1,10 @@
 // @ts-check
 const { defineConfig, devices } = require('@playwright/test');
 
+// The setup rebuilds SQLite on every run. Keeping the browser's cache in that same database gives
+// each seed a fresh limiter while preserving the real throttle across sign-ins within the run.
+process.env.CACHE_STORE = 'database';
+
 /*
  * The browser layer stays deliberately small (ADR-024). Its job is the class
  * of defect the PHP suite structurally cannot see: URL generation across page
@@ -213,10 +217,11 @@ module.exports = defineConfig({
     // mechanism that replaced it.
     webServer: [
         {
-            command: 'php artisan serve --port=8125 --no-interaction',
+            command: 'php artisan serve --no-reload --port=8125 --no-interaction',
             cwd: './skeleton',
             url: 'http://127.0.0.1:8125/up',
-            reuseExistingServer: !process.env.CI,
+            // A hand-started server may still use another cache. Reserve this port for the test run.
+            reuseExistingServer: false,
             timeout: 60_000,
         },
     ],

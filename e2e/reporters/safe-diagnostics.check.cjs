@@ -96,3 +96,65 @@ test('distinguishes generated variants at one source location without retaining 
     assert.equal(JSON.stringify(data).includes(secret), false);
     assert.equal(new Set(data.attempts.map((row) => `${row.file}:${row.line}`)).size, 1);
 });
+
+test('keeps only a known staff setup outcome and bounded status codes', () => {
+    const canary = 'fixture-credential-canary';
+    const setupLocation = { file: path.resolve(__dirname, '../auth-reader.setup.js'), line: 40 };
+    const attachment = (outcome) => ({
+        name: 'staff-setup-sign-in', contentType: 'application/json',
+        body: Buffer.from(JSON.stringify({
+            outcome, update_statuses: [200, 200, 700, canary],
+            credentials: canary, response_body: canary,
+        })),
+    });
+
+    const text = run((reporter) => {
+        for (const [file, outcome] of [[setupLocation, 'throttled'], [setupLocation, canary], [location, 'throttled']]) {
+            reporter.onTestEnd({ location: file }, {
+                retry: 0, status: 'failed', duration: 500,
+                attachments: [attachment(outcome)],
+            });
+        }
+    });
+    const rows = JSON.parse(text).attempts;
+    assert.equal(rows[0].file, 'e2e/auth-reader.setup.js');
+    assert.deepEqual(rows[0].staff_setup, { outcome: 'throttled', update_statuses: [200, 200] });
+    assert.equal(rows[1].staff_setup, undefined);
+    assert.equal(rows[2].staff_setup, undefined);
+    assert.equal(text.includes(canary), false);
+});
+
+test('does not discard a throttle result when another setup observation rejects first', async () => {
+    const { submitStaffSetupSignIn } = require('../admin-sign-in');
+    const events = new Map();
+    const attachments = [];
+    const response = {
+        url: () => 'http://127.0.0.1:8125/livewire-setup/update',
+        request: () => ({ method: () => 'POST' }),
+        status: () => 200,
+    };
+    const page = {
+        on: (name, callback) => events.set(name, callback),
+        off: (name) => events.delete(name),
+        waitForURL: () => Promise.reject(new Error('fixture rejected a navigation observation')),
+        getByText: (text) => ({
+            first: () => ({
+                waitFor: () => text === 'Too many login attempts'
+                    ? new Promise((resolve) => setImmediate(resolve))
+                    : Promise.reject(new Error('fixture rejected a message observation')),
+            }),
+        }),
+        locator: () => ({ getByRole: () => ({
+            click: async () => events.get('response')(response),
+        }) }),
+    };
+    const testInfo = { attach: async (name, attachment) => attachments.push({ name, attachment }) };
+
+    await assert.rejects(submitStaffSetupSignIn(page, testInfo), /Staff setup sign-in: throttled/);
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0].name, 'staff-setup-sign-in');
+    assert.deepEqual(JSON.parse(attachments[0].attachment.body.toString()), {
+        outcome: 'throttled', update_statuses: [200],
+    });
+    assert.equal(events.size, 0);
+});

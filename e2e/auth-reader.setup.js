@@ -1,7 +1,7 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
-const { waitForAdminPassword } = require('./admin-sign-in');
+const { waitForAdminPassword, submitStaffSetupSignIn } = require('./admin-sign-in');
 
 /*
  * Signs in the sessions that are not owners — ADR-033.
@@ -15,28 +15,23 @@ const { waitForAdminPassword } = require('./admin-sign-in');
  * what makes a restore allowed. Both are signed in here so the one project that measures permissions depends
  * on one setup.
  */
-async function signIn(page, email, file) {
+async function signIn(page, email, file, testInfo) {
     await page.goto('/admin/login');
     await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill(email);
     await page.locator('input[type="password"]').fill('password');
-    await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
-
-    await page.waitForURL(
-        (url) => url.pathname.startsWith('/admin/') && ! url.pathname.endsWith('/login'),
-        { timeout: 30_000 },
-    );
+    await submitStaffSetupSignIn(page, testInfo);
 
     await expect(page.locator('body')).not.toContainText('Sign in');
 
     await page.context().storageState({ path: path.join(__dirname, '..', '.playwright', file) });
 }
 
-setup('authenticate as the copy-editor', async ({ page }) => {
-    await signIn(page, 'copyeditor@kitsune.test', 'admin-reader-auth.json');
+setup('authenticate as the copy-editor', async ({ page }, testInfo) => {
+    await signIn(page, 'copyeditor@kitsune.test', 'admin-reader-auth.json', testInfo);
 });
 
-setup('authenticate as the viewer', async ({ page }) => {
-    await signIn(page, 'viewer@kitsune.test', 'admin-viewer-auth.json');
+setup('authenticate as the viewer', async ({ page }, testInfo) => {
+    await signIn(page, 'viewer@kitsune.test', 'admin-viewer-auth.json', testInfo);
 });

@@ -1,5 +1,5 @@
 // @ts-check
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { BLOG_OWNER, plantCrossOrgRows, seedReaderDownload, seedReaderGrant } = require('./accounts');
@@ -17,6 +17,28 @@ const { seedPublicCatalogue } = require('./public-catalogue-fixture');
 module.exports = async () => {
     const skeleton = path.join(__dirname, '..', 'skeleton');
     const run = (args) => execFileSync('php', ['artisan', ...args], { cwd: skeleton, stdio: 'inherit' });
+
+    // Check before migrate:fresh. A stale config cache could ignore the browser cache override, or
+    // send the limiter to a database other than the disposable fixture the setup rebuilds.
+    const cacheProbe = spawnSync('php', ['artisan', 'tinker', '--execute', [
+        '$default = config("database.default");',
+        '$database = config("cache.stores.database");',
+        '$limiter = config("cache.limiter") ?? config("cache.default");',
+        'if (config("cache.default") !== "database") { echo "default cache store"; }',
+        'elseif ($limiter !== "database") { echo "rate limiter store"; }',
+        'elseif (($database["driver"] ?? null) !== "database"',
+        '    || ($database["connection"] ?? $default) !== $default',
+        '    || ($database["lock_connection"] ?? $default) !== $default',
+        '    || ($database["table"] ?? null) !== "cache"',
+        '    || ($database["lock_table"] ?? "cache_locks") !== "cache_locks") { echo "fixture cache tables"; }',
+        'else { echo "browser cache ready"; }',
+    ].join(' ')], { cwd: skeleton, encoding: 'utf8' });
+    const cacheStatus = cacheProbe.status === 0 ? cacheProbe.stdout.trim() : '';
+    if (cacheStatus !== 'browser cache ready') {
+        const checks = ['default cache store', 'rate limiter store', 'fixture cache tables'];
+        const failedCheck = checks.includes(cacheStatus) ? cacheStatus : 'application configuration probe';
+        throw new Error('The browser suite requires its cache and limiter to use the fixture database. Failed check: ' + failedCheck);
+    }
 
     /*
      * ⚠️ EMPTY FIRST, AND SEEDED SECOND. The Blog blueprint's org and its first owner are made by the command, on an
