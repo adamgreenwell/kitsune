@@ -182,6 +182,40 @@ it('keeps a non-date guarded object outside the save proof even with a custom mo
     expect($site->guardedColumnsAreDerived())->toBeFalse();
 });
 
+it('refuses a DateTime supplied by an observer for a Site text attribute', function (): void {
+    $site = $this->site->setDateFormat('Y-m-d');
+    $site->base_url = 'https://before.example.test/news';
+    expect($site->save())->toBeTrue();
+    $persisted = DB::table('sites')->where('id', $site->id)->sole();
+    $dispatcher = Site::getEventDispatcher();
+    $called = false;
+    Site::setEventDispatcher(clone $dispatcher);
+    Site::updating(function (Site $updating) use ($site, &$called): void {
+        if ($updating !== $site) {
+            return;
+        }
+        $called = true;
+        expect($updating->guardedColumnsAreDerived())->toBeTrue();
+        $updating->path_prefix = CarbonImmutable::parse('2026-02-03 04:05:06', 'UTC');
+        expect($updating->guardedColumnsAreDerived())->toBeFalse();
+    });
+
+    try {
+        $site->base_url = 'https://after.example.test/news';
+        expect(fn () => $site->save())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+        expect($called)->toBeTrue();
+    } finally {
+        Site::setEventDispatcher($dispatcher);
+    }
+
+    expect(DB::table('sites')->where('id', $site->id)->sole())->toEqual($persisted);
+    $retry = $site->refresh();
+    $retry->base_url = 'https://after.example.test/news';
+    expect($retry->save())->toBeTrue();
+    $row = DB::table('sites')->where('id', $site->id)->sole();
+    expect($row->canonical_host)->toBe('after.example.test')->and($row->path_prefix)->toBe('/news');
+});
+
 describe('a promoted column with an Eloquent date cast', function (): void {
     beforeEach(function (): void {
         $this->dateType = new class extends BaseFieldType
