@@ -60,7 +60,7 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 |---|---|
 | PHP | `^8.4` |
 | Laravel | 13.x |
-| Admin | Filament `^5.6` — Livewire + Alpine, server-rendered |
+| Admin | Filament `^5.12` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
 ## Running it locally

@@ -22,7 +22,7 @@
 |---|---|---|
 | PHP | **`^8.4`**, tested on **8.4 and 8.5**; the alpha targets **8.5** | 8.3 is already security-only. Property hooks matter for the `Entry` model — see ADR-013 |
 | Laravel | 13.x | Security to 2028-03-17 |
-| Admin | **`filament/filament:^5.4`** | First release supporting Laravel 13 |
+| Admin | **`filament/filament:^5.12`** | Verified upstream recovery for editable-table requests ([ADR-008](decision-log.md#adr-008--build-on-full-filament-v5-panels)) |
 | Frontend (admin) | Livewire + Alpine | Via Filament |
 | Database | PostgreSQL primary, MySQL 8.0+ / MariaDB 10.6+, **SQLite** for small installs | SQLite needs VIRTUAL generated columns rather than STORED — it cannot add STORED via ALTER TABLE. Driver abstraction handles it |
 | Testing | **Pest**, plus **Playwright** for a narrow browser layer | Three layers per ADR-024. The Pest layer must stay runnable on a bare clone with SQLite — no Docker, no Node |

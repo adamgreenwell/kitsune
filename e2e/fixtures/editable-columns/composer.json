@@ -1,0 +1,23 @@
+{
+    "name": "kitsune/e2e-editable-columns",
+    "description": "Test-only: drives the published editable table column assets. Never published.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\E2e\\EditableColumns\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\E2e\\EditableColumns\\EditableColumnsServiceProvider",
+            "scoping": []
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

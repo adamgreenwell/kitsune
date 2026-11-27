@@ -86,6 +86,9 @@ module.exports = async () => {
     run(['kitsune:module', 'install', 'kitsune/e2e-credential-slots', '--no-interaction']);
     run(['kitsune:module', 'enable', 'kitsune/e2e-credential-slots', '--no-interaction']);
 
+    run(['kitsune:module', 'install', 'kitsune/e2e-editable-columns', '--no-interaction']);
+    run(['kitsune:module', 'enable', 'kitsune/e2e-editable-columns', '--no-interaction']);
+
     /*
      * ⚠️ THE SKELETON'S OWN READERS (ADR-037): its `AppServiceProvider` declares the reader guard, so every owner's
      * sidebar carries the *Entitlements* link on every page of every spec, and `DatabaseSeeder` made readers 1–4. Golfdom's

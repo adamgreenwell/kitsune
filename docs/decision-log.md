@@ -271,7 +271,7 @@ upgrade policy or a claim to reconstruct historical field definitions (#217).
 
 ## ADR-008 — Build on full Filament v5 panels
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · Amended 2026-11-27
 
 Kitsune's admin is a Filament v5 panel — full panel builder, not a fork, not just standalone packages.
 
@@ -289,6 +289,17 @@ Kitsune's admin is a Filament v5 panel — full panel builder, not a fork, not j
 2. **Pin `^5.4`** — Laravel 13 support landed only in v5.4.0; v5.0–5.3 constrain to `^11.28|^12.0`.
 3. **Two-tier ecosystem reality.** Third-party plugins register hand-written Resources against their own models, so they sit *beside* the schema engine, not inside it. Present that deliberately.
 4. **Most Filament plugins are not tenancy-aware** — a live cross-tenant leak vector under ADR-009. Any allowlist needs a tenancy audit.
+
+**Amended 2026-11-27.** The supported floor is Filament `^5.12`. Laravel 13 compatibility set the
+original `^5.4` floor. Core later required `^5.6` while the architecture and roadmap still listed `^5.4`.
+The current lockfile and published assets already use 5.12.0. Its editable columns cleared busy,
+preserved the recorded server value and reported the failure after HTTP 500 and aborted requests.
+The earlier range admitted 5.7.8, which stayed busy in those cases. Filament 5.12.0 passed the same
+Chromium cases with Livewire 4.4.9, the minimum its dependency chain allows, and with locked Livewire 4.4.10.
+Filament 5.12.0 also keeps a stable audio drag callback and clears global drag listeners on teardown.
+An idle detached audio element can still retain a listener.
+[Editable tables #355](https://github.com/adamgreenwell/kitsune/issues/355) ·
+[Audio preview #362](https://github.com/adamgreenwell/kitsune/issues/362)
 
 ---
 
