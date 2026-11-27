@@ -5325,8 +5325,8 @@ the receipt before confirmation. A submit rechecks current ownership and the rev
 reverse takes its own locks and recomputes its plan. A previously clear preview never grants permission to delete
 past new content or authority. No purge option, storage unlock or first-owner shortcut is added.
 
-**Implementation status:** this candidate adds the owner-only Structure page, local declarations and receipt versions,
-concrete signed review identity, and the existing apply/reverse writers. A purpose-prefixed HMAC-SHA256 of current
+**Implementation:** the owner-only Blueprints page under Structure shows local declarations and receipt versions. It confirms a
+signed review and uses the existing apply and reverse writers. A purpose-prefixed HMAC-SHA256 of current
 facts, keyed by the server's application key, binds the actor, Site, Org,
 operation, definition and exact receipt; the kernel checks the receipt again after the page recheck. The browser gets
 only the digest, not a receipt or a decryptable payload. A missing key refuses review and a rotated key invalidates it.
@@ -5336,11 +5336,12 @@ door, and that guard remains unchanged. This token is not an
 ownership lease. Revocation before a submission is refused, and lifecycle row locks still govern concurrent writes.
 Wrong or stale confirmation errors belong to the mounted field's full state path so they are visible; a successful
 action performs a fresh page load so the owner sees the committed receipt rather than the pre-action schema cache.
-Focused SQLite and four browser journeys have passed, including dashboard navigation, content refusal, stale review,
-cross-org access refusal, keyboard/focus and RTL axe checks. Full/native and complete canonical browser qualification
-remain owed, as do the accessibility inventory's human checks. No delivery or conformance is claimed here. Earlier CLI and reverse
-reasoning above remains unchanged. Later availability/seed extensions must remain visible to this flow's kernel
-review when independently integrated; pending feature branches do not establish support on current main.
+The initial review exercised SQLite and four browser journeys, including dashboard navigation, content refusal,
+stale review, cross-Org access refusal, keyboard and focus, and RTL axe checks. [PR #338](https://github.com/adamgreenwell/kitsune/pull/338)
+merged the page. A focused run on main on 2026-11-26 passed 27 page cases and 64 reverse and reverse-preview cases
+on SQLite. The five browser scenarios passed with zero retries and covered Arabic RTL keyboard and focus return.
+Full canonical browser and native qualification remain open. The [manual accessibility checks](accessibility-inventory.md#5-what-a-human-still-has-to-do) remain open.
+Availability and seed support enters the admin flow through the same kernel review, as recorded below.
 
 **Availability review integration (2026-11-25).** The owner sees the declared availability decisions in
 the apply summary. The review token binds those declarations and the database identities of newly targeted
