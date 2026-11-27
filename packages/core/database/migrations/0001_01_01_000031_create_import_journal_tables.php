@@ -1,0 +1,95 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('sites', function (Blueprint $table): void {
+            // This key lets child records constrain Site ownership as a pair.
+            $table->unique(['org_id', 'id'], 'sites_org_id_id_unique');
+        });
+
+        Schema::create('import_sources', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id');
+            $table->foreignId('site_id');
+            $table->string('source_key', 96);
+            $table->foreign(['org_id', 'site_id'], 'import_source_site_fk')
+                ->references(['org_id', 'id'])->on('sites')->cascadeOnDelete();
+            $table->unique(['site_id', 'source_key']);
+            $table->unique(['site_id', 'org_id', 'id']);
+        });
+
+        Schema::create('import_executions', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id');
+            $table->foreignId('site_id');
+            $table->foreignId('import_source_id');
+            $table->string('plan_digest', 64);
+            $table->unique(['site_id', 'import_source_id', 'plan_digest'], 'import_execution_plan_unique');
+            $table->unique(['site_id', 'org_id', 'import_source_id', 'id'], 'import_execution_source_unique');
+            $table->foreign(['site_id', 'org_id', 'import_source_id'], 'import_execution_source_fk')
+                ->references(['site_id', 'org_id', 'id'])->on('import_sources')->cascadeOnDelete();
+        });
+
+        Schema::create('migration_map', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id');
+            $table->foreignId('site_id');
+            $table->foreignId('import_source_id');
+            $table->string('source_type', 96);
+            $table->string('source_id_hash', 64);
+            // Keep the destination ID after deletion so a retry can report the lost mapping target.
+            $table->unsignedBigInteger('entry_id');
+            $table->unsignedBigInteger('entry_revision_id');
+            $table->string('entry_state_hash', 64);
+            $table->string('action_hash', 64);
+            $table->unsignedBigInteger('last_execution_id');
+            $table->unique(['site_id', 'import_source_id', 'source_type', 'source_id_hash'], 'migration_map_source_unique');
+            $table->foreign(['site_id', 'org_id', 'import_source_id', 'last_execution_id'], 'migration_map_execution_fk')
+                ->references(['site_id', 'org_id', 'import_source_id', 'id'])->on('import_executions')->cascadeOnDelete();
+        });
+
+        Schema::create('import_action_receipts', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id');
+            $table->foreignId('site_id');
+            $table->foreignId('import_source_id');
+            $table->foreignId('import_execution_id');
+            $table->unsignedInteger('position');
+            $table->string('outcome', 10);
+            $table->unsignedBigInteger('entry_id');
+            $table->unsignedBigInteger('entry_revision_id');
+            $table->unique(['site_id', 'import_execution_id', 'position'], 'import_action_receipt_position_unique');
+            $table->foreign(['site_id', 'org_id', 'import_source_id', 'import_execution_id'], 'import_action_receipt_execution_fk')
+                ->references(['site_id', 'org_id', 'import_source_id', 'id'])->on('import_executions')->cascadeOnDelete();
+        });
+    }
+
+    public function down(): void
+    {
+        if (Schema::hasTable('import_sources') && Schema::getConnection()->table('import_sources')->exists()) {
+            throw new RuntimeException('Preserve the retained import journal before rolling back its tables.');
+        }
+
+        Schema::dropIfExists('import_action_receipts');
+        Schema::dropIfExists('migration_map');
+        Schema::dropIfExists('import_executions');
+        Schema::dropIfExists('import_sources');
+        Schema::table('sites', function (Blueprint $table): void {
+            $table->dropUnique('sites_org_id_id_unique');
+        });
+    }
+};
