@@ -332,7 +332,7 @@ Mirrored geometry is not the same as comprehensible reading order. This folds in
 | `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on ~~five~~ *eight (2026-10-09)* page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
 | `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on ~~five~~ *eight (2026-10-09)* page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
 | `tests/Core/TextDirectionTest.php` | `Kitsune::textDirection()` across the six RTL languages, LTR languages, `ar_EG`/`ar-EG`/`AR` subtag forms, and the unknown-locale fallback |
-| `e2e/blueprints.spec.js` (`blueprint-admin` project, #206 candidate) | Owner navigation outside `/c/{type}`, visible validation, actual apply/reverse and content refusals, stale review and hostile Org URL; RTL keyboard/focus, open-modal axe and 375px dark view. Full canonical qualification is still owed. |
+| `e2e/blueprints.spec.js` (`blueprint-admin` project, #206) | Owner navigation outside `/c/{type}`, visible validation, actual apply/reverse and content refusals, stale review and hostile Org URL; Arabic RTL keyboard and focus return, open-modal axe and a 375px dark view. The focused project passed on current main. Full canonical browser qualification and the manual checks in §5 remain open. |
 
 The RTL project needs a second server, which `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
 
@@ -362,7 +362,7 @@ Automation answered question 2 of ADR-018 and only part of question 1. What rema
    password hidden, and give a usable correction after a mismatch or refusal. In the browser, check the sign-in
    page's focus, field labels and feedback after an incorrect password, then complete sign-in at the reported URL.
 
-7. **Review and change a blueprint with NVDA and VoiceOver** (*added 2026-10-26, #206 candidate*) — hear the Org-wide
+8. **Review and change a blueprint with NVDA and VoiceOver** (*added 2026-10-26, #206*) — hear the Org-wide
    effect, installed/available versions and unfinished state, then the reverse's remove/keep/block lists. Submit a
    wrong confirmation and a stale review, cancel by keyboard, and confirm a successful unused reverse. Record error
    announcement, modal reading order and focus after the fresh page load. Ask an Arabic or Hebrew reader whether
