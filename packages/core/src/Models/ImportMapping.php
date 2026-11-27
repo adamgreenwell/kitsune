@@ -20,7 +20,6 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property int $entry_id
  * @property int $entry_revision_id
  * @property string $entry_state_hash
- * @property string $action_hash
  * @property int $last_execution_id
  */
 #[SiteScoped]

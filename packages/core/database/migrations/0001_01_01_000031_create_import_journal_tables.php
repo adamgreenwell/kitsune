@@ -26,6 +26,7 @@ return new class extends Migration
             $table->foreignId('org_id');
             $table->foreignId('site_id');
             $table->string('source_key', 96);
+            $table->unsignedBigInteger('active_execution_id')->nullable();
             $table->foreign(['org_id', 'site_id'], 'import_source_site_fk')
                 ->references(['org_id', 'id'])->on('sites')->cascadeOnDelete();
             $table->unique(['site_id', 'source_key']);
@@ -38,6 +39,7 @@ return new class extends Migration
             $table->foreignId('site_id');
             $table->foreignId('import_source_id');
             $table->string('plan_digest', 64);
+            $table->string('state', 10)->default('open');
             $table->unique(['site_id', 'import_source_id', 'plan_digest'], 'import_execution_plan_unique');
             $table->unique(['site_id', 'org_id', 'import_source_id', 'id'], 'import_execution_source_unique');
             $table->foreign(['site_id', 'org_id', 'import_source_id'], 'import_execution_source_fk')
@@ -55,7 +57,6 @@ return new class extends Migration
             $table->unsignedBigInteger('entry_id');
             $table->unsignedBigInteger('entry_revision_id');
             $table->string('entry_state_hash', 64);
-            $table->string('action_hash', 64);
             $table->unsignedBigInteger('last_execution_id');
             $table->unique(['site_id', 'import_source_id', 'source_type', 'source_id_hash'], 'migration_map_source_unique');
             $table->foreign(['site_id', 'org_id', 'import_source_id', 'last_execution_id'], 'migration_map_execution_fk')

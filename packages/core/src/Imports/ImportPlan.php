@@ -20,7 +20,8 @@ use stdClass;
  * @internal
  *
  * @phpstan-type Finding array{position: int, code: string}
- * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int}
+ * @phpstan-type LinkTargets array<string, list<array{source_type: string, source_id: string}>>
+ * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets}
  */
 final readonly class ImportPlan
 {
@@ -33,6 +34,7 @@ final readonly class ImportPlan
         public int $orgId,
         public int $siteId,
         public string $sourceKey,
+        public string $schemaDigest,
         public bool $complete,
         public array $records,
         public array $findings,
@@ -43,7 +45,7 @@ final readonly class ImportPlan
      * @param  list<Finding>  $findings
      */
     public static function prepare(
-        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, array $records, array $findings,
+        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings,
     ): self {
         return self::restore(json_encode([
             'version' => 1,
@@ -52,8 +54,17 @@ final readonly class ImportPlan
             'source_key' => $sourceKey,
             'adapter' => $adapter,
             'snapshot_sha256' => $snapshot,
+            'schema_sha256' => $schemaDigest,
             'complete' => $findings === [],
-            'records' => $records,
+            'records' => array_map(static function (array $record): array {
+                foreach (['values', 'links'] as $object) {
+                    if (array_key_exists($object, $record)) {
+                        $record[$object] = (object) $record[$object];
+                    }
+                }
+
+                return $record;
+            }, $records),
             'findings' => $findings,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
@@ -76,13 +87,14 @@ final readonly class ImportPlan
         }
 
         $plan = get_object_vars($envelope);
-        if (array_keys($plan) !== ['version', 'org_id', 'site_id', 'source_key', 'adapter', 'snapshot_sha256', 'complete', 'records', 'findings']
+        if (array_keys($plan) !== ['version', 'org_id', 'site_id', 'source_key', 'adapter', 'snapshot_sha256', 'schema_sha256', 'complete', 'records', 'findings']
             || $plan['version'] !== 1
             || ! is_int($plan['org_id']) || $plan['org_id'] < 1
             || ! is_int($plan['site_id']) || $plan['site_id'] < 1
             || ! is_string($plan['source_key']) || ! self::validKey($plan['source_key'])
             || ! is_string($plan['adapter']) || ! self::validKey($plan['adapter'])
             || ! is_string($plan['snapshot_sha256']) || preg_match('/^[0-9a-f]{64}$/D', $plan['snapshot_sha256']) !== 1
+            || ! is_string($plan['schema_sha256']) || preg_match('/^[0-9a-f]{64}$/D', $plan['schema_sha256']) !== 1
             || ! is_bool($plan['complete'])
             || ! is_array($plan['records']) || ! array_is_list($plan['records'])
             || ! is_array($plan['findings']) || ! array_is_list($plan['findings'])
@@ -120,7 +132,7 @@ final readonly class ImportPlan
             $findings[] = ['position' => $item->position, 'code' => $item->code];
         }
 
-        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['complete'], $records, $findings);
+        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings);
     }
 
     public function digest(): string
@@ -136,7 +148,9 @@ final readonly class ImportPlan
         }
 
         $action = get_object_vars($record);
-        if (array_keys($action) !== ['source_type', 'source_id', 'entry_type_id', 'title', 'slug', 'expected_revision_id']
+        $required = ['source_type', 'source_id', 'entry_type_id', 'title', 'slug', 'expected_revision_id'];
+        if (array_diff($required, array_keys($action)) !== [] || array_diff(array_keys($action), [...$required, 'values', 'links']) !== []
+            || (array_key_exists('values', $action) && ! $action['values'] instanceof stdClass)
             || ! is_string($action['source_type']) || ! self::validKey($action['source_type'])
             || ! is_string($action['source_id']) || $action['source_id'] === '' || strlen($action['source_id']) > 4096
             || ! is_int($action['entry_type_id']) || $action['entry_type_id'] < 1
@@ -154,7 +168,47 @@ final readonly class ImportPlan
             'title' => $action['title'],
             'slug' => $action['slug'],
             'expected_revision_id' => $action['expected_revision_id'],
+            ...(! array_key_exists('values', $action) ? [] : [
+                'values' => json_decode(json_encode($action['values'], JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR),
+            ]),
+            ...(! array_key_exists('links', $action) ? [] : ['links' => self::links($action['links'])]),
         ];
+    }
+
+    /** @return LinkTargets */
+    private static function links(mixed $input): array
+    {
+        if (! $input instanceof stdClass) {
+            throw new InvalidArgumentException('Relation fields must be provided as an object.');
+        }
+
+        $normalized = [];
+        foreach (get_object_vars($input) as $field => $targets) {
+            if (! is_string($field) || ! self::validKey($field) || ! is_array($targets) || ! array_is_list($targets)) {
+                throw new InvalidArgumentException('A relation field must contain an ordered list of targets.');
+            }
+
+            $seen = [];
+            $links = [];
+            foreach ($targets as $target) {
+                if (! $target instanceof stdClass || count(get_object_vars($target)) !== 2
+                    || ! isset($target->source_type, $target->source_id) || ! is_string($target->source_type) || ! self::validKey($target->source_type)
+                    || ! is_string($target->source_id) || $target->source_id === '' || strlen($target->source_id) > 4096) {
+                    throw new InvalidArgumentException('A relation target must identify a typed source record.');
+                }
+
+                $key = DraftRelations::identity($target->source_type, $target->source_id);
+                if (isset($seen[$key])) {
+                    throw new InvalidArgumentException('A relation field repeats a source target.');
+                }
+
+                $seen[$key] = true;
+                $links[] = ['source_type' => $target->source_type, 'source_id' => $target->source_id];
+            }
+            $normalized[$field] = $links;
+        }
+
+        return $normalized;
     }
 
     private static function validKey(string $key): bool

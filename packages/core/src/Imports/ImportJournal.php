@@ -12,7 +12,9 @@ namespace Kitsune\Core\Imports;
 
 use DomainException;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\Entry;
@@ -21,6 +23,7 @@ use Kitsune\Core\Models\ImportActionReceipt;
 use Kitsune\Core\Models\ImportExecution;
 use Kitsune\Core\Models\ImportMapping;
 use Kitsune\Core\Models\ImportSource;
+use Kitsune\Core\Relations\EntryRelationWriter;
 use Kitsune\Core\Tenancy\Context;
 use LogicException;
 use RuntimeException;
@@ -46,6 +49,7 @@ final readonly class ImportJournal
         $availableTypes = EntryType::visibleFor($this->context->site(), $orgId)->keyBy('id');
         $findings = $sourceComplete ? [] : [['position' => 0, 'code' => 'source-incomplete']];
         $records = [];
+        $positions = [];
         $identities = [];
         $slugs = [];
 
@@ -62,11 +66,12 @@ final readonly class ImportJournal
 
             $identity = $action['source_type'].':'.hash('sha256', $action['source_id']);
             $slug = $action['entry_type_id'].':'.$action['slug'];
+            $type = $availableTypes->get($action['entry_type_id']);
             $conflict = match (true) {
                 isset($identities[$identity]) => 'repeated-source-identity',
                 isset($slugs[$slug]) => 'repeated-destination-slug',
-                ! $availableTypes->has($action['entry_type_id']) => 'unavailable-entry-type',
-                default => $this->previewTarget($source, $siteId, $action),
+                $type === null => 'unavailable-entry-type',
+                default => $this->previewTarget($source, $siteId, $type, $action),
             };
 
             $identities[$identity] = true;
@@ -78,13 +83,20 @@ final readonly class ImportJournal
             }
 
             $records[] = $action;
+            $positions[] = $position;
         }
 
-        return ImportPlan::prepare($orgId, $siteId, $sourceKey, $adapter, $snapshot, $records, $findings);
+        foreach ($this->relationFindings($records, $source, $siteId, $availableTypes) as $finding) {
+            $findings[] = ['position' => $positions[$finding['position'] - 1], 'code' => $finding['code']];
+        }
+
+        $schemaDigest = ImportSchema::digest($availableTypes->only(array_column($records, 'entry_type_id')));
+
+        return ImportPlan::prepare($orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings);
     }
 
     /** @param DraftAction $action */
-    private function previewTarget(?ImportSource $source, int $siteId, array &$action): ?string
+    private function previewTarget(?ImportSource $source, int $siteId, EntryType $type, array &$action): ?string
     {
         $mapping = $source === null ? null : $this->mappingQuery($siteId, (int) $source->getKey(), $action['source_type'], $action['source_id'])->first();
         $entry = $mapping === null ? null : Entry::query()->where('site_id', $siteId)->find($mapping->entry_id);
@@ -111,9 +123,57 @@ final readonly class ImportJournal
             return 'destination-slug-in-use';
         }
 
+        try {
+            DraftFieldValues::attributes($type, $entry, ['title' => $action['title'], 'slug' => $action['slug']], $action['values'] ?? []);
+        } catch (ValidationException) {
+            return 'invalid-field-values';
+        }
+
         $action['expected_revision_id'] = $expectedRevision;
 
         return null;
+    }
+
+    /**
+     * @param  list<DraftAction>  $records
+     * @param  Collection<int, EntryType>  $types
+     * @return list<array{position:int, code:string}>
+     */
+    private function relationFindings(array $records, ?ImportSource $source, int $siteId, Collection $types): array
+    {
+        $planned = [];
+        foreach ($records as $action) {
+            $planned[DraftRelations::identity($action['source_type'], $action['source_id'])] = $types->get($action['entry_type_id'])->handle;
+        }
+
+        $targetType = function (string $kind, string $id) use ($planned, $source, $siteId, $types): ?string {
+            $key = DraftRelations::identity($kind, $id);
+            if (isset($planned[$key])) {
+                return $planned[$key];
+            }
+
+            $target = $source === null ? null : $this->mappedEntry($siteId, (int) $source->getKey(), $kind, $id);
+
+            return $target !== null && $types->has($target->entry_type_id) ? $target->type_handle : null;
+        };
+
+        $findings = [];
+        foreach ($records as $index => $action) {
+            try {
+                DraftRelations::validate($types->get($action['entry_type_id']), $action['links'] ?? [], $action['expected_revision_id'] === null, $targetType);
+            } catch (DomainException $conflict) {
+                $findings[] = ['position' => $index + 1, 'code' => $conflict->getMessage()];
+            }
+        }
+
+        return $findings;
+    }
+
+    private function mappedEntry(int $siteId, int $sourceId, string $type, string $id): ?Entry
+    {
+        $mapping = $this->mappingQuery($siteId, $sourceId, $type, $id)->useWritePdo()->first();
+
+        return $mapping === null ? null : Entry::query()->where('site_id', $siteId)->useWritePdo()->find($mapping->entry_id);
     }
 
     /** @return list<int> Destination entry IDs in plan order. */
@@ -124,13 +184,35 @@ final readonly class ImportJournal
             throw new DomainException('The incomplete report requires operator review.');
         }
 
+        $recorded = $this->executionForPlan($plan, $approvedDigest);
+        if ($recorded !== null && $recorded->state === 'completed') {
+            $receipts = $this->receiptQuery($plan->siteId, $recorded->id)
+                ->where('position', '<=', count($plan->records))->orderBy('position')->get();
+            if ($receipts->count() !== count($plan->records)) {
+                throw new RuntimeException('The completed import is missing action receipts.');
+            }
+
+            return $receipts->pluck('entry_id')->all();
+        }
+
         $availableTypes = EntryType::visibleFor($this->context->site(), $plan->orgId)->keyBy('id');
         if (array_any($plan->records, static fn (array $action): bool => ! $availableTypes->has($action['entry_type_id']))) {
             throw new DomainException('A destination entry type is no longer available.');
         }
 
-        $source = $this->source($plan->sourceKey);
+        $schema = ImportSchema::digest($availableTypes->only(array_column($plan->records, 'entry_type_id')));
+        if (! hash_equals($plan->schemaDigest, $schema)) {
+            throw new DomainException('The destination schema changed. Review a new import preview.');
+        }
+
+        $source = ImportSource::query()->where('site_id', $plan->siteId)->where('source_key', $plan->sourceKey)->first();
+        if ($this->relationFindings($plan->records, $source, $plan->siteId, $availableTypes) !== []) {
+            throw new DomainException('The approved draft relationships are no longer available.');
+        }
+
+        $source ??= $this->source($plan->sourceKey);
         $execution = $this->recordApproval((int) $source->getKey(), $approvedDigest);
+        $this->transitionExecution($plan->siteId, $execution->id, 'active');
 
         $entries = [];
         foreach ($plan->records as $index => $action) {
@@ -146,14 +228,125 @@ final readonly class ImportJournal
                 $action['source_type'],
                 $action['source_id'],
                 $action['entry_type_id'],
-                ['title' => $action['title'], 'slug' => $action['slug']],
+                ['title' => $action['title'], 'slug' => $action['slug'], 'values' => $action['values'] ?? []],
                 $action['expected_revision_id'],
                 $index + 1,
             );
             $entries[] = (int) $entry->getKey();
         }
 
+        foreach ($plan->records as $index => $action) {
+            if (($action['links'] ?? []) !== []) {
+                $this->writeLinks($plan->siteId, $execution->id, count($plan->records) + $index + 1, $action, $availableTypes);
+            }
+        }
+        $this->transitionExecution($plan->siteId, $execution->id, 'completed');
+
         return $entries;
+    }
+
+    /**
+     * @param  DraftAction  $action
+     * @param  Collection<int, EntryType>  $types
+     */
+    private function writeLinks(int $siteId, int $executionId, int $position, array $action, Collection $types): void
+    {
+        TransactionRecovery::run(DB::connection(), function () use ($siteId, $executionId, $position, $action, $types): void {
+            $execution = ImportExecution::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($executionId);
+            $source = ImportSource::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($execution->import_source_id);
+            if ($this->receiptQuery($siteId, $executionId)->where('position', $position)->lockForUpdate()->exists()) {
+                return;
+            }
+            if ($source->active_execution_id !== $execution->id) {
+                throw new DomainException('The approved execution is no longer active.');
+            }
+
+            $mapping = $this->mappingQuery($siteId, $execution->import_source_id, $action['source_type'], $action['source_id'])
+                ->lockForUpdate()->firstOrFail();
+            $entry = Entry::query()->where('site_id', $siteId)->lockForUpdate()->find($mapping->entry_id);
+            if (! $this->usableDraft($entry, $action['entry_type_id']) || $mapping->last_execution_id !== $executionId
+                || $this->revisionId($entry) !== $mapping->entry_revision_id || self::entryState($entry) !== $mapping->entry_state_hash) {
+                throw new DomainException('The destination draft changed before its relationship write.');
+            }
+
+            $links = $action['links'] ?? [];
+            $resolved = [];
+            $fields = DraftRelations::validate($types->get($action['entry_type_id']), $links, false,
+                function (string $kind, string $id) use ($siteId, $execution, $types, &$resolved): ?string {
+                    $target = $this->mappedEntry($siteId, $execution->import_source_id, $kind, $id);
+                    if ($target === null || ! $types->has($target->entry_type_id)) {
+                        return null;
+                    }
+                    $resolved[DraftRelations::identity($kind, $id)] = $target->id;
+
+                    return $target->type_handle;
+                });
+            $sameSite = static fn (Entry $candidate): bool => $candidate->site_id === $siteId;
+            foreach ($links as $handle => $refs) {
+                $choices = array_map(static fn (array $ref): array => [
+                    'entry' => $resolved[DraftRelations::identity($ref['source_type'], $ref['source_id'])],
+                    'pin' => true,
+                ], $refs);
+                app(EntryRelationWriter::class)->replace($entry, $fields[$handle], $choices, $sameSite, $sameSite);
+            }
+
+            $entry->refresh();
+            $revision = $this->revisionId($entry) ?? throw new RuntimeException('The related draft has no revision.');
+            $mapping->forceFill(['entry_revision_id' => $revision, 'entry_state_hash' => self::entryState($entry)]);
+            if (! $mapping->save()) {
+                throw new RuntimeException('The import relationship checkpoint was refused.');
+            }
+            $this->saveReceipt($execution, $position, 'linked', $entry, $revision);
+        });
+    }
+
+    public function abandon(string $report, string $approvedDigest): void
+    {
+        $plan = $this->checkedPlan($report, $approvedDigest);
+        $execution = $this->executionForPlan($plan, $approvedDigest)
+            ?? throw new DomainException('The approved execution does not exist.');
+
+        $this->transitionExecution($plan->siteId, $execution->id, 'abandoned');
+    }
+
+    private function transitionExecution(int $siteId, int $executionId, string $next): void
+    {
+        TransactionRecovery::run(DB::connection(), function () use ($siteId, $executionId, $next): void {
+            $execution = ImportExecution::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($executionId);
+            $source = ImportSource::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($execution->import_source_id);
+
+            if ($execution->state === $next || ($next === 'active' && $execution->state === 'completed')) {
+                return;
+            }
+
+            if ($next === 'abandoned' && $execution->state === 'open') {
+                $execution->state = 'abandoned';
+                if (! $execution->save()) {
+                    throw new RuntimeException('The import execution state change was refused.');
+                }
+
+                return;
+            }
+
+            if (in_array($execution->state, ['completed', 'abandoned'], true)) {
+                throw new DomainException('The approved execution is already closed.');
+            }
+
+            if ($source->active_execution_id !== null && $source->active_execution_id !== $execution->id) {
+                throw new DomainException('Another approved execution is active for this source.');
+            }
+
+            if ($next !== 'active' && $source->active_execution_id !== $execution->id) {
+                throw new DomainException('Only the active approved execution can be closed.');
+            }
+
+            $source->active_execution_id = $next === 'active' ? $execution->id : null;
+            $execution->state = $next;
+
+            if (! $source->save() || ! $execution->save()) {
+                throw new RuntimeException('The import execution state change was refused.');
+            }
+        });
     }
 
     /**
@@ -164,10 +357,16 @@ final readonly class ImportJournal
      */
     public function progress(string $report, string $approvedDigest): array
     {
+        return $this->executionReport($report, $approvedDigest)['records'];
+    }
+
+    /**
+     * @return array{state: string, records: list<array{position: int, source_type: string, source_id: string, outcome: string, entry_id: ?int, revision_id: ?int}>}
+     */
+    public function executionReport(string $report, string $approvedDigest): array
+    {
         $plan = $this->checkedPlan($report, $approvedDigest);
-        $source = ImportSource::query()->useWritePdo()->where('site_id', $plan->siteId)->where('source_key', $plan->sourceKey)->first();
-        $execution = $source === null ? null : ImportExecution::query()->useWritePdo()->where('site_id', $plan->siteId)
-            ->where('import_source_id', $source->getKey())->where('plan_digest', $approvedDigest)->first();
+        $execution = $this->executionForPlan($plan, $approvedDigest);
         $receipts = $execution === null ? collect() : $this->receiptQuery($plan->siteId, $execution->id)->get()->keyBy('position');
         $progress = [];
 
@@ -183,7 +382,26 @@ final readonly class ImportJournal
             ];
         }
 
-        return $progress;
+        foreach ($plan->records as $index => $action) {
+            if (($action['links'] ?? []) !== []) {
+                $position = count($plan->records) + $index + 1;
+                $receipt = $receipts->get($position);
+                $progress[] = [
+                    'position' => $position, 'source_type' => $action['source_type'], 'source_id' => $action['source_id'],
+                    'outcome' => $receipt->outcome ?? 'pending', 'entry_id' => $receipt?->entry_id, 'revision_id' => $receipt?->entry_revision_id,
+                ];
+            }
+        }
+
+        return ['state' => $execution->state ?? 'not-started', 'records' => $progress];
+    }
+
+    private function executionForPlan(ImportPlan $plan, string $approvedDigest): ?ImportExecution
+    {
+        $source = ImportSource::query()->useWritePdo()->where('site_id', $plan->siteId)->where('source_key', $plan->sourceKey)->first();
+
+        return $source === null ? null : ImportExecution::query()->useWritePdo()->where('site_id', $plan->siteId)
+            ->where('import_source_id', $source->getKey())->where('plan_digest', $approvedDigest)->first();
     }
 
     private function checkedPlan(string $report, string $approvedDigest): ImportPlan
@@ -194,7 +412,7 @@ final readonly class ImportJournal
             throw new DomainException('The import report differs from the approved report.');
         }
 
-        if ($plan->siteId !== $siteId || $plan->orgId !== $this->context->orgId()) {
+        if ($plan->siteId !== $siteId || $plan->orgId !== $this->context->orgId() || $plan->orgId !== $this->context->site()?->org_id) {
             throw new DomainException('The import report belongs to a different Org or Site.');
         }
 
@@ -207,7 +425,7 @@ final readonly class ImportJournal
         return ImportActionReceipt::query()->useWritePdo()->where('site_id', $siteId)->where('import_execution_id', $executionId);
     }
 
-    public function source(string $key): ImportSource
+    private function source(string $key): ImportSource
     {
         $siteId = $this->siteId();
 
@@ -218,7 +436,7 @@ final readonly class ImportJournal
         return ImportSource::query()->where('site_id', $siteId)->firstOrCreate(['source_key' => $key]);
     }
 
-    public function recordApproval(int $sourceId, string $planDigest): ImportExecution
+    private function recordApproval(int $sourceId, string $planDigest): ImportExecution
     {
         $siteId = $this->siteId();
 
@@ -239,14 +457,14 @@ final readonly class ImportJournal
      *
      * @param  array{title: string, slug: string, values?: array<string, mixed>}  $content
      */
-    public function writeDraft(
+    private function writeDraft(
         int $executionId,
         string $sourceType,
         string $sourceId,
         int $entryTypeId,
         array $content,
         ?int $expectedRevisionId,
-        ?int $position = null,
+        int $position,
     ): Entry {
         $siteId = $this->siteId();
 
@@ -259,16 +477,22 @@ final readonly class ImportJournal
             'slug' => $content['slug'],
             ...array_intersect_key($content, ['values' => true]),
         ];
-        $actionHash = self::hashState([$entryTypeId, $expectedRevisionId, $attributes]);
 
         return TransactionRecovery::run(DB::connection(), function () use (
-            $siteId, $executionId, $sourceType, $sourceId, $entryTypeId, $attributes, $expectedRevisionId, $actionHash, $position
+            $siteId, $executionId, $sourceType, $sourceId, $entryTypeId, $attributes, $expectedRevisionId, $position
         ): Entry {
             $execution = ImportExecution::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($executionId);
 
             // Serialize actions for this source on row-locking engines. SQLite
             // can refuse a stale snapshot at the write and the caller can retry.
-            ImportSource::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($execution->import_source_id);
+            $source = ImportSource::query()->where('site_id', $siteId)->lockForUpdate()->findOrFail($execution->import_source_id);
+            $receipt = $this->receiptQuery($siteId, $execution->id)->where('position', $position)->lockForUpdate()->first();
+            if ($receipt !== null) {
+                return Entry::withTrashed()->where('site_id', $siteId)->findOrFail($receipt->entry_id);
+            }
+            if ($source->active_execution_id !== $execution->id) {
+                throw new DomainException('The approved execution is no longer active.');
+            }
 
             $identity = [
                 'import_source_id' => $execution->import_source_id,
@@ -297,11 +521,7 @@ final readonly class ImportJournal
                 }
 
                 if ($mapping->last_execution_id === $execution->id) {
-                    if ($mapping->action_hash !== $actionHash) {
-                        throw new RuntimeException('The retried action differs from the action already applied.');
-                    }
-
-                    return $entry;
+                    throw new RuntimeException('The applied draft is missing its action receipt.');
                 }
 
                 if ($revisionId !== $expectedRevisionId) {
@@ -309,7 +529,11 @@ final readonly class ImportJournal
                 }
             }
 
-            $entry->fill($attributes);
+            $type = EntryType::query()->findOrFail($entryTypeId);
+            $entry->fill(DraftFieldValues::attributes(
+                $type, $creating ? null : $entry, ['title' => $attributes['title'], 'slug' => $attributes['slug']],
+                $attributes['values'] ?? [],
+            ));
 
             if (! $entry->save()) {
                 throw new RuntimeException('The destination draft write was refused.');
@@ -321,7 +545,6 @@ final readonly class ImportJournal
                 'entry_id' => $entry->getKey(),
                 'entry_revision_id' => $revisionId,
                 'entry_state_hash' => self::entryState($entry),
-                'action_hash' => $actionHash,
                 'last_execution_id' => $execution->id,
             ]);
 
@@ -329,23 +552,26 @@ final readonly class ImportJournal
                 throw new RuntimeException('The import mapping write was refused.');
             }
 
-            if ($position !== null) {
-                $receipt = (new ImportActionReceipt)->forceFill([
-                    'import_source_id' => $execution->import_source_id,
-                    'import_execution_id' => $execution->id,
-                    'position' => $position,
-                    'outcome' => $creating ? 'created' : 'updated',
-                    'entry_id' => $entry->getKey(),
-                    'entry_revision_id' => $revisionId,
-                ]);
-
-                if (! $receipt->save()) {
-                    throw new RuntimeException('The import action receipt was refused.');
-                }
-            }
+            $this->saveReceipt($execution, $position, $creating ? 'created' : 'updated', $entry, $revisionId);
 
             return $entry;
         });
+    }
+
+    private function saveReceipt(ImportExecution $execution, int $position, string $outcome, Entry $entry, int $revisionId): void
+    {
+        $receipt = (new ImportActionReceipt)->forceFill([
+            'import_source_id' => $execution->import_source_id,
+            'import_execution_id' => $execution->id,
+            'position' => $position,
+            'outcome' => $outcome,
+            'entry_id' => $entry->getKey(),
+            'entry_revision_id' => $revisionId,
+        ]);
+
+        if (! $receipt->save()) {
+            throw new RuntimeException('The import action receipt was refused.');
+        }
     }
 
     /** @return Builder<ImportMapping> */
@@ -380,7 +606,7 @@ final readonly class ImportJournal
         $attributes = $entry->getRawOriginal();
         ksort($attributes, SORT_STRING);
 
-        return self::hashState($attributes);
+        return self::hashState([$attributes, $entry->relationState()]);
     }
 
     /** @param array<array-key, mixed> $state */

@@ -46,12 +46,37 @@ final readonly class StructuredDraftInput
         };
 
         $drafts = [];
+        $objects = $format === 'csv' ? ['values_json' => 'values', 'links_json' => 'links'] : ['values' => 'values', 'links' => 'links'];
         foreach ($rows as $row) {
-            if (count($row) !== count(self::COLUMNS) || array_diff(self::COLUMNS, array_keys($row)) !== []
+            if (array_diff(self::COLUMNS, array_keys($row)) !== []
+                || array_diff(array_keys($row), [...self::COLUMNS, ...array_keys($objects)]) !== []
                 || ! is_string($row['entry_type']) || ! isset($destinationTypes[$row['entry_type']])) {
                 $drafts[] = [];
 
                 continue;
+            }
+
+            $provided = [];
+            foreach ($objects as $column => $name) {
+                if (! array_key_exists($column, $row)) {
+                    continue;
+                }
+                $object = $row[$column];
+                if (is_string($object) && $format === 'csv') {
+                    try {
+                        $object = $object === '' ? new stdClass : json_decode($object, depth: 64, flags: JSON_THROW_ON_ERROR);
+                    } catch (JsonException) {
+                        $object = null;
+                    }
+                }
+                if (! $object instanceof stdClass) {
+                    $drafts[] = [];
+
+                    continue 2;
+                }
+                if (get_object_vars($object) !== []) {
+                    $provided[$name] = $object;
+                }
             }
 
             $drafts[] = [
@@ -60,6 +85,7 @@ final readonly class StructuredDraftInput
                 'entry_type_id' => $destinationTypes[$row['entry_type']],
                 'title' => $row['title'],
                 'slug' => $row['slug'],
+                ...$provided,
             ];
         }
 
@@ -97,8 +123,9 @@ final readonly class StructuredDraftInput
 
             $header = fgetcsv($stream, escape: '');
             $afterHeader = ftell($stream);
-            if ($header === false || $afterHeader === false || count($header) !== count(self::COLUMNS)
-                || array_diff(self::COLUMNS, $header) !== [] || ! self::wellFormedCsvRecord(substr($bytes, 0, $afterHeader))) {
+            if ($header === false || $afterHeader === false || count($header) !== count(array_unique($header))
+                || array_diff(self::COLUMNS, $header) !== [] || array_diff($header, [...self::COLUMNS, 'values_json', 'links_json']) !== []
+                || ! self::wellFormedCsvRecord(substr($bytes, 0, $afterHeader))) {
                 throw new InvalidArgumentException('The CSV header must contain each supported column once.');
             }
 

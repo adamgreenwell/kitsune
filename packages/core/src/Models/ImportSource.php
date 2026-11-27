@@ -14,7 +14,11 @@ use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
-/** @internal */
+/**
+ * @internal
+ *
+ * @property ?int $active_execution_id
+ */
 #[SiteScoped]
 final class ImportSource extends Model
 {
