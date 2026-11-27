@@ -33,6 +33,7 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\ScopeResolver;
 use Kitsune\Core\Tenancy\UndeclaredScopeException;
+use Kitsune\Core\Tests\Fixtures\Modules\Ambiguous\AmbiguousThing;
 use Kitsune\Core\Tests\Fixtures\UndeclaredThing;
 
 /*
@@ -46,6 +47,19 @@ it('refuses to boot a model with no scope declaration', function (): void {
     ScopeResolver::flush();
 
     expect(fn () => new UndeclaredThing)->toThrow(UndeclaredScopeException::class);
+});
+
+it('refuses to boot a model with conflicting scope declarations', function (): void {
+    expect(fn () => new AmbiguousThing)->toThrow(UndeclaredScopeException::class, 'declares more than one scope');
+});
+
+it('refuses to boot a model with a repeated scope declaration', function (): void {
+    $model = fn () => new #[OrgScoped, OrgScoped] class extends Model
+    {
+        use EnforcesScope;
+    };
+
+    expect($model)->toThrow(UndeclaredScopeException::class, 'declares more than one scope');
 });
 
 it('explains what to do rather than just failing', function (): void {

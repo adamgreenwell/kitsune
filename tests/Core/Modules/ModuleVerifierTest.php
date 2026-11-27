@@ -69,8 +69,16 @@ it('refuses a model that declares a scope and does not enforce it', function ():
 it('refuses a model that declares no scope at all', function (): void {
     $result = verifyFixture('Undeclared', ['unscoped:global']);
 
-    expect($result->refusal)->toContain('declares no scope')
+    expect($result->refusal)->toContain('does not declare a scope')
         ->and($result->examined)->not->toBeEmpty();
+});
+
+it('reports conflicting model scopes as a module verification refusal', function (): void {
+    $result = verifyFixture('Ambiguous', ['site']);
+
+    expect($result->passed())->toBeFalse()
+        ->and($result->refusal)->toContain('AmbiguousThing', 'declares more than one scope')
+        ->and($result->models)->toHaveCount(1);
 });
 
 it('refuses a model whose scope the manifest does not declare', function (): void {
