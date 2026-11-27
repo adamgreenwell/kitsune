@@ -1,0 +1,45 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+services:
+  origin-certificates:
+    build: .
+    image: kitsune-rehearsal:29b6124
+    user: root
+    entrypoint: /usr/local/bin/kitsune-rehearsal-origin-init
+    network_mode: none
+    restart: 'no'
+    environment:
+      KITSUNE_REHEARSAL_HOST: ${KITSUNE_REHEARSAL_HOST:-migration.example.test}
+    volumes:
+      - origin-ca:/ca
+      - origin-private:/origin
+      - origin-public:/published
+  app:
+    build: .
+    image: kitsune-rehearsal:29b6124
+    network_mode: none
+    restart: unless-stopped
+    depends_on:
+      origin-certificates:
+        condition: service_completed_successfully
+    environment:
+      KITSUNE_REHEARSAL_HOST: ${KITSUNE_REHEARSAL_HOST:-migration.example.test}
+      KITSUNE_REHEARSAL_SITE_API: ${KITSUNE_REHEARSAL_SITE_API:-false}
+    volumes:
+      - app-state:/var/lib/kitsune-rehearsal
+      - origin-private:/run/kitsune-rehearsal-origin:ro
+      - origin-public:/run/kitsune-rehearsal-ca:ro
+    cpus: 1.0
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS --noproxy "*" --cacert /run/kitsune-rehearsal-ca/ca.crt --resolve "$${KITSUNE_REHEARSAL_HOST}:8443:127.0.0.1" -H "Host: $${KITSUNE_REHEARSAL_HOST}" https://$${KITSUNE_REHEARSAL_HOST}:8443/up >/dev/null']
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+volumes:
+  app-state:
+  origin-ca:
+  origin-private:
+  origin-public:
