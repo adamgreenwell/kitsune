@@ -4510,6 +4510,32 @@ refusal hooks. The transaction and partial-DDL recovery limitations above remain
 engine would have to specify how dependent modules and retained content behave when its runtime is unavailable;
 the current kernel does not supply that contract merely by discovering a package.
 
+
+### Amendment — installation enablement and Org availability, 2026-11-26
+
+[Issue #259](https://github.com/adamgreenwell/kitsune/issues/259) reviewed the first single-Org personal-site demo
+and the separate synthetic migration rehearsal. Each runs on its own installation. Neither needs module surfaces
+to differ between Orgs on a shared installation. Keep the existing installation switch. A host can enable several
+packages in the same installation and use the resulting capabilities together.
+
+- **Installation lifecycle.** The Composer package, receipt, registered providers, routes and migrated schema
+  belong to the installation. Install, upgrade, disable and rollback still run at that level.
+- **Availability and access.** ADR-022 settings inherit through Org, SiteGroup and Site. Entry-type availability
+  already describes which content types a Site can use. Request authorization still belongs to policies and roles.
+  These controls serve different purposes and can apply together.
+- **Credentials.** Follow the module's credential contract. For example, ADR-040 scopes each Stripe account to the
+  Org that owns it. Secret values stay in the credential store.
+
+Reopen when a named shared installation has at least two Orgs that need different module surfaces, a concrete
+operational reason to share the installation, and a need that persists after applying existing availability,
+authorization and credential controls. Compare reusing the existing inheritance model with a dedicated record
+then. Any per-Org availability can only narrow the installed and enabled package. It must preserve data when
+availability changes and keep cache invalidation within the affected scope. An Org's decision about visible
+surfaces leaves the installation-wide provider and schema lifecycle in place.
+
+Keep the installation lifecycle distinct from request-time availability when choosing the v1.2 public extension
+surface. A public operation that reports package lifecycle state should state its installation-wide meaning.
+
 ---
 
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
@@ -12858,9 +12884,9 @@ existing scope rules.
   wrong everywhere it appears, and repointing it is an amendment rather than a sweep~~
   **Resolved by ADR-033's [citation amendment](#citation-amendment--2026-10-22-issue-258), 2026-10-22:** fourteen
   active citations were present at the correction; the earlier count and rationale remain visible here.
-- **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
-  `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
-  whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
+- **When will a shared installation need module-level availability by Org?** ADR-038 keeps one installation
+  switch. Its [availability amendment](#amendment--installation-enablement-and-org-availability-2026-11-26)
+  gives the evidence needed to reopen the design.
 - **ADR-018's rule 1 is enforced nowhere in core's admin.** *"No bare user-facing strings in UI code. A CI check,
   build-failing"* — and core's Filament layer carries bare English throughout. ADR-042's media UI is to go through a
   `kitsune` translation namespace so as not to add to it. Either the check is built and the rest extracted, or
