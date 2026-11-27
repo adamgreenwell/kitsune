@@ -449,6 +449,13 @@ test.describe('a relation pointing at something the editor may not view', () => 
     test('withholds the title of the linked record', async ({ page }) => {
         await openWeekFive(page);
 
+        const editUrl = page.url();
+        await page.goto(editUrl.replace(/\/edit$/, ''));
+        await expect(page.getByRole('heading', { name: /^View Article$/ })).toBeVisible();
+        await expect(selectValue(page, 'Related products')).not.toContainText(/Fairway mower|Entry #/);
+
+        await page.goto(editUrl);
+
         // The link is kept AS A VALUE and withheld AS A TITLE: the id was already in the form state, and the
         // product's name is what the grant protects.
         const products = selectValue(page, 'Related products');

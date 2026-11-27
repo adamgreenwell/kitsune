@@ -13,15 +13,10 @@ namespace Kitsune\Core\Filament\Concerns;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
-use Kitsune\Core\Fields\Control;
-use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\RelationManagers\RevisionsRelationManager;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
-use Kitsune\Core\Models\EntryType;
-use Kitsune\Core\Models\Field;
 use Kitsune\Core\Relations\EntryRelationWriter;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Throwable;
@@ -45,6 +40,8 @@ use Throwable;
  */
 trait SyncsFieldRelations
 {
+    use FillsFieldRelations;
+
     public function hasDatabaseTransactions(): bool
     {
         return $this->relationFields() !== [] || parent::hasDatabaseTransactions();
@@ -67,25 +64,14 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeFill(array $data): array
     {
-        $record = $this->getRecord();
+        return $this->fillFieldRelations($data, static function (Entry $record, array $storages): array {
+            $byStorage = [];
+            foreach ($storages as $storage) {
+                $byStorage[$storage->id] = $record->relationPickerValues($storage);
+            }
 
-        if (! $record instanceof Entry) {
-            return $data;
-        }
-
-        foreach ($this->relationFields() as $field) {
-            $ids = $record->relationPickerValues($field->fieldStorage);
-
-            // ⚠️ A single-value picker wants a scalar, not a one-element array — Filament
-            // renders an array into a `multiple()` control and nothing into a single one,
-            // so a relation with cardinality 1 would appear empty however it was saved.
-            $data[FieldValueRenderer::RELATION_STATE_PREFIX][$field->fieldStorage->handle] =
-                (new FieldConfig($field->fieldStorage, $field))->isMultiValue()
-                    ? $ids
-                    : ($ids[0] ?? null);
-        }
-
-        return $data;
+            return $byStorage;
+        });
     }
 
     /**
@@ -331,32 +317,5 @@ trait SyncsFieldRelations
                 throw ValidationException::withMessages(['data.relations.'.$handle => $failure->errors()['relations'] ?? [$failure->getMessage()]]);
             }
         }
-    }
-
-    /**
-     * The current entry type's relation fields, with storage loaded.
-     *
-     * Empty when no type is bound — a page can be constructed outside `/c/{type}`, and
-     * reaching for `app(EntryType::class)` unguarded is what 500s the dashboard.
-     *
-     * @return array<int, Field>
-     */
-    private function relationFields(): array
-    {
-        if (! app()->bound(EntryType::class)) {
-            return [];
-        }
-
-        $registry = app(FieldTypeRegistry::class);
-
-        return app(EntryType::class)
-            ->fields()
-            ->with('fieldStorage')
-            ->orderBy('ordering')
-            ->get()
-            ->filter(fn (Field $field): bool => $field->fieldStorage !== null
-                && $registry->get((string) $field->fieldStorage->type)->control() === Control::EntryPicker)
-            ->values()
-            ->all();
     }
 }
