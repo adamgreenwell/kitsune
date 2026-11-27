@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!start.sh
+!origin-init.sh
+!nginx.conf
+!app-dependencies/
+!app-dependencies/composer.json
+!app-dependencies/composer.lock
+!app-dependencies/config/
+!app-dependencies/config/kitsune.php
