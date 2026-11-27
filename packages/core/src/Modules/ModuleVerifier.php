@@ -190,10 +190,8 @@ final class ModuleVerifier
         foreach ($models as $model) {
             try {
                 $attribute = ScopeResolver::for($model);
-            } catch (UndeclaredScopeException) {
-                return "{$manifest->package} ships the model `{$model}`, which declares no scope. AGENTS.md §2: "
-                    .'every model declares exactly one of #[SiteScoped], #[OrgScoped], #[OrgScopedThroughPivot] '
-                    .'or #[Unscoped].';
+            } catch (UndeclaredScopeException $error) {
+                return $manifest->package.': '.$error->getMessage();
             }
 
             if (! in_array(EnforcesScope::class, class_uses_recursive($model), true)) {

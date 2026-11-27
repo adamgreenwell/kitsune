@@ -26,4 +26,11 @@ final class UndeclaredScopeException extends RuntimeException
             .'there.'
         );
     }
+
+    /** @internal */
+    public static function ambiguous(string $model): self
+    {
+        return new self("[{$model}] declares more than one scope. Keep exactly one of "
+            .'#[SiteScoped], #[OrgScoped], #[OrgScopedThroughPivot] or #[Unscoped].');
+    }
 }
