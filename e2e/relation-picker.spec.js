@@ -2,7 +2,7 @@
 const { test, expect } = require('@playwright/test');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
-const { selectField, selectValue, openSelect } = require('./select-control');
+const { selectTrigger, selectField, selectValue, openSelect } = require('./select-control');
 const AxeBuilder = require('@axe-core/playwright').default;
 
 /*
@@ -173,7 +173,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
         });
     }
 
-    test('saves a selection and hydrates it again after a reload', async ({ page }) => {
+    test('saves a selection and hydrates it again after a reload', async ({ page, browser, baseURL }) => {
         await page.goto(`/admin/${SITE}/c/article/1/edit`);
         await expect(picker(page)).toBeVisible();
 
@@ -184,7 +184,9 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * that fails the second time for a reason unrelated to what it checks.
          */
         await removeSelections(page);
-        await choose(page, 'week 3', /week 3/);
+        await choose(page, 'week 4', /week 4/);
+        await page.keyboard.press('Escape');
+        await choose(page, 'week 2', /week 2/);
         await save(page);
 
         /*
@@ -195,7 +197,22 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * feature.
          */
         await page.reload();
-        await expect(pickerValue(page)).toContainText('week 3');
+        await expect(pickerValue(page)).toContainText(/week 4.*week 2/s);
+
+        const viewer = await browser.newContext({
+            baseURL,
+            storageState: path.join(__dirname, '..', '.playwright', 'admin-viewer-auth.json'),
+        });
+
+        try {
+            const readOnlyPage = await viewer.newPage();
+            await readOnlyPage.goto(`/admin/${SITE}/c/article/1`);
+            await expect(selectTrigger(readOnlyPage, /Related articles/).first()).toBeDisabled();
+            await expect(pickerValue(readOnlyPage)).toContainText(/week 4.*week 2/s);
+            await expect(readOnlyPage.getByRole('link', { name: /^Edit$/ })).toHaveCount(0);
+        } finally {
+            await viewer.close();
+        }
 
         await leaveClean(page);
     });
