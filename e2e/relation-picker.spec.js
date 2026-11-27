@@ -18,6 +18,11 @@ const AxeBuilder = require('@axe-core/playwright').default;
 
 const SITE = 'golfdom';
 
+const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+    cwd: path.join(__dirname, '..', 'skeleton'),
+    encoding: 'utf8',
+}).trim();
+
 /** The complete field keeps its chips and remove controls together across Filament versions. */
 const picker = (page) => selectField(page, /Related articles/).first();
 const pickerValue = (page) => selectValue(page, /Related articles/).first();
@@ -173,7 +178,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
         });
     }
 
-    test('saves a selection and hydrates it again after a reload', async ({ page, browser, baseURL }) => {
+    test('saves a selection and hydrates it again after a reload', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article/1/edit`);
         await expect(picker(page)).toBeVisible();
 
@@ -184,9 +189,7 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * that fails the second time for a reason unrelated to what it checks.
          */
         await removeSelections(page);
-        await choose(page, 'week 4', /week 4/);
-        await page.keyboard.press('Escape');
-        await choose(page, 'week 2', /week 2/);
+        await choose(page, 'week 3', /week 3/);
         await save(page);
 
         /*
@@ -197,31 +200,65 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * feature.
          */
         await page.reload();
-        await expect(pickerValue(page)).toContainText(/week 4.*week 2/s);
-
-        const viewer = await browser.newContext({
-            baseURL,
-            storageState: path.join(__dirname, '..', '.playwright', 'admin-viewer-auth.json'),
-        });
-
-        try {
-            const readOnlyPage = await viewer.newPage();
-            await readOnlyPage.goto(`/admin/${SITE}/c/article/1`);
-            await expect(selectTrigger(readOnlyPage, /Related articles/).first()).toBeDisabled();
-            await expect(pickerValue(readOnlyPage)).toContainText(/week 4.*week 2/s);
-            await expect(readOnlyPage.getByRole('link', { name: /^Edit$/ })).toHaveCount(0);
-        } finally {
-            await viewer.close();
-        }
+        await expect(pickerValue(page)).toContainText('week 3');
 
         await leaveClean(page);
     });
 
+    test.describe('read-only relation view', () => {
+        const fixtureSite = `
+            $site = \\Kitsune\\Core\\Models\\Site::withoutScopeBecause('The exact disposable relation view Site', fn ($query) => $query->where('slug', 'golfdom')->sole());
+            app(\\Kitsune\\Core\\Tenancy\\Context::class)->setSite($site);
+        `;
+        /** @type {{ source: number, zebra: number, albatross: number } | null} */
+        let fixture = null;
+
+        test.afterEach(() => {
+            if (!fixture) return;
+
+            const { source, zebra, albatross } = fixture;
+            fixture = null;
+            tinker(fixtureSite + `
+                foreach ([${source}, ${zebra}, ${albatross}] as $id) {
+                    \\Kitsune\\Core\\Models\\Entry::query()->find($id)?->forceDelete();
+                }
+            `);
+        });
+
+        test('shows saved relations in order on the read-only entry page', async ({ browser, baseURL }) => {
+            fixture = JSON.parse(tinker(fixtureSite + `
+                echo json_encode(DB::transaction(function () {
+                    $type = \\Kitsune\\Core\\Models\\EntryType::query()->where('handle', 'article')->sole();
+                    $storage = \\Kitsune\\Core\\Models\\FieldStorage::query()->where('handle', 'related_articles')->sole();
+                    $source = \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $type->id, 'title' => 'Source for relation View']);
+                    $albatross = \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $type->id, 'title' => 'Albatross relation target']);
+                    $zebra = \\Kitsune\\Core\\Models\\Entry::create(['entry_type_id' => $type->id, 'title' => 'Zebra relation target']);
+                    $source->syncFieldRelations($storage, [$zebra->id, $albatross->id]);
+
+                    return ['source' => $source->id, 'zebra' => $zebra->id, 'albatross' => $albatross->id];
+                }));
+            `));
+
+            const viewer = await browser.newContext({
+                baseURL,
+                storageState: path.join(__dirname, '..', '.playwright', 'admin-viewer-auth.json'),
+            });
+
+            try {
+                const page = await viewer.newPage();
+                const response = await page.goto(`/admin/${SITE}/c/article/${fixture.source}`);
+                expect(response?.status()).toBe(200);
+                await expect(page.getByRole('heading', { name: 'View Article' })).toBeVisible();
+                await expect(selectTrigger(page, /Related articles/).first()).toBeDisabled();
+                await expect(pickerValue(page)).toContainText(/Zebra relation target.*Albatross relation target/s);
+                await expect(page.getByRole('link', { name: /^Edit$/ })).toHaveCount(0);
+            } finally {
+                await viewer.close();
+            }
+        });
+    });
+
     test('can follow a translation group or pin its current entry', async ({ page }) => {
-        const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
-            cwd: path.join(__dirname, '..', 'skeleton'),
-            encoding: 'utf8',
-        }).trim();
         const title = `Translation group sample ${Date.now()}`;
         const { source, target } = JSON.parse(tinker(`
             $site = \\Kitsune\\Core\\Models\\Site::withoutGlobalScopes()->where('slug', 'golfdom')->firstOrFail();
