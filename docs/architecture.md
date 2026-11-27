@@ -546,18 +546,40 @@ interface MigrationAdapter
 }
 ```
 
-```
-migrations
-  id, org_id, adapter, source_config json (encrypted)
-  status, started_at, finished_at, report json
+The v1.3 design separates three identities. These are logical records. The released schema and adapter API
+still need implementation and qualification.
 
-migration_map                             -- source id → kitsune id; makes re-runs idempotent
-  id, migration_id, source_type, source_id, entry_id
-```
+| Record | Identity and responsibility |
+|---|---|
+| Migration | Stable identity bound to one destination Org and Site and an explicit source identity. Carries encrypted source configuration scoped to that destination. A rerun keeps this identity. A different destination or source starts a different migration. |
+| Execution | Belongs to one migration. Records the adapter and input version, the exact approved plan, progress and the operator report. Resuming uses the same execution. A changed plan requires a new approval and execution. |
+| Mapping | Unique within a migration by source record type and stable source identifier. Holds the destination record identity and the destination state observed after the last successful write. Mappings survive executions. Cross-format reuse requires an explicit common source and an unambiguous transformation to the same typed identifiers. |
 
-`migration_map` is what makes an import **resumable and re-runnable** — you can re-run against a changed source and update rather than duplicate. That matters far more than any single adapter's fidelity.
+Derive the recorded Org from the destination Site at creation. Look up migrations, executions and mappings
+through the current Org and Site before reading configuration, reports or destination records. Refuse any scope
+mismatch, including a mapped target outside the destination. Keep decrypted source credentials within the adapter
+invocation and out of plans, reports and logs. Direct database sources use read-only credentials. The adapter
+reports data and coverage through the canonical representation. Use a source snapshot or stable ordering and
+check the approved input before writing, since pagination over a changing source can skip records.
 
-Every adapter must support **dry-run** producing a full report before anything is written. First adapters, in order: WordPress, then CSV/JSON (trivial, and covers a long tail), then whatever demand shows up.
+Use a canonical record type and stable source identifier for each map key, including media. Keep source identity
+fixed once mappings exist. Cross-format matching requires evidence that the source identifiers correspond.
+An ambiguous match is a dry-run conflict.
+
+Dry-run reports the planned changes, failures and source coverage before the writer changes destination state.
+Approval binds the destination, migration, adapter version, coverage, input digests and expected destination state.
+The writer refuses to apply changed inputs under that approval. Hold independently edited or missing mapped
+targets for review. Source absence never authorizes deletion. A completed action replayed against unchanged state
+retains its destination identity. Report completed, skipped, failed and unresolved actions so the operator can
+decide how to continue.
+
+Allow only one execution to apply for a migration at a time. Commit the destination record, its mapping and
+the successful action receipt in the same database transaction. Resolve relationships against existing or newly committed mappings and report unresolved targets. When remote
+media cannot share that transaction, persist a scoped staging reservation before the upload. After interruption
+or an unknown outcome, verify the bytes at the reserved key before adopting the object. Different bytes are a
+conflict and must remain untouched. Keep uncertain outcomes distinct from completed mappings.
+
+The first adapter is WordPress, followed by CSV and JSON. Add other formats when there is demonstrated demand.
 
 ---
 
