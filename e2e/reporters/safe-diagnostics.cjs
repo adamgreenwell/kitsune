@@ -10,7 +10,10 @@ const STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupte
 const STAGES = new Set(['navigation', 'readiness', 'credentials', 'rejection', 'reader-account', 'complete']);
 const PAGES = new Set(['staff-login', 'reader-account', 'other']);
 const VARIANTS = new Set(['normal', 'delayed-password']);
+const STAFF_SETUP_FILES = new Set(['e2e/auth.setup.js', 'e2e/auth-reader.setup.js', 'e2e/auth-rtl.setup.js']);
+const STAFF_SETUP_OUTCOMES = new Set(['throttled', 'rejected', 'no-completion']);
 const integer = (value, maximum) => Number.isFinite(value) ? Math.max(0, Math.min(maximum, Math.floor(value))) : 0;
+const httpStatuses = (values) => values.slice(0, 16).filter((v) => Number.isInteger(v) && v >= 100 && v <= 599);
 
 /** Only the explicit diagnostic schema crosses into an uploaded artifact. Never copy errors, logs or traces. */
 function boundary(attachments = []) {
@@ -27,10 +30,27 @@ function boundary(attachments = []) {
                 if (typeof value[key] === 'boolean') safe[key] = value[key];
             }
             if (Array.isArray(value.panel_redirects)) safe.panel_redirects = value.panel_redirects.slice(0, 3).filter((v) => typeof v === 'boolean');
-            if (Array.isArray(value.update_statuses)) safe.update_statuses = value.update_statuses.slice(0, 16).filter((v) => Number.isInteger(v) && v >= 100 && v <= 599);
+            if (Array.isArray(value.update_statuses)) safe.update_statuses = httpStatuses(value.update_statuses);
             return safe;
         } catch {
             // A malformed diagnostic must not become an error dump or prevent a retry report from being written.
+        }
+    }
+}
+
+function staffSetup(attachments = []) {
+    for (const attachment of attachments) {
+        if (attachment.name !== 'staff-setup-sign-in' || attachment.contentType !== 'application/json'
+            || !Buffer.isBuffer(attachment.body) || attachment.body.length > 8192) continue;
+        try {
+            const value = JSON.parse(attachment.body.toString('utf8'));
+            if (!value || !STAFF_SETUP_OUTCOMES.has(value.outcome)) continue;
+            return {
+                outcome: value.outcome,
+                update_statuses: Array.isArray(value.update_statuses) ? httpStatuses(value.update_statuses) : [],
+            };
+        } catch {
+            // Ignore malformed diagnostics without importing their content into the summary.
         }
     }
 }
@@ -49,7 +69,7 @@ class SafeDiagnostics {
         if (this.attempts.length >= 128) { this.omitted++; return; }
         const relative = path.relative(ROOT, test.location.file).replaceAll(path.sep, '/');
         const row = {
-            file: /^e2e\/[a-z0-9-]+\.spec\.js$/.test(relative) ? relative : 'unlisted',
+            file: /^e2e\/[a-z0-9-]+\.spec\.js$/.test(relative) || STAFF_SETUP_FILES.has(relative) ? relative : 'unlisted',
             line: integer(test.location.line, 1000000),
             retry: integer(result.retry, 20),
             status: STATUSES.has(result.status) ? result.status : 'unknown',
@@ -57,6 +77,10 @@ class SafeDiagnostics {
         };
         const diagnostic = boundary(result.attachments);
         if (diagnostic) row.boundary = diagnostic;
+        if (STAFF_SETUP_FILES.has(relative)) {
+            const setup = staffSetup(result.attachments);
+            if (setup) row.staff_setup = setup;
+        }
         this.attempts.push(row);
     }
 

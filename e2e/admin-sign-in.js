@@ -16,4 +16,44 @@ async function waitForAdminPassword(page) {
     });
 }
 
-module.exports = { waitForAdminPassword };
+/**
+ * Classify the normal staff setup response while a short-lived refusal is visible.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').TestInfo} testInfo
+ */
+async function submitStaffSetupSignIn(page, testInfo) {
+    const statuses = [];
+    const recordStatus = (response) => {
+        if (statuses.length < 16 && response.request().method() === 'POST'
+            && /\/livewire(?:-[^/]+)?\/update$/.test(new URL(response.url()).pathname)) {
+            statuses.push(response.status());
+        }
+    };
+    page.on('response', recordStatus);
+
+    try {
+        const timeout = 30_000;
+        const result = Promise.any([
+            page.waitForURL((url) => url.pathname.startsWith('/admin/') && !url.pathname.endsWith('/login'), { timeout })
+                .then(() => 'signed-in'),
+            page.getByText('Too many login attempts', { exact: true }).first()
+                .waitFor({ timeout }).then(() => 'throttled'),
+            page.getByText('These credentials do not match our records.', { exact: true }).first()
+                .waitFor({ timeout }).then(() => 'rejected'),
+        ]).catch(() => 'no-completion');
+        await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
+        const outcome = await result;
+
+        if (outcome !== 'signed-in') {
+            await testInfo.attach('staff-setup-sign-in', {
+                contentType: 'application/json',
+                body: Buffer.from(JSON.stringify({ outcome, update_statuses: statuses })),
+            });
+            throw new Error('Staff setup sign-in: ' + outcome);
+        }
+    } finally {
+        page.off('response', recordStatus);
+    }
+}
+
+module.exports = { waitForAdminPassword, submitStaffSetupSignIn };

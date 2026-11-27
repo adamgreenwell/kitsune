@@ -1,7 +1,7 @@
 // @ts-check
 const { test: setup, expect } = require('@playwright/test');
 const path = require('node:path');
-const { waitForAdminPassword } = require('./admin-sign-in');
+const { waitForAdminPassword, submitStaffSetupSignIn } = require('./admin-sign-in');
 
 const authFile = path.join(__dirname, '..', '.playwright', 'admin-auth.json');
 
@@ -13,26 +13,21 @@ const authFile = path.join(__dirname, '..', '.playwright', 'admin-auth.json');
  * selector rather than as contention, which cost a couple of rounds to see.
  * Authenticating once is also what Playwright recommends.
  */
-async function signIn(page, email, file) {
+async function signIn(page, email, file, testInfo) {
     await page.goto('/admin/login');
     await waitForAdminPassword(page);
 
     await page.locator('input[type="email"]').fill(email);
     await page.locator('input[type="password"]').fill('password');
-    await page.locator('form').getByRole('button', { name: 'Sign in' }).click();
-
-    await page.waitForURL(
-        (url) => url.pathname.startsWith('/admin/') && ! url.pathname.endsWith('/login'),
-        { timeout: 30_000 },
-    );
+    await submitStaffSetupSignIn(page, testInfo);
 
     await expect(page.locator('body')).not.toContainText('Sign in');
 
     await page.context().storageState({ path: file });
 }
 
-setup('authenticate', async ({ page }) => {
-    await signIn(page, 'alpha@kitsune.test', authFile);
+setup('authenticate', async ({ page }, testInfo) => {
+    await signIn(page, 'alpha@kitsune.test', authFile, testInfo);
 });
 
 /*
@@ -41,6 +36,6 @@ setup('authenticate', async ({ page }) => {
  * list shows nobody anything; the rival being shown it, in their own site, is what makes the refusal mean
  * something. Signed in here rather than in a spec for the reason this file exists at all.
  */
-setup('authenticate as the rival org\'s owner', async ({ page }) => {
-    await signIn(page, 'rival@kitsune.test', path.join(__dirname, '..', '.playwright', 'admin-rival-auth.json'));
+setup('authenticate as the rival org\'s owner', async ({ page }, testInfo) => {
+    await signIn(page, 'rival@kitsune.test', path.join(__dirname, '..', '.playwright', 'admin-rival-auth.json'), testInfo);
 });
