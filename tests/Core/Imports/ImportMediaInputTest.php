@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportMediaInput;
+use Kitsune\Core\Imports\StructuredDraftInput;
 use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
@@ -202,10 +203,11 @@ it('finalizes a staged media mapping and links it after a rollback without creat
         $journal = app(ImportJournal::class);
         $root = $this->mediaFixture.'/inside';
         $disk = Storage::fake(MediaDisks::PRIVATE);
-        $plan = $journal->preview('catalogue', 'json', hash('sha256', 'fixture'), [[
-            'source_type' => 'article', 'source_id' => 'draft', 'entry_type_id' => $type->id, 'title' => 'Draft', 'slug' => 'draft',
-            'links' => (object) ['lead_image' => [(object) ['source_type' => 'image', 'source_id' => '0042']]],
-        ]], true, [$asset], $root);
+        $input = app(StructuredDraftInput::class);
+        $links = ['lead_image' => [['source_type' => 'image', 'source_id' => '0042']]];
+        $csv = "source_type,source_id,entry_type,title,slug,links_json\narticle,draft,article,Draft,draft,\""
+            .str_replace('"', '""', json_encode($links, JSON_THROW_ON_ERROR))."\"\n";
+        $plan = $input->preview('csv', 'catalogue', $csv, ['article' => $type->id], true, [$asset], $root);
         $mediaStatus = fn (): array => $journal->executionReport($plan->report(), $plan->digest())['media'];
         expect($plan->complete)->toBeTrue()
             ->and($mediaStatus()[0])->toBe(['source_type' => 'image', 'source_id' => '0042', 'outcome' => 'pending', 'entry_id' => null])
@@ -276,10 +278,11 @@ it('finalizes a staged media mapping and links it after a rollback without creat
             ->and($journal->purgeStagedMedia($plan->report(), $plan->digest()))->toBe([$reservationId])
             ->and($mediaStatus()[0]['outcome'])->toBe('finalized');
 
-        $rerun = $journal->preview('catalogue', 'json', hash('sha256', 'revised fixture'), [[
-            'source_type' => 'article', 'source_id' => 'draft', 'entry_type_id' => $type->id, 'title' => 'Revised draft', 'slug' => 'draft',
-            'links' => (object) ['lead_image' => [(object) ['source_type' => 'image', 'source_id' => '0042']]],
-        ]], true, [$asset], $root);
+        $json = json_encode([[
+            'source_type' => 'article', 'source_id' => 'draft', 'entry_type' => 'article', 'title' => 'Revised draft', 'slug' => 'draft',
+            'links' => $links,
+        ]], JSON_THROW_ON_ERROR);
+        $rerun = $input->preview('json', 'catalogue', $json, ['article' => $type->id], true, [$asset], $root);
         expect($rerun->complete)->toBeTrue();
         [$reusedId] = $journal->stageMedia($rerun->report(), $rerun->digest(), $root);
         expect($reusedId)->not->toBe($reservationId)

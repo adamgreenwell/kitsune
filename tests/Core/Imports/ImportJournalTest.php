@@ -448,16 +448,61 @@ it('holds malformed CSV rows and preserves JSON IDs only when their source suppl
         true
     );
 
-    expect($plan->findings)->toBe([['position' => 2, 'code' => 'invalid-record']])
+    $badDocument = $input->preview('json', 'catalogue', '{"incomplete":', $types, true);
+    $badHeader = $input->preview('csv', 'catalogue', "source_type,source_id,entry_type,title,title\n", $types, true);
+    $badEncoding = $input->preview('json', 'catalogue', "\xFF", $types, true);
+
+    expect($plan->findings)->toBe([['position' => 2, 'code' => 'structured-invalid-csv-row']])
         ->and($plan->records[0]['source_id'])->toBe('good')
-        ->and($truncatedPlan->findings)->toBe([['position' => 1, 'code' => 'invalid-record']])
-        ->and($jsonPlan->findings)->toBe([['position' => 1, 'code' => 'invalid-record']])
-        ->and(fn () => $input->preview('json', 'catalogue', '{"incomplete":', $types, true))
-        ->toThrow(InvalidArgumentException::class, 'invalid JSON')
+        ->and($truncatedPlan->findings)->toBe([['position' => 1, 'code' => 'structured-invalid-csv-row']])
+        ->and($jsonPlan->findings)->toBe([['position' => 1, 'code' => 'structured-invalid-field-type', 'field' => 'source_id']])
+        ->and($badDocument->findings)->toBe([['position' => 0, 'code' => 'structured-invalid-json-document']])
+        ->and($badHeader->findings)->toBe([['position' => 0, 'code' => 'structured-invalid-csv-header']])
+        ->and($badEncoding->findings)->toBe([['position' => 0, 'code' => 'structured-invalid-utf8']])
+        ->and(ImportPlan::restore($badEncoding->report())->digest())->toBe($badEncoding->digest())
         ->and(fn () => $this->journal->apply($plan->report(), $plan->digest()))
         ->toThrow(DomainException::class, 'incomplete report')
         ->and(ImportSource::count())->toBe(0)
         ->and(Entry::count())->toBe(0);
+});
+
+it('reports source and destination failures at their original structured row positions', function (): void {
+    $rows = <<<'JSON'
+        [
+            {"source_type":"article","source_id":"accepted","entry_type":"catalogue","title":"Retained","slug":"first"},
+            false,
+            {"source_type":"article","source_id":"duplicate","entry_type":"catalogue","title":"Conflict","slug":"first"},
+            {"source_type":"article","source_id":"bad","entry_type":"unmapped","title":[],"private_key":"private value","values":null,"links":[]}
+        ]
+        JSON;
+    $input = app(StructuredDraftInput::class);
+    $types = ['catalogue' => $this->type->id];
+    $plan = $input->preview('json', 'catalogue', $rows, $types, true);
+
+    expect($plan->complete)->toBeFalse()
+        ->and(array_column($plan->records, 'source_id'))->toBe(['accepted'])
+        ->and($plan->findings)->toBe([
+            ['position' => 2, 'code' => 'structured-invalid-json-row'],
+            ['position' => 3, 'code' => 'repeated-destination-slug'],
+            ['position' => 4, 'code' => 'structured-invalid-field-type', 'field' => 'title'],
+            ['position' => 4, 'code' => 'structured-missing-field', 'field' => 'slug'],
+            ['position' => 4, 'code' => 'structured-unsupported-field'],
+            ['position' => 4, 'code' => 'structured-unmapped-entry-type', 'field' => 'entry_type'],
+            ['position' => 4, 'code' => 'structured-invalid-object', 'field' => 'values'],
+            ['position' => 4, 'code' => 'structured-invalid-object', 'field' => 'links'],
+        ])
+        ->and($plan->report())->not->toContain('private_key', 'private value')
+        ->and(ImportSource::count())->toBe(0);
+
+    $csv = "\xEF\xBB\xBFsource_type,source_id,entry_type,title,slug,values_json,links_json\r\n"
+        ."article,first,catalogue,First,first,,\r\n\r\narticle,second,catalogue,Second,second,not-json,[]\r\n";
+    $csvPlan = $input->preview('csv', 'catalogue', $csv, $types, true);
+
+    expect($csvPlan->findings)->toBe([
+        ['position' => 2, 'code' => 'structured-invalid-csv-row'],
+        ['position' => 3, 'code' => 'structured-invalid-object', 'field' => 'values_json'],
+        ['position' => 3, 'code' => 'structured-invalid-object', 'field' => 'links_json'],
+    ])->and(json_decode($csvPlan->report(), true)['snapshot_sha256'])->toBe(hash('sha256', $csv));
 });
 
 it('recovers a partly applied plan from its durable action receipts', function (): void {
@@ -573,8 +618,20 @@ it('uses the registered operator command for an exact preview, apply and status'
     $this->context->setSite($this->sibling);
 
     try {
+        $previewOptions = ['--source' => 'catalogue', '--format' => 'json', '--type' => ['stock=catalogue'], '--complete' => true];
+        file_put_contents($path, '{"incomplete":');
+        [$exit, $heldBytes] = $run('preview', $previewOptions);
+        $held = ImportPlan::restore($heldBytes);
+        expect($exit)->toBe(1)
+            ->and($held->siteId)->toBe($this->home->id)
+            ->and($held->findings)->toBe([['position' => 0, 'code' => 'structured-invalid-json-document']])
+            ->and($this->context->siteId())->toBe($this->sibling->id);
+        file_put_contents($path, $heldBytes);
+        expect($run('digest')[0])->toBe(1)
+            ->and($run('apply', ['--approval' => $held->digest()])[0])->toBe(1);
+
         file_put_contents($path, '[{"entry_type":"stock","source_type":"article","source_id":"code","title":"Draft","slug":"draft"}]');
-        [$exit, $bytes] = $run('preview', ['--source' => 'catalogue', '--format' => 'json', '--type' => ['stock=catalogue'], '--complete' => true]);
+        [$exit, $bytes] = $run('preview', $previewOptions);
         expect($exit)->toBe(0)
             ->and($this->context->siteId())->toBe($this->sibling->id)
             ->and(Entry::count())->toBe(0);
@@ -760,7 +817,7 @@ it('validates custom fields through the same contract as the Site API in both fo
     $invalid = $input->preview('json', 'catalogue', $json($row + ['values' => null]), $types, true);
     expect($incorrect->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values', 'field' => 'permalink']])
         ->and($missing->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values', 'field' => 'summary']])
-        ->and($invalid->findings)->toBe([['position' => 1, 'code' => 'invalid-record']])
+        ->and($invalid->findings)->toBe([['position' => 1, 'code' => 'structured-invalid-object', 'field' => 'values']])
         ->and(Entry::count())->toBe(0)
         ->and(ImportSource::count())->toBe(0);
 
