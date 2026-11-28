@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "fd9eb6f50e4cb47b7e8f5ab9c881f558",
+    "content-hash": "e1e324eea7b0f7af0e98378f393621d2",
     "packages": [],
     "packages-dev": [
         {
@@ -3054,6 +3054,34 @@
                 "MPL-2.0"
             ],
             "description": "People as content: authors, contacts and staff, as a first-party Kitsune module.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "kitsune/plugin-sdk",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "packages/plugin-sdk",
+                "reference": "2330377b2bbb5d651da5d17b668a0c2d58d82f2b"
+            },
+            "require": {
+                "kitsune/core": "@dev",
+                "orchestra/testbench": "^11.2",
+                "php": "^8.4"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Kitsune\\PluginSdk\\": "src/"
+                }
+            },
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "Development fixtures and isolation assertions for Kitsune extensions.",
             "transport-options": {
                 "symlink": true,
                 "relative": true
@@ -13300,6 +13328,7 @@
         "kitsune/core": 20,
         "kitsune/fixture-module": 20,
         "kitsune/person": 20,
+        "kitsune/plugin-sdk": 20,
         "kitsune/svg-sanitizer": 20
     },
     "prefer-stable": true,
