@@ -88,6 +88,10 @@ The projection modes read reviewed local files. Content
 bodies and original publication state stay in source custody while destination records
 remain drafts. Check taxonomy, authors, comments, headings, redirects and extension
 behavior against the intended migration scope before treating a source as complete.
+Preview reports `wordpress-parent-link-not-imported` for each record with a
+source parent. It identifies the child by source ID and record position. Review
+each reported relationship before approval and map it explicitly in the
+destination when the target content needs that hierarchy.
 
 
 For a local WXR 1.2 export, use `--format=wxr --wordpress-blog=ADDRESS --acf-schema=REPORT`.
