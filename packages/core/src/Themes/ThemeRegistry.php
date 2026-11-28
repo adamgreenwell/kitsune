@@ -45,9 +45,7 @@ final class ThemeRegistry
             return null;
         }
 
-        // A version declaration opts out of the provisional template interface. Keep it
-        // unavailable until this installation has a renderer for the declared contract.
-        if (! is_array($data) || array_key_exists('contract', $data)) {
+        if (! is_array($data) || (array_key_exists('contract', $data) && $data['contract'] !== 1)) {
             return null;
         }
 
@@ -62,7 +60,7 @@ final class ThemeRegistry
             }
         }
 
-        $theme = new SiteTheme($handle, $directory, array_values(array_unique($types)));
+        $theme = new SiteTheme($handle, $directory, array_values(array_unique($types)), $data['contract'] ?? null);
 
         return $theme->home() === null ? null : $theme;
     }
