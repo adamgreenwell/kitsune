@@ -12,19 +12,12 @@ namespace Kitsune\Core\Content;
 
 use DomainException;
 use Illuminate\Contracts\Auth\Authenticatable;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
-use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Http\Api\EntryFieldContract;
-use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
-use Kitsune\Core\Models\EntryTypeAvailability;
-use Kitsune\Core\Models\Site;
-use Kitsune\Core\Tenancy\Context;
 
 /**
  * Describe and validate the inline fields of a draft inside an established Site.
@@ -35,7 +28,7 @@ use Kitsune\Core\Tenancy\Context;
  */
 final readonly class SiteDraftFields
 {
-    public function __construct(private Context $context) {}
+    public function __construct(private SiteDraftAccess $access) {}
 
     /**
      * @param  list<FieldDeclaration>  $expected  Declared storage settings are compared without returning them.
@@ -43,7 +36,7 @@ final readonly class SiteDraftFields
      */
     public function describe(int $siteId, string $typeHandle, Authenticatable $actor, array $expected = []): array
     {
-        $type = $this->readableType($siteId, $typeHandle, $actor);
+        $type = $this->access->type($this->access->site($siteId), $typeHandle, $actor);
         $contract = EntryFieldContract::forType($type);
         $definitions = $contract->definitions();
         $fields = array_map(self::describeField(...), $definitions);
@@ -76,15 +69,8 @@ final readonly class SiteDraftFields
         array $values,
         ?int $entryId = null,
     ): array {
-        $type = $this->readableType($siteId, $typeHandle, $actor);
-        $entry = $entryId === null ? null : Entry::query()->useWritePdo()->where('org_id', $this->context->orgId())
-            ->where('site_id', $siteId)->where('entry_type_id', $type->getKey())->where('status', 'draft')->find($entryId);
-        $mayModify = $entryId === null
-            ? Permissions::allows($actor, Permissions::forEntryType($typeHandle, 'create'))
-            : $entry !== null && Gate::forUser($actor)->allows('update', $entry);
-        if (! $mayModify) {
-            throw new DomainException('The selected draft fields are unavailable.');
-        }
+        $type = $this->access->type($this->access->site($siteId), $typeHandle, $actor);
+        $entry = $this->access->writeTarget($siteId, $type, $actor, $entryId);
 
         $contract = EntryFieldContract::forType($type);
         if (! hash_equals(self::fingerprint($siteId, $type, $contract), $fingerprint)) {
@@ -108,32 +94,6 @@ final readonly class SiteDraftFields
         return $errors === [] ? ['values' => $validator->validated()['values'], 'errors' => []] : ['values' => [], 'errors' => $errors];
     }
 
-    private function readableType(int $siteId, string $handle, Authenticatable $actor): EntryType
-    {
-        $orgId = $this->context->orgId();
-        $site = $orgId === null || $siteId !== $this->context->siteId() ? null
-            : Site::query()->useWritePdo()->where('org_id', $orgId)->find($siteId);
-        if ($site === null) {
-            throw new DomainException('The selected draft fields are unavailable.');
-        }
-
-        // Resolve the current definition even when another screen has memoized the list of available types.
-        $type = EntryType::query()->useWritePdo()->where('handle', $handle)
-            ->where(static fn (Builder $query) => $query->whereNull('org_id')->orWhere('org_id', $orgId))
-            ->orderByRaw('CASE WHEN org_id IS NULL THEN 1 ELSE 0 END')
-            ->with([
-                'fields' => static fn ($query) => $query->useWritePdo(),
-                'fields.fieldStorage' => static fn ($query) => $query->useWritePdo(),
-            ])->first();
-        Permissions::forget();
-        if ($type === null || $type->is_media || ! EntryTypeAvailability::isEnabledFor($type, $site)
-            || ! Permissions::allows($actor, Permissions::forEntryType($handle, 'view'))) {
-            throw new DomainException('The selected draft fields are unavailable.');
-        }
-
-        return $type;
-    }
-
     /** @return FieldDescription */
     private static function describeField(FieldConfig $field): array
     {
@@ -145,7 +105,8 @@ final readonly class SiteDraftFields
         ];
     }
 
-    private static function fingerprint(int $siteId, EntryType $type, EntryFieldContract $contract): string
+    /** @internal Used by the draft writer after resolving the current field graph. */
+    public static function fingerprint(int $siteId, EntryType $type, EntryFieldContract $contract): string
     {
         $fields = array_map(static fn (FieldConfig $field): array => [
             ...self::describeField($field),

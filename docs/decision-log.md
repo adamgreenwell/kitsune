@@ -2111,6 +2111,15 @@ field path. Callers keep responsibility for the transaction and any writes.
 Promoted fields and relationships use their existing write paths. This
 candidate supplies evidence for #235's v1.2 extension audit.
 
+The internal `SiteDraftWriter` candidate puts draft metadata, field values and
+ordered relations in one transaction. It requires the active staff actor and
+the same Site and schema fingerprint. An update also supplies the draft's
+reviewed revision ID. The writer returns the saved identity and current
+revision, or validation errors with the transaction rolled back. New relation
+targets must pass the normal view policy on the current Site, including Org-shared
+entries visible there. The Site API and the writer share value partitioning.
+The host keeps ownership of source receipts and decides when to apply a plan.
+
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
 **Status:** Decided · 2026-09-10 · **Amended 2026-09-22 by ADR-039** — the idempotency condition is met by an
