@@ -5,7 +5,8 @@ standalone Filament Resource when a workflow needs its own models, storage, or a
 pages. One installation can combine both with blueprints for content structure and
 Blade themes for public presentation.
 
-This guide describes the current author workflow. The v1.2 extension contract will
+This guide describes the current author workflow. See the
+[extension surface audit](extension-surface.md) for the proposed v1.2 boundaries. The v1.2 extension contract will
 identify the supported APIs and compatibility guarantees. Use first-party modules
 such as `kitsune/person` to understand the implementation, and check the contract
 before depending on a class, hook, or view.

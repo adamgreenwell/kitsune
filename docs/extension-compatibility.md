@@ -2,7 +2,8 @@
 
 The compatibility promise starts with the first stable release that publishes the
 v1.2 extension inventory. The freeze under [#235](https://github.com/adamgreenwell/kitsune/issues/235)
-selects the supported PHP declarations and behaviors, including any supported Blade
+selects the supported PHP declarations and behaviors from the
+[extension surface audit](extension-surface.md), including any supported Blade
 inputs and menu shapes. Pre-freeze examples help authors rehearse the workflow.
 The inventory establishes the supported contract. Maintainers may change
 `@internal` code between releases.
