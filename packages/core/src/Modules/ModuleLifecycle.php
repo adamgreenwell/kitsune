@@ -219,9 +219,7 @@ final class ModuleLifecycle
             return "{$handle} is already enabled.";
         }
 
-        Event::dispatch(new ModuleEnabled($handle));
-
-        return "Enabled {$handle}.";
+        return self::notifySwitch(new ModuleEnabled($handle), "Enabled {$handle}.");
     }
 
     public static function disable(Application $app, string $handle): string
@@ -230,9 +228,31 @@ final class ModuleLifecycle
             return "{$handle} is already disabled.";
         }
 
-        Event::dispatch(new ModuleDisabled($handle));
+        return self::notifySwitch(
+            new ModuleDisabled($handle),
+            "Disabled {$handle}. Its schema and data are untouched; `kitsune:module uninstall` removes those.",
+        );
+    }
 
-        return "Disabled {$handle}. Its schema and data are untouched; `kitsune:module uninstall` removes those.";
+    private static function notifySwitch(ModuleEnabled|ModuleDisabled $event, string $message): string
+    {
+        $connection = (new Module)->getConnection();
+        $pending = $connection->transactionLevel() > 0 && $connection->getPdo()->inTransaction();
+
+        try {
+            Event::dispatch($event);
+        } catch (Throwable $failure) {
+            $state = $pending ? 'The caller still controls the open transaction.' : 'The switch already committed.';
+
+            throw new RuntimeException(
+                "{$message} A module notification listener failed. {$state} "
+                .'Other listeners may have been skipped. Repeating an unchanged switch skips notification. '
+                .$failure->getMessage(),
+                previous: $failure,
+            );
+        }
+
+        return $message;
     }
 
     public static function upgrade(Application $app, string $handle): string
