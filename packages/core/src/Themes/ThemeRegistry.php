@@ -45,7 +45,13 @@ final class ThemeRegistry
             return null;
         }
 
-        $types = is_array($data) ? ($data['entry_types'] ?? null) : null;
+        // A version declaration opts out of the provisional template interface. Keep it
+        // unavailable until this installation has a renderer for the declared contract.
+        if (! is_array($data) || array_key_exists('contract', $data)) {
+            return null;
+        }
+
+        $types = $data['entry_types'] ?? null;
         if (! is_array($types) || ! array_is_list($types)) {
             return null;
         }
