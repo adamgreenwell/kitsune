@@ -8872,8 +8872,11 @@ not only Kitsune's, passes through what follows.
   `preventFilePathTampering()`, so it never writes to a disk and never mints a URL for a string the browser sends
   back. The handler takes only `TemporaryUploadedFile` values, authorises first, and removes the staged file
   **and** its `.json` sidecar — which holds the client's original filename — in a `finally`.
-- `RichEditor` is built with file attachments off. An image belongs in a relation field to a media entry, which
-  is what ADR-016 designed; an inline `<img>` in rich text stays allowed by the sanitiser but gains no upload path.
+- `RichEditor` is built with file attachments off. An image belongs in a relation field to a media entry, as
+  specified in ADR-016. A reviewed import can retain the image's position as a reference to the linked entry.
+  The staff preview resolves the reference through media authorization for the current Site. Public templates
+  resolve it once the file is served from the public disk. The stored body carries the entry ID and alternative
+  text for each position. All file intake and visibility changes go through the media library.
 - Table columns are never handed a disk path. Filament's `ImageColumn` treats a state that is not a URL or a
   `data:` URI as a path on its disk and, on any disk but `public` unless told otherwise, mints a `temporaryUrl()`
   for it — which on `local` skips `EntryPolicy`. Tiles are Kitsune's own column, built from the URLs in decision

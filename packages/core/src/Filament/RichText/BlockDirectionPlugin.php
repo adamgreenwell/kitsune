@@ -148,6 +148,7 @@ class BlockDirectionPlugin implements RichContentPlugin
     {
         return [
             new BlockDirection,
+            new InlineMediaReference,
         ];
     }
 
@@ -158,6 +159,7 @@ class BlockDirectionPlugin implements RichContentPlugin
     {
         return [
             FilamentAsset::getScriptSrc(self::ASSET, self::PACKAGE),
+            FilamentAsset::getScriptSrc(InlineMediaReference::ASSET, self::PACKAGE),
         ];
     }
 

@@ -36,11 +36,12 @@ final readonly class WordPressDraftInput
      * @param  list<ImportMediaAsset>  $media
      * @param  list<Finding>  $bodyNotices
      * @param  array<string, string>  $bodyFields
+     * @param  array<array-key, array{relation: string, attachments: list<string>, positions: list<int>}>  $placements
      */
     public function preview(
         string $mode, string $sourceKey, string $projection, array $destinationTypes, bool $complete,
         array $media, ?string $mediaRoot, ?string $snapshot = null, ?string $confirmedBlog = null,
-        array $bodyNotices = [], bool $metadataOnly = true, array $bodyFields = [],
+        array $bodyNotices = [], bool $metadataOnly = true, array $bodyFields = [], array $placements = [],
     ): ImportPlan {
         if (! in_array($mode, ['direct', 'wxr'], true)) {
             throw new InvalidArgumentException('Use a direct or WXR WordPress projection.');
@@ -89,6 +90,18 @@ final readonly class WordPressDraftInput
                 $links[$field] = [(object) ['source_type' => 'attachment', 'source_id' => $attachment]];
             }
             $bodyField = $bodyFields[$row->source->type] ?? null;
+            $placement = $placements[$id] ?? null;
+            if ($placement !== null && $bodyField !== null) {
+                foreach ($placement['attachments'] as $attachment) {
+                    if (! isset($attachments[$attachment])) {
+                        $unavailableLinks[$id] = true;
+                    }
+                }
+                $links[$placement['relation']] = array_map(
+                    static fn (string $attachment): stdClass => (object) ['source_type' => 'attachment', 'source_id' => $attachment],
+                    $placement['attachments'],
+                );
+            }
             $drafts[] = [
                 'source_type' => $row->source->type,
                 'source_id' => $id,
@@ -98,6 +111,9 @@ final readonly class WordPressDraftInput
                 'values' => (object) $values,
                 'links' => (object) $links,
                 ...($bodyField === null || ! isset($values[$bodyField]) ? [] : ['reviewed_rich_text' => [$bodyField]]),
+                ...($placement === null || $bodyField === null ? [] : ['inline_media' => [(object) [
+                    'field' => $bodyField, 'relation' => $placement['relation'], 'positions' => $placement['positions'],
+                ]]]),
             ];
         }
 

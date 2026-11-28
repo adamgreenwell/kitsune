@@ -351,8 +351,21 @@ final class RichTextType extends BaseFieldType
 
     private function cleanAttributes(DOMElement $element): void
     {
+        $reference = $element->getAttribute('data-kitsune-media');
+        $isReference = $element->tagName === 'img'
+            && preg_match('/^[1-9][0-9]{0,18}$/D', $reference) === 1
+            && filter_var($reference, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
+
         foreach (iterator_to_array($element->attributes ?? []) as $attribute) {
             $name = strtolower($attribute->nodeName);
+            if ($isReference && $name === 'data-kitsune-media') {
+                continue;
+            }
+            if ($isReference && $name === 'src') {
+                $element->removeAttribute($attribute->nodeName);
+
+                continue;
+            }
 
             if (! in_array($name, self::ALLOWED_ATTRIBUTES, true)) {
                 $element->removeAttribute($attribute->nodeName);

@@ -19,6 +19,7 @@ use Kitsune\Core\Console\ImportDraftsCommand;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Imports\ImportJournal;
+use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportPlan;
 use Kitsune\Core\Imports\ImportRedirectPlan;
 use Kitsune\Core\Imports\ImportSchema;
@@ -68,6 +69,19 @@ function journalFixtureDraft(EntryType $type, string $slug = 'first', string $so
 {
     return ['source_type' => $sourceType, 'source_id' => $sourceId, 'entry_type_id' => $type->id, 'title' => ucfirst($slug), 'slug' => $slug];
 }
+
+it('requires an approved placement for references in imported values', function (): void {
+    $draft = journalFixtureDraft($this->type) + ['expected_revision_id' => null];
+    $reference = '<p><img DATA-KITSUNE-MEDIA="12" alt="Existing media"></p>';
+
+    foreach ([$reference, [(object) ['value' => $reference]]] as $value) {
+        expect(fn () => ImportPlan::draft((object) ($draft + ['values' => (object) ['body' => $value]])))
+            ->toThrow(InvalidArgumentException::class, 'Inline media references need an approved placement.');
+    }
+
+    expect(ImportPlan::draft((object) ($draft + ['values' => (object) ['body' => 'The data-kitsune-media attribute.']])))
+        ->toHaveKey('values');
+});
 
 it('includes adapter diagnostics in the approved bytes and refuses source blockers', function (): void {
     $draft = journalFixtureDraft($this->type);
@@ -1142,6 +1156,48 @@ it('plans the selected WordPress rich text field and writes only reviewed draft 
             ->and($related->site_id)->toBe($this->home->id)
             ->and($entry->fresh()->relationState())->toBe([$relation->id => [$related->id]])
             ->and($entry->fresh()->values['source_body'])->toContain('Updated copy');
+
+        file_put_contents($acf, '{"blocked":false,"groups":[]}');
+        $url = 'https://fixture.example.test/uploads/photo.png';
+        $inlineBody = '<p>Before.</p><!-- wp:image --><figure><img src="'.$url.'" alt="First"><figcaption>Caption</figcaption></figure>'
+            .'<!-- /wp:image --><p>Between.</p><img src="'.$url.'" alt="Second">';
+        $descriptor = ImportMediaAsset::fromDescriptor(json_decode(file_get_contents($manifest), flags: JSON_THROW_ON_ERROR)[0]);
+        $reference = ['url' => $url, 'attachment_id' => '40', 'descriptor_sha256' => $descriptor->descriptorHash()];
+        $inventory = $temporary.'/inline.json';
+        $reviewed = [
+            'source_type' => 'post', 'source_id' => '17', 'body_sha256' => hash('sha256', $inlineBody),
+            'relation' => 'illustration', 'images' => [$reference, $reference],
+        ];
+        $inlineOptions = ['--media-manifest' => $manifest, '--media-root' => $temporary, '--wordpress-inline-media' => $inventory];
+        file_put_contents($inventory, json_encode([array_replace($reviewed, ['images' => [$reference]])], JSON_THROW_ON_ERROR));
+        [$heldStatus, $heldBytes] = $preview($inlineBody, override: $inlineOptions, attachment: $attachment);
+        expect($heldStatus)->toBe(1)
+            ->and(array_column(ImportPlan::restore($heldBytes)->findings, 'code'))
+            ->toContain('wordpress-finding-inline-image-inventory-mismatch');
+        file_put_contents($inventory, json_encode([$reviewed], JSON_THROW_ON_ERROR));
+        [$inlineStatus, $inlineReport] = $preview($inlineBody, override: $inlineOptions, attachment: $attachment);
+        $inlinePlan = ImportPlan::restore($inlineReport);
+        expect($inlinePlan->findings)->toBe([])
+            ->and($inlineStatus)->toBe(0)
+            ->and($inlinePlan->records[0]['inline_media'])->toBe([
+                ['field' => 'source_body', 'relation' => 'illustration', 'positions' => [0, 0]],
+            ])->and($inlinePlan->records[0]['values']['source_body'])
+            ->toContain('data-kitsune-media="1"', 'data-kitsune-media="2"', '<p>Caption</p>')
+            ->not->toContain($url);
+        file_put_contents($report, $inlineReport);
+        $applyInline = array_replace($command, ['--approval' => $inlinePlan->digest()]);
+        expect($kernel->call('kitsune:import-drafts', array_replace($applyInline, [
+            'action' => 'stage-media', '--media-root' => $temporary,
+        ])))->toBe(0)->and($kernel->call('kitsune:import-drafts', $applyInline))->toBe(0);
+        $updated = $entry->fresh();
+        expect($updated->relationState())->toBe([$relation->id => [$related->id]])
+            ->and($updated->status)->toBe('draft')
+            ->and(substr_count($updated->values['source_body'], 'data-kitsune-media="'.$related->id.'"'))->toBe(2)
+            ->and($updated->values['source_body'])->toContain('>Caption</p>')
+            ->and($updated->values['source_body'])->not->toContain($url)
+            ->and($kernel->call('kitsune:import-drafts', $applyInline))->toBe(0)
+            ->and(Entry::where('entry_type_id', $mediaType->id)->count())->toBe(1);
+
     } finally {
         (new Filesystem)->deleteDirectory($temporary);
     }

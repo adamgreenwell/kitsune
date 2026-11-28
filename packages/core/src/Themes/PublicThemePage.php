@@ -12,8 +12,11 @@ namespace Kitsune\Core\Themes;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\View;
+use Illuminate\Support\HtmlString;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Kitsune;
+use Kitsune\Core\Media\InlineMediaPresentation;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Relations\EntryRelationResolver;
@@ -107,6 +110,16 @@ final class PublicThemePage
             'entryPath' => PublicEntryPaths::path($site, $entry->type_handle, $slug),
             'related' => $related,
             'relatedPaths' => $relatedPaths,
+            'richText' => static function (string $handle) use ($type, $entry, $site): ?HtmlString {
+                $storage = $type->fields->first(fn ($field) => $field->fieldStorage?->handle === $handle)?->fieldStorage;
+                if ($storage === null || $storage->type !== RichTextType::handle() || $storage->cardinality !== 1) {
+                    return null;
+                }
+
+                $value = $entry->values[$handle] ?? null;
+
+                return is_string($value) ? InlineMediaPresentation::publicHtml($entry, $site, $value) : null;
+            },
         ]);
     }
 

@@ -39,6 +39,8 @@ use RuntimeException;
  *
  * @phpstan-import-type DraftAction from ImportPlan
  * @phpstan-import-type Finding from ImportPlan
+ * @phpstan-import-type LinkTargets from ImportPlan
+ * @phpstan-import-type Placement from InlineMediaPlacement
  */
 final readonly class ImportJournal
 {
@@ -330,7 +332,11 @@ final readonly class ImportJournal
                 $action['source_type'],
                 $action['source_id'],
                 $action['entry_type_id'],
-                ['title' => $action['title'], 'slug' => $action['slug'], 'values' => $action['values'] ?? []],
+                [
+                    'title' => $action['title'], 'slug' => $action['slug'],
+                    'values' => $action['values'] ?? [], 'links' => $action['links'] ?? [],
+                    'inline_media' => $action['inline_media'] ?? [],
+                ],
                 $action['expected_revision_id'],
                 $index + 1,
             );
@@ -345,6 +351,35 @@ final readonly class ImportJournal
         $this->transitionExecution($plan->siteId, $execution->id, 'completed');
 
         return $entries;
+    }
+
+    /**
+     * @param  array{values?: array<string, mixed>, links?: LinkTargets, inline_media?: list<Placement>}  $action
+     * @return array<string, mixed>
+     */
+    private function resolveInlineMedia(int $siteId, int $sourceId, array $action): array
+    {
+        $values = $action['values'] ?? [];
+        foreach ($action['inline_media'] ?? [] as $placement) {
+            $field = $placement['field'];
+            $links = $action['links'][$placement['relation']];
+            $ids = [];
+            foreach ($placement['positions'] as $index) {
+                $target = $links[$index];
+                $entry = $this->mappedEntry($siteId, $sourceId, $target['source_type'], $target['source_id']);
+                if ($entry === null || ! $entry->mediaFile()->exists()) {
+                    throw new DomainException('The approved inline media is unavailable on this Site.');
+                }
+                $ids[] = (int) $entry->getKey();
+            }
+            $html = $values[$field] ?? null;
+            if (! is_string($html)) {
+                throw new DomainException('The approved inline media body is unavailable.');
+            }
+            $values[$field] = InlineMediaPlacement::apply($html, $ids);
+        }
+
+        return $values;
     }
 
     /**
@@ -587,7 +622,7 @@ final readonly class ImportJournal
     /**
      * Apply one approved draft action. The plan supplies the expected target revision for updates.
      *
-     * @param  array{title: string, slug: string, values?: array<string, mixed>}  $content
+     * @param  array{title: string, slug: string, values?: array<string, mixed>, links?: LinkTargets, inline_media?: list<Placement>}  $content
      */
     private function writeDraft(
         int $executionId,
@@ -607,7 +642,7 @@ final readonly class ImportJournal
         $attributes = [
             'title' => $content['title'],
             'slug' => $content['slug'],
-            ...array_intersect_key($content, ['values' => true]),
+            ...array_intersect_key($content, ['values' => true, 'links' => true, 'inline_media' => true]),
         ];
 
         return TransactionRecovery::run(DB::connection(), function () use (
@@ -664,7 +699,7 @@ final readonly class ImportJournal
             $type = EntryType::query()->findOrFail($entryTypeId);
             $entry->fill(DraftFieldValues::attributes(
                 $type, $creating ? null : $entry, ['title' => $attributes['title'], 'slug' => $attributes['slug']],
-                $attributes['values'] ?? [],
+                $this->resolveInlineMedia($siteId, $execution->import_source_id, $attributes),
             ));
 
             if (! $entry->save()) {

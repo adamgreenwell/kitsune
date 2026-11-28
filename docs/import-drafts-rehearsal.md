@@ -92,10 +92,30 @@ the current field and normalization before writing drafts.
 
 The reader retains up to 512 KiB per source body and 16 MiB of bodies per report.
 The normalized values also have a 16 MiB report budget. Password-protected bodies
-and recognized inline media hold approval. Media mentioned in a body needs reviewed
-rehosting before conversion can proceed. The reader keeps the WordPress source
-bytes local and includes the original body digest in its source fingerprint.
+hold approval. The reader keeps the WordPress source bytes local and includes the
+original body digest in its source fingerprint.
 WordPress rendering behavior such as shortcodes remains an editorial review item.
+
+For supported inline images, add `--wordpress-inline-media=PATH` at preview along
+with the local media manifest and root. The inventory is a JSON list. Each row
+contains `source_type`, `source_id`, `body_sha256`, the destination media relation
+handle in `relation`, and an `images` list in body order. Every occurrence contains
+the exact `url` from the body, the WordPress `attachment_id`, and the
+`descriptor_sha256` of the approved attachment descriptor. Repeat occurrences in
+the inventory when a body uses the same image more than once. The attachment path
+must match the offline source, and the destination field must accept its media type.
+Calculate `descriptor_sha256` from PHP's compact JSON encoding of the descriptor,
+with keys ordered as `source_type`, `source_id`, `path`, `original_name`, `size`,
+`sha256`, and `entry_type_id`. Include `entry_type_id` even if its value is null.
+The preview holds unsupported embeds, responsive source sets, mismatches, and unused
+inventory. The importer reads attachment bytes from the local root.
+
+Stage and apply the reviewed report to retain the image positions and caption text in
+the draft. Captions become paragraphs next to their image. The staff editor previews
+rehosted files through the existing media authorization. A public entry template can
+call `{{ $richText('body') }}` for its
+configured field. An operator can use the media library to make individual assets
+public. Until then, the public view preserves the caption or alternative text.
 
 ## Plan former addresses
 
