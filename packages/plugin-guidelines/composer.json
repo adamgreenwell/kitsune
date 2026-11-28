@@ -1,0 +1,6 @@
+{
+    "name": "kitsune/plugin-guidelines",
+    "description": "Kitsune extension authoring guidance for Laravel Boost.",
+    "license": "MPL-2.0",
+    "type": "library"
+}
