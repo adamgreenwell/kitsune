@@ -13,7 +13,7 @@ described in this guide. [Extension compatibility and deprecation](extension-com
 | Module package and boot | The Composer `extra.kitsune.provider`, `extra.kitsune.scoping`, and PSR-4 requirements. Evaluate the provider’s `registerModule()`, `bootModule()`, `migrationPath()`, `install()`, and `uninstall()` hooks with an independently admitted consumer. | The kernel, receipt storage, Laravel registration order, and internal admin, privacy, settings, and maintenance adapters. Approve the enable and disable events separately once their timing and payloads have compatibility probes. |
 | Blueprint definition and registration | `BlueprintDefinition`, the declaration objects it accepts, and the proposed boot-time `BlueprintRegistrar::register()`. Keep apply, status, seed, and reverse available through the documented operator workflow. | `BlueprintRegistry`, `BlueprintApplier`, dependency order, receipts, and first-owner provisioning. Review the supported declaration parameters together, including those that compose CMS and DAM content. [Registration draft](https://github.com/adamgreenwell/kitsune/pull/475) |
 | Blade themes | The theme layout, manifest, Site selection commands, and admitted template precedence. For contract 1, review the `ThemeView` values and methods below, plus `ThemeViewSelection::forRender(int $orgId, int $siteId, ?string $entryType)` for the host. | Theme discovery, renderers, raw Site and Entry models, request cache plumbing, route resolution, and media delivery internals. [Projection draft](https://github.com/adamgreenwell/kitsune/pull/466) · [Inline image draft](https://github.com/adamgreenwell/kitsune/pull/478) |
-| Site draft content | The proposed `SiteDraftFields::describe()` and `validate()`, and `SiteDraftWriter::save()`. Preserve the affirmative staff and Site checks, the reviewed field fingerprint, ordered allowed relations, and the revision comparison. | `EntryFieldContract`, `EntryRelationWriter`, storage rows, API serialization, audit internals, and private importer bookkeeping. [Field draft](https://github.com/adamgreenwell/kitsune/pull/476) · [Write draft](https://github.com/adamgreenwell/kitsune/pull/477) |
+| Site draft content | The proposed `SiteDraftFields::describe()` and `validate()`, and `SiteDraftWriter::save()`. Review `SiteDraftSnapshot::read()` alongside them for approved-plan consumers. Preserve the affirmative staff and Site checks, the reviewed field fingerprint, ordered allowed relations, and the revision comparison. | `EntryFieldContract`, `EntryRelationWriter`, storage rows, API serialization, audit internals, and private importer bookkeeping. [Field draft](https://github.com/adamgreenwell/kitsune/pull/476) · [Write draft](https://github.com/adamgreenwell/kitsune/pull/477) |
 | Batch Site address changes | `Site::saveAllInHostOrder()` from #71. Qualify its outer transaction requirement, a single Org and connection, returned saved models, and rollback and retry behavior. | Hostname locks, origin queries, and observer checks. This batch covers Site rows and their address claims. The draft entry writer covers an Entry and its verified relations in the selected Site. Plugin tables retain their own persistence boundary. [Batch draft](https://github.com/adamgreenwell/kitsune/pull/479) |
 | Plugin author tools | The SDK test base and scope fixture, the explicit source validator workflow, and the optional Boost guidelines. Qualify the authoritative example as an installed package. | Static-analysis heuristics, review workflow plumbing, and trust-admission decisions. [Plugin integration guide](plugin-integrations.md) |
 
@@ -51,6 +51,14 @@ The author workflow must keep a sibling Site and a foreign Org in its tests. Ver
 grant, withdrawal, and delivery through the real entry point when a composition
 uses private assets. Keep a plugin’s grades, progress, or other custom records under
 its own permissions and storage policy.
+
+A host that compares a draft with an earlier receipt can use the proposed snapshot
+read under the active staff actor and exact Site. It returns live draft attributes,
+the corresponding revision token, and the selected relation fields in stored order.
+Pins are entry IDs. A followed translation group remains a group reference. The
+read refuses a selected field with an unavailable target, so a receipt cannot
+silently ignore inaccessible changes. The host continues to define and compare
+its own receipt format.
 
 ## Existing first-party exceptions
 

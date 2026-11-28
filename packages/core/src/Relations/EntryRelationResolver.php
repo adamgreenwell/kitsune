@@ -13,6 +13,7 @@ namespace Kitsune\Core\Relations;
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\JoinClause;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
@@ -68,7 +69,7 @@ final class EntryRelationResolver
             return [];
         }
 
-        $entries = $prototype->newQuery()->where('entries.org_id', $orgId)
+        $entries = EntryWriteReads::query($prototype->newQuery())->where('entries.org_id', $orgId)
             ->when($publishedOnly, fn (Builder $query) => $query->published());
         $readableSources = (clone $entries)->whereKey($sourceIds)->get()->filter($canRead)->keyBy('id');
 
@@ -77,7 +78,8 @@ final class EntryRelationResolver
         }
 
         $connection = $prototype->getConnectionName();
-        $fields = (new Field)->setConnection($connection)->newQuery()->with('fieldStorage')
+        $fields = EntryWriteReads::query((new Field)->setConnection($connection)->newQuery())
+            ->with(['fieldStorage' => static fn ($query) => EntryWriteReads::query($query->getQuery())])
             ->whereIntegerInRaw('entry_type_id', $readableSources->pluck('entry_type_id')->unique()->all())
             ->whereIntegerInRaw('field_storage_id', $storageIds)->get();
 
@@ -90,7 +92,7 @@ final class EntryRelationResolver
             }
         }
 
-        $links = (new EntryRelation)->setConnection($connection)->newQuery()
+        $links = EntryWriteReads::query((new EntryRelation)->setConnection($connection)->newQuery())
             ->where('org_id', $orgId)->whereIntegerInRaw('source_entry_id', $readableSources->modelKeys())
             ->whereIntegerInRaw('field_storage_id', $storageIds)
             ->orderBy('ordering')->orderBy('id')->get()

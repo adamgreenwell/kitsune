@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kitsune\Core\Database\EntryWriteReads;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -96,7 +97,7 @@ class EntryTypeAvailability extends Model
             return [];
         }
 
-        $rows = static::query()
+        $rows = EntryWriteReads::query(static::query())
             ->whereIn('entry_type_id', $typeIds)
             ->where(function ($query) use ($siteId, $siteGroupId, $orgId): void {
                 foreach (self::levels($siteId, $siteGroupId, $orgId) as [$type, $id]) {
