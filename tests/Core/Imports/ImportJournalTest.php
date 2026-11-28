@@ -602,13 +602,15 @@ it('approves a local WordPress projection through the command and refuses its so
     $options = ['--source' => 'fixture-wordpress', '--format' => 'wordpress-wxr', '--type' => ['post=catalogue'], '--complete' => true];
     try {
         $blockedInput = array_replace($projection, [
-            'blocked' => true, 'findings' => [['source_id' => '17', 'code' => 'ambiguous-acf-value']],
+            'blocked' => true, 'findings' => [['source_id' => '17', 'code' => 'ambiguous-acf-value', 'field' => 'summary']],
         ]);
         file_put_contents($path, json_encode($blockedInput, JSON_THROW_ON_ERROR));
         [$exit, $bytes] = $run('preview', $options);
         $blocked = ImportPlan::restore($bytes);
         expect($exit)->toBe(1)
-            ->and($blocked->findings)->toBe([['position' => 1, 'code' => 'wordpress-finding-ambiguous-acf-value', 'source_id' => '17']])
+            ->and($blocked->findings)->toBe([[
+                'position' => 1, 'code' => 'wordpress-finding-ambiguous-acf-value', 'source_id' => '17', 'field' => 'summary',
+            ]])
             ->and($blocked->sourceNotices)->toHaveCount(4);
         file_put_contents($path, $bytes);
         expect($run('digest')[0])->toBe(1)->and(Entry::count())->toBe(0);
@@ -739,8 +741,8 @@ it('validates custom fields through the same contract as the Site API in both fo
     ]), $types, true);
     $missing = $input->preview('json', 'catalogue', $json($row), $types, true);
     $invalid = $input->preview('json', 'catalogue', $json($row + ['values' => null]), $types, true);
-    expect($incorrect->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values']])
-        ->and($missing->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values']])
+    expect($incorrect->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values', 'field' => 'permalink']])
+        ->and($missing->findings)->toBe([['position' => 1, 'code' => 'invalid-field-values', 'field' => 'summary']])
         ->and($invalid->findings)->toBe([['position' => 1, 'code' => 'invalid-record']])
         ->and(Entry::count())->toBe(0)
         ->and(ImportSource::count())->toBe(0);

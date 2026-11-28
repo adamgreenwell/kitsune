@@ -17,7 +17,8 @@ php artisan kitsune:import-drafts status review.json --org=demo --site=catalogue
 ```
 
 Use `--complete` when the input covers the intended import. Review the planned actions and findings
-before approving the digest. Keep the exact report and the approved digest for status checks and a
+before approving the digest. Field diagnostics identify the affected source or destination field
+when the adapter or validator can name it. Keep the exact report and the approved digest for status checks and a
 restart. The status output reports committed draft and relation actions. Pending actions have no
 committed receipt. An independently changed destination entry or schema requires a new review.
 

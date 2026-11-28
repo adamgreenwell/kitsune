@@ -134,7 +134,8 @@ final readonly class WordPressDraftInput
         foreach (self::items($value) as $finding) {
             if (! $finding instanceof stdClass || ! is_string($finding->code ?? null)
                 || ! self::knownKeys($finding, ['code', 'source_id', 'field'])
-                || (isset($finding->source_id) && ! self::validId($finding->source_id))) {
+                || (isset($finding->source_id) && ! self::validId($finding->source_id))
+                || (property_exists($finding, 'field') && ! is_string($finding->field))) {
                 throw new InvalidArgumentException('The WordPress projection contains an invalid finding.');
             }
             $id = $finding->source_id ?? null;
@@ -142,6 +143,7 @@ final readonly class WordPressDraftInput
                 'position' => $id === null ? 0 : ($positions[$id] ?? 0),
                 'code' => 'wordpress-finding-'.$finding->code,
                 ...($id === null ? [] : ['source_id' => $id]),
+                ...(isset($finding->field) ? ['field' => $finding->field] : []),
             ];
         }
 
