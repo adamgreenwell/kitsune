@@ -8,6 +8,8 @@
 
 declare(strict_types=1);
 
+use Filament\Forms\Components\RichEditor\RichContentRenderer;
+use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Filament\RichText\BlockDirection;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
@@ -44,6 +46,13 @@ function bundledEditor(): ?string
 
     return null;
 }
+
+it('preserves an inline media reference through the server editor renderer', function (): void {
+    $stored = '<p dir="auto">Look <img data-kitsune-media="12" alt="Detail"> here.</p>';
+    $renderer = RichContentRenderer::make($stored)->plugins([new BlockDirectionPlugin]);
+
+    expect((new RichTextType)->sanitize($renderer->toUnsafeHtml()))->toBe($stored);
+});
 
 it('maps every tag the model gives a direction to', function (): void {
     /*

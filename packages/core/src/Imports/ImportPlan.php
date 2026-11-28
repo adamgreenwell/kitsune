@@ -19,9 +19,11 @@ use stdClass;
  *
  * @internal
  *
+ * @phpstan-import-type Placement from InlineMediaPlacement
+ *
  * @phpstan-type Finding array{position: int, code: string, source_id?: string, field?: string}
  * @phpstan-type LinkTargets array<string, list<array{source_type: string, source_id: string}>>
- * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets, reviewed_rich_text?: list<string>}
+ * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets, reviewed_rich_text?: list<string>, inline_media?: list<Placement>}
  */
 final readonly class ImportPlan
 {
@@ -217,7 +219,7 @@ final readonly class ImportPlan
 
         $action = get_object_vars($record);
         $required = ['source_type', 'source_id', 'entry_type_id', 'title', 'slug', 'expected_revision_id'];
-        if (array_diff($required, array_keys($action)) !== [] || array_diff(array_keys($action), [...$required, 'values', 'links', 'reviewed_rich_text']) !== []
+        if (array_diff($required, array_keys($action)) !== [] || array_diff(array_keys($action), [...$required, 'values', 'links', 'reviewed_rich_text', 'inline_media']) !== []
             || (array_key_exists('values', $action) && ! $action['values'] instanceof stdClass)
             || ! is_string($action['source_type']) || ! self::validKey($action['source_type'])
             || ! is_string($action['source_id']) || $action['source_id'] === '' || strlen($action['source_id']) > 4096
@@ -244,6 +246,20 @@ final readonly class ImportPlan
             $seenRichText[$handle] = true;
         }
 
+        $links = array_key_exists('links', $action) ? self::links($action['links']) : [];
+        $inline = array_key_exists('inline_media', $action)
+            ? InlineMediaPlacement::fromPlan($action['inline_media'], $values, $links) : [];
+        foreach ($inline as $placement) {
+            if (! isset($seenRichText[$placement['field']])) {
+                throw new InvalidArgumentException('An inline media field must contain reviewed rich text.');
+            }
+        }
+        foreach (array_diff_key($values, array_column($inline, 'field', 'field')) as $value) {
+            if (InlineMediaPlacement::containsReference($value)) {
+                throw new InvalidArgumentException('Inline media references need an approved placement.');
+            }
+        }
+
         return [
             'source_type' => $action['source_type'],
             'source_id' => $action['source_id'],
@@ -254,8 +270,9 @@ final readonly class ImportPlan
             ...(! array_key_exists('values', $action) ? [] : [
                 'values' => json_decode(json_encode($action['values'], JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR),
             ]),
-            ...(! array_key_exists('links', $action) ? [] : ['links' => self::links($action['links'])]),
+            ...(! array_key_exists('links', $action) ? [] : ['links' => $links]),
             ...($reviewedRichText === [] ? [] : ['reviewed_rich_text' => $reviewedRichText]),
+            ...($inline === [] ? [] : ['inline_media' => $inline]),
         ];
     }
 

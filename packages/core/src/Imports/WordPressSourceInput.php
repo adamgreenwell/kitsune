@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Imports;
 
+use DomainException;
 use InvalidArgumentException;
 use JsonException;
 use Kitsune\Core\Fields\Types\RichTextType;
@@ -31,7 +32,7 @@ final readonly class WordPressSourceInput
      */
     public function preview(
         string $mode, array $source, string $sourceKey, string $acfSchema, array $destinationTypes,
-        bool $complete, array $media, ?string $mediaRoot, array $bodyFields = [],
+        bool $complete, array $media, ?string $mediaRoot, array $bodyFields = [], ?string $inlineInventory = null,
     ): ImportPlan {
         $fields = self::fields($acfSchema);
         $descriptors = array_column($media, null, 'sourceId');
@@ -40,6 +41,8 @@ final readonly class WordPressSourceInput
                 throw new InvalidArgumentException('A body field cannot also be mapped from ACF.');
             }
         }
+        $inventory = $inlineInventory === null ? [] : WordPressInlineImages::read($inlineInventory);
+        $placements = [];
         $findings = [];
         $bodyNotices = $bodyFields === [] ? [] : [[
             'position' => 0, 'code' => 'wordpress-body-source-rendering-not-reproduced',
@@ -77,7 +80,20 @@ final readonly class WordPressSourceInput
             if ($bodyField === null) {
                 $metadataOnly = true;
             } else {
-                [$normalized, $bodyFinding] = self::body($row);
+                $reviewed = $inventory[$id] ?? null;
+                $images = null;
+                try {
+                    if ($reviewed !== null) {
+                        unset($inventory[$id]);
+                        if (array_key_exists($reviewed['relation'], $fields[$row['type']] ?? [])) {
+                            throw new DomainException('The inline relation is already mapped from ACF.');
+                        }
+                        $images = WordPressInlineImages::verify($reviewed, $row['type'], $row['content_sha256'], $descriptors);
+                    }
+                    [$normalized, $bodyFinding] = self::body($row, $images['urls'] ?? []);
+                } catch (DomainException) {
+                    [$normalized, $bodyFinding] = [null, 'inline-image-inventory-mismatch'];
+                }
                 if ($bodyFinding !== null) {
                     $findings[] = ['code' => $bodyFinding, 'source_id' => $id, 'field' => $bodyField];
                 } elseif (strlen($normalized) > WordPressBodyRead::MAX_TOTAL_BYTES - $bodyBytes) {
@@ -85,6 +101,11 @@ final readonly class WordPressSourceInput
                 } else {
                     $bodyBytes += strlen($normalized);
                     $values[$bodyField] = $normalized;
+                    if ($images !== null && $reviewed !== null) {
+                        $placements[$id] = [
+                            'relation' => $reviewed['relation'], 'attachments' => $images['attachments'], 'positions' => $images['positions'],
+                        ];
+                    }
                     $notice = match (true) {
                         $normalized !== $row['body'] => 'wordpress-body-markup-normalized',
                         ! str_contains($row['body'], '<!-- wp:')
@@ -111,6 +132,9 @@ final readonly class WordPressSourceInput
                 'values' => (object) $values, 'media_references' => (object) $links,
             ];
         }
+        foreach (array_keys($inventory) as $unused) {
+            $findings[] = ['code' => 'unmatched-inline-image-inventory', 'source_id' => (string) $unused];
+        }
         if (count($approved) !== count($media)) {
             $findings[] = ['code' => 'attachment-descriptors-not-used'];
         }
@@ -123,19 +147,21 @@ final readonly class WordPressSourceInput
             'findings' => $findings,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $snapshot = hash('sha256', "kitsune.wordpress.1\0".$mode."\0".$source['sha256'].hash('sha256', $acfSchema).hash('sha256', $projection)
-            .($bodyFields === [] ? '' : hash('sha256', json_encode($bodyFields, JSON_THROW_ON_ERROR))));
+            .($bodyFields === [] ? '' : hash('sha256', json_encode($bodyFields, JSON_THROW_ON_ERROR)))
+            .($inlineInventory === null ? '' : hash('sha256', $inlineInventory)));
 
         return $this->drafts->preview(
             $mode, $sourceKey, $projection, $destinationTypes, $complete, $approved, $mediaRoot, $snapshot,
-            $source['blog'], $bodyNotices, $metadataOnly, $bodyFields,
+            $source['blog'], $bodyNotices, $metadataOnly, $bodyFields, $placements,
         );
     }
 
     /**
      * @param  SourceRow  $row
+     * @param  list<string>  $reviewedUrls
      * @return array{string, null}|array{null, string}
      */
-    private static function body(array $row): array
+    private static function body(array $row, array $reviewedUrls): array
     {
         if (isset($row['body_finding'])) {
             return [null, $row['body_finding']];
@@ -145,13 +171,15 @@ final readonly class WordPressSourceInput
             return [null, 'body-source-bytes-unverified'];
         }
 
-        if (self::containsEmbeddedMedia($raw)) {
+        if (self::containsEmbeddedMedia($raw, $reviewedUrls !== [])) {
             return [null, 'body-inline-media-needs-rehosting'];
         }
 
         $richText = new RichTextType;
         $normalized = $richText->sanitize(self::plainTextParagraphs($raw));
-        if (preg_match('~<img(?:\s|>)~', $normalized) === 1) {
+        if ($reviewedUrls !== []) {
+            $normalized = $richText->sanitize(InlineMediaPlacement::preview($normalized, $reviewedUrls));
+        } elseif (preg_match('~<img(?:\s|>)~', $normalized) === 1) {
             return [null, 'body-inline-media-needs-rehosting'];
         }
         if (trim($raw) !== '' && trim($normalized) === '') {
@@ -164,18 +192,28 @@ final readonly class WordPressSourceInput
         return [$normalized, null];
     }
 
-    private static function containsEmbeddedMedia(string $raw): bool
+    private static function containsEmbeddedMedia(string $raw, bool $reviewedImages): bool
     {
         // Leave recognized references in source custody until a rehost plan covers them.
+        if (preg_match($reviewedImages
+            ? '~<img\b(?:[^>"\x27]|"[^"]*"|\x27[^\x27]*\x27)*?\s(?:srcset|style)\s*=~i'
+            : '~<img\b|<!--\s*wp:image\b~i', $raw) !== 0) {
+            return true;
+        }
+        $remaining = $reviewedImages ? preg_replace('~<img\b(?:[^>"\x27]|"[^"]*"|\x27[^\x27]*\x27)*>~i', '', $raw) : $raw;
+        if ($remaining === null) {
+            return true;
+        }
+
         return preg_match(<<<'REGEX'
             ~
-              <(?:img|picture|audio|video|source|iframe|object|embed|svg)\b
+              <(?:picture|audio|video|source|iframe|object|embed|svg)\b
             | \[(?:gallery|audio|video|embed|caption|playlist)\b
-            | <!--\s*wp:(?:image|gallery|embed|cover|file|media-text|audio|video|core-embed/[^\s]+)\b
+            | <!--\s*wp:(?:gallery|embed|cover|file|media-text|audio|video|core-embed/[^\s]+)\b
             | <[^>]+\bstyle\s*=\s*["'][^>]*?\burl\s*\(
             | <[^>]+\b(?:href|src)\s*=\s*["']?[^"'>\s]*?/?wp-content/uploads/
             ~ix
-            REGEX, $raw) === 1;
+            REGEX, $remaining) !== 0;
     }
 
     private static function plainTextParagraphs(string $body): string

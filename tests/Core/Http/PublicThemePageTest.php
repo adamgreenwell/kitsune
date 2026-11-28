@@ -17,8 +17,10 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
+use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryTranslationGroup;
@@ -312,8 +314,9 @@ it('exposes entry links only when the public fallback and the current Site own t
 it('keeps private media out of public content routes and rendered relations', function (): void {
     File::put($this->directory.'/journal/theme.json', '{"entry_types":["article","private_asset"]}');
     File::put($this->directory.'/journal/entries/article.blade.php',
-        '<h1>{{ $entry->title }}</h1>@foreach ($related["links"] as $link)<p>{{ $link->title }}</p>@endforeach');
+        '<h1>{{ $entry->title }}</h1>{{ $richText("body") }}@foreach ($related["links"] as $link)<p>{{ $link->title }}</p>@endforeach');
     Storage::fake(MediaDisks::PRIVATE);
+    Storage::fake('public');
     $this->context->setSite($this->en);
     $type = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
     $assetType = EntryType::create([
@@ -323,16 +326,34 @@ it('keeps private media out of public content routes and rendered relations', fu
         'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
     ]);
     $type->fields()->create(['field_storage_id' => $storage->id, 'label' => 'Links']);
+    $body = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'body', 'type' => 'rich_text', 'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    $type->fields()->create(['field_storage_id' => $body->id, 'label' => 'Body']);
     $source = Entry::create(['entry_type_id' => $type->id, 'title' => 'Published story', 'slug' => 'story', 'status' => 'published']);
 
-    $file = $this->directory.'/fixture.txt';
-    File::put($file, "Private media fixture bytes.\n");
-    $media = MediaLibrary::store($file, 'fixture.txt', $assetType, 'private', 'Private asset title', siteOnly: true);
+    $file = $this->directory.'/fixture.png';
+    File::put($file, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXWQAAAAASUVORK5CYII=', true));
+    $media = MediaLibrary::store($file, 'fixture.png', $assetType, 'private', 'Private asset title', siteOnly: true);
     $source->syncFieldRelations($storage, [$media->id]);
+    $source->update(['values' => ['body' => '<p>Look <img data-kitsune-media="'.$media->id.'" alt="Detail"> here.</p>']]);
 
     $this->context->forget();
     $this->get('/news/private_asset/'.$media->slug)->assertNotFound();
-    $this->get('/news/article/story')->assertOk()->assertSee('Published story')->assertDontSee('Private asset title');
+    $this->get('/news/article/story')->assertOk()->assertSee('Published story')->assertDontSee('Private asset title')
+        ->assertSee('Look Detail here.')->assertDontSee('<img', false);
+
+    $this->context->setSite($this->en);
+    MediaVisibility::makePublic($media);
+    $url = MediaDelivery::urlFor($media->fresh());
+    expect($url)->not->toBeNull();
+    $this->context->forget();
+    $this->get('/news/article/story')->assertOk()->assertSee('src="'.e($url).'"', false);
+
+    $this->context->setSite($this->en);
+    $source->syncFieldRelations($storage, []);
+    $this->context->forget();
+    $this->get('/news/article/story')->assertOk()->assertSee('Look Detail here.')->assertDontSee('<img', false);
 });
 
 it('redirects multiple former addresses to the current entry in one hop', function (): void {

@@ -55,6 +55,7 @@ final class ImportDraftsCommand extends Command
         {--wordpress-prefix= : Exact WordPress source table prefix}
         {--acf-schema= : Reviewed ACF field report for WordPress preview}
         {--wordpress-body=* : Map a raw WordPress post type as source-type=rich-text-field}
+        {--wordpress-inline-media= : Reviewed local inventory of inline images}
         {--type=* : Map a source type as source-name=destination-handle}
         {--complete : Confirm that the supplied rows cover the intended draft import}
         {--media-manifest= : Local JSON list of media descriptors for preview}
@@ -86,7 +87,7 @@ final class ImportDraftsCommand extends Command
             }
             $context->setSite($site);
 
-            if ($action !== 'preview' && $this->option('wordpress-body') !== []) {
+            if ($action !== 'preview' && ($this->option('wordpress-body') !== [] || $this->option('wordpress-inline-media') !== null)) {
                 throw new InvalidArgumentException('Select WordPress body fields when previewing the source.');
             }
 
@@ -97,13 +98,18 @@ final class ImportDraftsCommand extends Command
                 $destination = $this->destinationTypes($site);
                 $bodyFields = $this->wordpressBodyFields($format, $site, $destination);
                 $bodyRead = $bodyFields === [] ? null : new WordPressBodyRead(array_map(strval(...), array_keys($bodyFields)));
+                $inlinePath = $this->option('wordpress-inline-media');
+                if ($inlinePath !== null && $bodyRead === null) {
+                    throw new InvalidArgumentException('Inline images require a reviewed raw WordPress body mapping.');
+                }
+                $inline = $inlinePath === null ? null : $this->readLocalFile($inlinePath);
                 $complete = (bool) $this->option('complete');
                 $mediaRoot = $media === [] ? null : $this->requiredOption('media-root');
                 $plan = match ($format) {
                     'wxr', 'wordpress-database' => $sourceInput->preview(
                         $format === 'wxr' ? 'wxr' : 'direct', $this->wordpressSource($format, $site, $bodyRead), $source,
                         $format === 'wxr' ? $this->readLocalFile($this->requiredOption('acf-schema')) : $this->readInput(),
-                        $destination, $complete, $media, $mediaRoot, $bodyFields,
+                        $destination, $complete, $media, $mediaRoot, $bodyFields, $inline,
                     ),
                     'wordpress-direct', 'wordpress-wxr' => $wordPress->preview(
                         substr($format, strlen('wordpress-')), $source, $this->readInput(), $destination, $complete, $media, $mediaRoot,
