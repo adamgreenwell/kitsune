@@ -329,6 +329,36 @@ verification step. The service-free CI suite exercises this sequence and refuses
 files and changed resolver metadata. For runtime checks, use a trusted consumer and
 verify its generated autoloader and dependencies separately.
 
+### Rehearse a submitted package in CI
+
+The manual **Plugin source review** workflow on the trusted default branch
+accepts a same-repository Actions artifact, its archive SHA-256, and the commit
+SHA of the uploading workflow run. Upload the original Composer archive as a
+single file named `distribution.zip` in an artifact named `plugin-submission`.
+In a trusted workflow in this repository, the upload step can use the exact
+archive already downloaded and reviewed by the operator.
+
+```yaml
+- uses: actions/upload-artifact@v7
+  with:
+    name: plugin-submission
+    path: distribution.zip
+    if-no-files-found: error
+```
+
+Supply the artifact ID and SHA-256 from that upload and the commit SHA from its
+workflow run. Verify the three-part version against the release metadata
+(for example `1.2.3` for tag `v1.2.3`) and compute the SHA-256 of the original
+distribution before uploading. The provenance report records the supplied
+version. When `composer.json` omits its version, the package receipt uses the
+supplied version for comparison with the installed package.
+
+The job checks both archives, inspects the package source, and retains the
+provenance, file receipt, and strict source report. Installation and runtime
+checks follow in a separate disposable consumer. The Composer archive and its
+expanded contents each have a 128 MiB budget, with up to 25,000 archive members
+and 64 path segments.
+
 ## Governance
 
 [`GOVERNANCE.md`](GOVERNANCE.md) — who decides, how maintainers earn commit rights, what happens if the maintainer disappears, and binding commitments about what will never happen to the licence — **is published now**, before there is anything to govern.
