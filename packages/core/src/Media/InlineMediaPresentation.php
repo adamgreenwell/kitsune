@@ -38,7 +38,19 @@ final class InlineMediaPresentation
             return new HtmlString($sanitized);
         }
 
-        $urls = self::urls($entry, $site, $body, false);
+        return new HtmlString(self::render($body, self::urls($entry, $site, $body, false)));
+    }
+
+    public static function withoutReferences(string $html): string
+    {
+        $body = self::parse($html);
+
+        return $body === null ? $html : self::render($body, []);
+    }
+
+    /** @param array<int, string> $urls */
+    private static function render(DOMElement $body, array $urls): string
+    {
         foreach (iterator_to_array($body->getElementsByTagName('img')) as $image) {
             if (! $image->hasAttribute('data-kitsune-media')) {
                 continue;
@@ -59,7 +71,7 @@ final class InlineMediaPresentation
             $result .= $body->ownerDocument->saveHTML($child);
         }
 
-        return new HtmlString($result);
+        return $result;
     }
 
     /** @return array<int, string> */

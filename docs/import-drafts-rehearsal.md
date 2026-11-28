@@ -113,8 +113,8 @@ inventory. The importer reads attachment bytes from the local root.
 Stage and apply the reviewed report to retain the image positions and caption text in
 the draft. Captions become paragraphs next to their image. The staff editor previews
 rehosted files through the existing media authorization. A public entry template can
-call `{{ $richText('body') }}` for its
-configured field. An operator can use the media library to make individual assets
+call `{{ $richText('body') }}` in an unversioned theme or `{{ $kitsune->richText('body') }}`
+in a contract 1 theme whose host has selected the body field. An operator can use the media library to make individual assets
 public. Until then, the public view preserves the caption or alternative text.
 
 ## Plan former addresses
