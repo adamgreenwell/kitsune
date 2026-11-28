@@ -192,6 +192,28 @@ it('discovers usable themes and applies independent Site choices across two orga
     $this->get('/host-owned')->assertOk()->assertSee('host page');
 });
 
+it('keeps unversioned themes and refuses a declared contract without its renderer', function (): void {
+    $manifest = $this->directory.'/journal/theme.json';
+    $registry = app(ThemeRegistry::class);
+    File::put($manifest, '{"entry_types":["article"],"host_label":"Journal"}');
+
+    expect($registry->find('journal')?->entryTypes)->toBe(['article']);
+    $this->get('/news')->assertOk()->assertSee('English journal');
+
+    foreach ([1, 2, 0, '1', 1.5, true, null] as $contract) {
+        File::put($manifest, json_encode(['entry_types' => ['article'], 'contract' => $contract], JSON_THROW_ON_ERROR));
+        expect($registry->find('journal'))->toBeNull()
+            ->and(array_column($registry->all(), 'handle'))->toBe(['stone']);
+    }
+
+    File::put($manifest, '{"entry_types":["article"],"contract":2}');
+    $this->get('/news')->assertOk()->assertSee('Welcome placeholder')->assertDontSee('English journal');
+    $this->get('/news/ar')->assertOk()->assertSee('<main lang="ar" dir="rtl">Arabic stone', false);
+    $this->artisan('kitsune:theme', ['action' => 'select', 'theme' => 'journal', '--org' => 'news', '--site' => 'ar'])
+        ->assertFailed();
+    expect($this->ar->fresh()->theme)->toBe('stone');
+});
+
 it('renders a published exact-Site entry via the type template or its theme default', function (): void {
     $this->context->setSite($this->en);
     foreach (['article', 'brief', 'private-note'] as $handle) {

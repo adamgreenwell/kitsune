@@ -26,8 +26,10 @@ php artisan kitsune:theme select journal --org=news --site=english
 php artisan kitsune:theme clear --org=news --site=english
 ```
 
-Each Site has its own choice. A missing or malformed manifest or an absent home template makes
-the theme unavailable. An unavailable selection falls back to the welcome page.
+Each Site has its own choice. A missing or malformed manifest, an absent home template, or a
+declared `contract` without a renderer for that version makes the theme unavailable. Omit
+`contract` to use the provisional Blade interface. An unavailable selection falls back to the
+welcome page.
 
 ## Templates
 
