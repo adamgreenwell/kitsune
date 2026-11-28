@@ -37,7 +37,7 @@ final readonly class WordPressDraftInput
      */
     public function preview(
         string $mode, string $sourceKey, string $projection, array $destinationTypes, bool $complete,
-        array $media, ?string $mediaRoot, ?string $snapshot = null,
+        array $media, ?string $mediaRoot, ?string $snapshot = null, ?string $confirmedBlog = null,
     ): ImportPlan {
         if (! in_array($mode, ['direct', 'wxr'], true)) {
             throw new InvalidArgumentException('Use a direct or WXR WordPress projection.');
@@ -120,7 +120,7 @@ final readonly class WordPressDraftInput
         return $this->journal->preview(
             $sourceKey, 'wordpress:'.$mode.':v1', $snapshot ?? hash('sha256', $projection), $drafts, $complete,
             $media, $mediaRoot,
-            ['blockers' => $blockers, 'notices' => array_values($notices)],
+            ['blockers' => $blockers, 'notices' => array_values($notices)], $confirmedBlog,
         );
     }
 

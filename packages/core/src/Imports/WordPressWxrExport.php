@@ -34,7 +34,7 @@ final class WordPressWxrExport
         'utc' => 'wp:post_date_gmt', 'content' => 'content:encoded',
     ];
 
-    /** @return array{sha256: string, rows: list<SourceRow>} */
+    /** @return array{sha256: string, blog: string, rows: list<SourceRow>} */
     public function read(string $path, string $blog): array
     {
         if (! class_exists(XMLReader::class)) {
@@ -64,7 +64,7 @@ final class WordPressWxrExport
                 throw new InvalidArgumentException('Unable to fingerprint the local WXR export.');
             }
 
-            return ['sha256' => hash_final($hash), 'rows' => $this->parse($snapshot, $blog)];
+            return ['sha256' => hash_final($hash), 'blog' => $blog, 'rows' => $this->parse($snapshot, $blog)];
         } finally {
             fclose($file);
             fclose($snapshot);

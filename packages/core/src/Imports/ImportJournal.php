@@ -51,7 +51,7 @@ final readonly class ImportJournal
      */
     public function preview(
         string $sourceKey, string $adapter, string $snapshot, array $drafts, bool $sourceComplete,
-        array $media = [], ?string $mediaRoot = null, ?array $sourceDiagnostics = null,
+        array $media = [], ?string $mediaRoot = null, ?array $sourceDiagnostics = null, ?string $sourceAddress = null,
     ): ImportPlan {
         $siteId = $this->siteId();
         $orgId = $this->context->orgId() ?? throw new LogicException('The import journal requires a destination Org.');
@@ -129,7 +129,7 @@ final readonly class ImportJournal
 
         return ImportPlan::prepare(
             $orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings, $media,
-            $sourceDiagnostics['notices'] ?? [],
+            $sourceDiagnostics['notices'] ?? [], $sourceAddress,
         );
     }
 

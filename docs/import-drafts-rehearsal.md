@@ -41,6 +41,13 @@ conflicts in preview.
 
 ## Review a WordPress projection
 
+Run `php bin/inspect-wordpress-acf.php SOURCE_DIR [PHP_FILES...]` from the trusted
+development checkout to prepare a schema report from a disposable source copy.
+The command reads `acf-json/*.json` and the explicitly selected PHP files or a
+top-level `fields.php`. It parses literal ACF registrations without executing
+the source. Review the blockers and exact input hashes. Conditional, dynamic, and
+unsupported definitions need an explicit mapping decision before import.
+
 The same command can preview a reviewed local projection using
 `--format=wordpress-direct` or `--format=wordpress-wxr`. Choose an explicit source key,
 map the post types to destination entry types, and provide a private media descriptor
@@ -71,3 +78,30 @@ confirmed blog URL, exact `--wordpress-prefix`, reviewed ACF report, and type ma
 The positional path in database mode is the reviewed ACF report. The reader confirms
 the source URL against the prefix's `home` option and requires InnoDB for a read-only
 repeatable-read snapshot. Configure source credentials in the host environment.
+
+## Plan former addresses
+
+Once an approved draft import is complete, use `plan-redirects` with the same report,
+approval digest, Org and Site. Provide `--redirect-inventory=PATH` with a local JSON
+object containing `source_key`, `source_blog`, and an `addresses` list. Each address
+contains an asserted `source_type`, `source_id`, and absolute `url`. The source blog
+must match the address the raw import reader verified. The report links
+that identity to its committed entry and records the current destination state.
+
+The report is read-only. It holds unpublished destinations, duplicate addresses,
+host-owned routes and old URLs that the Site's former-address mechanism cannot serve.
+Dated URLs, query-string URLs and URLs on another origin need separate routing review.
+
+Use `redirect-digest` with the exact saved redirect report after reviewing its findings.
+Run `apply-redirects` with the same approved import report, inventory, Org and Site.
+Pass the saved redirect report as `--redirect-report` and its separately approved digest
+as `--redirect-approval`. The writer applies candidates in one transaction and checks the
+current routes and destinations again. Changes require a fresh report. It reuses an
+already-recorded redirect when it still has the same destination.
+
+A held dated URL or an exact WordPress `?p=ID` URL can include a `host_route`
+proposal with the old origin, exact request URI, and destination URL. A known old
+origin or blog prefix change can also produce a proposal. The plan excludes wrong
+source IDs, unrelated origins, duplicate requests and known route conflicts.
+The hosting operator reviews ownership and the destination independently before
+using these proposals. `apply-redirects` handles only the Site's former addresses.

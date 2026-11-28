@@ -26,6 +26,7 @@ parameters:
         # Development setup and release admission execute package code or change its installed form.
         - bin/install-commerce-skeleton.php
         - bin/docs
+        - bin/inspect-wordpress-acf.php
         - bin/docs-build.php
         - bin/release
         - bin/release-artifacts.php

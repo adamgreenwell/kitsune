@@ -10,12 +10,19 @@ declare(strict_types=1);
 
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\QueryException;
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Console\ImportDraftsCommand;
+use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
+use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportPlan;
+use Kitsune\Core\Imports\ImportRedirectPlan;
 use Kitsune\Core\Imports\ImportSchema;
 use Kitsune\Core\Imports\StructuredDraftInput;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -26,7 +33,10 @@ use Kitsune\Core\Models\ImportMapping;
 use Kitsune\Core\Models\ImportSource;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Models\SiteEntryRedirect;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Themes\PublicThemePage;
+use Kitsune\Core\Themes\ThemeRegistry;
 use Symfony\Component\Console\Output\BufferedOutput;
 
 beforeEach(function (): void {
@@ -686,6 +696,7 @@ it('streams a local WXR export through the operator command for the confirmed bl
         $plan = ImportPlan::restore($bytes);
         expect($exit)->toBe(0)->and($plan->sourceNotices)->toHaveCount(4)
             ->and($plan->records[0]['source_id'])->toBe('17')
+            ->and($plan->sourceAddress)->toBe($blog)
             ->and($bytes)->not->toContain('Original body')
             ->and(Entry::count())->toBe(0);
 
@@ -836,4 +847,131 @@ it('requires a fresh approval when a destination field changes without changing 
     expect($committed)->toHaveCount(1)
         ->and($this->journal->apply($revised->report(), $revised->digest()))->toBe($committed)
         ->and(ImportActionReceipt::count())->toBe(1);
+});
+
+it('plans former addresses from committed import identities and holds unroutable paths', function (): void {
+    $theme = sys_get_temp_dir().'/kitsune-import-redirect-theme-'.bin2hex(random_bytes(8));
+    mkdir($theme.'/journal', 0700, true);
+    file_put_contents($theme.'/journal/theme.json', '{"entry_types":["catalogue"]}');
+    file_put_contents($theme.'/journal/home.blade.php', 'Home');
+    file_put_contents($theme.'/journal/entry.blade.php', 'Entry');
+    app()->instance(ThemeRegistry::class, new ThemeRegistry($theme));
+
+    try {
+        $this->home->update(['base_url' => 'https://example.test/news', 'theme' => 'journal']);
+        $this->context->setSite($this->home);
+        Route::get('/news/post/owned', fn () => 'Host')->name('host-owned');
+        Route::get('/news/2025/06/claimed', fn () => 'Host')->name('host-dated');
+        Route::fallback(function (Request $request, Context $context, PublicThemePage $theme) {
+            return $context->site() === null ? abort(404) : ($theme->render($request, $context->site(), 'site.home') ?? abort(404));
+        })->middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->name('site.home');
+        $plan = $this->journal->preview('wordpress-fixture', 'wordpress:direct:v1', hash('sha256', 'source'), [
+            journalFixtureDraft($this->type, 'story', 'post', '100'),
+        ], true, sourceAddress: 'https://example.test/news');
+        $input = [
+            'source_key' => 'wordpress-fixture',
+            'source_blog' => 'https://example.test/news',
+            'addresses' => array_map(static fn (string $url): array => ['source_type' => 'post', 'source_id' => '100', 'url' => $url], [
+                'https://example.test/news/post/old',
+                'https://example.test/news/catalogue/story',
+                'https://example.test/news/2025/01/story',
+                'https://external.example.test/news/?p=100',
+                'https://example.test/news-archive/post/story',
+                'https://example.test/news/post/owned',
+                'https://EXAMPLE.test:443/news/post/duplicate/',
+                'https://example.test/news/post/duplicate',
+                'https://example.test/news/?p=100',
+                'https://example.test/news/?p=102',
+                'https://example.test/news/2025/05/repeated/',
+                'https://example.test/news/2025/05/repeated',
+                'https://example.test/news/2025/06/claimed',
+            ]),
+        ];
+        $planner = app(ImportRedirectPlan::class);
+        $preview = fn (array $values) => $planner->preview($this->home, $plan->report(), $plan->digest(), json_encode($values, JSON_THROW_ON_ERROR), 'site.home');
+        expect(fn () => $preview($input))->toThrow(DomainException::class, 'Finish the approved draft import');
+        [$id] = $this->journal->apply($plan->report(), $plan->digest());
+        $unpublished = json_decode($preview($input), true, flags: JSON_THROW_ON_ERROR);
+        expect($unpublished['rows'][0]['findings'])->toBe(['destination-unpublished']);
+
+        Entry::query()->findOrFail($id)->update(['status' => 'published']);
+        $report = $preview($input);
+        expect($preview($input))->toBe($report);
+        file_put_contents($theme.'/import.json', $plan->report());
+        file_put_contents($theme.'/inventory.json', json_encode($input, JSON_THROW_ON_ERROR));
+        $kernel = app(Kernel::class);
+        $kernel->registerCommand(app(ImportDraftsCommand::class));
+        $output = new BufferedOutput;
+        expect($kernel->call('kitsune:import-drafts', [
+            'action' => 'plan-redirects', 'path' => $theme.'/import.json', '--org' => 'home', '--site' => 'home',
+            '--approval' => $plan->digest(), '--redirect-inventory' => $theme.'/inventory.json',
+        ], $output))->toBe(0)->and($output->fetch())->toBe($report);
+        $read = json_decode($report, true, flags: JSON_THROW_ON_ERROR);
+        expect(array_column($read['rows'], 'disposition'))->toBe(['candidate', 'no-op', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'held'])
+            ->and($read['rows'][0]['destination']['entry_id'])->toBe($id)
+            ->and($read['rows'][2]['findings'])->toContain('unsupported-former-address')
+            ->and($read['rows'][3]['findings'])->toContain('outside-source-origin', 'unsupported-former-address')
+            ->and($read['rows'][4]['findings'])->toContain('outside-source-blog-path')
+            ->and($read['rows'][5]['findings'])->toContain('former-address-not-owned')
+            ->and($read['rows'][6]['findings'])->toContain('duplicate-former-address')
+            ->and($read['rows'][7]['findings'])->toContain('duplicate-former-address')
+            ->and($read['rows'][2]['host_route'])->toBe([
+                'origin' => 'https://example.test', 'request_uri' => '/news/2025/01/story',
+                'location' => 'https://example.test/news/catalogue/story',
+            ])
+            ->and($read['rows'][3]['host_route'])->toBeNull()
+            ->and($read['rows'][8]['host_route']['request_uri'])->toBe('/news/?p=100')
+            ->and($read['rows'][9]['host_route'])->toBeNull()
+            ->and($read['rows'][10]['host_route'])->toBeNull()
+            ->and($read['rows'][10]['findings'])->toContain('duplicate-old-request')
+            ->and($read['rows'][12]['host_route'])->toBeNull()
+            ->and($read['rows'][12]['findings'])->toContain('former-address-not-owned')
+            ->and(SiteEntryRedirect::query()->count())->toBe(0)
+            ->and(fn () => $preview(array_replace($input, ['source_key' => 'other'])))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => $preview(array_replace($input, ['source_blog' => 'https://other.example.test/news'])))->toThrow(InvalidArgumentException::class);
+
+        $apply = static function (string $reviewed, string $digest) use ($kernel, $theme, $plan): array {
+            file_put_contents($theme.'/redirects.json', $reviewed);
+            $output = new BufferedOutput;
+            $exit = $kernel->call('kitsune:import-drafts', [
+                'action' => 'apply-redirects', 'path' => $theme.'/import.json', '--org' => 'home', '--site' => 'home',
+                '--approval' => $plan->digest(), '--redirect-inventory' => $theme.'/inventory.json',
+                '--redirect-report' => $theme.'/redirects.json', '--redirect-approval' => $digest,
+            ], $output);
+
+            return [$exit, $output->fetch()];
+        };
+        expect($apply($report, 'wrong')[0])->toBe(1);
+        $changingRoutes = $input;
+        $changingRoutes['addresses'][] = ['source_type' => 'post', 'source_id' => '100', 'url' => 'https://example.test/news/post/claimed'];
+        $beforeClaim = $preview($changingRoutes);
+        file_put_contents($theme.'/inventory.json', json_encode($changingRoutes, JSON_THROW_ON_ERROR));
+        Route::get('/news/post/claimed', fn () => 'Host claimed the route');
+        expect($apply($beforeClaim, ImportRedirectPlan::digest($beforeClaim))[0])->toBe(1)
+            ->and(SiteEntryRedirect::query()->count())->toBe(0);
+        file_put_contents($theme.'/inventory.json', json_encode($input, JSON_THROW_ON_ERROR));
+
+        Entry::query()->findOrFail($id)->update(['title' => 'Independently revised']);
+        expect($apply($report, ImportRedirectPlan::digest($report))[0])->toBe(1)
+            ->and(SiteEntryRedirect::query()->count())->toBe(0);
+
+        $report = $preview($input);
+        file_put_contents($theme.'/redirects.json', $report);
+        $output = new BufferedOutput;
+        expect($kernel->call('kitsune:import-drafts', [
+            'action' => 'redirect-digest', 'path' => $theme.'/redirects.json', '--org' => 'home', '--site' => 'home',
+        ], $output))->toBe(0);
+        $digest = trim($output->fetch());
+        expect($digest)->toBe(ImportRedirectPlan::digest($report));
+
+        [$exit, $applied] = $apply($report, $digest);
+        expect($exit)->toBe(0, $applied)->and($apply($report, $digest))->toBe([$exit, $applied])
+            ->and(SiteEntryRedirect::query()->sole()->target_entry_id)->toBe($id)
+            ->and(AuditLog::query()->where('action', 'site.redirect_saved')->count())->toBe(1);
+        $this->get('https://example.test/news/post/old')->assertStatus(302)
+            ->assertRedirect('/news/catalogue/story')->assertHeader('Cache-Control', 'no-store, private');
+        $this->get('https://example.test/news/catalogue/story')->assertOk();
+    } finally {
+        (new Filesystem)->deleteDirectory($theme);
+    }
 });

@@ -23,7 +23,7 @@ final readonly class WordPressSourceInput
     public function __construct(private WordPressDraftInput $drafts) {}
 
     /**
-     * @param  array{sha256: string, rows: list<SourceRow>}  $source
+     * @param  array{sha256: string, blog: string, rows: list<SourceRow>}  $source
      * @param  array<string, int>  $destinationTypes
      * @param  list<ImportMediaAsset>  $media
      */
@@ -84,7 +84,7 @@ final readonly class WordPressSourceInput
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $snapshot = hash('sha256', "kitsune.wordpress.1\0".$mode."\0".$source['sha256'].hash('sha256', $acfSchema).hash('sha256', $projection));
 
-        return $this->drafts->preview($mode, $sourceKey, $projection, $destinationTypes, $complete, $approved, $mediaRoot, $snapshot);
+        return $this->drafts->preview($mode, $sourceKey, $projection, $destinationTypes, $complete, $approved, $mediaRoot, $snapshot, $source['blog']);
     }
 
     /**

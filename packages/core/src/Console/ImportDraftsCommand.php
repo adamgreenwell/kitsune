@@ -17,6 +17,7 @@ use InvalidArgumentException;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportPlan;
+use Kitsune\Core\Imports\ImportRedirectPlan;
 use Kitsune\Core\Imports\StructuredDraftInput;
 use Kitsune\Core\Imports\WordPressDatabaseExport;
 use Kitsune\Core\Imports\WordPressDraftInput;
@@ -39,7 +40,7 @@ use Throwable;
 final class ImportDraftsCommand extends Command
 {
     protected $signature = 'kitsune:import-drafts
-        {action : preview, digest, stage-media, apply, status, purge-staged-media or abandon}
+        {action : preview, digest, stage-media, apply, status, purge-staged-media, abandon, plan-redirects, redirect-digest or apply-redirects}
         {path : Local draft input, WordPress export, reviewed ACF report or exact approval report}
         {--org= : Destination Org slug}
         {--site= : Destination Site handle}
@@ -53,6 +54,10 @@ final class ImportDraftsCommand extends Command
         {--complete : Confirm that the supplied rows cover the intended draft import}
         {--media-manifest= : Local JSON list of media descriptors for preview}
         {--media-root= : Local directory containing approved source files}
+        {--redirect-inventory= : Local former URL inventory for redirect planning or apply}
+        {--entry-route=site.home : Host fallback route name for redirect planning}
+        {--redirect-report= : Exact reviewed redirect report for apply-redirects}
+        {--redirect-approval= : Approved digest of the reviewed redirect report}
         {--approval= : Exact digest of the reviewed report}';
 
     protected $description = 'Rehearse a resumable draft import from a trusted host shell';
@@ -64,8 +69,8 @@ final class ImportDraftsCommand extends Command
 
         try {
             $action = $this->argument('action');
-            if (! in_array($action, ['preview', 'digest', 'stage-media', 'apply', 'status', 'purge-staged-media', 'abandon'], true)) {
-                throw new InvalidArgumentException('Choose preview, digest, stage-media, apply, status, purge-staged-media or abandon.');
+            if (! in_array($action, ['preview', 'digest', 'stage-media', 'apply', 'status', 'purge-staged-media', 'abandon', 'plan-redirects', 'redirect-digest', 'apply-redirects'], true)) {
+                throw new InvalidArgumentException('Choose preview, digest, stage-media, apply, status, purge-staged-media, abandon, plan-redirects, redirect-digest or apply-redirects.');
             }
 
             $org = Org::query()->useWritePdo()->where('slug', $this->requiredOption('org'))->first();
@@ -111,7 +116,34 @@ final class ImportDraftsCommand extends Command
                 return self::SUCCESS;
             }
 
+            if ($action === 'redirect-digest') {
+                $reviewed = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
+                if (! is_array($reviewed) || ($reviewed['org_id'] ?? null) !== $site->org_id
+                    || ($reviewed['site_id'] ?? null) !== $site->id || ($reviewed['version'] ?? null) !== 1) {
+                    throw new DomainException('The redirect report does not belong to the selected Org and Site.');
+                }
+                $this->line(ImportRedirectPlan::digest($bytes));
+
+                return self::SUCCESS;
+            }
+
             $approval = $this->requiredOption('approval');
+            if ($action === 'plan-redirects') {
+                $this->output->write(app(ImportRedirectPlan::class)->preview(
+                    $site, $bytes, $approval, $this->readLocalFile($this->requiredOption('redirect-inventory')), $this->requiredOption('entry-route'),
+                ), false, OutputInterface::OUTPUT_RAW);
+
+                return self::SUCCESS;
+            }
+            if ($action === 'apply-redirects') {
+                $ids = app(ImportRedirectPlan::class)->apply(
+                    $site, $bytes, $approval, $this->readLocalFile($this->requiredOption('redirect-inventory')), $this->requiredOption('entry-route'),
+                    $this->readLocalFile($this->requiredOption('redirect-report')), $this->requiredOption('redirect-approval'),
+                );
+                $this->output->writeln(json_encode(['redirect_ids' => $ids], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
+
+                return self::SUCCESS;
+            }
             if ($action === 'stage-media') {
                 $ids = $journal->stageMedia($bytes, $approval, $this->requiredOption('media-root'));
                 $this->output->writeln(json_encode(['state' => 'staged', 'reservations' => $ids], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
@@ -145,7 +177,7 @@ final class ImportDraftsCommand extends Command
         }
     }
 
-    /** @return array{sha256: string, rows: list<WordPressSourceRow>} */
+    /** @return array{sha256: string, blog: string, rows: list<WordPressSourceRow>} */
     private function wordpressSource(string $format, Site $site): array
     {
         $blog = $this->requiredOption('wordpress-blog');

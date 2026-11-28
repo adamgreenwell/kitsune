@@ -21,7 +21,7 @@ use PDOException;
  */
 final class WordPressDatabaseExport
 {
-    /** @return array{sha256: string, rows: list<SourceRow>} */
+    /** @return array{sha256: string, blog: string, rows: list<SourceRow>} */
     public function read(PDO $source, string $prefix, string $blog): array
     {
         if ($source->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql' || $source->inTransaction()
@@ -48,6 +48,7 @@ final class WordPressDatabaseExport
 
         return [
             'sha256' => hash('sha256', json_encode([$prefix, $blog, $rows], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)),
+            'blog' => $blog,
             'rows' => $rows,
         ];
     }

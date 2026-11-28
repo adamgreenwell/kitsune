@@ -42,6 +42,7 @@ final readonly class ImportPlan
         public array $findings,
         public array $media,
         public array $sourceNotices,
+        public ?string $sourceAddress,
     ) {}
 
     /**
@@ -51,7 +52,7 @@ final readonly class ImportPlan
      * @param  list<Finding>  $sourceNotices
      */
     public static function prepare(
-        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings, array $media = [], array $sourceNotices = [],
+        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings, array $media = [], array $sourceNotices = [], ?string $sourceAddress = null,
     ): self {
         return self::restore(json_encode([
             'version' => 1,
@@ -74,6 +75,7 @@ final readonly class ImportPlan
             'findings' => $findings,
             ...($media === [] ? [] : ['media' => array_map(static fn (ImportMediaAsset $asset): array => $asset->descriptor(), $media)]),
             ...($sourceNotices === [] ? [] : ['source_notices' => $sourceNotices]),
+            ...($sourceAddress === null ? [] : ['source_address' => $sourceAddress]),
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
@@ -100,6 +102,7 @@ final readonly class ImportPlan
             ...$keys,
             ...(array_key_exists('media', $plan) ? ['media'] : []),
             ...(array_key_exists('source_notices', $plan) ? ['source_notices'] : []),
+            ...(array_key_exists('source_address', $plan) ? ['source_address'] : []),
         ];
         if (array_keys($plan) !== $expected
             || $plan['version'] !== 1
@@ -114,6 +117,7 @@ final readonly class ImportPlan
             || ! is_array($plan['findings']) || ! array_is_list($plan['findings'])
             || $plan['complete'] !== ($plan['findings'] === [])
             || (array_key_exists('media', $plan) && (! is_array($plan['media']) || ! array_is_list($plan['media'])))
+            || (array_key_exists('source_address', $plan) && ! self::validSourceAddress($plan['source_address']))
             || (array_key_exists('source_notices', $plan) && (! is_array($plan['source_notices']) || $plan['source_notices'] === [] || ! array_is_list($plan['source_notices'])))) {
             throw new InvalidArgumentException('The import report envelope is invalid.');
         }
@@ -151,7 +155,7 @@ final readonly class ImportPlan
             $media[] = $asset;
         }
 
-        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings, $media, $sourceNotices);
+        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings, $media, $sourceNotices, $plan['source_address'] ?? null);
     }
 
     /**
@@ -179,6 +183,17 @@ final readonly class ImportPlan
         }
 
         return $findings;
+    }
+
+    private static function validSourceAddress(mixed $value): bool
+    {
+        if (! is_string($value) || filter_var($value, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+        $parts = parse_url($value);
+
+        return $parts !== false && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && ! isset($parts['user']) && ! isset($parts['pass']) && ! isset($parts['query']) && ! isset($parts['fragment']);
     }
 
     public function digest(): string
