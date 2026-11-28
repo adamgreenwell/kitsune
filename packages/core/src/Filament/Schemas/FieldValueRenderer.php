@@ -36,6 +36,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Media\InlineMediaPresentation;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Relations\EntryRelationResolver;
@@ -315,6 +316,19 @@ final class FieldValueRenderer
              */
             Control::RichText => RichEditor::make($path ?? 'value')
                 ->plugins([new BlockDirectionPlugin])
+                ->extraAttributes(static function () use ($config): array {
+                    $record = $config->record;
+                    $value = $record?->values[$config->handle()] ?? null;
+                    $site = app(Context::class)->site();
+                    if ($record === null || $site === null || ! is_string($value)) {
+                        return [];
+                    }
+                    $urls = InlineMediaPresentation::staffUrls($record, $site, $value);
+
+                    return $urls === [] ? [] : [
+                        'data-kitsune-inline-preview' => base64_encode(json_encode($urls, JSON_THROW_ON_ERROR)),
+                    ];
+                }, merge: true)
                 /*
                  * ⚠️ NO FILE ATTACHMENTS — ADR-042 decision 4. Filament's are on by default and store to the
                  * `public` disk with no entry, no `MediaIntake` and no pruning: a second path to disk that "one path

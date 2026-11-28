@@ -37,7 +37,7 @@ use Symfony\Component\HttpFoundation\Response;
  * health check, a webhook. Refusing the request here would make this
  * middleware unattachable to anything but a site route, and attaching it to
  * one is how an application says "a site is required". Absence is reported by
- * leaving Context empty, which `SetSiteLocale` reads as "use the application
+ * clearing Context, which `SetSiteLocale` reads as "use the application
  * default".
  */
 final class ResolveSiteFromRequest
@@ -46,9 +46,7 @@ final class ResolveSiteFromRequest
 
     public function handle(Request $request, Closure $next): Response
     {
-        if (($site = $this->addresses->resolve($request)) !== null) {
-            app(Context::class)->setSite($site);
-        }
+        app(Context::class)->setSite($this->addresses->resolve($request));
 
         return $next($request);
     }

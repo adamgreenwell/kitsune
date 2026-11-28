@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use Closure;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
@@ -71,6 +72,73 @@ final class MediaLibrary
         ?string $title = null,
         bool $siteOnly = false,
     ): Entry {
+        return self::withPrepared($absolutePath, $originalName, $type, $visibility, $siteOnly,
+            static fn (string $source, string $extension, string $mime, int $size, int $orgId, ?int $siteId): Entry => self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId, null, null));
+    }
+
+    public static function reservePrivatePath(string $originalName): string
+    {
+        $context = app(Context::class);
+        $extension = MediaIntake::extensionOf($originalName);
+        if ($context->siteId() === null || $context->orgId() === null || ! array_key_exists($extension, MediaIntake::acceptedTypes())) {
+            throw new MediaRefused('A reserved media path requires a Site and an accepted filename.');
+        }
+
+        return self::pathFor($context->orgId(), MediaIntake::storedName($extension));
+    }
+
+    /** @param Closure(string, string):void $install */
+    public static function prepareReservedPrivate(string $absolutePath, string $originalName, EntryType $type, Closure $install): void
+    {
+        self::withPrepared($absolutePath, $originalName, $type, 'private', true, static function (string $source) use ($install): void {
+            $hash = hash_file('sha256', $source);
+            if (! is_string($hash)) {
+                throw new MediaRefused('The prepared media source could not be verified.');
+            }
+
+            $install($source, $hash);
+        });
+    }
+
+    /** @param Closure(Entry):void $recordMapping */
+    public static function adoptReservedPrivate(
+        string $originalName,
+        EntryType $type,
+        string $reservedPath,
+        string $preparedHash,
+        Closure $recordMapping,
+    ): Entry {
+        $orgId = app(Context::class)->orgId();
+        $extension = preg_quote(MediaIntake::extensionOf($originalName), '~');
+        if ($orgId === null || preg_match('~^media/'.$orgId.'/[0-9]{4}/(?:0[1-9]|1[0-2])/[0-9a-f]{32}[.]'.$extension.'$~D', $reservedPath) !== 1) {
+            throw new MediaRefused('The reserved media path is unavailable in the current Org.');
+        }
+
+        $temporary = MediaBytes::toTemporary(self::diskFor('private'), $reservedPath, $preparedHash);
+        try {
+            return self::withPrepared($temporary, $originalName, $type, 'private', true,
+                static fn (string $source, string $extension, string $mime, int $size, int $orgId, ?int $siteId): Entry => self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, 'private', null, $siteId, $reservedPath, $recordMapping),
+                alreadyPrepared: true);
+        } finally {
+            @unlink($temporary);
+        }
+    }
+
+    /**
+     * @template TResult
+     *
+     * @param  Closure(string, string, string, int, int, ?int):TResult  $usePrepared
+     * @return TResult
+     */
+    private static function withPrepared(
+        string $absolutePath,
+        string $originalName,
+        EntryType $type,
+        string $visibility,
+        bool $siteOnly,
+        Closure $usePrepared,
+        bool $alreadyPrepared = false,
+    ): mixed {
         if (! in_array($visibility, MediaFile::VISIBILITIES, true)) {
             throw new MediaRefused(sprintf(
                 'Refusing to store media with visibility [%s]. It is one of: %s — and ADR-041 makes private '
@@ -164,7 +232,7 @@ final class MediaLibrary
          * refusal path an attacker chooses the size of.
          */
         try {
-            if (MediaIntake::isGuarded($extension)) {
+            if (! $alreadyPrepared && MediaIntake::isGuarded($extension)) {
                 $source = self::sanitisedCopy($absolutePath, $originalName);
                 $temporaries[] = $source;
                 $size = (int) filesize($source);
@@ -199,7 +267,7 @@ final class MediaLibrary
                 }
             }
 
-            return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId);
+            return $usePrepared($source, $extension, $mime, $size, $orgId, $siteId);
         } finally {
             /*
              * ⚠️ `finally`, SO EVERY TEMPORARY GOES ON BOTH PATHS. A sanitised or stripped copy left in the system
@@ -215,6 +283,8 @@ final class MediaLibrary
     /**
      * Write the bytes, then the rows — everything after the refusals.
      *
+     * @param  (Closure(Entry):void)|null  $recordMapping
+     *
      * @throws RuntimeException
      */
     private static function write(
@@ -228,46 +298,18 @@ final class MediaLibrary
         string $visibility,
         ?string $title,
         ?int $siteId,
+        ?string $reservedPath,
+        ?Closure $recordMapping,
     ): Entry {
         $disk = self::diskFor($visibility);
-        $path = self::pathFor($orgId, MediaIntake::storedName($extension));
-
-        $stream = fopen($source, 'rb');
-
-        if ($stream === false) {
-            throw new RuntimeException("Cannot store media: [{$source}] could not be opened.");
-        }
-
-        /*
-         * Streamed rather than read into memory: the ceiling is 64 MiB and the floor is 1 GB of RAM.
-         *
-         * ⚠️ A FAILED WRITE CAN STILL HAVE WRITTEN, so the path goes on every failure, best effort, as it does when the
-         * row write fails (review of decision 3). Flysystem's local adapter reports a failure only after
-         * `file_put_contents()` has created the file and copied what fitted — a full disk, a quota — and a failed chmod
-         * on a public disk answers false once the whole file is there. A disk configured to throw, as a host's `public`
-         * may be, leaves the same residue by an exception instead of a `false`.
-         */
-        try {
-            $written = Storage::disk($disk)->writeStream($path, $stream);
-        } catch (Throwable $e) {
-            self::removeWritten($disk, $path);
-
-            throw $e;
-        } finally {
-            if (is_resource($stream)) {
-                fclose($stream);
-            }
-        }
-
-        if ($written === false) {
-            self::removeWritten($disk, $path);
-
-            throw new RuntimeException("Cannot store media: writing to [{$disk}:{$path}] failed.");
+        $path = $reservedPath ?? self::pathFor($orgId, MediaIntake::storedName($extension));
+        if ($reservedPath === null) {
+            self::writeNew($source, $disk, $path);
         }
 
         try {
             return Entry::query()->getConnection()->transaction(
-                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility, $siteId): Entry {
+                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility, $siteId, $recordMapping): Entry {
                     /*
                      * ⚠️ THE FLAG AGAIN, UNDER A SHARED LOCK, INSIDE THE WRITE. The check in `store()` refuses before
                      * a byte is written; this one is the one that holds. `kitsune:media-types --force` is the single
@@ -323,15 +365,56 @@ final class MediaLibrary
                         'created_at' => now(),
                     ]);
 
+                    $recordMapping?->__invoke($entry);
+
                     return $entry;
                 },
             );
         } catch (Throwable $e) {
-            /* Best effort, as the docblock says: the bytes this call wrote go, and a crash leaves them. */
-            self::removeWritten($disk, $path);
+            // A reservation retains its verified bytes so the next attempt can adopt the same object.
+            if ($reservedPath === null) {
+                self::removeWritten($disk, $path);
+            }
 
             throw $e;
         }
+    }
+
+    private static function writeNew(string $source, string $disk, string $path): void
+    {
+        $stream = fopen($source, 'rb');
+
+        if ($stream === false) {
+            throw new RuntimeException("Cannot store media: [{$source}] could not be opened.");
+        }
+
+        /*
+         * Streamed rather than read into memory: the ceiling is 64 MiB and the floor is 1 GB of RAM.
+         *
+         * ⚠️ A FAILED WRITE CAN STILL HAVE WRITTEN, so the path goes on every failure, best effort, as it does when the
+         * row write fails (review of decision 3). Flysystem's local adapter reports a failure only after
+         * `file_put_contents()` has created the file and copied what fitted — a full disk, a quota — and a failed chmod
+         * on a public disk answers false once the whole file is there. A disk configured to throw, as a host's `public`
+         * may be, leaves the same residue by an exception instead of a `false`.
+         */
+        try {
+            $written = Storage::disk($disk)->writeStream($path, $stream);
+        } catch (Throwable $e) {
+            self::removeWritten($disk, $path);
+
+            throw $e;
+        } finally {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+        }
+
+        if ($written === false) {
+            self::removeWritten($disk, $path);
+
+            throw new RuntimeException("Cannot store media: writing to [{$disk}:{$path}] failed.");
+        }
+
     }
 
     /**

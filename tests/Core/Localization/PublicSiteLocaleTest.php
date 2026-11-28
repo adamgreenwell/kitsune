@@ -123,6 +123,17 @@ describe('a public request resolves its site with no org context', function (): 
      * default is deliberately set to something neither site uses, so a pass cannot come
      * from the environment agreeing by accident.
      */
+    it('clears the previous Org and Site when the public address has no match', function (): void {
+        config()->set('app.locale', 'en');
+        expect(serve('http://localhost/golfdom-ar'))->toBe('ar')
+            ->and(app(Context::class)->siteId())->toBe($this->arabic->id)
+            ->and(app(Context::class)->orgId())->toBe($this->org->id);
+
+        expect(serve('http://localhost/outside'))->toBe('en')
+            ->and(app(Context::class)->siteId())->toBeNull()
+            ->and(app(Context::class)->orgId())->toBeNull();
+    });
+
     it('serves RTL from the site setting while the app default is LTR', function (): void {
         config()->set('app.locale', 'en');
         app()->setLocale('en');

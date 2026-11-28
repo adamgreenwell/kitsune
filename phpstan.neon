@@ -30,6 +30,7 @@ parameters:
         - bin/inventory-extension-surface.php
         - bin/install-commerce-skeleton.php
         - bin/docs
+        - bin/inspect-wordpress-acf.php
         - bin/docs-build.php
         - bin/release
         - bin/release-artifacts.php

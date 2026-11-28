@@ -14,7 +14,7 @@ namespace Kitsune\Core\Themes;
 final readonly class SiteTheme
 {
     /** @param list<string> $entryTypes */
-    public function __construct(public string $handle, private string $directory, public array $entryTypes) {}
+    public function __construct(public string $handle, private string $directory, public array $entryTypes, public ?int $contract = null) {}
 
     public function home(): ?string
     {
