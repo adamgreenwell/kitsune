@@ -16,7 +16,7 @@ use RuntimeException;
 use stdClass;
 
 /**
- * Read structured draft metadata into the shared migration preview.
+ * Read CSV and JSON records into the shared migration preview.
  *
  * @internal
  */
@@ -39,28 +39,39 @@ final readonly class StructuredDraftInput
         array $media = [],
         ?string $mediaRoot = null,
     ): ImportPlan {
-        if (! mb_check_encoding($bytes, 'UTF-8')) {
-            throw new InvalidArgumentException('The structured import must use UTF-8.');
+        if (! in_array($format, ['csv', 'json'], true)) {
+            throw new InvalidArgumentException('The structured import format is unavailable.');
         }
 
+        $findings = [];
         $input = str_starts_with($bytes, "\xEF\xBB\xBF") ? substr($bytes, 3) : $bytes;
-        $rows = match ($format) {
-            'csv' => $this->csv($input),
-            'json' => $this->json($input),
-            default => throw new InvalidArgumentException('The structured import format is unavailable.'),
-        };
+        if (! mb_check_encoding($input, 'UTF-8')) {
+            $findings[] = ['position' => 0, 'code' => 'structured-invalid-utf8'];
+            $rows = [];
+        } else {
+            $rows = $format === 'csv' ? $this->csv($input) : $this->json($input);
+            if ($rows === null) {
+                $findings[] = [
+                    'position' => 0,
+                    'code' => $format === 'csv' ? 'structured-invalid-csv-header' : 'structured-invalid-json-document',
+                ];
+                $rows = [];
+            }
+        }
 
         $drafts = [];
+        $rowBlockers = [];
         $objects = $format === 'csv' ? ['values_json' => 'values', 'links_json' => 'links'] : ['values' => 'values', 'links' => 'links'];
-        foreach ($rows as $row) {
-            if (array_diff(self::COLUMNS, array_keys($row)) !== []
-                || array_diff(array_keys($row), [...self::COLUMNS, ...array_keys($objects)]) !== []
-                || ! is_string($row['entry_type']) || ! isset($destinationTypes[$row['entry_type']])) {
+        foreach ($rows as $index => $row) {
+            $position = $index + 1;
+            if ($row === null) {
+                $rowBlockers[$position] = [['code' => 'structured-invalid-'.$format.'-row']];
                 $drafts[] = [];
 
                 continue;
             }
 
+            $rowFindings = self::rowFindings($row, $objects, $destinationTypes);
             $provided = [];
             foreach ($objects as $column => $name) {
                 if (! array_key_exists($column, $row)) {
@@ -75,46 +86,79 @@ final readonly class StructuredDraftInput
                     }
                 }
                 if (! $object instanceof stdClass) {
-                    $drafts[] = [];
+                    $rowFindings[] = ['code' => 'structured-invalid-object', 'field' => $column];
 
-                    continue 2;
+                    continue;
                 }
                 if (get_object_vars($object) !== []) {
                     $provided[$name] = $object;
                 }
             }
+            if ($rowFindings !== []) {
+                $rowBlockers[$position] = $rowFindings;
+                $drafts[] = [];
+
+                continue;
+            }
 
             $drafts[] = [
                 'source_type' => $row['source_type'],
                 'source_id' => $row['source_id'],
-                'entry_type_id' => $destinationTypes[$row['entry_type']],
+                'entry_type_id' => $destinationTypes[$row['entry_type']] ?? null,
                 'title' => $row['title'],
                 'slug' => $row['slug'],
                 ...$provided,
             ];
         }
 
-        return $this->journal->preview($sourceKey, $format.':v1', hash('sha256', $bytes), $drafts, $complete, $media, $mediaRoot);
+        return $this->journal->preview($sourceKey, $format.':v1', hash('sha256', $bytes), $drafts, $complete, $media, $mediaRoot,
+            ['blockers' => $findings, 'notices' => [], 'row_blockers' => $rowBlockers]);
     }
 
-    /** @return list<array<string, mixed>> */
-    private function json(string $bytes): array
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array<string, string>  $objects
+     * @param  array<string, int>  $destinationTypes
+     * @return list<array{code: string, field?: string}>
+     */
+    private static function rowFindings(array $row, array $objects, array $destinationTypes): array
+    {
+        $findings = [];
+        foreach (self::COLUMNS as $field) {
+            if (! array_key_exists($field, $row)) {
+                $findings[] = ['code' => 'structured-missing-field', 'field' => $field];
+            } elseif (! is_string($row[$field])) {
+                $findings[] = ['code' => 'structured-invalid-field-type', 'field' => $field];
+            }
+        }
+        if (array_diff(array_keys($row), [...self::COLUMNS, ...array_keys($objects)]) !== []) {
+            $findings[] = ['code' => 'structured-unsupported-field'];
+        }
+        if (is_string($row['entry_type'] ?? null) && ! isset($destinationTypes[$row['entry_type']])) {
+            $findings[] = ['code' => 'structured-unmapped-entry-type', 'field' => 'entry_type'];
+        }
+
+        return $findings;
+    }
+
+    /** @return list<array<string, mixed>|null>|null */
+    private function json(string $bytes): ?array
     {
         try {
             $records = json_decode($bytes, depth: 64, flags: JSON_THROW_ON_ERROR);
-        } catch (JsonException $failure) {
-            throw new InvalidArgumentException('The structured import contains invalid JSON.', previous: $failure);
+        } catch (JsonException) {
+            return null;
         }
 
         if (! is_array($records) || ! array_is_list($records)) {
-            throw new InvalidArgumentException('The structured JSON import must be a list of objects.');
+            return null;
         }
 
-        return array_map(static fn (mixed $record): array => $record instanceof stdClass ? get_object_vars($record) : [], $records);
+        return array_map(static fn (mixed $record): ?array => $record instanceof stdClass ? get_object_vars($record) : null, $records);
     }
 
-    /** @return list<array<string, mixed>> */
-    private function csv(string $bytes): array
+    /** @return list<array<string, mixed>|null>|null */
+    private function csv(string $bytes): ?array
     {
         $stream = fopen('php://temp', 'w+b');
         if ($stream === false) {
@@ -131,7 +175,7 @@ final readonly class StructuredDraftInput
             if ($header === false || $afterHeader === false || count($header) !== count(array_unique($header))
                 || array_diff(self::COLUMNS, $header) !== [] || array_diff($header, [...self::COLUMNS, 'values_json', 'links_json']) !== []
                 || ! self::wellFormedCsvRecord(substr($bytes, 0, $afterHeader))) {
-                throw new InvalidArgumentException('The CSV header must contain each supported column once.');
+                return null;
             }
 
             $rows = [];
@@ -144,7 +188,7 @@ final readonly class StructuredDraftInput
 
                 $record = substr($bytes, $offset, $end - $offset);
                 $rows[] = count($values) === count($header) && self::wellFormedCsvRecord($record)
-                    ? array_combine($header, $values) : [];
+                    ? array_combine($header, $values) : null;
                 $offset = $end;
             }
 

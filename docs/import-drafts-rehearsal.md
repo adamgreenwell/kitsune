@@ -8,6 +8,24 @@ and `slug`. JSON accepts optional `values` and `links` objects. CSV accepts the 
 `source_type` and `source_id`. The command maps each input `entry_type` token to a destination
 handle supplied through a repeatable `--type` option.
 
+```json
+[
+  {
+    "source_type": "device",
+    "source_id": "0042",
+    "entry_type": "device",
+    "title": "Notebook",
+    "slug": "notebook",
+    "values": {"summary": "A catalogue model."},
+    "links": {"lead_image": [{"source_type": "image", "source_id": "18"}]}
+  }
+]
+```
+
+The destination type must declare the `summary` field and a `lead_image` relation that
+accepts the media type of image `18`. Use the same `--source` and exact typed IDs
+when moving between CSV and JSON so the same Site's mappings can be reused.
+
 ```sh
 php artisan kitsune:import-drafts preview drafts.csv --org=demo --site=catalogue \
   --source=demo-catalogue --format=csv --type=device=device --complete > review.json
@@ -21,6 +39,14 @@ before approving the digest. Field diagnostics identify the affected source or d
 when the adapter or validator can name it. Keep the exact report and the approved digest for status checks and a
 restart. The status output reports committed draft and relation actions. Pending actions have no
 committed receipt. An independently changed destination entry or schema requires a new review.
+
+Structured previews identify document-wide failures at position zero. These include invalid UTF-8,
+an invalid CSV header, or JSON that cannot be decoded as a list. Row findings use the original
+one-based record position, excluding the CSV header. Quoted line breaks are part of one CSV record.
+The report identifies missing or mistyped metadata, unmapped entry types, malformed field objects,
+and conflicts found in the destination. A malformed quoted CSV record can consume the remainder of
+the file. Repair the quoting and preview again to recover its row boundaries. A held report exits
+with a failure status after writing its JSON and cannot be approved or applied.
 
 For media, add `--media-manifest` and `--media-root` to preview. The manifest is a JSON array
 whose entries specify `source_type`, `source_id`, `path`, `original_name`, `size` in bytes,

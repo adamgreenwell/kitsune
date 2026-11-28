@@ -49,7 +49,7 @@ final readonly class ImportJournal
     /**
      * @param  list<array<string, mixed>>  $drafts
      * @param  list<ImportMediaAsset>  $media
-     * @param  array{blockers: list<Finding>, notices: list<Finding>}|null  $sourceDiagnostics
+     * @param  array{blockers: list<Finding>, notices: list<Finding>, row_blockers?: array<int, list<array{code: string, field?: string}>>}|null  $sourceDiagnostics
      */
     public function preview(
         string $sourceKey, string $adapter, string $snapshot, array $drafts, bool $sourceComplete,
@@ -68,6 +68,15 @@ final readonly class ImportJournal
 
         foreach ($drafts as $index => $draft) {
             $position = $index + 1;
+
+            $rowBlockers = $sourceDiagnostics['row_blockers'][$position] ?? [];
+            if ($rowBlockers !== []) {
+                foreach ($rowBlockers as $blocker) {
+                    $findings[] = ['position' => $position, ...$blocker];
+                }
+
+                continue;
+            }
 
             try {
                 $action = ImportPlan::draft((object) ($draft + ['expected_revision_id' => null]));
