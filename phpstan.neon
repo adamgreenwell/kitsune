@@ -24,6 +24,7 @@ parameters:
         - packages/svg-sanitizer/src
         - packages/commerce/src
         # Development setup and release admission execute package code or change its installed form.
+        - bin/check-plugin.php
         - bin/install-commerce-skeleton.php
         - bin/docs
         - bin/docs-build.php
