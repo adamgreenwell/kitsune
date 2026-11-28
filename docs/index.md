@@ -11,6 +11,7 @@ not a stable-release or third-party extension promise. Choose the snapshot you m
 - [Rehearse Amazon S3 media storage](s3-media.md) — configure the optional disks and check delivery and withdrawal.
 - [Define fields and storage](field-types.md) — field shapes, validation, driver differences and index creation.
 - [Understand Org and Site](architecture.md#2-admin-routing--the-decision-that-shapes-everything) — the two isolation boundaries and how they are enforced.
+- [Choose a plugin integration](plugin-integrations.md) — decide between schema-engine content and a separate Filament Resource.
 
 ## Operate optional commerce
 

@@ -583,7 +583,7 @@ tooling stay here. The 4–6 months is re-estimated once the v1.0 slice has size
 - [ ] `kitsune/plugin-sdk`: base classes, a two-org / two-site fixture, assertion helpers
 - [ ] **Validation CLI** failing on unscoped queries, missing tenancy declarations, unsafe validation rules. Run in CI for every submitted plugin
 - [ ] Written deprecation policy: deprecate, never remove within a major
-- [ ] Document the **two-tier reality** — third-party Filament plugins register their own Resources against their own models, so they sit *beside* the schema engine, not inside it
+- [ ] [Document the two extension tiers](plugin-integrations.md) and align the author guide with the frozen contract
 - [ ] ⚠️ **Tenancy-audit every allowlisted third-party plugin.** Most Filament plugins are not tenancy-aware
 - [ ] **`kitsune/plugin-guidelines`** (ADR-025) — the invariants in Boost's guidelines format, so an AI-assisted plugin author inherits the scope attribute, `scopedUnique()`, the driver abstraction and the reserved handles *before* the validation CLI ever runs. The CLI catches a violation; guidelines prevent it
 

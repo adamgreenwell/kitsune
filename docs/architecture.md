@@ -494,6 +494,9 @@ answer that Composer and Packagist do that job. ~~One payload ships inside `kits
 `kitsune/core`: Blog, the Marketing Site and the DAM (`Kitsune\Core\Blueprints\FirstParty\BlogBlueprint`,
 `MarketingSiteBlueprint` and `DamBlueprint`), registered by core's own provider.
 
+See [Choosing a plugin integration](plugin-integrations.md) for the routing, authorization,
+scope, and UI responsibilities of each extension path.
+
 ### Module manifest
 
 Composer resolves package dependencies. Kitsune adds no module dependency resolver or provider load-order
