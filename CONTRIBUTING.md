@@ -307,6 +307,28 @@ actually selects. Use the module verifier in a disposable host, then test reques
 a sibling Site and another Org. The CLI is a development tool for the pre-alpha
 repository.
 
+### Verify the installed module
+
+Record the reviewed unpacked library before installing it. Verify the installed copy
+against that receipt and Composer's resolved metadata before loading the module.
+
+```sh
+php bin/check-plugin.php --strict "$source"
+php bin/check-plugin-distribution.php record "$source" > "$receipt"
+composer --working-dir="$consumer" install --no-plugins --no-scripts --no-interaction
+php bin/check-plugin-distribution.php verify "$installed" "$receipt" "$consumer/vendor/composer/installed.json"
+php bin/check-plugin.php --strict "$installed"
+```
+
+Use a disposable consumer and disable Composer plugins and scripts while installing the
+reviewed distribution. Use a consumer whose trusted Composer configuration selects that
+package. Pass its reviewed release version as the third `record` argument when the
+package manifest omits `version`. The receipt includes non-PHP files and the package metadata that
+influences Composer's installation. Keep the receipt from the review for the independent
+verification step. The service-free CI suite exercises this sequence and refuses changed
+files and changed resolver metadata. For runtime checks, use a trusted consumer and
+verify its generated autoloader and dependencies separately.
+
 ## Governance
 
 [`GOVERNANCE.md`](GOVERNANCE.md) — who decides, how maintainers earn commit rights, what happens if the maintainer disappears, and binding commitments about what will never happen to the licence — **is published now**, before there is anything to govern.
