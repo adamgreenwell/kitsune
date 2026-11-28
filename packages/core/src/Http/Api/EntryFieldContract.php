@@ -12,6 +12,7 @@ namespace Kitsune\Core\Http\Api;
 
 use Closure;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
@@ -229,6 +230,39 @@ final readonly class EntryFieldContract
         }
 
         return $payload;
+    }
+
+    /**
+     * Partition values already validated against this contract for the model and relation writer.
+     *
+     * @param  array<string, mixed>  $changes
+     * @return array{array<string, mixed>, array<string, list<array{entry: int, pin?: bool, follow?: bool}|array{group: string}>>}
+     */
+    public function writeChanges(Entry $entry, array $changes): array
+    {
+        $definitions = $this->definitions();
+        $attributes = array_intersect_key($changes, array_flip(['title', 'status', 'slug']));
+        $inline = $entry->values ?? [];
+        $relations = [];
+
+        foreach ($changes['values'] ?? [] as $handle => $value) {
+            $config = $definitions[$handle];
+            $storage = $config->storage;
+            match ($storage->strategy()) {
+                StorageStrategy::Inline => $inline[$handle] = $value,
+                StorageStrategy::Promoted => $attributes[(string) $storage->promotedColumn()] = $value,
+                StorageStrategy::Relational => $relations[$handle] = array_map(
+                    fn (mixed $choice): array => self::relationChoice($choice)
+                        ?? throw ValidationException::withMessages(['values.'.$handle => 'Choose an available relation.']),
+                    $value ?? [],
+                ),
+            };
+        }
+        if ($inline !== ($entry->values ?? [])) {
+            $attributes['values'] = $inline;
+        }
+
+        return [$attributes, $relations];
     }
 
     public function hasPromotedSlug(): bool
