@@ -27,9 +27,13 @@ whose entries specify `source_type`, `source_id`, `path`, `original_name`, `size
 to the local source directory. Run `stage-media` with the approved report, digest and media root
 before applying. For a completed report, `purge-staged-media` takes the same report and approved
 digest and verifies the managed file before removing its staging copy. For an abandoned report,
-it releases the reservation after accounting for the staging copy. A managed write whose entry
-never committed requires operator review. On
-S3, cleanup uses the version captured in the staging receipt. The approved media report uses
-private files scoped to the selected Site. A later approved report reuses an unchanged mapped asset
+it releases the reservation after accounting for the staging copy. Cleanup can remove an
+uncommitted managed copy with a recorded checksum, using the exact recorded version on S3.
+An unconfirmed remote write requires operator review. On S3, staging cleanup uses the version
+captured in the staging receipt. The approved media report uses
+private files scoped to the selected Site. The journal records the checksum of the prepared file
+before writing it. A retry can verify and adopt those exact bytes after an interruption. If
+the managed file is absent and preparation produces a different checksum, the report requires
+review. A later approved report reuses an unchanged mapped asset
 without uploading it again. Changed descriptors and independently edited media entries appear as
 conflicts in preview.

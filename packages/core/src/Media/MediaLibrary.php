@@ -72,7 +72,8 @@ final class MediaLibrary
         ?string $title = null,
         bool $siteOnly = false,
     ): Entry {
-        return self::storePrepared($absolutePath, $originalName, $type, $visibility, $title, $siteOnly);
+        return self::withPrepared($absolutePath, $originalName, $type, $visibility, $siteOnly,
+            static fn (string $source, string $extension, string $mime, int $size, int $orgId, ?int $siteId): Entry => self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId, null, null));
     }
 
     public static function reservePrivatePath(string $originalName): string
@@ -86,12 +87,25 @@ final class MediaLibrary
         return self::pathFor($context->orgId(), MediaIntake::storedName($extension));
     }
 
+    /** @param Closure(string, string):void $install */
+    public static function prepareReservedPrivate(string $absolutePath, string $originalName, EntryType $type, Closure $install): void
+    {
+        self::withPrepared($absolutePath, $originalName, $type, 'private', true, static function (string $source) use ($install): void {
+            $hash = hash_file('sha256', $source);
+            if (! is_string($hash)) {
+                throw new MediaRefused('The prepared media source could not be verified.');
+            }
+
+            $install($source, $hash);
+        });
+    }
+
     /** @param Closure(Entry):void $recordMapping */
-    public static function storeReservedPrivate(
-        string $absolutePath,
+    public static function adoptReservedPrivate(
         string $originalName,
         EntryType $type,
         string $reservedPath,
+        string $preparedHash,
         Closure $recordMapping,
     ): Entry {
         $orgId = app(Context::class)->orgId();
@@ -100,20 +114,31 @@ final class MediaLibrary
             throw new MediaRefused('The reserved media path is unavailable in the current Org.');
         }
 
-        return self::storePrepared($absolutePath, $originalName, $type, 'private', null, true, $reservedPath, $recordMapping);
+        $temporary = MediaBytes::toTemporary(self::diskFor('private'), $reservedPath, $preparedHash);
+        try {
+            return self::withPrepared($temporary, $originalName, $type, 'private', true,
+                static fn (string $source, string $extension, string $mime, int $size, int $orgId, ?int $siteId): Entry => self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, 'private', null, $siteId, $reservedPath, $recordMapping),
+                alreadyPrepared: true);
+        } finally {
+            @unlink($temporary);
+        }
     }
 
-    /** @param (Closure(Entry):void)|null $recordMapping */
-    private static function storePrepared(
+    /**
+     * @template TResult
+     *
+     * @param  Closure(string, string, string, int, int, ?int):TResult  $usePrepared
+     * @return TResult
+     */
+    private static function withPrepared(
         string $absolutePath,
         string $originalName,
         EntryType $type,
         string $visibility,
-        ?string $title,
         bool $siteOnly,
-        ?string $reservedPath = null,
-        ?Closure $recordMapping = null,
-    ): Entry {
+        Closure $usePrepared,
+        bool $alreadyPrepared = false,
+    ): mixed {
         if (! in_array($visibility, MediaFile::VISIBILITIES, true)) {
             throw new MediaRefused(sprintf(
                 'Refusing to store media with visibility [%s]. It is one of: %s — and ADR-041 makes private '
@@ -207,7 +232,7 @@ final class MediaLibrary
          * refusal path an attacker chooses the size of.
          */
         try {
-            if (MediaIntake::isGuarded($extension)) {
+            if (! $alreadyPrepared && MediaIntake::isGuarded($extension)) {
                 $source = self::sanitisedCopy($absolutePath, $originalName);
                 $temporaries[] = $source;
                 $size = (int) filesize($source);
@@ -242,7 +267,7 @@ final class MediaLibrary
                 }
             }
 
-            return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId, $reservedPath, $recordMapping);
+            return $usePrepared($source, $extension, $mime, $size, $orgId, $siteId);
         } finally {
             /*
              * ⚠️ `finally`, SO EVERY TEMPORARY GOES ON BOTH PATHS. A sanitised or stripped copy left in the system
@@ -280,12 +305,6 @@ final class MediaLibrary
         $path = $reservedPath ?? self::pathFor($orgId, MediaIntake::storedName($extension));
         if ($reservedPath === null) {
             self::writeNew($source, $disk, $path);
-        } else {
-            $expected = hash_file('sha256', $source);
-            if (! is_string($expected)) {
-                throw new MediaRefused('The reserved media source could not be verified.');
-            }
-            MediaBytes::createVerified($disk, $path, $source, $expected);
         }
 
         try {

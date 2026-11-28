@@ -25,6 +25,7 @@ use Kitsune\Core\Models\ImportExecution;
 use Kitsune\Core\Models\ImportMapping;
 use Kitsune\Core\Models\ImportMediaReservation;
 use Kitsune\Core\Models\ImportSource;
+use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 
@@ -53,16 +54,14 @@ final readonly class ImportMediaReservations
     public function finalize(int $executionId, ImportPlan $plan): void
     {
         foreach ($plan->media as $asset) {
+            $this->prepareManaged($executionId, $plan, $asset);
             TransactionRecovery::run(DB::connection(), function () use ($executionId, $plan, $asset): void {
                 $execution = $this->lockExecution($executionId, $plan, ['completed']);
                 if ($execution->state === 'completed') {
                     return;
                 }
 
-                $reservation = $this->lockReservation($plan, $executionId, $asset);
-                if ($reservation === null || ! $reservation->staged || $reservation->disk !== MediaLibrary::diskFor('private')) {
-                    throw new DomainException('Stage the approved media before applying the report.');
-                }
+                $reservation = $this->stagedReservation($plan, $executionId, $asset);
 
                 if ($reservation->entry_id !== null) {
                     $entry = $this->verifyManaged($plan->siteId, $reservation);
@@ -74,25 +73,144 @@ final readonly class ImportMediaReservations
                     return;
                 }
 
-                $type = EntryType::query()->where(fn ($query) => $query->whereNull('org_id')->orWhere('org_id', $plan->orgId))
-                    ->where('is_media', true)->find($asset->entryTypeId);
-                if ($type === null || ! EntryTypeAvailability::isEnabledFor($type, $this->context->site())) {
-                    throw new DomainException('The approved media type is unavailable for this Site.');
-                }
-                $path = $reservation->path ?? throw new DomainException('The media staging path is unavailable.');
-                $this->verifyStagedVersion($reservation, $path);
-                $temporary = MediaBytes::toTemporary($reservation->disk, $path, $reservation->content_sha256);
-                try {
-                    $this->verifyStagedVersion($reservation, $path);
-                    MediaLibrary::storeReservedPrivate($temporary, $asset->originalName, $type, $reservation->managed_path,
-                        function (Entry $entry) use ($execution, $reservation, $asset): void {
-                            $this->recordMapping($execution, $reservation, $entry, $asset);
-                        });
-                } finally {
-                    @unlink($temporary);
-                }
+                $hash = $reservation->managed_sha256 ?? throw new DomainException('The prepared media checksum is unavailable.');
+                $this->verifyManagedVersion($reservation);
+                MediaLibrary::adoptReservedPrivate($asset->originalName, $this->availableMediaType($plan, $asset),
+                    $reservation->managed_path, $hash, function (Entry $entry) use ($execution, $reservation, $asset): void {
+                        $this->recordMapping($execution, $reservation, $entry, $asset);
+                    });
             });
         }
+    }
+
+    private function prepareManaged(int $executionId, ImportPlan $plan, ImportMediaAsset $asset): void
+    {
+        $reservation = TransactionRecovery::run(DB::connection(), function () use ($executionId, $plan, $asset): ?ImportMediaReservation {
+            if ($this->lockExecution($executionId, $plan, ['completed'])->state === 'completed') {
+                return null;
+            }
+
+            $reservation = $this->stagedReservation($plan, $executionId, $asset);
+            if ($reservation->entry_id !== null || $this->preparedObjectExists($reservation)) {
+                return null;
+            }
+
+            return $reservation;
+        });
+        if ($reservation === null) {
+            return;
+        }
+
+        $path = $reservation->path ?? throw new DomainException('The media staging path is unavailable.');
+        $this->verifyStagedVersion($reservation, $path);
+        $temporary = MediaBytes::toTemporary($reservation->disk, $path, $reservation->content_sha256);
+        try {
+            $this->verifyStagedVersion($reservation, $path);
+            MediaLibrary::prepareReservedPrivate($temporary, $asset->originalName, $this->availableMediaType($plan, $asset),
+                function (string $prepared, string $hash) use ($executionId, $plan, $asset): void {
+                    $this->installPrepared($plan, $executionId, $asset, $prepared, $hash);
+                });
+        } finally {
+            @unlink($temporary);
+        }
+    }
+
+    private function stagedReservation(ImportPlan $plan, int $executionId, ImportMediaAsset $asset): ImportMediaReservation
+    {
+        $reservation = $this->lockReservation($plan, $executionId, $asset);
+        if ($reservation === null || ! $reservation->staged || $reservation->disk !== MediaLibrary::diskFor('private')) {
+            throw new DomainException('Stage the approved media before applying the report.');
+        }
+
+        return $reservation;
+    }
+
+    private function availableMediaType(ImportPlan $plan, ImportMediaAsset $asset): EntryType
+    {
+        $type = EntryType::query()->where(fn ($query) => $query->whereNull('org_id')->orWhere('org_id', $plan->orgId))
+            ->where('is_media', true)->find($asset->entryTypeId);
+        if ($type === null || ! EntryTypeAvailability::isEnabledFor($type, $this->context->site())) {
+            throw new DomainException('The approved media type is unavailable for this Site.');
+        }
+
+        return $type;
+    }
+
+    private function preparedObjectExists(ImportMediaReservation $reservation): bool
+    {
+        $actual = MediaBytes::hash($reservation->disk, $reservation->managed_path);
+        if ($actual === null) {
+            return false;
+        }
+        if (! MediaBytes::same($reservation->managed_sha256, $actual)) {
+            throw new DomainException('The managed object differs from the prepared media checksum.');
+        }
+
+        $this->verifyManagedVersion($reservation);
+
+        return true;
+    }
+
+    private function verifyManagedVersion(ImportMediaReservation $reservation): void
+    {
+        if ($reservation->managed_object_version !== null
+            && $reservation->managed_object_version !== MediaBytes::reservedObjectVersion($reservation->disk, $reservation->managed_path)) {
+            throw new DomainException('The managed object differs from the recorded provider version.');
+        }
+    }
+
+    private function installPrepared(ImportPlan $plan, int $executionId, ImportMediaAsset $asset, string $prepared, string $hash): void
+    {
+        $commitChecksum = TransactionRecovery::run(DB::connection(), function () use ($plan, $executionId, $asset, $hash): bool {
+            if ($this->lockExecution($executionId, $plan, ['completed'])->state === 'completed') {
+                return false;
+            }
+
+            $reservation = $this->stagedReservation($plan, $executionId, $asset);
+            if ($reservation->entry_id !== null || $this->preparedObjectExists($reservation)) {
+                return false;
+            }
+
+            if ($reservation->managed_sha256 !== null) {
+                if ($reservation->managed_sha256 !== $hash) {
+                    throw new DomainException('The preparation output changed after the checksum was recorded. Review the approved report.');
+                }
+
+                return true;
+            }
+
+            $reservation->managed_sha256 = $hash;
+            if (! $reservation->save()) {
+                throw new RuntimeException('The prepared media checksum could not be recorded.');
+            }
+
+            return true;
+        });
+        if (! $commitChecksum) {
+            return;
+        }
+
+        TransactionRecovery::run(DB::connection(), function () use ($plan, $executionId, $asset, $prepared, $hash): void {
+            if ($this->lockExecution($executionId, $plan, ['completed'])->state === 'completed') {
+                return;
+            }
+
+            $reservation = $this->stagedReservation($plan, $executionId, $asset);
+            if ($reservation->entry_id !== null || $this->preparedObjectExists($reservation)) {
+                return;
+            }
+            if ($reservation->managed_sha256 !== $hash) {
+                throw new DomainException('Another attempt prepared the managed media. Retry the approved report.');
+            }
+
+            $version = MediaBytes::createVerified($reservation->disk, $reservation->managed_path, $prepared, $hash);
+            if ($version !== null) {
+                $reservation->managed_object_version = $version;
+                if (! $reservation->save()) {
+                    throw new RuntimeException('The managed object version could not be recorded.');
+                }
+            }
+        });
     }
 
     /** @return list<int> */
@@ -139,7 +257,7 @@ final readonly class ImportMediaReservations
     {
         $path = $reservation->path ?? throw new DomainException('The media staging path is unavailable.');
         if ($reservation->entry_id === null && MediaBytes::containsReservedObject($reservation->disk, $reservation->managed_path)) {
-            throw new DomainException('The abandoned reservation has an uncommitted managed file that requires review.');
+            $this->purgeUncommittedManaged($reservation);
         }
 
         if (! $reservation->staged && ! MediaBytes::containsReservedObject($reservation->disk, $path)) {
@@ -162,6 +280,22 @@ final readonly class ImportMediaReservations
         }
     }
 
+    private function purgeUncommittedManaged(ImportMediaReservation $reservation): void
+    {
+        $hash = $reservation->managed_sha256;
+        $version = $reservation->managed_object_version;
+        if ($hash === null || (! MediaBytes::local($reservation->disk) && ($version === null || $version === 'null'))) {
+            throw new DomainException('The abandoned reservation has an uncommitted managed file that requires review.');
+        }
+
+        MediaBytes::purgeReserved($reservation->disk, $reservation->managed_path, $hash, $version, static function () use ($reservation): void {
+            // Media paths are globally unique. A registered file is outside abandoned-import cleanup.
+            if (MediaFile::query()->where('path', $reservation->managed_path)->lockForUpdate()->exists()) {
+                throw new DomainException('The managed path belongs to a registered media file.');
+            }
+        });
+    }
+
     private function lockReservation(ImportPlan $plan, int $executionId, ImportMediaAsset $asset): ?ImportMediaReservation
     {
         return ImportMediaReservation::query()->where('site_id', $plan->siteId)->where('import_execution_id', $executionId)
@@ -175,9 +309,13 @@ final readonly class ImportMediaReservations
             ->findOrFail($reservation->entry_id);
         $file = $entry->mediaFile()->when($lock, fn ($query) => $query->lockForUpdate())->firstOrFail();
         if ($file->path !== $reservation->managed_path || $file->disk !== $reservation->disk
-            || $file->visibility !== 'private' || ! MediaBytes::same($file->checksum, MediaBytes::hash($file->disk, $file->path))) {
+            || $file->visibility !== 'private'
+            || ($reservation->managed_sha256 !== null && ! MediaBytes::same($reservation->managed_sha256, $file->checksum))
+            || ! MediaBytes::same($file->checksum, MediaBytes::hash($file->disk, $file->path))) {
             throw new DomainException('The finalized media no longer matches its reservation.');
         }
+
+        $this->verifyManagedVersion($reservation);
 
         return $entry;
     }
@@ -293,6 +431,8 @@ final readonly class ImportMediaReservations
                 'disk' => $disk,
                 'path' => $prior === null ? sprintf('imports/staging/%d/%d/%s', $orgId, $siteId, bin2hex(random_bytes(16))) : null,
                 'managed_path' => $prior->managed_path ?? MediaLibrary::reservePrivatePath($asset->originalName),
+                'managed_sha256' => $prior?->managed_sha256,
+                'managed_object_version' => $prior?->managed_object_version,
                 'entry_id' => $prior?->entry_id,
                 'staged' => $prior !== null,
                 'content_sha256' => $asset->sha256,

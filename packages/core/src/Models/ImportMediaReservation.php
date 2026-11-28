@@ -27,6 +27,8 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property string $disk
  * @property ?string $path
  * @property string $managed_path
+ * @property ?string $managed_sha256
+ * @property ?string $managed_object_version
  * @property ?int $entry_id
  * @property string $content_sha256
  * @property int $source_size_bytes

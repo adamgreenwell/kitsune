@@ -13,8 +13,10 @@ use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportMediaInput;
+use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\SanitisesSvg;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -230,9 +232,17 @@ it('finalizes a staged media mapping and links it after a rollback without creat
             ->and($mediaStatus()[0]['outcome'])->toBe('staged')
             ->and(fn () => $journal->purgeStagedMedia($plan->report(), $plan->digest()))
             ->toThrow(DomainException::class, 'completed or abandoned approved report')
+            ->and($reservation->fresh()->managed_sha256)->toBe($asset->sha256)
             ->and($disk->get($reservation->managed_path))->toBe($this->mediaBytes);
 
         $refuse = false;
+        $disk->put($reservation->managed_path, 'unexpected managed object');
+        expect(fn () => $journal->apply($plan->report(), $plan->digest()))
+            ->toThrow(DomainException::class, 'differs from the prepared media checksum')
+            ->and($disk->get($reservation->managed_path))->toBe('unexpected managed object');
+        $disk->put($reservation->managed_path, $this->mediaBytes);
+        $disk->delete($reservation->path);
+
         [$draft] = $journal->apply($plan->report(), $plan->digest());
         $id = $reservation->fresh()->entry_id;
         $file = MediaFile::query()->where('entry_id', $id)->firstOrFail();
@@ -292,6 +302,105 @@ it('finalizes a staged media mapping and links it after a rollback without creat
         Entry::findOrFail($id)->update(['title' => 'Independently edited asset']);
         expect($journal->preview('catalogue', 'json', hash('sha256', 'edited destination'), [], true, [$asset], $root)->findings)
             ->toBe([['position' => 1, 'code' => 'mapped-media-conflict']]);
+    } finally {
+        $context->forget();
+    }
+});
+
+it('adopts the checkpointed SVG bytes after the preparation service changes', function (): void {
+    $context = app(Context::class);
+    try {
+        $org = Org::create(['name' => 'Preparation', 'slug' => 'preparation']);
+        $context->setOrg($org);
+        $context->setSite(Site::create(['handle' => 'primary', 'slug' => 'primary', 'name' => 'Primary']));
+        $type = EntryType::create(['handle' => 'artwork', 'name' => 'Artwork', 'plural_name' => 'Artworks', 'is_media' => true]);
+        $disk = Storage::fake(MediaDisks::PRIVATE);
+        $svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Original</title><rect width="1" height="1"/></svg>';
+        $sanitiser = new class implements SanitisesSvg
+        {
+            public int $calls = 0;
+
+            public string $title = 'Prepared';
+
+            public function sanitise(string $svg): string
+            {
+                $this->calls++;
+
+                return '<svg xmlns="http://www.w3.org/2000/svg"><title>'.$this->title.'</title><rect width="1" height="1"/></svg>';
+            }
+        };
+        app()->instance(SanitisesSvg::class, $sanitiser);
+        $root = $this->mediaFixture.'/inside';
+        file_put_contents($root.'/image.svg', $svg);
+        $asset = new ImportMediaAsset('artwork', 'svg-1', 'image.svg', 'image.svg', strlen($svg), hash('sha256', $svg), $type->id);
+        $journal = app(ImportJournal::class);
+        $plan = $journal->preview('catalogue', 'json', hash('sha256', 'svg fixture'), [], true, [$asset], $root);
+        expect($plan->complete)->toBeTrue();
+        [$reservationId] = $journal->stageMedia($plan->report(), $plan->digest(), $root);
+        $refuse = true;
+        ImportMapping::creating(static function () use (&$refuse): ?bool {
+            return $refuse ? false : null;
+        });
+        expect(fn () => $journal->apply($plan->report(), $plan->digest()))->toThrow(RuntimeException::class, 'media mapping was refused');
+        $reservation = ImportMediaReservation::findOrFail($reservationId);
+        $prepared = $disk->get($reservation->managed_path);
+        expect($prepared)->toContain('<title>Prepared</title>')
+            ->and($reservation->managed_sha256)->toBe(hash('sha256', $prepared))
+            ->and($reservation->managed_sha256)->not->toBe($asset->sha256);
+
+        $sanitiser->title = 'Different output';
+        $refuse = false;
+        $journal->apply($plan->report(), $plan->digest());
+        expect($sanitiser->calls)->toBe(1)
+            ->and($disk->get($reservation->managed_path))->toBe($prepared)
+            ->and(MediaFile::query()->sole()->checksum)->toBe($reservation->managed_sha256);
+    } finally {
+        $context->forget();
+        app()->forgetInstance(SanitisesSvg::class);
+    }
+});
+
+it('cleans an abandoned prepared object only when it matches the recorded checksum', function (): void {
+    $context = app(Context::class);
+    try {
+        $org = Org::create(['name' => 'Abandonment', 'slug' => 'abandonment']);
+        $context->setOrg($org);
+        $context->setSite(Site::create(['handle' => 'primary', 'slug' => 'primary', 'name' => 'Primary']));
+        $type = EntryType::create(['handle' => 'asset', 'name' => 'Asset', 'plural_name' => 'Assets', 'is_media' => true]);
+        $disk = Storage::fake(MediaDisks::PRIVATE);
+        $asset = new ImportMediaAsset('image', '0042', 'photo.png', 'photo.png', $this->descriptor->size, $this->descriptor->sha256, $type->id);
+        $journal = app(ImportJournal::class);
+        $root = $this->mediaFixture.'/inside';
+        $plan = $journal->preview('catalogue', 'json', hash('sha256', 'fixture'), [], true, [$asset], $root);
+        [$reservationId] = $journal->stageMedia($plan->report(), $plan->digest(), $root);
+        $reservation = ImportMediaReservation::findOrFail($reservationId);
+        $earlierHash = hash('sha256', 'earlier preparation output');
+        $reservation->managed_sha256 = $earlierHash;
+        $reservation->save();
+        expect(fn () => $journal->apply($plan->report(), $plan->digest()))
+            ->toThrow(DomainException::class, 'preparation output changed')
+            ->and($reservation->fresh()->managed_sha256)->toBe($earlierHash)
+            ->and($disk->exists($reservation->managed_path))->toBeFalse();
+
+        $reservation->managed_sha256 = $asset->sha256;
+        $reservation->save();
+        ImportMapping::creating(static fn (): bool => false);
+        expect(fn () => $journal->apply($plan->report(), $plan->digest()))->toThrow(RuntimeException::class, 'media mapping was refused');
+        $reservation = ImportMediaReservation::findOrFail($reservationId);
+        $journal->abandon($plan->report(), $plan->digest());
+        $disk->put($reservation->managed_path, 'earlier contents replaced');
+        expect(fn () => $journal->purgeStagedMedia($plan->report(), $plan->digest()))
+            ->toThrow(MediaCustodyFailure::class)
+            ->and($disk->get($reservation->managed_path))->toBe('earlier contents replaced')
+            ->and($disk->get($reservation->path))->toBe($this->mediaBytes)
+            ->and($reservation->fresh()->staging_purged)->toBeFalse();
+
+        $disk->put($reservation->managed_path, $this->mediaBytes);
+        expect($journal->purgeStagedMedia($plan->report(), $plan->digest()))->toBe([$reservationId])
+            ->and($journal->purgeStagedMedia($plan->report(), $plan->digest()))->toBe([$reservationId])
+            ->and($reservation->fresh()->staging_purged)->toBeTrue()
+            ->and($disk->allFiles())->toBe([])
+            ->and(Entry::count())->toBe(0);
     } finally {
         $context->forget();
     }

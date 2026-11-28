@@ -622,15 +622,13 @@ final class MediaBytes
 
     /**
      * Install verified bytes at a reserved path without replacing an existing object.
-     * A retry accepts an existing object only when its checksum agrees.
+     * A retry accepts an existing object only when its checksum agrees. Return the S3 version from an acknowledged PUT.
      */
-    public static function createVerified(string $disk, string $path, string $source, string $expected): void
+    public static function createVerified(string $disk, string $path, string $source, string $expected): ?string
     {
         $filesystem = self::disk($disk);
         if ($filesystem instanceof AwsS3V3Adapter) {
-            self::createS3Verified($filesystem, $disk, $path, $source, $expected);
-
-            return;
+            return self::createS3Verified($filesystem, $disk, $path, $source, $expected);
         }
 
         if (! $filesystem instanceof LocalFilesystemAdapter) {
@@ -643,7 +641,7 @@ final class MediaBytes
                 throw new MediaCustodyFailure('verify', $disk, $path);
             }
 
-            return;
+            return null;
         }
 
         $scratch = $path.'-'.bin2hex(random_bytes(8));
@@ -655,9 +653,11 @@ final class MediaBytes
         } finally {
             self::discard($disk, $scratch);
         }
+
+        return null;
     }
 
-    private static function createS3Verified(AwsS3V3Adapter $filesystem, string $disk, string $path, string $source, string $expected): void
+    private static function createS3Verified(AwsS3V3Adapter $filesystem, string $disk, string $path, string $source, string $expected): ?string
     {
         $config = $filesystem->getConfig();
         $bucket = $config['bucket'] ?? null;
@@ -673,7 +673,7 @@ final class MediaBytes
                 throw new MediaCustodyFailure('verify', $disk, $path);
             }
 
-            return;
+            return null;
         }
 
         $stream = @fopen($source, 'rb');
@@ -697,14 +697,14 @@ final class MediaBytes
                 'ExpectedBucketOwner', 'RequestPayer', 'ServerSideEncryption', 'SSEKMSKeyId', 'SSEKMSEncryptionContext',
                 'SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5', 'BucketKeyEnabled',
             ]));
-            $putObject($params);
+            $result = $putObject($params);
         } catch (Throwable $failure) {
             // A lost response or another writer may have left the exact requested object.
             if (! self::same($expected, self::hash($disk, $path))) {
                 throw new MediaCustodyFailure('copy', $disk, $path, $failure);
             }
 
-            return;
+            return null;
         } finally {
             self::close($stream);
         }
@@ -712,6 +712,14 @@ final class MediaBytes
         if (! self::same($expected, self::hash($disk, $path))) {
             throw new MediaCustodyFailure('verify', $disk, $path);
         }
+
+        $version = $result['VersionId'] ?? 'null';
+        if (! is_string($version) || $version === ''
+            || $version !== self::reservedObjectVersion($disk, $path)) {
+            throw new MediaCustodyFailure('verify', $disk, $path);
+        }
+
+        return $version;
     }
 
     /** The S3 version ID as reported by the provider. Local files have no version. */

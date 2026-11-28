@@ -90,6 +90,8 @@ return new class extends Migration
             $table->string('disk');
             $table->string('path', 100)->nullable();
             $table->string('managed_path', 100);
+            $table->string('managed_sha256', 64)->nullable();
+            $table->text('managed_object_version')->nullable();
             $table->unsignedBigInteger('entry_id')->nullable();
             $table->string('content_sha256', 64);
             $table->unsignedBigInteger('source_size_bytes');
