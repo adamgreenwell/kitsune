@@ -669,7 +669,7 @@ it('approves a local WordPress projection through the command and refuses its so
     };
     $projection = [
         'format' => 1, 'blocked' => false, 'records' => [[
-            'source' => ['type' => 'post', 'id' => '17'],
+            'source' => ['type' => 'post', 'id' => '17'], 'parent_source_id' => '1',
             'title' => 'Fixture article', 'slug' => 'fixture-article', 'values' => (object) [], 'media_references' => [],
         ]], 'media' => [], 'findings' => [],
     ];
@@ -685,7 +685,7 @@ it('approves a local WordPress projection through the command and refuses its so
             ->and($blocked->findings)->toBe([[
                 'position' => 1, 'code' => 'wordpress-finding-ambiguous-acf-value', 'source_id' => '17', 'field' => 'summary',
             ]])
-            ->and($blocked->sourceNotices)->toHaveCount(4);
+            ->and($blocked->sourceNotices)->toHaveCount(5);
         file_put_contents($path, $bytes);
         expect($run('digest')[0])->toBe(1)->and(Entry::count())->toBe(0);
 
@@ -695,7 +695,8 @@ it('approves a local WordPress projection through the command and refuses its so
         file_put_contents($path, json_encode($projection, JSON_THROW_ON_ERROR));
         [$exit, $bytes] = $run('preview', $options);
         $wxr = ImportPlan::restore($bytes);
-        expect($exit)->toBe(0)->and($wxr->sourceNotices)->toHaveCount(4);
+        expect($exit)->toBe(0)->and($wxr->sourceNotices)->toHaveCount(5)
+            ->toContain(['position' => 1, 'code' => 'wordpress-parent-link-not-imported', 'source_id' => '17']);
         file_put_contents($path, $bytes);
         expect($run('apply', ['--approval' => $wxr->digest()])[0])->toBe(0);
         $destinationId = Entry::query()->sole()->id;
@@ -703,7 +704,8 @@ it('approves a local WordPress projection through the command and refuses its so
         file_put_contents($path, json_encode($projection, JSON_THROW_ON_ERROR));
         [$exit, $bytes] = $run('preview', array_replace($options, ['--format' => 'wordpress-direct']));
         $direct = ImportPlan::restore($bytes);
-        expect($exit)->toBe(0)->and($direct->sourceNotices)->toHaveCount(1)
+        expect($exit)->toBe(0)->and($direct->sourceNotices)->toHaveCount(2)
+            ->toContain(['position' => 1, 'code' => 'wordpress-parent-link-not-imported', 'source_id' => '17'])
             ->and($direct->digest())->not->toBe($wxr->digest());
         file_put_contents($path, $bytes);
         expect($run('apply', ['--approval' => $direct->digest()])[0])->toBe(0)
@@ -774,6 +776,14 @@ it('streams a local WXR export through the operator command for the confirmed bl
             ->and($plan->records[0]['source_id'])->toBe('17')
             ->and($plan->sourceAddress)->toBe($blog)
             ->and($bytes)->not->toContain('Original body')
+            ->and(Entry::count())->toBe(0);
+
+        file_put_contents($xml, str_replace('<wp:post_parent>0', '<wp:post_parent>1', $fixture));
+        [$exit, $bytes] = $run($blog);
+        $child = ImportPlan::restore($bytes);
+        expect($exit)->toBe(0)
+            ->and($child->sourceNotices)->toContain(['position' => 1, 'code' => 'wordpress-parent-link-not-imported', 'source_id' => '17'])
+            ->and($child->digest())->not->toBe($plan->digest())
             ->and(Entry::count())->toBe(0);
 
         file_put_contents($xml, str_replace('Original body', 'Changed body', $fixture));

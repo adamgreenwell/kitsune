@@ -64,6 +64,7 @@ final readonly class WordPressDraftInput
         $drafts = [];
         $positions = [];
         $unavailableLinks = [];
+        $hierarchyNotices = [];
         foreach (self::items($report->records ?? null) as $row) {
             if (! $row instanceof stdClass || ! ($row->source ?? null) instanceof stdClass
                 || ! self::knownKeys($row, ['source', 'parent_source_id', 'slug', 'title', 'source_status',
@@ -77,6 +78,11 @@ final readonly class WordPressDraftInput
                 throw new InvalidArgumentException('The WordPress projection repeats a source post ID.');
             }
             $positions[$id] = count($drafts) + 1;
+            if (! in_array($row->parent_source_id ?? null, [null, '0', 0], true)) {
+                $hierarchyNotices[] = [
+                    'position' => $positions[$id], 'code' => 'wordpress-parent-link-not-imported', 'source_id' => $id,
+                ];
+            }
 
             $values = self::properties($row->values ?? null);
             $links = [];
@@ -141,7 +147,7 @@ final readonly class WordPressDraftInput
         return $this->journal->preview(
             $sourceKey, 'wordpress:'.$mode.':v1', $snapshot ?? hash('sha256', $projection), $drafts, $complete,
             $media, $mediaRoot,
-            ['blockers' => $blockers, 'notices' => [...array_values($notices), ...$bodyNotices]], $confirmedBlog,
+            ['blockers' => $blockers, 'notices' => [...array_values($notices), ...$bodyNotices, ...$hierarchyNotices]], $confirmedBlog,
         );
     }
 
