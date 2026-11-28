@@ -41,11 +41,9 @@ try {
     $probeFiles = [];
     foreach ($candidate->exports as $key => $export) {
         $retained = $candidate->sameMajorAs($published) && isset($published->exports[$key]);
-        $directory = realpath($retained ? $publishedProbes : $candidateProbes);
-        $file = $directory.DIRECTORY_SEPARATOR.$export['probe'].'.php';
-        if ($directory === false || realpath($file) !== $file || ! is_file($file)
-            || hash_file('sha256', $file) !== $export['sha256']) {
-            throw new InvalidArgumentException('Missing or changed consumer probe '.$export['probe'].'.');
+        $file = requireExtensionProbe($candidateProbes, $export['probe'], $export['sha256'], 'candidate');
+        if ($retained) {
+            $file = requireExtensionProbe($publishedProbes, $export['probe'], $export['sha256'], 'published');
         }
 
         $probeFiles[$file] = $export['probe'];
@@ -63,6 +61,19 @@ try {
 } catch (Throwable $error) {
     fwrite(STDERR, 'Extension compatibility refused: '.$error->getMessage().PHP_EOL);
     exit(1);
+}
+
+function requireExtensionProbe(string $root, string $name, string $sha256, string $source): string
+{
+    $directory = realpath($root);
+    if ($directory !== false) {
+        $file = $directory.DIRECTORY_SEPARATOR.$name.'.php';
+        if (realpath($file) === $file && is_file($file) && hash_file('sha256', $file) === $sha256) {
+            return $file;
+        }
+    }
+
+    throw new InvalidArgumentException('Missing or changed '.$source.' consumer probe '.$name.'.');
 }
 
 /** @param list<string> $command */

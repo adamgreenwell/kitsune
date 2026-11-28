@@ -48,9 +48,10 @@ exercises the actual API or rendered behavior. It exits successfully and prints 
 line containing `compatible` when the checks pass. The tool starts a separate PHP
 process for runtime inspection and for each distinct probe.
 
-A same-major candidate retains every published export and the digest of its probe.
-The checker verifies the candidate’s PHP declarations, runs the unchanged consumers
-from the published probe directory, and runs probes for new exports from the candidate
+A same-major candidate retains every published export and includes the same
+probe bytes in its own probe directory. The checker verifies both copies.
+It checks the candidate’s PHP declarations, runs retained consumers from the
+published probe directory, and runs probes for new exports from the candidate
 directory. At the freeze, qualify the first inventory against its own probes. For a
 new major, use the prior published inventory for comparison, qualify the new
 inventory, and document the removed capabilities in the upgrade guide.
