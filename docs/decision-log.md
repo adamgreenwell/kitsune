@@ -4247,6 +4247,14 @@ deployment and cache generation, restart persistent workers and optionally build
 [commerce operations guide](commerce-operations.md) records those boundaries. No distributed cache-build fence
 or transaction over filesystem and database is claimed.
 
+**A module notification can fail after the switch.** The standalone CLI reports
+a listener exception with a failure exit and says that the switch already
+committed. The receipt remains the record of the switch. Repeating an unchanged
+switch emits no new notification. Laravel can stop dispatch before later
+listeners run. When an internal caller has an open transaction, the diagnostic
+leaves the commit or rollback to that caller. The supported event contract for
+nested calls and queued delivery is still part of [#235](https://github.com/adamgreenwell/kitsune/issues/235).
+
 **What it does not claim.** Dependency resolution is Composer's, and the kernel adds none — the roadmap line asking
 for it is **amended** rather than satisfied. Load order is registration order and is explicitly **not** a contract, so
 no test pins it beyond determinism. Nothing in core listens to a kernel event in Phase 3, so the hook system is a
