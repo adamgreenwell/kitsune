@@ -96,8 +96,10 @@ function extensionCompatibilityInput(string $directory): array
         }
         echo "compatible\n";
         PHP;
-    file_put_contents($directory.'/published/php.php', $phpProbe);
-    file_put_contents($directory.'/published/theme.php', $bladeProbe);
+    foreach (['published', 'candidate'] as $release) {
+        file_put_contents($directory.'/'.$release.'/php.php', $phpProbe);
+        file_put_contents($directory.'/'.$release.'/theme.php', $bladeProbe);
+    }
     file_put_contents($directory.'/candidate/replacement.php', $newProbe);
 
     $old = [
@@ -184,12 +186,27 @@ it('refuses forgetting a deprecated export or changing its retained consumer', f
     // Rehearse an edit to a retained fixture without touching either inventory.
     file_put_contents($this->dir.'/published/php.php', "<?php echo \"compatible\\n\";\n");
     $report = runExtensionCompatibilityFixture($this->dir, $this->published, $this->candidate);
-    expect($report->getExitCode())->toBe(1)->and($report->getErrorOutput())->toContain('Missing or changed consumer probe php');
+    expect($report->getExitCode())->toBe(1)->and($report->getErrorOutput())->toContain('Missing or changed published consumer probe php');
 });
+
+it('refuses a candidate that cannot carry the retained consumers forward', function (bool $omit): void {
+    $path = $this->dir.'/candidate/theme.php';
+    if ($omit) {
+        unlink($path);
+    } else {
+        file_put_contents($path, '<?php echo "compatible\n";');
+    }
+
+    $report = runExtensionCompatibilityFixture($this->dir, $this->published, $this->candidate);
+    expect($report->getExitCode())->toBe(1)
+        ->and($report->getErrorOutput())->toContain('Missing or changed candidate consumer probe theme.');
+})->with([true, false]);
 
 it('allows a new major to retire an old export and requires its own consumer', function (): void {
     file_put_contents($this->dir.'/contract.php', str_replace('public function title', 'private function previousTitle', $this->source));
     $new = ['release' => '2.0.0', 'exports' => [$this->candidate['exports'][3]]];
+    unlink($this->dir.'/candidate/php.php');
+    unlink($this->dir.'/candidate/theme.php');
     $report = runExtensionCompatibilityFixture($this->dir, $this->candidate, $new);
     expect($report->getExitCode())->toBe(0)->and($report->getOutput())->toContain('"probes":1');
 });
