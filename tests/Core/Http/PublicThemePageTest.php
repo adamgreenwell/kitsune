@@ -17,8 +17,10 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
+use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaVisibility;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryTranslationGroup;
@@ -33,6 +35,7 @@ use Kitsune\Core\Themes\PublicEntryRedirects;
 use Kitsune\Core\Themes\PublicThemePage;
 use Kitsune\Core\Themes\SiteMenus;
 use Kitsune\Core\Themes\ThemeRegistry;
+use Kitsune\Core\Themes\ThemeViewSelection;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 beforeEach(function (): void {
@@ -192,6 +195,124 @@ it('discovers usable themes and applies independent Site choices across two orga
     $this->get('/host-owned')->assertOk()->assertSee('host page');
 });
 
+it('keeps unversioned themes and refuses a declared contract without its renderer', function (): void {
+    $manifest = $this->directory.'/journal/theme.json';
+    $registry = app(ThemeRegistry::class);
+    File::put($manifest, '{"entry_types":["article"],"host_label":"Journal"}');
+
+    expect($registry->find('journal')?->entryTypes)->toBe(['article']);
+    $this->get('/news')->assertOk()->assertSee('English journal');
+
+    foreach ([2, 0, '1', 1.5, true, null] as $contract) {
+        File::put($manifest, json_encode(['entry_types' => ['article'], 'contract' => $contract], JSON_THROW_ON_ERROR));
+        expect($registry->find('journal'))->toBeNull()
+            ->and(array_column($registry->all(), 'handle'))->toBe(['stone']);
+    }
+
+    File::put($manifest, '{"entry_types":["article"],"contract":2}');
+    $this->get('/news')->assertOk()->assertSee('Welcome placeholder')->assertDontSee('English journal');
+    $this->get('/news/ar')->assertOk()->assertSee('<main lang="ar" dir="rtl">Arabic stone', false);
+    $this->artisan('kitsune:theme', ['action' => 'select', 'theme' => 'journal', '--org' => 'news', '--site' => 'ar'])
+        ->assertFailed();
+    expect($this->ar->fresh()->theme)->toBe('stone');
+});
+
+it('projects only the fields selected for the current Site through contract 1', function (): void {
+    File::put($this->directory.'/journal/theme.json', '{"entry_types":["article"],"contract":1}');
+    File::put($this->directory.'/journal/home.blade.php', <<<'BLADE'
+        <main lang="{{ $kitsune->locale }}" dir="{{ $kitsune->direction }}">
+        {{ $kitsune->siteName }} {{ $kitsune->homePath }} {{ $kitsune->entry === null ? 'home' : 'entry' }}
+        </main>
+        BLADE);
+    File::put($this->directory.'/journal/entries/article.blade.php', <<<'BLADE'
+        <?php echo json_encode([
+            'entry' => $kitsune->entry,
+            'site' => [$kitsune->siteName, $kitsune->locale, $kitsune->direction],
+            'enabled' => $kitsune->field('enabled'),
+            'score' => $kitsune->field('score'),
+            'labels' => $kitsune->field('labels'),
+            'empty_list' => $kitsune->field('empty_list'),
+            'empty_text' => $kitsune->field('empty_text'),
+            'private_notes' => $kitsune->field('private_notes'),
+            'unattached' => $kitsune->field('unattached'),
+            'body' => $kitsune->richText('body')?->toHtml(),
+            'menu' => $kitsune->menu('main'),
+            'missing_menu' => $kitsune->menu('absent'),
+            'missing_related' => $kitsune->related('absent'),
+            'host' => $kitsune->hostData,
+            'legacy' => isset($site) || isset($entry),
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES); ?>
+        BLADE);
+
+    $this->context->setSite($this->en);
+    $type = EntryType::create(['handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+    foreach ([
+        'enabled' => ['boolean', 1], 'score' => ['number', 1], 'labels' => ['text', 3],
+        'empty_list' => ['text', 3], 'empty_text' => ['text', 1], 'private_notes' => ['text', 1],
+        'body' => ['rich_text', 1],
+    ] as $handle => [$fieldType, $cardinality]) {
+        $storage = FieldStorage::create(['handle' => $handle, 'type' => $fieldType, 'cardinality' => $cardinality, 'pii_class' => 'none']);
+        $type->fields()->create(['field_storage_id' => $storage->id, 'label' => $handle]);
+    }
+    Entry::create([
+        'entry_type_id' => $type->id, 'title' => null, 'slug' => 'versioned', 'status' => 'published',
+        'values' => ['enabled' => false, 'score' => 0, 'labels' => ['Beta', 'Alpha'], 'body' => '<p>Safe</p>', 'private_notes' => 'private'],
+    ]);
+    app(SiteMenus::class)->save($this->en, 'main', 'Main', [['target' => 'home', 'label' => 'Start']], null);
+    $this->context->setSite($this->ar);
+    $this->ar->update(['theme' => 'journal']);
+    Entry::create([
+        'entry_type_id' => $type->id, 'slug' => 'versioned', 'title' => 'Arabic Story', 'status' => 'published',
+        'values' => ['enabled' => true, 'score' => 12, 'private_notes' => 'other private'],
+    ]);
+    $this->context->forget();
+
+    $read = function (string $path): array {
+        $response = $this->get($path)->assertOk()->assertHeader('Cache-Control', 'no-store, private');
+
+        return json_decode(trim($response->getContent()), true, flags: JSON_THROW_ON_ERROR);
+    };
+    $this->get('/news')->assertOk()->assertSee('English /news home');
+    expect($read('/news/article/versioned'))->toMatchArray(['enabled' => null, 'body' => null, 'host' => []]);
+
+    app()->instance(ThemeViewSelection::class, new class($this->org->id, $this->en->id) implements ThemeViewSelection
+    {
+        public function __construct(private readonly int $orgId, private readonly int $siteId) {}
+
+        public function forRender(int $orgId, int $siteId, ?string $entryType): array
+        {
+            return $orgId === $this->orgId && $siteId === $this->siteId && $entryType === 'article'
+                ? [
+                    'fields' => ['enabled', 'score', 'labels', 'empty_list', 'empty_text', 'body', 'unattached'],
+                    'hostData' => ['tag' => 'English publication'],
+                ]
+                : ['fields' => [], 'hostData' => []];
+        }
+    });
+
+    expect($read('/news/article/versioned'))->toMatchArray([
+        'entry' => ['title' => null, 'type' => 'article', 'path' => '/news/article/versioned'],
+        'site' => ['English', 'en', 'ltr'],
+        'enabled' => ['type' => 'boolean', 'multiple' => false, 'value' => false],
+        'score' => ['type' => 'number', 'multiple' => false, 'value' => 0],
+        'labels' => ['type' => 'text', 'multiple' => true, 'value' => ['Beta', 'Alpha']],
+        'empty_list' => ['type' => 'text', 'multiple' => true, 'value' => []],
+        'empty_text' => ['type' => 'text', 'multiple' => false, 'value' => null],
+        'private_notes' => null,
+        'unattached' => null,
+        'menu' => [['label' => 'Start', 'path' => '/news', 'children' => []]],
+        'missing_menu' => [],
+        'missing_related' => [],
+        'host' => ['tag' => 'English publication'],
+        'legacy' => false,
+    ]);
+    expect($read('/news/article/versioned')['body'])->toContain('Safe');
+    expect($read('/news/ar/article/versioned'))->toMatchArray([
+        'site' => ['Arabic', 'ar', 'rtl'], 'score' => null, 'host' => [], 'menu' => [],
+    ]);
+    $this->get('/magazine/article/versioned')->assertNotFound();
+});
+
 it('renders a published exact-Site entry via the type template or its theme default', function (): void {
     $this->context->setSite($this->en);
     foreach (['article', 'brief', 'private-note'] as $handle) {
@@ -268,6 +389,29 @@ it('renders the eligible local member and removes it when unpublished without fa
 
     $this->get('/news/ar/article/source')->assertOk()->assertSee('Exact pin')
         ->assertDontSee($arabic->title)->assertDontSee($english->title);
+
+    File::ensureDirectoryExists($this->directory.'/journal-contract/entries');
+    File::put($this->directory.'/journal-contract/theme.json', '{"entry_types":["article"],"contract":1}');
+    File::put($this->directory.'/journal-contract/home.blade.php', '<h1>{{ $kitsune->siteName }}</h1>');
+    File::put($this->directory.'/journal-contract/entries/article.blade.php',
+        '<h1>{{ $kitsune->entry["title"] }}</h1>@foreach ($kitsune->related("links") as $link)<a href="{{ $link["path"] }}">{{ $link["title"] }}</a>@endforeach');
+    $this->context->setSite($this->ar);
+    $this->ar->update(['theme' => 'journal-contract']);
+    $this->context->forget();
+    $this->get('/news/ar/article/source')->assertOk()->assertSee('Source story')->assertDontSee('Exact pin');
+
+    app()->instance(ThemeViewSelection::class, new class($this->ar->id) implements ThemeViewSelection
+    {
+        public function __construct(private readonly int $siteId) {}
+
+        public function forRender(int $orgId, int $siteId, ?string $entryType): array
+        {
+            return ['fields' => $siteId === $this->siteId && $entryType === 'article' ? ['links'] : [], 'hostData' => []];
+        }
+    });
+    $this->get('/news/ar/article/source')->assertOk()
+        ->assertSee('<a href="/news/ar/article/pin">Exact pin</a>', false)
+        ->assertDontSee($arabic->title)->assertDontSee($english->title);
 });
 
 it('exposes entry links only when the public fallback and the current Site own their destinations', function (): void {
@@ -309,11 +453,24 @@ it('exposes entry links only when the public fallback and the current Site own t
     $this->get('/news/brief/brief')->assertNotFound();
 });
 
-it('keeps private media out of public content routes and rendered relations', function (): void {
-    File::put($this->directory.'/journal/theme.json', '{"entry_types":["article","private_asset"]}');
-    File::put($this->directory.'/journal/entries/article.blade.php',
-        '<h1>{{ $entry->title }}</h1>@foreach ($related["links"] as $link)<p>{{ $link->title }}</p>@endforeach');
+it('keeps private media out of public content routes and rendered relations', function (bool $versioned): void {
+    File::put($this->directory.'/journal/theme.json', $versioned
+        ? '{"contract":1,"entry_types":["article","private_asset"]}'
+        : '{"entry_types":["article","private_asset"]}');
+    File::put($this->directory.'/journal/entries/article.blade.php', $versioned
+        ? '<h1>{{ $kitsune->entry["title"] }}</h1>{{ $kitsune->richText("body") }}{{ $kitsune->richText("hidden") }}'
+            .'<pre>{{ $kitsune->field("body")["value"] }}</pre>'
+            .'@foreach ($kitsune->related("links") as $link)<p>{{ $link["title"] }}</p>@endforeach'
+        : '<h1>{{ $entry->title }}</h1>{{ $richText("body") }}@foreach ($related["links"] as $link)<p>{{ $link->title }}</p>@endforeach');
+    app()->instance(ThemeViewSelection::class, new class implements ThemeViewSelection
+    {
+        public function forRender(int $orgId, int $siteId, ?string $entryType): array
+        {
+            return ['fields' => ['body', 'links'], 'hostData' => []];
+        }
+    });
     Storage::fake(MediaDisks::PRIVATE);
+    Storage::fake('public');
     $this->context->setSite($this->en);
     $type = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
     $assetType = EntryType::create([
@@ -323,17 +480,47 @@ it('keeps private media out of public content routes and rendered relations', fu
         'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
     ]);
     $type->fields()->create(['field_storage_id' => $storage->id, 'label' => 'Links']);
+    $body = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'body', 'type' => 'rich_text', 'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    $type->fields()->create(['field_storage_id' => $body->id, 'label' => 'Body']);
+    $hidden = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'hidden', 'type' => 'rich_text', 'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    $type->fields()->create(['field_storage_id' => $hidden->id, 'label' => 'Hidden']);
     $source = Entry::create(['entry_type_id' => $type->id, 'title' => 'Published story', 'slug' => 'story', 'status' => 'published']);
 
-    $file = $this->directory.'/fixture.txt';
-    File::put($file, "Private media fixture bytes.\n");
-    $media = MediaLibrary::store($file, 'fixture.txt', $assetType, 'private', 'Private asset title', siteOnly: true);
+    $file = $this->directory.'/fixture.png';
+    File::put($file, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXWQAAAAASUVORK5CYII=', true));
+    $media = MediaLibrary::store($file, 'fixture.png', $assetType, 'private', 'Private asset title', siteOnly: true);
     $source->syncFieldRelations($storage, [$media->id]);
+    $image = '<img data-kitsune-media="'.$media->id.'" alt="Detail">';
+    $source->update(['values' => [
+        'body' => '<p>Look '.$image.' here.</p>',
+        'hidden' => '<p>Unselected '.$image.'</p>',
+    ]]);
 
     $this->context->forget();
     $this->get('/news/private_asset/'.$media->slug)->assertNotFound();
-    $this->get('/news/article/story')->assertOk()->assertSee('Published story')->assertDontSee('Private asset title');
-});
+    $this->get('/news/article/story')->assertOk()->assertSee('Published story')->assertDontSee('Private asset title')
+        ->assertSee('Look Detail here.')->assertDontSee('<img', false);
+
+    $this->context->setSite($this->en);
+    MediaVisibility::makePublic($media);
+    $url = MediaDelivery::urlFor($media->fresh());
+    expect($url)->not->toBeNull();
+    $this->context->forget();
+    $response = $this->get('/news/article/story')->assertOk()->assertSee('src="'.e($url).'"', false)
+        ->assertDontSee('data-kitsune-media')->assertDontSee('Unselected');
+    if ($versioned) {
+        $response->assertSee('<pre>&lt;p dir=&quot;auto&quot;&gt;Look Detail here.&lt;/p&gt;</pre>', false);
+    }
+
+    $this->context->setSite($this->en);
+    $source->syncFieldRelations($storage, []);
+    $this->context->forget();
+    $this->get('/news/article/story')->assertOk()->assertSee('Look Detail here.')->assertDontSee('<img', false);
+})->with(['legacy' => false, 'contract 1' => true]);
 
 it('redirects multiple former addresses to the current entry in one hop', function (): void {
     $request = Request::create('https://localhost/news');

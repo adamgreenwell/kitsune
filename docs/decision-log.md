@@ -1159,6 +1159,10 @@ entries
 >
 > So what stands is honest rather than complete: a caller who wraps several site **moves** in one transaction can deadlock, the failure is loud and retryable rather than silent, no in-tree code does it, and the mechanism lands with the v1.2 API. The counter-example is recorded here so nobody has to rediscover it.
 >
+> **Amended 2026-11-28 for the v1.2 candidate (#71).** `Site::saveAllInHostOrder()` owns the outer transaction for a single Org and connection. It locks the sorted union of origin and destination hostnames before writing any Site. It also locks existing Site rows in ID order, including admin-only Sites that have no hostname mutex. Creates contribute only a destination. A cancelled save, a missing or stale Site, or an observer attempting to alter the planned address or add a Site save aborts the batch. Callers receive the saved models in input order. The prepared input models remain available for retry after a rollback. Observers should defer external effects until commit.
+>
+> The compatibility promise remains part of the v1.2 freeze. Existing individual saves retain their per-save locking contract.
+>
 > ⚠️ **And the rival lookup's currency is a PRECONDITION on PostgreSQL, not a property of `lockForUpdate()`.** Review found that the clause added for MySQL does not do the same work on Postgres: at REPEATABLE READ a row **inserted** after the transaction's snapshot is invisible, `FOR UPDATE` or not. Measured on PostgreSQL 17 — one session took a snapshot, a rival committed `x.test/`, and the locking read returned only the pre-snapshot `x.test/other`. The whole design rests on one requirement, *the rival lookup must see rivals that committed while this save queued*, and Postgres satisfies it at READ COMMITTED (its default, and Laravel's). That requirement is now **checked for each save**, because the effective level is a property of the *transaction* rather than of the connection — measured on one PostgreSQL connection: `read committed` outside a transaction, `repeatable read` inside a `REPEATABLE READ` one, `read committed` again after. A per-connection cache was tried and is rejected: it would skip the check for a later `REPEATABLE READ` transaction on a connection first seen at READ COMMITTED, and refuse every valid save on one first seen the other way round. A save under Postgres REPEATABLE READ is refused with the reason, rather than silently permitting the overlap the mutex exists to prevent. SERIALIZABLE is not refused: Postgres aborts a transaction whose read has been invalidated, which meets the requirement by failing loudly instead. MySQL and MariaDB run at REPEATABLE READ **by default** and are safe there, because a locking read is a current read — refusing every REPEATABLE READ connection fails 13 of their tests, which is why the check names the engine.
 >
 > This ADR previously said nested saves were safe, on the strength of a nested save re-locking nothing. That much is true and does not imply the rest.
@@ -2094,6 +2098,31 @@ their established shapes; malformed closing tags cannot silently discard later c
 The earlier fragment-parser reasoning remains recorded above and in the source comments.
 
 ---
+
+### 2026-11-27 amendment · Candidate for inspecting draft fields
+
+A trusted host with an established Site may use the internal `SiteDraftFields`
+candidate to inspect declared fields and check its expected blueprint fields.
+The caller supplies an actor with the ordinary entry-type view permission.
+The result has field handles, type handles, cardinality, required and inline
+flags, and a fingerprint of the current Site and schema.
+
+Inline validation also requires create permission for a new draft or update
+permission for an existing draft on that exact Site. It uses the same field
+rules as the generated Site API, applies partial validation on updates and
+checks the fingerprint again. It returns the validated values or errors by
+field path. Callers keep responsibility for the transaction and any writes.
+Promoted fields and relationships use their existing write paths. This
+candidate supplies evidence for #235's v1.2 extension audit.
+
+The internal `SiteDraftWriter` candidate puts draft metadata, field values and
+ordered relations in one transaction. It requires the active staff actor and
+the same Site and schema fingerprint. An update also supplies the draft's
+reviewed revision ID. The writer returns the saved identity and current
+revision, or validation errors with the transaction rolled back. New relation
+targets must pass the normal view policy on the current Site, including Org-shared
+entries visible there. The Site API and the writer share value partitioning.
+The host keeps ownership of source receipts and decides when to apply a plan.
 
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
@@ -5367,6 +5396,22 @@ same checks again. The token binds the displayed reverse plan. Under its own loc
 would be kept or removed differently or if the action has become receipt-only. Apply remains structure-only.
 
 ---
+
+### 2026-11-27 amendment · Candidate blueprint registration
+
+ADR-039 separates the definition an author supplies from the Org-scoped apply an
+operator runs. The internal `BlueprintRegistrar` gives trusted host providers and
+admitted module providers a registration-only path during application bootstrap.
+The existing registry and operator command consume the same definitions. The
+module kernel continues to decide which module providers may register.
+
+The registry accepts repeated registration of the same object and refuses a
+different object claiming an occupied handle, including another instance of
+the same PHP class. Definition handles and payloads are fixed for the lifetime
+of the application. Reload long-lived workers after changing provider
+configuration or module admission. The registrar is a candidate for the v1.2
+extension audit in #235. The list of author symbols above governs compatibility
+until that audit selects its supported surface.
 
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
@@ -8872,8 +8917,11 @@ not only Kitsune's, passes through what follows.
   `preventFilePathTampering()`, so it never writes to a disk and never mints a URL for a string the browser sends
   back. The handler takes only `TemporaryUploadedFile` values, authorises first, and removes the staged file
   **and** its `.json` sidecar — which holds the client's original filename — in a `finally`.
-- `RichEditor` is built with file attachments off. An image belongs in a relation field to a media entry, which
-  is what ADR-016 designed; an inline `<img>` in rich text stays allowed by the sanitiser but gains no upload path.
+- `RichEditor` is built with file attachments off. An image belongs in a relation field to a media entry, as
+  specified in ADR-016. A reviewed import can retain the image's position as a reference to the linked entry.
+  The staff preview resolves the reference through media authorization for the current Site. Public templates
+  resolve it once the file is served from the public disk. The stored body carries the entry ID and alternative
+  text for each position. All file intake and visibility changes go through the media library.
 - Table columns are never handed a disk path. Filament's `ImageColumn` treats a state that is not a URL or a
   `data:` URI as a path on its disk and, on any disk but `public` unless told otherwise, mints a `temporaryUrl()`
   for it — which on `local` skips `EntryPolicy`. Tiles are Kitsune's own column, built from the URLs in decision

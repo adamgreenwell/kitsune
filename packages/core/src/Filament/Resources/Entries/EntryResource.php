@@ -144,6 +144,8 @@ class EntryResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
+        $record = $schema->getRecord();
+
         return $schema->components([
             // ⚠️ `dir="auto"` on the INPUT, not the page. Filament sets `dir` once, on
             // the root `<html>`, from the panel locale — so every field value renders in
@@ -228,7 +230,7 @@ class EntryResource extends Resource
                 )))
                 ->required(),
             self::fileSection(),
-            ...self::fieldControls(),
+            ...self::fieldControls($record instanceof Entry ? $record : null),
         ]);
     }
 
@@ -422,11 +424,11 @@ class EntryResource extends Resource
      *
      * @return array<int, Component>
      */
-    private static function fieldControls(): array
+    private static function fieldControls(?Entry $record): array
     {
         return array_map(
             static fn (Field $field): Component => FieldValueRenderer::formComponent(
-                new FieldConfig($field->fieldStorage, $field),
+                new FieldConfig($field->fieldStorage, $field, $record),
             ),
             self::currentFields(),
         );

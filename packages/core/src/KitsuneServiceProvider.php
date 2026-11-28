@@ -27,6 +27,7 @@ use Kitsune\Core\Auth\EntryListAuthorization;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
+use Kitsune\Core\Blueprints\BlueprintRegistrar;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
 use Kitsune\Core\Blueprints\FirstParty\DamBlueprint;
@@ -67,6 +68,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\MediaReaderBulk;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Filament\RichText\InlineMediaReference;
 use Kitsune\Core\Http\Api\SiteTokens;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Http\MiddlewarePriority;
@@ -191,6 +193,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ->register(new MarketingSiteBlueprint)
                 ->register(new DamBlueprint),
         );
+        $this->app->singleton(BlueprintRegistrar::class);
 
         /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.
@@ -385,6 +388,8 @@ final class KitsuneServiceProvider extends ServiceProvider
              * injects it, which is how Filament ships its own dynamically imported components.
              */
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
+                ->loadedOnRequest(),
+            Js::make(InlineMediaReference::ASSET, __DIR__.'/../resources/js/rich-editor-inline-media.js')
                 ->loadedOnRequest(),
             Js::make('kitsune-select-value-direction', __DIR__.'/../resources/js/select-value-direction.js'),
             Js::make('kitsune-bulk-selection-recovery', __DIR__.'/../resources/js/bulk-selection-recovery.js'),

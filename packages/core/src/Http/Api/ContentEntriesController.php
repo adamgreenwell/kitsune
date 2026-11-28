@@ -22,7 +22,6 @@ use Illuminate\Validation\Rule as LaravelRule;
 use Illuminate\Validation\ValidationException;
 use JsonException;
 use Kitsune\Core\Auth\Permissions;
-use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Relations\EntryRelationResolver;
@@ -125,26 +124,7 @@ final class ContentEntriesController
                     abort_unless(SiteTokens::allows($request, $type->handle, 'publish'), 403);
                 }
 
-                $attributes = array_intersect_key($changes, array_flip(['title', 'status', 'slug']));
-                $inline = $entry->values ?? [];
-                $relations = [];
-
-                foreach ($changes['values'] ?? [] as $handle => $value) {
-                    $config = $definitions[$handle];
-                    $storage = $config->storage;
-                    match ($storage->strategy()) {
-                        StorageStrategy::Inline => $inline[$handle] = $value,
-                        StorageStrategy::Promoted => $attributes[(string) $storage->promotedColumn()] = $value,
-                        StorageStrategy::Relational => $relations[$handle] = array_map(
-                            fn (mixed $choice): array => EntryFieldContract::relationChoice($choice)
-                                ?? throw ValidationException::withMessages(['values.'.$handle => 'Choose an available relation.']),
-                            $value ?? [],
-                        ),
-                    };
-                }
-                if ($inline !== ($entry->values ?? [])) {
-                    $attributes['values'] = $inline;
-                }
+                [$attributes, $relations] = $contract->writeChanges($entry, $changes);
 
                 $revision = app(RecordedRevisions::class);
                 if ($relations !== []) {

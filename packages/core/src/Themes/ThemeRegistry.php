@@ -45,7 +45,11 @@ final class ThemeRegistry
             return null;
         }
 
-        $types = is_array($data) ? ($data['entry_types'] ?? null) : null;
+        if (! is_array($data) || (array_key_exists('contract', $data) && $data['contract'] !== 1)) {
+            return null;
+        }
+
+        $types = $data['entry_types'] ?? null;
         if (! is_array($types) || ! array_is_list($types)) {
             return null;
         }
@@ -56,7 +60,7 @@ final class ThemeRegistry
             }
         }
 
-        $theme = new SiteTheme($handle, $directory, array_values(array_unique($types)));
+        $theme = new SiteTheme($handle, $directory, array_values(array_unique($types)), $data['contract'] ?? null);
 
         return $theme->home() === null ? null : $theme;
     }
