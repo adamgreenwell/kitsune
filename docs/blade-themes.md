@@ -45,7 +45,7 @@ The redirect is temporary and uncached so it follows later edits and stops servi
 entry is unavailable. A published entry using the old address takes precedence. If its editor
 later renames it and keeps the old address, the redirect follows that newer entry.
 
-All templates receive `$site`, `$locale` and `$direction`. Use `lang="{{ $locale }}"` and
+Unversioned templates receive `$site`, `$locale` and `$direction`. Use `lang="{{ $locale }}"` and
 `dir="{{ $direction }}"` on the document root. Entry templates also receive `$entry`,
 its public `$entryPath`, and `$related`, which maps relation field handles to their readable
 entries in authored order. Use `$relatedPaths[$entryId]` for a related entry's same-host link.
@@ -71,6 +71,20 @@ make its records or files public.
 
 The theme runs on Blade and the existing database at request time. A standard SQLite
 installation can render it without Node, a separate service or a worker.
+
+## Versioned rendering rehearsal
+
+A host can try the candidate view interface by setting `"contract": 1` in a test theme's
+manifest. Templates in that theme receive `$kitsune` with the Site name, canonical home
+path, locale, direction, current published entry, and authored menus. Published content
+links and inline fields require an explicit host allowlist for the resolved Org, Site and
+entry type. The default supplies no fields or relations. Use normal Blade escaping for
+plain values and the view's `richText()` method for sanitized rich text.
+
+Prepare the replacement templates and host selection together. Rebuild the compiled view
+cache and start a fresh PHP runtime before switching traffic. For a Core rollback, restore
+the unversioned templates and manifest before selecting that theme on the previous Core.
+The compatibility promise begins with the v1.2 freeze.
 
 ## Response caching
 
