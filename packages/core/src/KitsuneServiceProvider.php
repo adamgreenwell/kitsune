@@ -27,6 +27,7 @@ use Kitsune\Core\Auth\EntryListAuthorization;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\ReaderGuard;
+use Kitsune\Core\Blueprints\BlueprintRegistrar;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Blueprints\FirstParty\BlogBlueprint;
 use Kitsune\Core\Blueprints\FirstParty\DamBlueprint;
@@ -191,6 +192,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 ->register(new MarketingSiteBlueprint)
                 ->register(new DamBlueprint),
         );
+        $this->app->singleton(BlueprintRegistrar::class);
 
         /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.

@@ -43,11 +43,10 @@ final class BlueprintRegistry
          * depends on registration order, and the receipt would record a handle without recording whose. A
          * module shadowing a first-party blueprint silently is the shape this refuses.
          */
-        if (isset($this->definitions[$handle]) && $definition::class !== $this->definitions[$handle]::class) {
+        if (isset($this->definitions[$handle]) && $definition !== $this->definitions[$handle]) {
             throw new RuntimeException(sprintf(
-                'Two blueprints claim the handle [%s]: %s is registered and %s wants it. A handle names one '
-                .'blueprint — the receipt records the handle, not the class, so the second would be applied '
-                .'under the first one\'s name.',
+                'Two blueprint instances claim the handle [%s]: %s is registered and %s wants it. '
+                .'Retain the original definition for this handle.',
                 $handle,
                 $this->definitions[$handle]::class,
                 $definition::class,
