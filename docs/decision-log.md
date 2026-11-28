@@ -2095,6 +2095,22 @@ The earlier fragment-parser reasoning remains recorded above and in the source c
 
 ---
 
+### 2026-11-27 amendment · Candidate for inspecting draft fields
+
+A trusted host with an established Site may use the internal `SiteDraftFields`
+candidate to inspect declared fields and check its expected blueprint fields.
+The caller supplies an actor with the ordinary entry-type view permission.
+The result has field handles, type handles, cardinality, required and inline
+flags, and a fingerprint of the current Site and schema.
+
+Inline validation also requires create permission for a new draft or update
+permission for an existing draft on that exact Site. It uses the same field
+rules as the generated Site API, applies partial validation on updates and
+checks the fingerprint again. It returns the validated values or errors by
+field path. Callers keep responsibility for the transaction and any writes.
+Promoted fields and relationships use their existing write paths. This
+candidate supplies evidence for #235's v1.2 extension audit.
+
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
 **Status:** Decided · 2026-09-10 · **Amended 2026-09-22 by ADR-039** — the idempotency condition is met by an
