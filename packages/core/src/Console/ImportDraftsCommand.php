@@ -12,11 +12,16 @@ namespace Kitsune\Core\Console;
 
 use DomainException;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportPlan;
 use Kitsune\Core\Imports\StructuredDraftInput;
+use Kitsune\Core\Imports\WordPressDatabaseExport;
+use Kitsune\Core\Imports\WordPressDraftInput;
+use Kitsune\Core\Imports\WordPressSourceInput;
+use Kitsune\Core\Imports\WordPressWxrExport;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -28,16 +33,22 @@ use Throwable;
  * Host-registered command for rehearsing the draft importer.
  *
  * @internal
+ *
+ * @phpstan-import-type SourceRow from WordPressWxrExport as WordPressSourceRow
  */
 final class ImportDraftsCommand extends Command
 {
     protected $signature = 'kitsune:import-drafts
         {action : preview, digest, stage-media, apply, status, purge-staged-media or abandon}
-        {path : Local input CSV, JSON or exact report file}
+        {path : Local draft input, WordPress export, reviewed ACF report or exact approval report}
         {--org= : Destination Org slug}
         {--site= : Destination Site handle}
         {--source= : Stable source identity for preview}
-        {--format= : csv or json for preview}
+        {--format= : csv, json, wxr, wordpress-database, wordpress-direct or wordpress-wxr for preview}
+        {--wordpress-blog= : Confirmed blog address for WordPress preview}
+        {--wordpress-connection= : A separate Laravel source connection for the offline WordPress database}
+        {--wordpress-prefix= : Exact WordPress source table prefix}
+        {--acf-schema= : Reviewed ACF field report for WordPress preview}
         {--type=* : Map a source type as source-name=destination-handle}
         {--complete : Confirm that the supplied rows cover the intended draft import}
         {--media-manifest= : Local JSON list of media descriptors for preview}
@@ -46,7 +57,7 @@ final class ImportDraftsCommand extends Command
 
     protected $description = 'Rehearse a resumable draft import from a trusted host shell';
 
-    public function handle(Context $context, StructuredDraftInput $input, ImportJournal $journal): int
+    public function handle(Context $context, StructuredDraftInput $input, WordPressDraftInput $wordPress, WordPressSourceInput $sourceInput, ImportJournal $journal): int
     {
         $previousOrg = $context->org();
         $previousSite = $context->site();
@@ -65,18 +76,30 @@ final class ImportDraftsCommand extends Command
             }
             $context->setSite($site);
 
-            $bytes = $this->readInput();
             if ($action === 'preview') {
                 $media = $this->mediaManifest();
-                $plan = $input->preview(
-                    $this->requiredOption('format'), $this->requiredOption('source'), $bytes, $this->destinationTypes($site),
-                    (bool) $this->option('complete'), $media, $media === [] ? null : $this->requiredOption('media-root'),
-                );
+                $format = $this->requiredOption('format');
+                $source = $this->requiredOption('source');
+                $destination = $this->destinationTypes($site);
+                $complete = (bool) $this->option('complete');
+                $mediaRoot = $media === [] ? null : $this->requiredOption('media-root');
+                $plan = match ($format) {
+                    'wxr', 'wordpress-database' => $sourceInput->preview(
+                        $format === 'wxr' ? 'wxr' : 'direct', $this->wordpressSource($format, $site), $source,
+                        $format === 'wxr' ? $this->readLocalFile($this->requiredOption('acf-schema')) : $this->readInput(),
+                        $destination, $complete, $media, $mediaRoot,
+                    ),
+                    'wordpress-direct', 'wordpress-wxr' => $wordPress->preview(
+                        substr($format, strlen('wordpress-')), $source, $this->readInput(), $destination, $complete, $media, $mediaRoot,
+                    ),
+                    default => $input->preview($format, $source, $this->readInput(), $destination, $complete, $media, $mediaRoot),
+                };
                 $this->output->write($plan->report(), false, OutputInterface::OUTPUT_RAW);
 
                 return $plan->complete ? self::SUCCESS : self::FAILURE;
             }
 
+            $bytes = $this->readInput();
             if ($action === 'digest') {
                 $plan = ImportPlan::restore($bytes);
                 if ($plan->orgId !== $site->org_id || $plan->siteId !== $site->id || ! $plan->complete) {
@@ -120,6 +143,22 @@ final class ImportDraftsCommand extends Command
         } finally {
             $context->setSite($previousSite)->setOrg($previousOrg);
         }
+    }
+
+    /** @return array{sha256: string, rows: list<WordPressSourceRow>} */
+    private function wordpressSource(string $format, Site $site): array
+    {
+        $blog = $this->requiredOption('wordpress-blog');
+        if ($format === 'wxr') {
+            return app(WordPressWxrExport::class)->read((string) $this->argument('path'), $blog);
+        }
+
+        $name = $this->requiredOption('wordpress-connection');
+        if ($name === $site->getConnection()->getName() || $name === DB::getDefaultConnection()) {
+            throw new InvalidArgumentException('Choose a separate connection for the offline WordPress database.');
+        }
+
+        return app(WordPressDatabaseExport::class)->read(DB::connection($name)->getPdo(), $this->requiredOption('wordpress-prefix'), $blog);
     }
 
     private function requiredOption(string $name): string

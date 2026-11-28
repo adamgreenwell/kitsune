@@ -56,6 +56,30 @@ function journalFixtureDraft(EntryType $type, string $slug = 'first', string $so
     return ['source_type' => $sourceType, 'source_id' => $sourceId, 'entry_type_id' => $type->id, 'title' => ucfirst($slug), 'slug' => $slug];
 }
 
+it('includes adapter diagnostics in the approved bytes and refuses source blockers', function (): void {
+    $draft = journalFixtureDraft($this->type);
+    $snapshot = hash('sha256', 'source');
+    $notices = [['position' => 0, 'code' => 'export-omissions-not-recoverable']];
+    $blockers = [['position' => 1, 'code' => 'required-source-field-unavailable']];
+    $previous = $this->journal->preview('catalogue', 'adapter', $snapshot, [$draft], true);
+    $reported = $this->journal->preview('catalogue', 'adapter', $snapshot, [$draft], true,
+        sourceDiagnostics: ['blockers' => [], 'notices' => $notices]);
+    $blocked = $this->journal->preview('catalogue', 'adapter', $snapshot, [$draft], true,
+        sourceDiagnostics: ['blockers' => $blockers, 'notices' => $notices]);
+
+    expect(ImportPlan::restore($previous->report())->sourceNotices)->toBe([])
+        ->and(ImportPlan::restore($reported->report())->sourceNotices)->toBe($notices)
+        ->and($reported->complete)->toBeTrue()
+        ->and($reported->digest())->not->toBe($previous->digest())
+        ->and($blocked->complete)->toBeFalse()
+        ->and($blocked->findings)->toBe($blockers)
+        ->and(fn () => $this->journal->apply($reported->report(), $previous->digest()))->toThrow(DomainException::class)
+        ->and(fn () => $this->journal->apply($blocked->report(), $blocked->digest()))->toThrow(DomainException::class)
+        ->and(Entry::query()->count())->toBe(0)
+        ->and(ImportSource::query()->count())->toBe(0);
+    expect($this->journal->apply($reported->report(), $reported->digest()))->toHaveCount(1);
+});
+
 it('keeps a source identity across approved plans and reuses the exact execution on retry', function (): void {
     $draft = journalFixtureDraft($this->type);
     $first = $this->journal->preview('mactacular:catalogue', 'csv', hash('sha256', 'first'), [$draft], true);
@@ -540,6 +564,139 @@ it('uses the registered operator command for an exact preview, apply and status'
             ->and($this->context->siteId())->toBe($this->sibling->id);
     } finally {
         unlink($path);
+    }
+});
+
+it('approves a local WordPress projection through the command and refuses its source findings', function (): void {
+    $kernel = app(Kernel::class);
+    $kernel->registerCommand(app(ImportDraftsCommand::class));
+    $path = tempnam(sys_get_temp_dir(), 'kitsune-wordpress-projection-');
+    if ($path === false) {
+        throw new RuntimeException('Could not allocate fixture projection.');
+    }
+
+    $run = static function (string $action, array $options = []) use ($kernel, $path): array {
+        $output = new BufferedOutput;
+        $exit = $kernel->call('kitsune:import-drafts', [
+            'action' => $action, 'path' => $path, '--org' => 'home', '--site' => 'home', ...$options,
+        ], $output);
+
+        return [$exit, $output->fetch()];
+    };
+    $projection = [
+        'format' => 1, 'blocked' => false, 'records' => [[
+            'source' => ['type' => 'post', 'id' => '17'],
+            'title' => 'Fixture article', 'slug' => 'fixture-article', 'values' => (object) [], 'media_references' => [],
+        ]], 'media' => [], 'findings' => [],
+    ];
+    $options = ['--source' => 'fixture-wordpress', '--format' => 'wordpress-wxr', '--type' => ['post=catalogue'], '--complete' => true];
+    try {
+        $blockedInput = array_replace($projection, [
+            'blocked' => true, 'findings' => [['source_id' => '17', 'code' => 'ambiguous-acf-value']],
+        ]);
+        file_put_contents($path, json_encode($blockedInput, JSON_THROW_ON_ERROR));
+        [$exit, $bytes] = $run('preview', $options);
+        $blocked = ImportPlan::restore($bytes);
+        expect($exit)->toBe(1)
+            ->and($blocked->findings)->toBe([['position' => 1, 'code' => 'wordpress-finding-ambiguous-acf-value', 'source_id' => '17']])
+            ->and($blocked->sourceNotices)->toHaveCount(4);
+        file_put_contents($path, $bytes);
+        expect($run('digest')[0])->toBe(1)->and(Entry::count())->toBe(0);
+
+        file_put_contents($path, json_encode($projection + ['truncated' => true], JSON_THROW_ON_ERROR));
+        expect($run('preview', $options)[0])->toBe(1)->and(Entry::count())->toBe(0);
+
+        file_put_contents($path, json_encode($projection, JSON_THROW_ON_ERROR));
+        [$exit, $bytes] = $run('preview', $options);
+        $wxr = ImportPlan::restore($bytes);
+        expect($exit)->toBe(0)->and($wxr->sourceNotices)->toHaveCount(4);
+        file_put_contents($path, $bytes);
+        expect($run('apply', ['--approval' => $wxr->digest()])[0])->toBe(0);
+        $destinationId = Entry::query()->sole()->id;
+
+        file_put_contents($path, json_encode($projection, JSON_THROW_ON_ERROR));
+        [$exit, $bytes] = $run('preview', array_replace($options, ['--format' => 'wordpress-direct']));
+        $direct = ImportPlan::restore($bytes);
+        expect($exit)->toBe(0)->and($direct->sourceNotices)->toHaveCount(1)
+            ->and($direct->digest())->not->toBe($wxr->digest());
+        file_put_contents($path, $bytes);
+        expect($run('apply', ['--approval' => $direct->digest()])[0])->toBe(0)
+            ->and(Entry::query()->sole()->id)->toBe($destinationId)
+            ->and(Entry::query()->sole()->status)->toBe('draft');
+    } finally {
+        unlink($path);
+    }
+});
+
+it('requires a separate offline source connection for WordPress database preview', function (): void {
+    $kernel = app(Kernel::class);
+    $kernel->registerCommand(app(ImportDraftsCommand::class));
+    $output = new BufferedOutput;
+    $status = $kernel->call('kitsune:import-drafts', [
+        'action' => 'preview', 'path' => 'unused-source-report.json', '--org' => 'home', '--site' => 'home',
+        '--source' => 'confirmed-blog', '--format' => 'wordpress-database',
+        '--wordpress-blog' => 'https://fixture.example.test/blog',
+        '--wordpress-prefix' => 'wp_', '--wordpress-connection' => DB::getDefaultConnection(),
+    ], $output);
+
+    expect($status)->toBe(1)
+        ->and($output->fetch())->toContain('Choose a separate connection')
+        ->and(ImportSource::query()->count())->toBe(0);
+});
+
+it('streams a local WXR export through the operator command for the confirmed blog', function (): void {
+    if (! class_exists(XMLReader::class)) {
+        $this->markTestSkipped('This import format requires PHP XMLReader.');
+    }
+
+    $kernel = app(Kernel::class);
+    $kernel->registerCommand(app(ImportDraftsCommand::class));
+    [$xml, $schema] = [tempnam(sys_get_temp_dir(), 'kitsune-wxr-'), tempnam(sys_get_temp_dir(), 'kitsune-acf-')];
+    if ($xml === false || $schema === false) {
+        throw new RuntimeException('Could not allocate WXR fixture input.');
+    }
+    $fixture = <<<'XML'
+        <rss version="2.0" xmlns:wp="https://wordpress.org/export/1.2/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+          <channel>
+            <wp:wxr_version>1.2</wp:wxr_version>
+            <wp:base_blog_url>https://fixture.example.test/blog</wp:base_blog_url>
+            <item><title>Article</title><wp:post_id>17</wp:post_id><wp:post_type>post</wp:post_type>
+              <wp:status>publish</wp:status><wp:post_parent>0</wp:post_parent><wp:post_name>article</wp:post_name>
+              <wp:post_date_gmt>2025-01-01 12:00:00</wp:post_date_gmt><content:encoded>Original body</content:encoded>
+            </item>
+          </channel>
+        </rss>
+        XML;
+    $run = static function (string $blog) use ($kernel, $xml, $schema): array {
+        $output = new BufferedOutput;
+        $exit = $kernel->call('kitsune:import-drafts', [
+            'action' => 'preview', 'path' => $xml, '--org' => 'home', '--site' => 'home',
+            '--source' => 'confirmed-blog', '--format' => 'wxr', '--wordpress-blog' => $blog,
+            '--acf-schema' => $schema, '--type' => ['post=catalogue'], '--complete' => true,
+        ], $output);
+
+        return [$exit, $output->fetch()];
+    };
+    try {
+        file_put_contents($schema, '{"blocked":false,"groups":[]}');
+        file_put_contents($xml, $fixture);
+        $blog = 'https://fixture.example.test/blog';
+        expect($run('https://fixture.example.test/other')[0])->toBe(1);
+        [$exit, $bytes] = $run($blog);
+        $plan = ImportPlan::restore($bytes);
+        expect($exit)->toBe(0)->and($plan->sourceNotices)->toHaveCount(4)
+            ->and($plan->records[0]['source_id'])->toBe('17')
+            ->and($bytes)->not->toContain('Original body')
+            ->and(Entry::count())->toBe(0);
+
+        file_put_contents($xml, str_replace('Original body', 'Changed body', $fixture));
+        [$exit, $bytes] = $run($blog);
+        expect($exit)->toBe(0)->and(ImportPlan::restore($bytes)->digest())->not->toBe($plan->digest());
+        file_put_contents($xml, '<!DOCTYPE rss>'.$fixture);
+        expect($run($blog)[0])->toBe(1)->and(Entry::count())->toBe(0);
+    } finally {
+        unlink($xml);
+        unlink($schema);
     }
 });
 

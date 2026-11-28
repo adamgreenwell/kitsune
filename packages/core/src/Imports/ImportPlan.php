@@ -19,7 +19,7 @@ use stdClass;
  *
  * @internal
  *
- * @phpstan-type Finding array{position: int, code: string}
+ * @phpstan-type Finding array{position: int, code: string, source_id?: string}
  * @phpstan-type LinkTargets array<string, list<array{source_type: string, source_id: string}>>
  * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets}
  */
@@ -29,6 +29,7 @@ final readonly class ImportPlan
      * @param  list<DraftAction>  $records
      * @param  list<Finding>  $findings
      * @param  list<ImportMediaAsset>  $media
+     * @param  list<Finding>  $sourceNotices
      */
     private function __construct(
         private string $bytes,
@@ -40,15 +41,17 @@ final readonly class ImportPlan
         public array $records,
         public array $findings,
         public array $media,
+        public array $sourceNotices,
     ) {}
 
     /**
      * @param  list<DraftAction>  $records
      * @param  list<Finding>  $findings
      * @param  list<ImportMediaAsset>  $media
+     * @param  list<Finding>  $sourceNotices
      */
     public static function prepare(
-        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings, array $media = [],
+        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings, array $media = [], array $sourceNotices = [],
     ): self {
         return self::restore(json_encode([
             'version' => 1,
@@ -70,6 +73,7 @@ final readonly class ImportPlan
             }, $records),
             'findings' => $findings,
             ...($media === [] ? [] : ['media' => array_map(static fn (ImportMediaAsset $asset): array => $asset->descriptor(), $media)]),
+            ...($sourceNotices === [] ? [] : ['source_notices' => $sourceNotices]),
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
@@ -92,7 +96,12 @@ final readonly class ImportPlan
 
         $plan = get_object_vars($envelope);
         $keys = ['version', 'org_id', 'site_id', 'source_key', 'adapter', 'snapshot_sha256', 'schema_sha256', 'complete', 'records', 'findings'];
-        if (! in_array(array_keys($plan), [$keys, [...$keys, 'media']], true)
+        $expected = [
+            ...$keys,
+            ...(array_key_exists('media', $plan) ? ['media'] : []),
+            ...(array_key_exists('source_notices', $plan) ? ['source_notices'] : []),
+        ];
+        if (array_keys($plan) !== $expected
             || $plan['version'] !== 1
             || ! is_int($plan['org_id']) || $plan['org_id'] < 1
             || ! is_int($plan['site_id']) || $plan['site_id'] < 1
@@ -104,7 +113,8 @@ final readonly class ImportPlan
             || ! is_array($plan['records']) || ! array_is_list($plan['records'])
             || ! is_array($plan['findings']) || ! array_is_list($plan['findings'])
             || $plan['complete'] !== ($plan['findings'] === [])
-            || (array_key_exists('media', $plan) && (! is_array($plan['media']) || ! array_is_list($plan['media'])))) {
+            || (array_key_exists('media', $plan) && (! is_array($plan['media']) || ! array_is_list($plan['media'])))
+            || (array_key_exists('source_notices', $plan) && (! is_array($plan['source_notices']) || $plan['source_notices'] === [] || ! array_is_list($plan['source_notices'])))) {
             throw new InvalidArgumentException('The import report envelope is invalid.');
         }
 
@@ -127,16 +137,8 @@ final readonly class ImportPlan
             $records[] = $action;
         }
 
-        $findings = [];
-        foreach ($plan['findings'] as $item) {
-            if (! $item instanceof stdClass || array_keys(get_object_vars($item)) !== ['position', 'code']
-                || ! is_int($item->position) || $item->position < 0
-                || ! is_string($item->code) || ! self::validKey($item->code)) {
-                throw new InvalidArgumentException('The import report contains an invalid finding.');
-            }
-
-            $findings[] = ['position' => $item->position, 'code' => $item->code];
-        }
+        $findings = self::diagnostics($plan['findings']);
+        $sourceNotices = self::diagnostics($plan['source_notices'] ?? []);
 
         $media = [];
         foreach ($plan['media'] ?? [] as $item) {
@@ -149,7 +151,34 @@ final readonly class ImportPlan
             $media[] = $asset;
         }
 
-        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings, $media);
+        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings, $media, $sourceNotices);
+    }
+
+    /**
+     * @param  list<mixed>  $items
+     * @return list<Finding>
+     */
+    private static function diagnostics(array $items): array
+    {
+        $findings = [];
+        foreach ($items as $item) {
+            if (! $item instanceof stdClass
+                || ! in_array(array_keys(get_object_vars($item)), [['position', 'code'], ['position', 'code', 'source_id']], true)
+                || ! is_int($item->position) || $item->position < 0
+                || ! is_string($item->code) || ! self::validKey($item->code)
+                || (property_exists($item, 'source_id') && (! is_string($item->source_id)
+                    || $item->source_id === '' || strlen($item->source_id) > 4096))) {
+                throw new InvalidArgumentException('The import report contains an invalid diagnostic.');
+            }
+
+            $findings[] = [
+                'position' => $item->position,
+                'code' => $item->code,
+                ...(isset($item->source_id) ? ['source_id' => $item->source_id] : []),
+            ];
+        }
+
+        return $findings;
     }
 
     public function digest(): string

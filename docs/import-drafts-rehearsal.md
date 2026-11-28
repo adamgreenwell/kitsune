@@ -1,4 +1,4 @@
-# Internal CSV and JSON rehearsal
+# Internal draft import rehearsal
 
 The internal `kitsune:import-drafts` command is available when the host explicitly registers
 `Kitsune\Core\Console\ImportDraftsCommand`. Use it with a disposable destination and existing
@@ -37,3 +37,37 @@ the managed file is absent and preparation produces a different checksum, the re
 review. A later approved report reuses an unchanged mapped asset
 without uploading it again. Changed descriptors and independently edited media entries appear as
 conflicts in preview.
+
+
+## Review a WordPress projection
+
+The same command can preview a reviewed local projection using
+`--format=wordpress-direct` or `--format=wordpress-wxr`. Choose an explicit source key,
+map the post types to destination entry types, and provide a private media descriptor
+for every attachment in the projection. Attachment IDs, byte sizes and checksums must
+match. The command hashes the exact projection and includes its findings and limits
+in the report the operator approves. Unknown projection fields and links to attachments
+outside the reviewed input are refused. Blockers prevent approval, including with
+`--complete`. WXR reports keep their export limits visible in `source_notices`.
+
+The projection modes read reviewed local files. Content
+bodies and original publication state stay in source custody while destination records
+remain drafts. Check taxonomy, authors, comments, headings, redirects and extension
+behavior against the intended migration scope before treating a source as complete.
+
+
+For a local WXR 1.2 export, use `--format=wxr --wordpress-blog=ADDRESS --acf-schema=REPORT`.
+The blog address must match the export. Supply the same media manifest and root for
+attachments, plus the same explicit destination type map. The reader snapshots the
+local file and streams items. It does not retrieve attachment URLs. The approved digest
+binds the export bytes, the reviewed ACF report and the projected records. Only the WXR
+path needs PHP XMLReader.
+
+
+For an offline MySQL or MariaDB copy, configure a separate Laravel connection with a
+read-only account limited to the selected prefix's `options`, `posts`, and `postmeta`
+tables. Use `--format=wordpress-database --wordpress-connection=NAME` and pass the
+confirmed blog URL, exact `--wordpress-prefix`, reviewed ACF report, and type map.
+The positional path in database mode is the reviewed ACF report. The reader confirms
+the source URL against the prefix's `home` option and requires InnoDB for a read-only
+repeatable-read snapshot. Configure source credentials in the host environment.

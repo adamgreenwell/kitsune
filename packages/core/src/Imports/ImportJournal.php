@@ -38,6 +38,7 @@ use RuntimeException;
  * @internal
  *
  * @phpstan-import-type DraftAction from ImportPlan
+ * @phpstan-import-type Finding from ImportPlan
  */
 final readonly class ImportJournal
 {
@@ -46,16 +47,18 @@ final readonly class ImportJournal
     /**
      * @param  list<array<string, mixed>>  $drafts
      * @param  list<ImportMediaAsset>  $media
+     * @param  array{blockers: list<Finding>, notices: list<Finding>}|null  $sourceDiagnostics
      */
     public function preview(
         string $sourceKey, string $adapter, string $snapshot, array $drafts, bool $sourceComplete,
-        array $media = [], ?string $mediaRoot = null,
+        array $media = [], ?string $mediaRoot = null, ?array $sourceDiagnostics = null,
     ): ImportPlan {
         $siteId = $this->siteId();
         $orgId = $this->context->orgId() ?? throw new LogicException('The import journal requires a destination Org.');
         $source = ImportSource::query()->where('site_id', $siteId)->where('source_key', $sourceKey)->first();
         $availableTypes = EntryType::visibleFor($this->context->site(), $orgId)->keyBy('id');
         $findings = $sourceComplete ? [] : [['position' => 0, 'code' => 'source-incomplete']];
+        array_push($findings, ...($sourceDiagnostics['blockers'] ?? []));
         $records = [];
         $positions = [];
         $identities = [];
@@ -124,7 +127,10 @@ final readonly class ImportJournal
 
         $schemaDigest = ImportSchema::digest($availableTypes->only([...array_column($records, 'entry_type_id'), ...array_filter(array_column($media, 'entryTypeId'))]));
 
-        return ImportPlan::prepare($orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings, $media);
+        return ImportPlan::prepare(
+            $orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings, $media,
+            $sourceDiagnostics['notices'] ?? [],
+        );
     }
 
     /** @param DraftAction $action */
