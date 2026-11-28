@@ -13,9 +13,11 @@ namespace Kitsune\Core\Models;
 use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use InvalidArgumentException;
 use Kitsune\Core\Settings\Concerns\HoldsSettings;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -26,6 +28,7 @@ use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
+use WeakMap;
 
 /**
  * Anything with its own base URL. Carries the locale (ADR-021), so
@@ -59,6 +62,12 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     use HoldsSettings;
 
     protected $guarded = [];
+
+    /** @var WeakMap<Context, true>|null */
+    private static ?WeakMap $addressBatches = null;
+
+    /** @var array{?string, string, int, Connection}|null */
+    private ?array $batchAddress = null;
 
     /**
      * ⚠️ `url_strategy` IS DEFAULTED ON THE MODEL, NOT ONLY IN THE MIGRATION, because it is
@@ -163,6 +172,13 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     protected static function booted(): void
     {
         static::saving(function (self $site): void {
+            if ($site->batchAddress !== null) {
+                [$baseUrl, $strategy, , $connection] = $site->batchAddress;
+                if ($site->base_url !== $baseUrl || $site->url_strategy !== $strategy || $site->getConnection() !== $connection) {
+                    throw new RuntimeException('A Site observer changed the address or connection during the batch.');
+                }
+            }
+
             [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url, $site->url_strategy);
 
             self::refuseOverlappingClaim($site);
@@ -181,8 +197,15 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          * These two fire INSIDE the attempt, which clears the proof on entry. So a proof can only
          * exist for the attempt that armed it, and an abort before the attempt starts leaves none.
          */
-        static::creating(fn (self $site) => $site->noteGuardedColumnsDerived());
-        static::updating(fn (self $site) => $site->noteGuardedColumnsDerived());
+        $recordDerivation = static function (self $site): void {
+            if ($site->batchAddress !== null) {
+                $site->assertBatchAddress(...$site->batchAddress);
+            }
+
+            $site->noteGuardedColumnsDerived();
+        };
+        static::creating($recordDerivation);
+        static::updating($recordDerivation);
     }
 
     /**
@@ -221,18 +244,8 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * the union: `a→d` then `b→e` against `b→c` then `a→f` obeys it and deadlocks on Postgres. There is
      * no ordering of the SAVES that fixes it, because each save locks a non-contiguous pair.
      *
-     * ⚠️ SO IT IS A KNOWN LIMITATION, DEFERRED, and this is the third answer to the same finding —
-     * the first two are recorded because each was wrong in a way worth keeping. A CONTRACT was tried
-     * ("order your saves by the hostname each claims") and review disproved it. A public
-     * `saveAllInHostOrder()` was tried next, which acquires the union before any save and does work —
-     * and review held it to `CONTRIBUTING.md`, correctly: new public API before v1.2 is on the
-     * won't-merge list, and my argument that callers "have no door" is weak when there is no caller.
-     * Nothing in this repository batches site saves.
-     *
-     * What is left is honest rather than fixed: a caller who wraps several site MOVES in one
-     * transaction can deadlock, the failure is loud and retryable rather than silent, and the
-     * mechanism lands with the v1.2 API. ADR-021 carries the counter-example so nobody has to
-     * rediscover it, and issue #71 carries the remaining work rather than a docblock.
+     * The v1.2 candidate pre-acquires the union through saveAllInHostOrder(). A
+     * series of ordinary saves in an outer transaction still has only per-save ordering.
      */
     public function save(array $options = []): bool
     {
@@ -247,11 +260,127 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          * than live. It is the same class as every other finding on this branch: a guard that holds on
          * the path it was written for and not on the one beside it.
          */
-        return (bool) $this->getConnection()->transaction(function () use ($options): bool {
+        $connection = $this->getConnection();
+        if (isset(self::$addressBatches[app(Context::class)])) {
+            throw new RuntimeException('A Site save cannot add work to an open Site address batch.');
+        }
+
+        return (bool) $connection->transaction(function () use ($options): bool {
             $this->lockHostClaim();
 
             return parent::save($options);
         });
+    }
+
+    /**
+     * @internal Candidate for the v1.2 extension contract.
+     *
+     * Saves prepared Sites in input order and returns the saved models in that order.
+     * The input models are left untouched, including when a later save rolls back.
+     * Observers with external side effects must defer those effects until commit.
+     *
+     * @param  list<self>  $sites
+     * @return list<self>
+     */
+    public static function saveAllInHostOrder(array $sites): array
+    {
+        if ($sites === []) {
+            return [];
+        }
+
+        $connection = $sites[0]->getConnection();
+        if ($connection->transactionLevel() !== 0 || $connection->getPdo()->inTransaction()) {
+            throw new RuntimeException('A Site address batch must start its own transaction.');
+        }
+
+        $context = app(Context::class);
+        if (isset(self::$addressBatches[$context])) {
+            throw new RuntimeException('A Site address batch cannot start inside another Site address batch.');
+        }
+
+        $orgId = $context->orgId();
+        if ($orgId === null) {
+            throw new RuntimeException('A Site address batch requires an Org context.');
+        }
+
+        $working = [];
+        $existing = [];
+        $hosts = [];
+        foreach ($sites as $site) {
+            if ($site->getConnection() !== $connection
+                || ($site->org_id ?? $orgId) !== $orgId
+                || ($site->exists && $site->getRawOriginal('org_id') !== $orgId)) {
+                throw new InvalidArgumentException('All Sites in an address batch must belong to the current Org and use one connection.');
+            }
+
+            $candidate = clone $site;
+            $candidate->batchAddress = [$candidate->base_url, $candidate->url_strategy, $orgId, $connection];
+            $working[] = $candidate;
+            $claim = $candidate->contendedHosts();
+            $hosts = array_merge($hosts, $claim);
+
+            if ($candidate->exists) {
+                if (isset($existing[$candidate->id])) {
+                    throw new InvalidArgumentException('A Site may appear only once in an address batch.');
+                }
+
+                $existing[$candidate->id] = [$candidate, $claim];
+            }
+        }
+
+        $hosts = array_values(array_unique($hosts));
+        sort($hosts, SORT_STRING);
+        ksort($existing, SORT_NUMERIC);
+
+        self::$addressBatches ??= new WeakMap;
+        self::$addressBatches[$context] = true;
+        try {
+            return $connection->transaction(function () use ($working, $hosts, $existing, $orgId, $context): array {
+                if ($hosts !== []) {
+                    $working[0]->refuseUnusableIsolation();
+                    $working[0]->lockClaims($hosts);
+                }
+
+                // Admin-only Sites share no hostname mutex, so acquire their row locks in order as well.
+                foreach ($existing as [$site, $claim]) {
+                    $site->refuseStaleOrigin($claim, $orgId);
+                }
+
+                foreach ($working as $site) {
+                    $site->saveInAddressBatch();
+                }
+
+                // Laravel dispatches committed callbacks after this closure returns.
+                unset(self::$addressBatches[$context]);
+
+                return $working;
+            });
+        } finally {
+            unset(self::$addressBatches[$context]);
+        }
+    }
+
+    private function saveInAddressBatch(): void
+    {
+        $address = $this->batchAddress ?? throw new RuntimeException('Missing prepared Site address.');
+        try {
+            if (! parent::save()) {
+                throw new RuntimeException('A Site save was cancelled. The Site address batch was rolled back.');
+            }
+
+            $this->assertBatchAddress(...$address);
+        } finally {
+            $this->batchAddress = null;
+        }
+    }
+
+    private function assertBatchAddress(?string $baseUrl, string $strategy, int $orgId, Connection $connection): void
+    {
+        if ($this->base_url !== $baseUrl || $this->url_strategy !== $strategy
+            || $this->org_id !== $orgId || app(Context::class)->orgId() !== $orgId || $this->getConnection() !== $connection
+            || [$this->canonical_host, $this->path_prefix] !== self::deriveUrlParts($baseUrl, $strategy)) {
+            throw new RuntimeException('A Site observer changed the address, Org or connection during the batch.');
+        }
     }
 
     /**
@@ -455,7 +584,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      *
      * @param  list<string>  $hosts
      */
-    private function refuseStaleOrigin(array $hosts): void
+    private function refuseStaleOrigin(array $hosts, ?int $batchOrgId = null): void
     {
         if (! $this->exists) {
             // A create has no row yet, so there is no earlier state it could have missed.
@@ -476,12 +605,17 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          */
         $row = $this->getConnection()->table('sites')
             ->where('id', $this->getKey())
+            ->when($batchOrgId !== null, fn ($query) => $query->where('org_id', $batchOrgId))
             ->lockForUpdate()
             ->first(['canonical_host']);
 
         // Gone is not stale: the row was hard-deleted, and `parent::save()` will find nothing to
         // update. Refusing here would replace that with a message about the wrong thing.
         if ($row === null) {
+            if ($batchOrgId !== null) {
+                throw new RuntimeException('A Site in the address batch is no longer available in the current Org.');
+            }
+
             return;
         }
 
@@ -594,7 +728,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             static fn (?string $host): bool => $host !== null,
         )));
 
-        sort($hosts);
+        sort($hosts, SORT_STRING);
 
         return $hosts;
     }
