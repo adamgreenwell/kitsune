@@ -5368,6 +5368,22 @@ would be kept or removed differently or if the action has become receipt-only. A
 
 ---
 
+### 2026-11-27 amendment · Candidate blueprint registration
+
+ADR-039 separates the definition an author supplies from the Org-scoped apply an
+operator runs. The internal `BlueprintRegistrar` gives trusted host providers and
+admitted module providers a registration-only path during application bootstrap.
+The existing registry and operator command consume the same definitions. The
+module kernel continues to decide which module providers may register.
+
+The registry accepts repeated registration of the same object and refuses a
+different object claiming an occupied handle, including another instance of
+the same PHP class. Definition handles and payloads are fixed for the lifetime
+of the application. Reload long-lived workers after changing provider
+configuration or module admission. The registrar is a candidate for the v1.2
+extension audit in #235. The list of author symbols above governs compatibility
+until that audit selects its supported surface.
+
 ## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
 
 **Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line) · **Amended 2026-10-06 — the credential store, as built, its first half**: encrypted under a key derived from `APP_KEY`, one door in and one out, test and live mode, ~~no admin page yet~~ *(true of that half)*; see the end of this entry · **Amended 2026-10-06 — its second half, the admin**: an owner-only page that sets, replaces and removes a credential and switches the mode, the value posted outside Livewire and never shown back; see the end of this entry · **Amended 2026-10-06 — entitlements in core, as built (Phase 5a), first half**: one row per (reader, site, entitlement, **source**), by Adam's answer; a revoked source stays revoked until an owner comps; see the end of this entry · **Amended 2026-10-07 — entitlements' second half, the owner's page**: who holds what on a site, from which source and until when, a comp and a revoke of one source, and each row's history, owner-only, with nothing listed while no usable reader guard is declared; see the end of this entry · **Amended 2026-10-13 — catalogue design before implementation**: Adam’s five decisions, shared org price/stock with each site’s own content, supported currency minor units, finite/untracked stock and catalogue-first delivery; defaults and implementation proof remain explicit below · **Amended 2026-10-31 — timestamp portability beyond credentials**: media file rows and module receipts keep their stored time on MariaDB before 10.10; see *Timestamp portability beyond credentials*
