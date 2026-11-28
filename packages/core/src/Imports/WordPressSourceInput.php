@@ -12,6 +12,7 @@ namespace Kitsune\Core\Imports;
 
 use InvalidArgumentException;
 use JsonException;
+use Kitsune\Core\Fields\Types\RichTextType;
 
 /**
  * @internal
@@ -26,14 +27,25 @@ final readonly class WordPressSourceInput
      * @param  array{sha256: string, blog: string, rows: list<SourceRow>}  $source
      * @param  array<string, int>  $destinationTypes
      * @param  list<ImportMediaAsset>  $media
+     * @param  array<string, string>  $bodyFields
      */
     public function preview(
         string $mode, array $source, string $sourceKey, string $acfSchema, array $destinationTypes,
-        bool $complete, array $media, ?string $mediaRoot,
+        bool $complete, array $media, ?string $mediaRoot, array $bodyFields = [],
     ): ImportPlan {
         $fields = self::fields($acfSchema);
         $descriptors = array_column($media, null, 'sourceId');
+        foreach ($bodyFields as $type => $field) {
+            if (isset($fields[$type][$field])) {
+                throw new InvalidArgumentException('A body field cannot also be mapped from ACF.');
+            }
+        }
         $findings = [];
+        $bodyNotices = $bodyFields === [] ? [] : [[
+            'position' => 0, 'code' => 'wordpress-body-source-rendering-not-reproduced',
+        ]];
+        $bodyBytes = 0;
+        $metadataOnly = $bodyFields === [];
         $records = [];
         $attachments = [];
         $approved = [];
@@ -61,6 +73,34 @@ final readonly class WordPressSourceInput
             foreach ($issues as $field => $code) {
                 $findings[] = ['code' => $code, 'source_id' => $id, 'field' => $field];
             }
+            $bodyField = $bodyFields[$row['type']] ?? null;
+            if ($bodyField === null) {
+                $metadataOnly = true;
+            } else {
+                [$normalized, $bodyFinding] = self::body($row);
+                if ($bodyFinding !== null) {
+                    $findings[] = ['code' => $bodyFinding, 'source_id' => $id, 'field' => $bodyField];
+                } elseif (strlen($normalized) > WordPressBodyRead::MAX_TOTAL_BYTES - $bodyBytes) {
+                    $findings[] = ['code' => 'body-output-exceeds-byte-limit', 'source_id' => $id, 'field' => $bodyField];
+                } else {
+                    $bodyBytes += strlen($normalized);
+                    $values[$bodyField] = $normalized;
+                    $notice = match (true) {
+                        $normalized !== $row['body'] => 'wordpress-body-markup-normalized',
+                        ! str_contains($row['body'], '<!-- wp:')
+                            && preg_match('/\R[ \t]*\R/u', $row['body']) === 1 => 'wordpress-body-classic-layout-needs-review',
+                        default => null,
+                    };
+                    if ($notice !== null) {
+                        $bodyNotices[] = [
+                            'position' => count($records) + 1,
+                            'code' => $notice,
+                            'source_id' => $id,
+                            'field' => $bodyField,
+                        ];
+                    }
+                }
+            }
             $records[] = [
                 'source' => ['type' => $row['type'], 'id' => $id],
                 'parent_source_id' => $row['parent'],
@@ -82,9 +122,74 @@ final readonly class WordPressSourceInput
             'media' => $attachments,
             'findings' => $findings,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $snapshot = hash('sha256', "kitsune.wordpress.1\0".$mode."\0".$source['sha256'].hash('sha256', $acfSchema).hash('sha256', $projection));
+        $snapshot = hash('sha256', "kitsune.wordpress.1\0".$mode."\0".$source['sha256'].hash('sha256', $acfSchema).hash('sha256', $projection)
+            .($bodyFields === [] ? '' : hash('sha256', json_encode($bodyFields, JSON_THROW_ON_ERROR))));
 
-        return $this->drafts->preview($mode, $sourceKey, $projection, $destinationTypes, $complete, $approved, $mediaRoot, $snapshot, $source['blog']);
+        return $this->drafts->preview(
+            $mode, $sourceKey, $projection, $destinationTypes, $complete, $approved, $mediaRoot, $snapshot,
+            $source['blog'], $bodyNotices, $metadataOnly, $bodyFields,
+        );
+    }
+
+    /**
+     * @param  SourceRow  $row
+     * @return array{string, null}|array{null, string}
+     */
+    private static function body(array $row): array
+    {
+        if (isset($row['body_finding'])) {
+            return [null, $row['body_finding']];
+        }
+        $raw = $row['body'] ?? null;
+        if ($raw === null || preg_match('//u', $raw) !== 1 || hash('sha256', $raw) !== $row['content_sha256']) {
+            return [null, 'body-source-bytes-unverified'];
+        }
+
+        if (self::containsEmbeddedMedia($raw)) {
+            return [null, 'body-inline-media-needs-rehosting'];
+        }
+
+        $richText = new RichTextType;
+        $normalized = $richText->sanitize(self::plainTextParagraphs($raw));
+        if (preg_match('~<img(?:\s|>)~', $normalized) === 1) {
+            return [null, 'body-inline-media-needs-rehosting'];
+        }
+        if (trim($raw) !== '' && trim($normalized) === '') {
+            return [null, 'body-has-no-convertible-content'];
+        }
+        if ($richText->sanitize($normalized) !== $normalized) {
+            return [null, 'body-normalization-is-unstable'];
+        }
+
+        return [$normalized, null];
+    }
+
+    private static function containsEmbeddedMedia(string $raw): bool
+    {
+        // Leave recognized references in source custody until a rehost plan covers them.
+        return preg_match(<<<'REGEX'
+            ~
+              <(?:img|picture|audio|video|source|iframe|object|embed|svg)\b
+            | \[(?:gallery|audio|video|embed|caption|playlist)\b
+            | <!--\s*wp:(?:image|gallery|embed|cover|file|media-text|audio|video|core-embed/[^\s]+)\b
+            | <[^>]+\bstyle\s*=\s*["'][^>]*?\burl\s*\(
+            | <[^>]+\b(?:href|src)\s*=\s*["']?[^"'>\s]*?/?wp-content/uploads/
+            ~ix
+            REGEX, $raw) === 1;
+    }
+
+    private static function plainTextParagraphs(string $body): string
+    {
+        if (trim($body) === '' || preg_match('/<[\/a-z!]/i', $body) === 1 || strpbrk($body, "\r\n") === false) {
+            return $body;
+        }
+
+        $text = str_replace(["\r\n", "\r"], "\n", trim($body));
+        $paragraphs = preg_split('/\n(?:[ \t]*\n)+/', $text) ?: [$text];
+
+        return implode('', array_map(static fn (string $paragraph): string => '<p>'
+            .str_replace("\n", '<br>', htmlspecialchars($paragraph, ENT_QUOTES | ENT_HTML5, 'UTF-8', double_encode: false))
+            .'</p>', $paragraphs));
     }
 
     /**

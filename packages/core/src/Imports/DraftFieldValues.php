@@ -10,9 +10,11 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Imports;
 
+use DomainException;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Http\Api\EntryFieldContract;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -60,6 +62,29 @@ final class DraftFieldValues
         }
 
         return $attributes;
+    }
+
+    /**
+     * @param  list<string>  $reviewed
+     * @param  array<string, mixed>  $values
+     */
+    public static function verifyReviewedRichText(EntryType $type, array $reviewed, array $values): void
+    {
+        if ($reviewed === []) {
+            return;
+        }
+
+        $fields = EntryFieldContract::forType($type)->definitions();
+        $richText = new RichTextType;
+        foreach ($reviewed as $handle) {
+            $field = $fields[$handle] ?? null;
+            $value = $values[$handle] ?? null;
+            if ($field === null || $field->storage->type !== RichTextType::handle()
+                || $field->storage->strategy() !== StorageStrategy::Inline || $field->isMultiValue()
+                || ! is_string($value) || $richText->sanitize($value) !== $value) {
+                throw new DomainException('Reviewed rich text no longer matches the destination field. Review a new import preview.');
+            }
+        }
     }
 
     /** @param array<string, mixed> $promoted */

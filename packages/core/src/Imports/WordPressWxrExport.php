@@ -22,7 +22,7 @@ use XMLReader;
  *
  * @internal
  *
- * @phpstan-type SourceRow array{id: string, type: string, status: string, parent: string, slug: string, title: string, utc: string, content_sha256: string, meta: array<string, list<?string>>}
+ * @phpstan-type SourceRow array{id: string, type: string, status: string, parent: string, slug: string, title: string, utc: string, content_sha256: string, body?: string, body_finding?: string, meta: array<string, list<?string>>}
  */
 final class WordPressWxrExport
 {
@@ -35,7 +35,7 @@ final class WordPressWxrExport
     ];
 
     /** @return array{sha256: string, blog: string, rows: list<SourceRow>} */
-    public function read(string $path, string $blog): array
+    public function read(string $path, string $blog, ?WordPressBodyRead $bodies = null): array
     {
         if (! class_exists(XMLReader::class)) {
             throw new InvalidArgumentException('WXR preview requires PHP XMLReader.');
@@ -64,7 +64,7 @@ final class WordPressWxrExport
                 throw new InvalidArgumentException('Unable to fingerprint the local WXR export.');
             }
 
-            return ['sha256' => hash_final($hash), 'blog' => $blog, 'rows' => $this->parse($snapshot, $blog)];
+            return ['sha256' => hash_final($hash), 'blog' => $blog, 'rows' => $this->parse($snapshot, $blog, $bodies)];
         } finally {
             fclose($file);
             fclose($snapshot);
@@ -75,7 +75,7 @@ final class WordPressWxrExport
      * @param  resource  $snapshot
      * @return list<SourceRow>
      */
-    private function parse($snapshot, string $blog): array
+    private function parse($snapshot, string $blog, ?WordPressBodyRead $bodies): array
     {
         $previous = libxml_use_internal_errors(true);
         libxml_clear_errors();
@@ -88,7 +88,7 @@ final class WordPressWxrExport
             $reader->setParserProperty(XMLReader::LOADDTD, false);
             $reader->setParserProperty(XMLReader::SUBST_ENTITIES, false);
             try {
-                return $this->rows($reader, $blog);
+                return $this->rows($reader, $blog, $bodies);
             } finally {
                 $reader->close();
             }
@@ -99,7 +99,7 @@ final class WordPressWxrExport
     }
 
     /** @return list<SourceRow> */
-    private function rows(XMLReader $reader, string $blog): array
+    private function rows(XMLReader $reader, string $blog, ?WordPressBodyRead $bodies): array
     {
         $version = null;
         $address = null;
@@ -147,7 +147,7 @@ final class WordPressWxrExport
                 if ($namespace === null) {
                     throw new InvalidArgumentException('WXR source metadata must precede its items.');
                 }
-                $rows[] = $this->item($reader, $namespace);
+                $rows[] = $this->item($reader, $namespace, $bodies);
             }
         }
         if (libxml_get_last_error() !== false || $version !== '1.2' || $address !== $blog || $rows === []) {
@@ -163,7 +163,7 @@ final class WordPressWxrExport
     }
 
     /** @return SourceRow */
-    private function item(XMLReader $reader, string $namespace): array
+    private function item(XMLReader $reader, string $namespace, ?WordPressBodyRead $bodies): array
     {
         $document = new DOMDocument;
         $item = $reader->expand($document);
@@ -198,7 +198,16 @@ final class WordPressWxrExport
         $content = $parts['content'];
         unset($parts['content']);
 
-        return $parts + ['content_sha256' => hash('sha256', $content), 'meta' => $meta];
+        $body = [];
+        if ($bodies?->selects($parts['type'], $parts['status']) === true) {
+            $password = $xpath->query('wp:post_password', $item);
+            $body = match (true) {
+                $password === false || $password->length !== 1 => ['body_finding' => 'body-password-status-unavailable'],
+                default => $bodies->collect($content, self::text($password->item(0)) !== ''),
+            };
+        }
+
+        return $parts + ['content_sha256' => hash('sha256', $content), 'meta' => $meta] + $body;
     }
 
     private static function one(DOMXPath $xpath, string $selector, DOMNode $node): string

@@ -14,11 +14,15 @@ use DomainException;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Fields\Types\RichTextType;
+use Kitsune\Core\Http\Api\EntryFieldContract;
 use Kitsune\Core\Imports\ImportJournal;
 use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportPlan;
 use Kitsune\Core\Imports\ImportRedirectPlan;
 use Kitsune\Core\Imports\StructuredDraftInput;
+use Kitsune\Core\Imports\WordPressBodyRead;
 use Kitsune\Core\Imports\WordPressDatabaseExport;
 use Kitsune\Core\Imports\WordPressDraftInput;
 use Kitsune\Core\Imports\WordPressSourceInput;
@@ -50,6 +54,7 @@ final class ImportDraftsCommand extends Command
         {--wordpress-connection= : A separate Laravel source connection for the offline WordPress database}
         {--wordpress-prefix= : Exact WordPress source table prefix}
         {--acf-schema= : Reviewed ACF field report for WordPress preview}
+        {--wordpress-body=* : Map a raw WordPress post type as source-type=rich-text-field}
         {--type=* : Map a source type as source-name=destination-handle}
         {--complete : Confirm that the supplied rows cover the intended draft import}
         {--media-manifest= : Local JSON list of media descriptors for preview}
@@ -81,18 +86,24 @@ final class ImportDraftsCommand extends Command
             }
             $context->setSite($site);
 
+            if ($action !== 'preview' && $this->option('wordpress-body') !== []) {
+                throw new InvalidArgumentException('Select WordPress body fields when previewing the source.');
+            }
+
             if ($action === 'preview') {
                 $media = $this->mediaManifest();
                 $format = $this->requiredOption('format');
                 $source = $this->requiredOption('source');
                 $destination = $this->destinationTypes($site);
+                $bodyFields = $this->wordpressBodyFields($format, $site, $destination);
+                $bodyRead = $bodyFields === [] ? null : new WordPressBodyRead(array_map(strval(...), array_keys($bodyFields)));
                 $complete = (bool) $this->option('complete');
                 $mediaRoot = $media === [] ? null : $this->requiredOption('media-root');
                 $plan = match ($format) {
                     'wxr', 'wordpress-database' => $sourceInput->preview(
-                        $format === 'wxr' ? 'wxr' : 'direct', $this->wordpressSource($format, $site), $source,
+                        $format === 'wxr' ? 'wxr' : 'direct', $this->wordpressSource($format, $site, $bodyRead), $source,
                         $format === 'wxr' ? $this->readLocalFile($this->requiredOption('acf-schema')) : $this->readInput(),
-                        $destination, $complete, $media, $mediaRoot,
+                        $destination, $complete, $media, $mediaRoot, $bodyFields,
                     ),
                     'wordpress-direct', 'wordpress-wxr' => $wordPress->preview(
                         substr($format, strlen('wordpress-')), $source, $this->readInput(), $destination, $complete, $media, $mediaRoot,
@@ -178,11 +189,11 @@ final class ImportDraftsCommand extends Command
     }
 
     /** @return array{sha256: string, blog: string, rows: list<WordPressSourceRow>} */
-    private function wordpressSource(string $format, Site $site): array
+    private function wordpressSource(string $format, Site $site, ?WordPressBodyRead $bodies): array
     {
         $blog = $this->requiredOption('wordpress-blog');
         if ($format === 'wxr') {
-            return app(WordPressWxrExport::class)->read((string) $this->argument('path'), $blog);
+            return app(WordPressWxrExport::class)->read((string) $this->argument('path'), $blog, $bodies);
         }
 
         $name = $this->requiredOption('wordpress-connection');
@@ -190,7 +201,42 @@ final class ImportDraftsCommand extends Command
             throw new InvalidArgumentException('Choose a separate connection for the offline WordPress database.');
         }
 
-        return app(WordPressDatabaseExport::class)->read(DB::connection($name)->getPdo(), $this->requiredOption('wordpress-prefix'), $blog);
+        return app(WordPressDatabaseExport::class)->read(DB::connection($name)->getPdo(), $this->requiredOption('wordpress-prefix'), $blog, $bodies);
+    }
+
+    /**
+     * @param  array<string, int>  $types
+     * @return array<string, string>
+     */
+    private function wordpressBodyFields(string $format, Site $site, array $types): array
+    {
+        $options = $this->option('wordpress-body');
+        if ($options === []) {
+            return [];
+        }
+        if (! in_array($format, ['wxr', 'wordpress-database'], true)) {
+            throw new InvalidArgumentException('WordPress body mappings require a raw WXR or offline database source.');
+        }
+
+        $available = EntryType::visibleFor($site, $site->org_id)->keyBy('id');
+        $mappings = [];
+        foreach ($options as $pair) {
+            [$source, $handle] = array_pad(explode('=', (string) $pair, 2), 2, '');
+            $type = isset($types[$source]) ? $available->get($types[$source]) : null;
+            if ($type === null || isset($mappings[$source]) || in_array($source, ['attachment', 'revision'], true)) {
+                throw new InvalidArgumentException('Map the body of each available WordPress post type once.');
+            }
+            $config = EntryFieldContract::forType($type)->definitions()[$handle] ?? null;
+            if ($config === null || $config->storage->type !== RichTextType::handle()
+                || $config->storage->strategy() !== StorageStrategy::Inline || $config->isMultiValue()) {
+                throw new InvalidArgumentException('Map WordPress bodies to an existing single rich-text field.');
+            }
+            $mappings[$source] = $handle;
+        }
+
+        ksort($mappings, SORT_STRING);
+
+        return $mappings;
     }
 
     private function requiredOption(string $name): string
