@@ -26,6 +26,7 @@ parameters:
         - packages/plugin-sdk/src
         # Development setup and release admission execute package code or change its installed form.
         - bin/check-plugin.php
+        - bin/check-extension-compatibility.php
         - bin/install-commerce-skeleton.php
         - bin/docs
         - bin/docs-build.php

@@ -30,11 +30,11 @@ contract to v1.2. A public method, event or configuration key is not automatical
 first-party exceptions in [CONTRIBUTING](../CONTRIBUTING.md#things-that-wont-be-merged) retain their exact
 limits; the host-owned reader-model contract does not gain mandatory methods during an upgrade.
 
-The v1.2 audit must name the supported surface and resolve accidental exposure before declaring it stable
-([#235](https://github.com/adamgreenwell/kitsune/issues/235)). Once frozen, announce a deprecation with its
-replacement and migration instructions in release notes and the relevant documentation. **Never remove
-deprecated public extension surface within the same major.** The SDK and enforcement work in
-[#238](https://github.com/adamgreenwell/kitsune/issues/238) remain open; this policy does not claim they exist.
+The v1.2 promise starts with the first stable release that publishes the extension
+inventory selected by [#235](https://github.com/adamgreenwell/kitsune/issues/235).
+It covers the PHP declarations and behaviors explicitly named in that inventory.
+The [extension deprecation and compatibility guide](extension-compatibility.md)
+describes the announcement, retained behavior, and candidate release check.
 
 ## Security maintenance
 
