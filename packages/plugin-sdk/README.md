@@ -51,3 +51,5 @@ vendor/bin/phpunit --bootstrap vendor/autoload.php tests
 The example and the first-party module implementations illustrate the current
 development workflow. The v1.2 freeze will record the supported extension
 contracts. Use that contract when choosing base classes, interfaces, and hooks.
+
+See the [extension compatibility guide](https://github.com/adamgreenwell/kitsune/blob/main/docs/extension-compatibility.md) for the release inventory and consumer checks.
