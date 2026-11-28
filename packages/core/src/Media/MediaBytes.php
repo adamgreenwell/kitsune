@@ -10,7 +10,9 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use Closure;
 use Illuminate\Contracts\Filesystem\Filesystem;
+use Illuminate\Filesystem\AwsS3V3Adapter;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\LocalFilesystemAdapter;
 use Illuminate\Filesystem\ReadThroughFilesystem;
@@ -19,6 +21,7 @@ use League\Flysystem\Filesystem as LeagueFilesystem;
 use League\Flysystem\PathPrefixer;
 use League\Flysystem\WhitespacePathNormalizer;
 use LogicException;
+use Psr\Http\Message\StreamInterface;
 use ReflectionProperty;
 use Throwable;
 
@@ -615,6 +618,293 @@ final class MediaBytes
         }
 
         return $temporary;
+    }
+
+    /**
+     * Install verified bytes at a reserved path without replacing an existing object.
+     * A retry accepts an existing object only when its checksum agrees.
+     */
+    public static function createVerified(string $disk, string $path, string $source, string $expected): void
+    {
+        $filesystem = self::disk($disk);
+        if ($filesystem instanceof AwsS3V3Adapter) {
+            self::createS3Verified($filesystem, $disk, $path, $source, $expected);
+
+            return;
+        }
+
+        if (! $filesystem instanceof LocalFilesystemAdapter) {
+            throw new MediaCustodyFailure('copy', $disk, $path);
+        }
+
+        $existing = self::hash($disk, $path);
+        if ($existing !== null) {
+            if (! self::same($expected, $existing)) {
+                throw new MediaCustodyFailure('verify', $disk, $path);
+            }
+
+            return;
+        }
+
+        $scratch = $path.'-'.bin2hex(random_bytes(8));
+        try {
+            self::replaceVerified($disk, $scratch, $source, $expected);
+            if (! @link($filesystem->path($scratch), $filesystem->path($path)) && ! self::same($expected, self::hash($disk, $path))) {
+                throw new MediaCustodyFailure('copy', $disk, $path);
+            }
+        } finally {
+            self::discard($disk, $scratch);
+        }
+    }
+
+    private static function createS3Verified(AwsS3V3Adapter $filesystem, string $disk, string $path, string $source, string $expected): void
+    {
+        $config = $filesystem->getConfig();
+        $bucket = $config['bucket'] ?? null;
+        $putObject = [$filesystem->getClient(), 'putObject'];
+        if (($config['read-only'] ?? false) || ! is_string($bucket) || $bucket === '' || ! is_callable($putObject)
+            || ! self::s3SupportsCondition($filesystem, 'PutObject', 'IfNoneMatch')) {
+            throw new MediaCustodyFailure('copy', $disk, $path);
+        }
+
+        $existing = self::hash($disk, $path);
+        if ($existing !== null) {
+            if (! self::same($expected, $existing)) {
+                throw new MediaCustodyFailure('verify', $disk, $path);
+            }
+
+            return;
+        }
+
+        $stream = @fopen($source, 'rb');
+        $binaryHash = hex2bin($expected);
+        if ($stream === false || $binaryHash === false) {
+            self::close($stream);
+
+            throw new MediaCustodyFailure('copy', $disk, $path);
+        }
+
+        try {
+            // Use a single conditional PUT so the SDK cannot switch to multipart or add an ACL.
+            $params = [
+                'Bucket' => $bucket,
+                'Key' => $filesystem->path($path),
+                'Body' => $stream,
+                'IfNoneMatch' => '*',
+                'ChecksumSHA256' => base64_encode($binaryHash),
+                'CacheControl' => 'no-store',
+            ] + array_intersect_key((array) ($config['options'] ?? []), array_flip([
+                'ExpectedBucketOwner', 'RequestPayer', 'ServerSideEncryption', 'SSEKMSKeyId', 'SSEKMSEncryptionContext',
+                'SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5', 'BucketKeyEnabled',
+            ]));
+            $putObject($params);
+        } catch (Throwable $failure) {
+            // A lost response or another writer may have left the exact requested object.
+            if (! self::same($expected, self::hash($disk, $path))) {
+                throw new MediaCustodyFailure('copy', $disk, $path, $failure);
+            }
+
+            return;
+        } finally {
+            self::close($stream);
+        }
+
+        if (! self::same($expected, self::hash($disk, $path))) {
+            throw new MediaCustodyFailure('verify', $disk, $path);
+        }
+    }
+
+    /** The S3 version ID as reported by the provider. Local files have no version. */
+    public static function reservedObjectVersion(string $disk, string $path): ?string
+    {
+        $filesystem = self::disk($disk);
+        if (! $filesystem instanceof AwsS3V3Adapter) {
+            return null;
+        }
+
+        $config = $filesystem->getConfig();
+        $bucket = $config['bucket'] ?? null;
+        $headObject = [$filesystem->getClient(), 'headObject'];
+        if (! is_string($bucket) || $bucket === '' || ! is_callable($headObject)) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        $options = array_intersect_key((array) ($config['options'] ?? []), array_flip([
+            'ExpectedBucketOwner', 'RequestPayer', 'SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5',
+        ]));
+        try {
+            $head = $headObject(['Bucket' => $bucket, 'Key' => $filesystem->path($path)] + $options);
+            $version = $head['VersionId'] ?? 'null';
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path, $failure);
+        }
+        if (! is_string($version) || $version === '') {
+            throw new MediaCustodyFailure('unreadable', $disk, $path);
+        }
+
+        return $version;
+    }
+
+    public static function containsReservedObject(string $disk, string $path): bool
+    {
+        $filesystem = self::disk($disk);
+        if (! $filesystem instanceof AwsS3V3Adapter) {
+            return self::present($disk, $path);
+        }
+
+        $config = $filesystem->getConfig();
+        $bucket = $config['bucket'] ?? null;
+        $listVersions = [$filesystem->getClient(), 'listObjectVersions'];
+        if (! is_string($bucket) || $bucket === '' || ! is_callable($listVersions)) {
+            throw new MediaCustodyFailure('unknown', $disk, $path);
+        }
+
+        $key = $filesystem->path($path);
+        $owner = array_intersect_key((array) ($config['options'] ?? []), array_flip(['ExpectedBucketOwner', 'RequestPayer']));
+        try {
+            return self::s3VersionsForKey($listVersions(['Bucket' => $bucket, 'Prefix' => $key] + $owner), $key) !== [];
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('unknown', $disk, $path, $failure);
+        }
+    }
+
+    /** @param Closure():void $verifyManaged */
+    public static function purgeReserved(string $disk, string $path, string $expected, ?string $expectedVersion, Closure $verifyManaged): void
+    {
+        $filesystem = self::disk($disk);
+        if ($filesystem instanceof AwsS3V3Adapter) {
+            self::purgeS3Reserved($filesystem, $disk, $path, $expected, $expectedVersion, $verifyManaged);
+
+            return;
+        }
+
+        if ($expectedVersion !== null) {
+            throw new MediaCustodyFailure('delete', $disk, $path);
+        }
+
+        $stagedHash = self::hash($disk, $path);
+        if ($stagedHash === null) {
+            return;
+        }
+        if (! self::same($expected, $stagedHash)) {
+            throw new MediaCustodyFailure('verify', $disk, $path);
+        }
+
+        $verifyManaged();
+        self::delete($disk, $path);
+    }
+
+    /** @param Closure():void $verifyManaged */
+    private static function purgeS3Reserved(
+        AwsS3V3Adapter $filesystem, string $disk, string $path, string $expected, ?string $expectedVersion, Closure $verifyManaged,
+    ): void {
+        $config = $filesystem->getConfig();
+        $bucket = $config['bucket'] ?? null;
+        $client = $filesystem->getClient();
+        $listVersions = [$client, 'listObjectVersions'];
+        $getObject = [$client, 'getObject'];
+        $deleteObject = [$client, 'deleteObject'];
+        if ($expectedVersion === null || ($config['read-only'] ?? false) || ! is_string($bucket) || $bucket === '' || ! is_callable($listVersions)
+            || ! is_callable($getObject) || ! is_callable($deleteObject)
+            || ! self::s3SupportsCondition($filesystem, 'DeleteObject', 'IfMatch')) {
+            throw new MediaCustodyFailure('delete', $disk, $path);
+        }
+
+        $key = $filesystem->path($path);
+        $options = (array) ($config['options'] ?? []);
+        $owner = array_intersect_key($options, array_flip(['ExpectedBucketOwner', 'RequestPayer']));
+        $list = ['Bucket' => $bucket, 'Prefix' => $key] + $owner;
+        try {
+            $versions = self::s3VersionsForKey($listVersions($list), $key);
+            if ($versions === []) {
+                return;
+            }
+
+            // A reservation writes one version. Leave ambiguous history untouched, including delete markers.
+            $version = $versions[0]['VersionId'] ?? null;
+            if (count($versions) !== 1 || ! isset($versions[0]['ETag']) || $version !== $expectedVersion
+                || ($versions[0]['IsLatest'] ?? false) !== true) {
+                throw new MediaCustodyFailure('delete', $disk, $path);
+            }
+            $object = ['Bucket' => $bucket, 'Key' => $key, 'VersionId' => $version] + $owner;
+            $encryption = array_intersect_key($options, array_flip(['SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5']));
+            $fetched = $getObject($object + ['@http' => ['stream' => true]] + $encryption);
+            $body = $fetched['Body'] ?? null;
+            $etag = $fetched['ETag'] ?? null;
+            if (! $body instanceof StreamInterface) {
+                throw new MediaCustodyFailure('unreadable', $disk, $path);
+            }
+            try {
+                $hash = hash_init('sha256');
+                $read = 0;
+                while (($chunk = $body->read(65_536)) !== '') {
+                    hash_update($hash, $chunk);
+                    $read += strlen($chunk);
+                }
+                if (! $body->eof()) {
+                    throw new MediaCustodyFailure('unreadable', $disk, $path);
+                }
+            } finally {
+                $body->close();
+            }
+            if (! is_string($etag) || $etag === '' || $read !== ($fetched['ContentLength'] ?? null)
+                || ! self::same($expected, hash_final($hash))) {
+                throw new MediaCustodyFailure('verify', $disk, $path);
+            }
+        } catch (MediaCustodyFailure $failure) {
+            throw $failure;
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('unreadable', $disk, $path, $failure);
+        }
+
+        $verifyManaged();
+        $deleteFailure = null;
+        try {
+            $deleteObject($object + ['IfMatch' => $etag]);
+        } catch (Throwable $failure) {
+            $deleteFailure = $failure;
+        }
+
+        // A lost acknowledgement is settled by the version history, including on a later retry.
+        try {
+            $remaining = self::s3VersionsForKey($listVersions($list), $key);
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('unknown', $disk, $path, $failure);
+        }
+        if ($remaining !== []) {
+            throw new MediaCustodyFailure('delete', $disk, $path, $deleteFailure);
+        }
+    }
+
+    private static function s3SupportsCondition(AwsS3V3Adapter $filesystem, string $operation, string $condition): bool
+    {
+        // The optional SDK can silently drop a parameter absent from its service model.
+        $getApi = [$filesystem->getClient(), 'getApi'];
+        $getOperation = [is_callable($getApi) ? $getApi() : null, 'getOperation'];
+        $getInput = [is_callable($getOperation) ? $getOperation($operation) : null, 'getInput'];
+        $hasMember = [is_callable($getInput) ? $getInput() : null, 'hasMember'];
+
+        return is_callable($hasMember) && $hasMember($condition) === true;
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function s3VersionsForKey(mixed $result, string $key): array
+    {
+        if (! $result instanceof \ArrayAccess || ($result['IsTruncated'] ?? false)) {
+            throw new LogicException('The provider did not return complete staging object history.');
+        }
+
+        $versions = [];
+        foreach ([...($result['Versions'] ?? []), ...($result['DeleteMarkers'] ?? [])] as $item) {
+            if (! is_array($item) || ! is_string($item['Key'] ?? null)) {
+                throw new LogicException('The provider did not return valid staging object history.');
+            }
+            if ($item['Key'] === $key) {
+                $versions[] = $item;
+            }
+        }
+
+        return $versions;
     }
 
     /**

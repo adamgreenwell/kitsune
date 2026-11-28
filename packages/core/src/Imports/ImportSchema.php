@@ -13,6 +13,7 @@ namespace Kitsune\Core\Imports;
 use DomainException;
 use Illuminate\Support\Collection;
 use Kitsune\Core\Http\Api\EntryFieldContract;
+use Kitsune\Core\Media\MediaFormats;
 use Kitsune\Core\Models\EntryType;
 
 /** @internal */
@@ -45,6 +46,7 @@ final class ImportSchema
             $schema[$type->id] = [
                 'handle' => $type->handle,
                 'media' => $type->is_media,
+                ...($type->is_media ? ['media_formats' => MediaFormats::namedBy($type->settings, $type->handle)] : []),
                 'subject_field_id' => $type->subject_field_id,
                 'fields' => $fields,
                 'validation_shape' => $contract->schema(write: true),

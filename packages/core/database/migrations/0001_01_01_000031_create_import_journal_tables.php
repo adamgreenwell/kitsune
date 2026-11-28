@@ -77,6 +77,31 @@ return new class extends Migration
             $table->foreign(['site_id', 'org_id', 'import_source_id', 'import_execution_id'], 'import_action_receipt_execution_fk')
                 ->references(['site_id', 'org_id', 'import_source_id', 'id'])->on('import_executions')->cascadeOnDelete();
         });
+
+        Schema::create('import_media_reservations', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('org_id');
+            $table->foreignId('site_id');
+            $table->foreignId('import_source_id');
+            $table->foreignId('import_execution_id');
+            $table->string('source_type', 96);
+            $table->string('source_id_hash', 64);
+            $table->string('descriptor_sha256', 64);
+            $table->string('disk');
+            $table->string('path', 100)->nullable();
+            $table->string('managed_path', 100);
+            $table->unsignedBigInteger('entry_id')->nullable();
+            $table->string('content_sha256', 64);
+            $table->unsignedBigInteger('source_size_bytes');
+            $table->boolean('staged')->default(false);
+            $table->text('staged_object_version')->nullable();
+            $table->boolean('staging_purged')->default(false);
+            $table->unique(['site_id', 'import_execution_id', 'source_type', 'source_id_hash'], 'import_media_execution_asset_unique');
+            $table->index(['site_id', 'import_source_id', 'source_type', 'source_id_hash'], 'import_media_source');
+            $table->unique(['site_id', 'path'], 'import_media_path_unique');
+            $table->foreign(['site_id', 'org_id', 'import_source_id', 'import_execution_id'], 'import_media_execution_fk')
+                ->references(['site_id', 'org_id', 'import_source_id', 'id'])->on('import_executions')->cascadeOnDelete();
+        });
     }
 
     public function down(): void
@@ -85,6 +110,7 @@ return new class extends Migration
             throw new RuntimeException('Preserve the retained import journal before rolling back its tables.');
         }
 
+        Schema::dropIfExists('import_media_reservations');
         Schema::dropIfExists('import_action_receipts');
         Schema::dropIfExists('migration_map');
         Schema::dropIfExists('import_executions');

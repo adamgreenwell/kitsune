@@ -17,11 +17,14 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Media\MediaFormats;
+use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\ImportActionReceipt;
 use Kitsune\Core\Models\ImportExecution;
 use Kitsune\Core\Models\ImportMapping;
+use Kitsune\Core\Models\ImportMediaReservation;
 use Kitsune\Core\Models\ImportSource;
 use Kitsune\Core\Relations\EntryRelationWriter;
 use Kitsune\Core\Tenancy\Context;
@@ -40,9 +43,14 @@ final readonly class ImportJournal
 {
     public function __construct(private Context $context) {}
 
-    /** @param list<array<string, mixed>> $drafts Draft records from the source adapter. */
-    public function preview(string $sourceKey, string $adapter, string $snapshot, array $drafts, bool $sourceComplete): ImportPlan
-    {
+    /**
+     * @param  list<array<string, mixed>>  $drafts
+     * @param  list<ImportMediaAsset>  $media
+     */
+    public function preview(
+        string $sourceKey, string $adapter, string $snapshot, array $drafts, bool $sourceComplete,
+        array $media = [], ?string $mediaRoot = null,
+    ): ImportPlan {
         $siteId = $this->siteId();
         $orgId = $this->context->orgId() ?? throw new LogicException('The import journal requires a destination Org.');
         $source = ImportSource::query()->where('site_id', $siteId)->where('source_key', $sourceKey)->first();
@@ -86,13 +94,37 @@ final readonly class ImportJournal
             $positions[] = $position;
         }
 
-        foreach ($this->relationFindings($records, $source, $siteId, $availableTypes) as $finding) {
+        foreach ($this->relationFindings($records, $source, $siteId, $availableTypes, $media) as $finding) {
             $findings[] = ['position' => $positions[$finding['position'] - 1], 'code' => $finding['code']];
         }
 
-        $schemaDigest = ImportSchema::digest($availableTypes->only(array_column($records, 'entry_type_id')));
+        foreach ($media as $index => $asset) {
+            $position = count($drafts) + $index + 1;
+            if ($asset->entryTypeId !== null) {
+                $type = $availableTypes->get($asset->entryTypeId)?->fresh();
+                if ($type?->is_media !== true) {
+                    $findings[] = ['position' => $position, 'code' => 'unavailable-media-type'];
+                } else {
+                    $formats = MediaFormats::namedBy($type->settings, $type->handle);
+                    if ($formats !== null && ! in_array(MediaFormats::of(MediaIntake::extensionOf($asset->originalName)), $formats, true)) {
+                        $findings[] = ['position' => $position, 'code' => 'unsupported-media-format'];
+                    }
+                }
+            }
+            $conflict = app(ImportMediaReservations::class)->previewConflict($source, $siteId, $asset);
+            if ($conflict !== null) {
+                $findings[] = ['position' => $position, 'code' => $conflict];
+            }
+            try {
+                ImportMediaInput::inspect($mediaRoot ?? '', $asset);
+            } catch (DomainException) {
+                $findings[] = ['position' => $position, 'code' => 'unavailable-media-asset'];
+            }
+        }
 
-        return ImportPlan::prepare($orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings);
+        $schemaDigest = ImportSchema::digest($availableTypes->only([...array_column($records, 'entry_type_id'), ...array_filter(array_column($media, 'entryTypeId'))]));
+
+        return ImportPlan::prepare($orgId, $siteId, $sourceKey, $adapter, $snapshot, $schemaDigest, $records, $findings, $media);
     }
 
     /** @param DraftAction $action */
@@ -137,13 +169,20 @@ final readonly class ImportJournal
     /**
      * @param  list<DraftAction>  $records
      * @param  Collection<int, EntryType>  $types
+     * @param  list<ImportMediaAsset>  $media
      * @return list<array{position:int, code:string}>
      */
-    private function relationFindings(array $records, ?ImportSource $source, int $siteId, Collection $types): array
+    private function relationFindings(array $records, ?ImportSource $source, int $siteId, Collection $types, array $media): array
     {
         $planned = [];
         foreach ($records as $action) {
             $planned[DraftRelations::identity($action['source_type'], $action['source_id'])] = $types->get($action['entry_type_id'])->handle;
+        }
+
+        foreach ($media as $asset) {
+            if ($asset->entryTypeId !== null && $types->get($asset->entryTypeId)?->is_media === true) {
+                $planned[DraftRelations::identity($asset->sourceType, $asset->sourceId)] = $types->get($asset->entryTypeId)->handle;
+            }
         }
 
         $targetType = function (string $kind, string $id) use ($planned, $source, $siteId, $types): ?string {
@@ -176,6 +215,33 @@ final readonly class ImportJournal
         return $mapping === null ? null : Entry::query()->where('site_id', $siteId)->useWritePdo()->find($mapping->entry_id);
     }
 
+    /** @return list<int> Reservation IDs in report order. */
+    public function stageMedia(string $report, string $approvedDigest, string $root): array
+    {
+        $plan = $this->checkedPlan($report, $approvedDigest);
+        if (! $plan->complete || $plan->media === []) {
+            throw new DomainException('Staging requires a complete report with approved media.');
+        }
+
+        $source = $this->source($plan->sourceKey);
+        $execution = $this->recordApproval((int) $source->getKey(), $approvedDigest);
+        $this->transitionExecution($plan->siteId, $execution->id, 'active');
+
+        return app(ImportMediaReservations::class)->stage($execution->id, $plan, $root);
+    }
+
+    /** @return list<int> Purged reservation IDs in report order. */
+    public function purgeStagedMedia(string $report, string $approvedDigest): array
+    {
+        $plan = $this->checkedPlan($report, $approvedDigest);
+        $execution = $this->executionForPlan($plan, $approvedDigest);
+        if ($execution === null || ! in_array($execution->state, ['completed', 'abandoned'], true) || $plan->media === []) {
+            throw new DomainException('Purging requires a completed or abandoned approved report with media.');
+        }
+
+        return app(ImportMediaReservations::class)->purgeStaged($execution->id, $plan);
+    }
+
     /** @return list<int> Destination entry IDs in plan order. */
     public function apply(string $report, string $approvedDigest): array
     {
@@ -200,19 +266,29 @@ final readonly class ImportJournal
             throw new DomainException('A destination entry type is no longer available.');
         }
 
-        $schema = ImportSchema::digest($availableTypes->only(array_column($plan->records, 'entry_type_id')));
+        foreach ($plan->media as $asset) {
+            if ($asset->entryTypeId === null || $availableTypes->get($asset->entryTypeId)?->is_media !== true) {
+                throw new DomainException('The report needs an available media type for final import custody.');
+            }
+        }
+
+        $schema = ImportSchema::digest($availableTypes->only([
+            ...array_column($plan->records, 'entry_type_id'), ...array_column($plan->media, 'entryTypeId'),
+        ]));
         if (! hash_equals($plan->schemaDigest, $schema)) {
             throw new DomainException('The destination schema changed. Review a new import preview.');
         }
 
         $source = ImportSource::query()->where('site_id', $plan->siteId)->where('source_key', $plan->sourceKey)->first();
-        if ($this->relationFindings($plan->records, $source, $plan->siteId, $availableTypes) !== []) {
+        if ($this->relationFindings($plan->records, $source, $plan->siteId, $availableTypes, $plan->media) !== []) {
             throw new DomainException('The approved draft relationships are no longer available.');
         }
 
         $source ??= $this->source($plan->sourceKey);
         $execution = $this->recordApproval((int) $source->getKey(), $approvedDigest);
         $this->transitionExecution($plan->siteId, $execution->id, 'active');
+
+        app(ImportMediaReservations::class)->finalize($execution->id, $plan);
 
         $entries = [];
         foreach ($plan->records as $index => $action) {
@@ -361,7 +437,11 @@ final readonly class ImportJournal
     }
 
     /**
-     * @return array{state: string, records: list<array{position: int, source_type: string, source_id: string, outcome: string, entry_id: ?int, revision_id: ?int}>}
+     * @return array{
+     *     state: string,
+     *     records: list<array{position: int, source_type: string, source_id: string, outcome: string, entry_id: ?int, revision_id: ?int}>,
+     *     media?: list<array{source_type: string, source_id: string, outcome: string, entry_id: ?int}>
+     * }
      */
     public function executionReport(string $report, string $approvedDigest): array
     {
@@ -393,7 +473,33 @@ final readonly class ImportJournal
             }
         }
 
-        return ['state' => $execution->state ?? 'not-started', 'records' => $progress];
+        $report = ['state' => $execution->state ?? 'not-started', 'records' => $progress];
+        if ($plan->media === []) {
+            return $report;
+        }
+
+        $reservations = $execution === null ? collect() : ImportMediaReservation::query()->useWritePdo()
+            ->where('site_id', $plan->siteId)->where('import_execution_id', $execution->id)->get()
+            ->keyBy(static fn (ImportMediaReservation $reservation): string => DraftRelations::identity($reservation->source_type, $reservation->source_id_hash));
+        $report['media'] = [];
+        foreach ($plan->media as $asset) {
+            $reservation = $reservations->get(DraftRelations::identity($asset->sourceType, hash('sha256', $asset->sourceId)));
+            $outcome = 'pending';
+            if ($reservation?->staged === true) {
+                $outcome = match (true) {
+                    $reservation->path === null => 'reused',
+                    $reservation->entry_id !== null => 'finalized',
+                    default => 'staged',
+                };
+            }
+
+            $report['media'][] = [
+                'source_type' => $asset->sourceType, 'source_id' => $asset->sourceId,
+                'outcome' => $outcome, 'entry_id' => $reservation?->entry_id,
+            ];
+        }
+
+        return $report;
     }
 
     private function executionForPlan(ImportPlan $plan, string $approvedDigest): ?ImportExecution
@@ -601,7 +707,7 @@ final readonly class ImportJournal
         return $revision === null ? null : (int) $revision->getKey();
     }
 
-    private static function entryState(Entry $entry): string
+    public static function entryState(Entry $entry): string
     {
         $attributes = $entry->getRawOriginal();
         ksort($attributes, SORT_STRING);

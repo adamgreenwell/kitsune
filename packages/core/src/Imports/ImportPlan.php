@@ -28,6 +28,7 @@ final readonly class ImportPlan
     /**
      * @param  list<DraftAction>  $records
      * @param  list<Finding>  $findings
+     * @param  list<ImportMediaAsset>  $media
      */
     private function __construct(
         private string $bytes,
@@ -38,14 +39,16 @@ final readonly class ImportPlan
         public bool $complete,
         public array $records,
         public array $findings,
+        public array $media,
     ) {}
 
     /**
      * @param  list<DraftAction>  $records
      * @param  list<Finding>  $findings
+     * @param  list<ImportMediaAsset>  $media
      */
     public static function prepare(
-        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings,
+        int $orgId, int $siteId, string $sourceKey, string $adapter, string $snapshot, string $schemaDigest, array $records, array $findings, array $media = [],
     ): self {
         return self::restore(json_encode([
             'version' => 1,
@@ -66,6 +69,7 @@ final readonly class ImportPlan
                 return $record;
             }, $records),
             'findings' => $findings,
+            ...($media === [] ? [] : ['media' => array_map(static fn (ImportMediaAsset $asset): array => $asset->descriptor(), $media)]),
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
@@ -87,7 +91,8 @@ final readonly class ImportPlan
         }
 
         $plan = get_object_vars($envelope);
-        if (array_keys($plan) !== ['version', 'org_id', 'site_id', 'source_key', 'adapter', 'snapshot_sha256', 'schema_sha256', 'complete', 'records', 'findings']
+        $keys = ['version', 'org_id', 'site_id', 'source_key', 'adapter', 'snapshot_sha256', 'schema_sha256', 'complete', 'records', 'findings'];
+        if (! in_array(array_keys($plan), [$keys, [...$keys, 'media']], true)
             || $plan['version'] !== 1
             || ! is_int($plan['org_id']) || $plan['org_id'] < 1
             || ! is_int($plan['site_id']) || $plan['site_id'] < 1
@@ -98,7 +103,8 @@ final readonly class ImportPlan
             || ! is_bool($plan['complete'])
             || ! is_array($plan['records']) || ! array_is_list($plan['records'])
             || ! is_array($plan['findings']) || ! array_is_list($plan['findings'])
-            || $plan['complete'] !== ($plan['findings'] === [])) {
+            || $plan['complete'] !== ($plan['findings'] === [])
+            || (array_key_exists('media', $plan) && (! is_array($plan['media']) || ! array_is_list($plan['media'])))) {
             throw new InvalidArgumentException('The import report envelope is invalid.');
         }
 
@@ -132,7 +138,18 @@ final readonly class ImportPlan
             $findings[] = ['position' => $item->position, 'code' => $item->code];
         }
 
-        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings);
+        $media = [];
+        foreach ($plan['media'] ?? [] as $item) {
+            $asset = ImportMediaAsset::fromDescriptor($item);
+            $key = DraftRelations::identity($asset->sourceType, $asset->sourceId);
+            if (isset($seen[$key])) {
+                throw new InvalidArgumentException('The import report repeats a source record.');
+            }
+            $seen[$key] = true;
+            $media[] = $asset;
+        }
+
+        return new self($bytes, $plan['org_id'], $plan['site_id'], $plan['source_key'], $plan['schema_sha256'], $plan['complete'], $records, $findings, $media);
     }
 
     public function digest(): string

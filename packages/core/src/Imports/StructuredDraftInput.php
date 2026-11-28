@@ -26,13 +26,18 @@ final readonly class StructuredDraftInput
 
     public function __construct(private ImportJournal $journal) {}
 
-    /** @param array<string, int> $destinationTypes Operator-approved source type to destination type IDs. */
+    /**
+     * @param  array<string, int>  $destinationTypes
+     * @param  list<ImportMediaAsset>  $media
+     */
     public function preview(
         string $format,
         string $sourceKey,
         string $bytes,
         array $destinationTypes,
         bool $complete,
+        array $media = [],
+        ?string $mediaRoot = null,
     ): ImportPlan {
         if (! mb_check_encoding($bytes, 'UTF-8')) {
             throw new InvalidArgumentException('The structured import must use UTF-8.');
@@ -89,7 +94,7 @@ final readonly class StructuredDraftInput
             ];
         }
 
-        return $this->journal->preview($sourceKey, $format.':v1', hash('sha256', $bytes), $drafts, $complete);
+        return $this->journal->preview($sourceKey, $format.':v1', hash('sha256', $bytes), $drafts, $complete, $media, $mediaRoot);
     }
 
     /** @return list<array<string, mixed>> */

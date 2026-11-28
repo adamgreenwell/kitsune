@@ -19,6 +19,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  *
  * @property int $id
  * @property int $import_source_id
+ * @property string $plan_digest
  * @property string $state
  */
 #[SiteScoped]

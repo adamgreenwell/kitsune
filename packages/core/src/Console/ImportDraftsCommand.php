@@ -14,6 +14,7 @@ use DomainException;
 use Illuminate\Console\Command;
 use InvalidArgumentException;
 use Kitsune\Core\Imports\ImportJournal;
+use Kitsune\Core\Imports\ImportMediaAsset;
 use Kitsune\Core\Imports\ImportPlan;
 use Kitsune\Core\Imports\StructuredDraftInput;
 use Kitsune\Core\Models\EntryType;
@@ -31,7 +32,7 @@ use Throwable;
 final class ImportDraftsCommand extends Command
 {
     protected $signature = 'kitsune:import-drafts
-        {action : preview, digest, apply, status or abandon}
+        {action : preview, digest, stage-media, apply, status, purge-staged-media or abandon}
         {path : Local input CSV, JSON or exact report file}
         {--org= : Destination Org slug}
         {--site= : Destination Site handle}
@@ -39,6 +40,8 @@ final class ImportDraftsCommand extends Command
         {--format= : csv or json for preview}
         {--type=* : Map a source type as source-name=destination-handle}
         {--complete : Confirm that the supplied rows cover the intended draft import}
+        {--media-manifest= : Local JSON list of media descriptors for preview}
+        {--media-root= : Local directory containing approved source files}
         {--approval= : Exact digest of the reviewed report}';
 
     protected $description = 'Rehearse a resumable draft import from a trusted host shell';
@@ -50,8 +53,8 @@ final class ImportDraftsCommand extends Command
 
         try {
             $action = $this->argument('action');
-            if (! in_array($action, ['preview', 'digest', 'apply', 'status', 'abandon'], true)) {
-                throw new InvalidArgumentException('Choose preview, digest, apply, status or abandon.');
+            if (! in_array($action, ['preview', 'digest', 'stage-media', 'apply', 'status', 'purge-staged-media', 'abandon'], true)) {
+                throw new InvalidArgumentException('Choose preview, digest, stage-media, apply, status, purge-staged-media or abandon.');
             }
 
             $org = Org::query()->useWritePdo()->where('slug', $this->requiredOption('org'))->first();
@@ -64,9 +67,10 @@ final class ImportDraftsCommand extends Command
 
             $bytes = $this->readInput();
             if ($action === 'preview') {
+                $media = $this->mediaManifest();
                 $plan = $input->preview(
                     $this->requiredOption('format'), $this->requiredOption('source'), $bytes, $this->destinationTypes($site),
-                    (bool) $this->option('complete'),
+                    (bool) $this->option('complete'), $media, $media === [] ? null : $this->requiredOption('media-root'),
                 );
                 $this->output->write($plan->report(), false, OutputInterface::OUTPUT_RAW);
 
@@ -85,6 +89,18 @@ final class ImportDraftsCommand extends Command
             }
 
             $approval = $this->requiredOption('approval');
+            if ($action === 'stage-media') {
+                $ids = $journal->stageMedia($bytes, $approval, $this->requiredOption('media-root'));
+                $this->output->writeln(json_encode(['state' => 'staged', 'reservations' => $ids], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
+
+                return self::SUCCESS;
+            }
+            if ($action === 'purge-staged-media') {
+                $ids = $journal->purgeStagedMedia($bytes, $approval);
+                $this->output->writeln(json_encode(['state' => 'purged', 'reservations' => $ids], JSON_THROW_ON_ERROR), OutputInterface::OUTPUT_RAW);
+
+                return self::SUCCESS;
+            }
             if ($action === 'apply') {
                 $journal->apply($bytes, $approval);
             } elseif ($action === 'abandon') {
@@ -118,7 +134,27 @@ final class ImportDraftsCommand extends Command
 
     private function readInput(): string
     {
-        $path = $this->argument('path');
+        return $this->readLocalFile($this->argument('path'));
+    }
+
+    /** @return list<ImportMediaAsset> */
+    private function mediaManifest(): array
+    {
+        $path = $this->option('media-manifest');
+        if ($path === null) {
+            return [];
+        }
+
+        $items = json_decode($this->readLocalFile($path), flags: JSON_THROW_ON_ERROR);
+        if (! is_array($items) || ! array_is_list($items)) {
+            throw new InvalidArgumentException('The import media manifest must be a list.');
+        }
+
+        return array_map(ImportMediaAsset::fromDescriptor(...), $items);
+    }
+
+    private function readLocalFile(mixed $path): string
+    {
         $file = is_string($path) ? realpath($path) : false;
         $contents = $file !== false && is_file($file) ? @file_get_contents($file) : false;
         if ($contents === false) {
