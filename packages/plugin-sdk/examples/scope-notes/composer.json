@@ -1,0 +1,28 @@
+{
+    "name": "kitsune/example-scope-notes",
+    "description": "A test fixture for the Kitsune plugin SDK.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev"
+    },
+    "require-dev": {
+        "kitsune/plugin-sdk": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\Example\\ScopeNotes\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\Example\\ScopeNotes\\ScopeNotesServiceProvider",
+            "scoping": ["site"]
+        }
+    },
+    "repositories": [
+        {"type": "path", "url": "../.."},
+        {"type": "path", "url": "../../../core"}
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "name": "kitsune/plugin-sdk",
+    "description": "Development fixtures and isolation assertions for Kitsune extensions.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev",
+        "orchestra/testbench": "^11.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\PluginSdk\\": "src/"
+        }
+    }
+}

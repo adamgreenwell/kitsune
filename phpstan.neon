@@ -23,6 +23,7 @@ parameters:
         - packages/person/src
         - packages/svg-sanitizer/src
         - packages/commerce/src
+        - packages/plugin-sdk/src
         # Development setup and release admission execute package code or change its installed form.
         - bin/check-plugin.php
         - bin/install-commerce-skeleton.php
