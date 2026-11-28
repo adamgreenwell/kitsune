@@ -78,17 +78,19 @@ final readonly class ImportJournal
             $identity = $action['source_type'].':'.hash('sha256', $action['source_id']);
             $slug = $action['entry_type_id'].':'.$action['slug'];
             $type = $availableTypes->get($action['entry_type_id']);
-            $conflict = match (true) {
-                isset($identities[$identity]) => 'repeated-source-identity',
-                isset($slugs[$slug]) => 'repeated-destination-slug',
-                $type === null => 'unavailable-entry-type',
+            $conflicts = match (true) {
+                isset($identities[$identity]) => [['code' => 'repeated-source-identity']],
+                isset($slugs[$slug]) => [['code' => 'repeated-destination-slug']],
+                $type === null => [['code' => 'unavailable-entry-type']],
                 default => $this->previewTarget($source, $siteId, $type, $action),
             };
 
             $identities[$identity] = true;
             $slugs[$slug] = true;
-            if ($conflict !== null) {
-                $findings[] = ['position' => $position, 'code' => $conflict];
+            if ($conflicts !== []) {
+                foreach ($conflicts as $conflict) {
+                    $findings[] = ['position' => $position, ...$conflict];
+                }
 
                 continue;
             }
@@ -133,8 +135,11 @@ final readonly class ImportJournal
         );
     }
 
-    /** @param DraftAction $action */
-    private function previewTarget(?ImportSource $source, int $siteId, EntryType $type, array &$action): ?string
+    /**
+     * @param  DraftAction  $action
+     * @return list<array{code: string, field?: string}>
+     */
+    private function previewTarget(?ImportSource $source, int $siteId, EntryType $type, array &$action): array
     {
         $mapping = $source === null ? null : $this->mappingQuery($siteId, (int) $source->getKey(), $action['source_type'], $action['source_id'])->first();
         $entry = $mapping === null ? null : Entry::query()->where('site_id', $siteId)->find($mapping->entry_id);
@@ -142,12 +147,12 @@ final readonly class ImportJournal
 
         if ($mapping !== null) {
             if (! $this->usableDraft($entry, $action['entry_type_id'])) {
-                return 'mapped-draft-unavailable';
+                return [['code' => 'mapped-draft-unavailable']];
             }
 
             $expectedRevision = $this->revisionId($entry, lock: false);
             if ($expectedRevision !== $mapping->entry_revision_id || self::entryState($entry) !== $mapping->entry_state_hash) {
-                return 'mapped-draft-changed';
+                return [['code' => 'mapped-draft-changed']];
             }
         }
 
@@ -158,18 +163,25 @@ final readonly class ImportJournal
         }
 
         if ($collision->exists()) {
-            return 'destination-slug-in-use';
+            return [['code' => 'destination-slug-in-use']];
         }
 
         try {
             DraftFieldValues::attributes($type, $entry, ['title' => $action['title'], 'slug' => $action['slug']], $action['values'] ?? []);
-        } catch (ValidationException) {
-            return 'invalid-field-values';
+        } catch (ValidationException $failure) {
+            $invalid = [];
+            foreach (array_keys($failure->errors()) as $attribute) {
+                if (preg_match('/^values\.([a-z0-9][a-z0-9_-]{0,95})(?:\.|$)/D', $attribute, $parts) === 1) {
+                    $invalid[$parts[1]] = ['code' => 'invalid-field-values', 'field' => $parts[1]];
+                }
+            }
+
+            return $invalid === [] ? [['code' => 'invalid-field-values']] : array_values($invalid);
         }
 
         $action['expected_revision_id'] = $expectedRevision;
 
-        return null;
+        return [];
     }
 
     /**

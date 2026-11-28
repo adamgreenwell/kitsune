@@ -19,7 +19,7 @@ use stdClass;
  *
  * @internal
  *
- * @phpstan-type Finding array{position: int, code: string, source_id?: string}
+ * @phpstan-type Finding array{position: int, code: string, source_id?: string, field?: string}
  * @phpstan-type LinkTargets array<string, list<array{source_type: string, source_id: string}>>
  * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets}
  */
@@ -167,11 +167,17 @@ final readonly class ImportPlan
         $findings = [];
         foreach ($items as $item) {
             if (! $item instanceof stdClass
-                || ! in_array(array_keys(get_object_vars($item)), [['position', 'code'], ['position', 'code', 'source_id']], true)
+                || ! in_array(array_keys(get_object_vars($item)), [
+                    ['position', 'code'],
+                    ['position', 'code', 'source_id'],
+                    ['position', 'code', 'field'],
+                    ['position', 'code', 'source_id', 'field'],
+                ], true)
                 || ! is_int($item->position) || $item->position < 0
                 || ! is_string($item->code) || ! self::validKey($item->code)
                 || (property_exists($item, 'source_id') && (! is_string($item->source_id)
-                    || $item->source_id === '' || strlen($item->source_id) > 4096))) {
+                    || $item->source_id === '' || strlen($item->source_id) > 4096))
+                || (property_exists($item, 'field') && (! is_string($item->field) || ! self::validKey($item->field)))) {
                 throw new InvalidArgumentException('The import report contains an invalid diagnostic.');
             }
 
@@ -179,6 +185,7 @@ final readonly class ImportPlan
                 'position' => $item->position,
                 'code' => $item->code,
                 ...(isset($item->source_id) ? ['source_id' => $item->source_id] : []),
+                ...(isset($item->field) ? ['field' => $item->field] : []),
             ];
         }
 
