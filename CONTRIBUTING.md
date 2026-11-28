@@ -279,6 +279,34 @@ Not to be discouraging — just so nobody wastes an afternoon:
 
 ---
 
+## Review a module's source
+
+Use a trusted Kitsune development checkout to scan a separate, unpacked module before
+installing it or running its code. The scanner uses the checkout's Composer development
+dependencies. Point it at the directory that contains the module's `composer.json`.
+
+```sh
+composer install
+php bin/check-plugin.php /path/to/reviewed-module
+```
+
+The command uses the module manifest's PSR-4 roots and parses PHP with a dedicated
+parser loader. It checks declarations against their source paths without running
+Composer's application autoloader or loading the module. It reports a JSON list of findings with relative files, lines and rules. Exit 1
+means a source check failed. Exit 2 means the scanner could not validate the input or its
+manifest. Exit 0 means the source checks passed.
+
+Use `php bin/check-plugin.php --strict /path/to/reviewed-module` in CI to also
+fail on findings that require review. Exit 3 means the scan found review items
+and no confirmed violations.
+
+Review the items in `review` with the package author. They include raw queries with a
+visible scope predicate, dynamic calls and deliberate kernel boundary crossings. The
+source scan cannot establish runtime authorization or which Org and Site a caller
+actually selects. Use the module verifier in a disposable host, then test requests from
+a sibling Site and another Org. The CLI is a development tool for the pre-alpha
+repository.
+
 ## Governance
 
 [`GOVERNANCE.md`](GOVERNANCE.md) — who decides, how maintainers earn commit rights, what happens if the maintainer disappears, and binding commitments about what will never happen to the licence — **is published now**, before there is anything to govern.
