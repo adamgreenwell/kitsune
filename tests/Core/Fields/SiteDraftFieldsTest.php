@@ -9,8 +9,10 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Kitsune\Core\Blueprints\Declarations\FieldDeclaration;
 use Kitsune\Core\Content\SiteDraftFields;
+use Kitsune\Core\Content\SiteDraftSnapshot;
 use Kitsune\Core\Content\SiteDraftWriter;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -172,4 +174,69 @@ it('requires the current Site, enabled type, current schema and an exact draft o
         'entry_type_id' => $this->type->id, 'scope_type' => 'site', 'scope_id' => $this->main->id, 'is_enabled' => false,
     ]);
     expect(fn () => $this->fields->describe($this->main->id, 'lesson', $this->actor))->toThrow(DomainException::class, 'unavailable');
+});
+
+it('reads the live draft, the revision and the legacy pin order under the current staff scope', function (): void {
+    foreach (['view', 'create', 'update'] as $action) {
+        $this->role->grant('entry.lesson.'.$action);
+    }
+    $snapshot = app(SiteDraftSnapshot::class);
+    $writer = app(SiteDraftWriter::class);
+    $first = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'First']);
+    $second = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Second']);
+    $this->actingAs($this->actor);
+    $schema = $this->fields->describe($this->main->id, 'lesson', $this->actor);
+    $created = $writer->save($this->main->id, 'lesson', $this->actor, $schema['fingerprint'], [
+        'title' => 'Approved', 'slug' => 'approved', 'values' => ['summary' => 'Initial', 'related' => [$second->id, $first->id]],
+    ]);
+    $entry = Entry::findOrFail($created['id']);
+    $storage = FieldStorage::where('handle', 'related')->sole();
+
+    // Existing receipts use the insertion order as the tiebreaker.
+    DB::table('entry_relations')->where('source_entry_id', $entry->id)->update(['ordering' => 0]);
+    $read = fn (?array $handles = null): array => $snapshot->read($this->main->id, 'lesson', $this->actor, $entry->id, $handles);
+    $result = $read(['related']);
+    expect($result)->toBe([
+        'id' => $entry->id, 'title' => 'Approved', 'slug' => 'approved', 'status' => 'draft',
+        'values' => $entry->values, 'revision' => $created['revision'],
+        'relations' => ['related' => $entry->relatedIdsForField($storage)],
+    ])->and($result['relations']['related'])->toBe([$second->id, $first->id])
+        ->and($read([])['relations'])->toBe([])
+        ->and(fn () => $read(['missing']))->toThrow(DomainException::class, 'relation is unavailable');
+
+    DB::table('entries')->where('id', $entry->id)->update(['title' => 'Unrecorded change']);
+    expect($read()['title'])->toBe('Unrecorded change')->and($read()['revision'])->toBe($created['revision']);
+
+    $this->context->setSite($this->sibling);
+    expect(fn () => $read())->toThrow(DomainException::class, 'unavailable');
+    $this->context->setSite($this->foreignSite);
+    expect(fn () => $read())->toThrow(DomainException::class, 'unavailable');
+    $this->context->setSite($this->main);
+    auth()->forgetUser();
+    expect(fn () => $read())->toThrow(DomainException::class, 'active staff actor');
+});
+
+it('returns ordered group references and refuses a partial snapshot of hidden links', function (): void {
+    foreach (['view', 'create', 'update'] as $action) {
+        $this->role->grant('entry.lesson.'.$action);
+    }
+    $this->actingAs($this->actor);
+    $uuid = (string) Str::uuid();
+    $group = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Followed', 'translation_group' => $uuid]);
+    $pin = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Pinned']);
+    $schema = $this->fields->describe($this->main->id, 'lesson', $this->actor);
+    $created = app(SiteDraftWriter::class)->save($this->main->id, 'lesson', $this->actor, $schema['fingerprint'], [
+        'title' => 'Approved', 'values' => ['summary' => 'Initial', 'related' => [['entry' => $group->id, 'mode' => 'follow'], $pin->id]],
+    ]);
+    $read = fn (?array $handles = null): array => app(SiteDraftSnapshot::class)
+        ->read($this->main->id, 'lesson', $this->actor, $created['id'], $handles);
+    expect($read()['relations']['related'])->toBe([['group' => $uuid], $pin->id]);
+
+    $this->context->setSite($this->sibling);
+    $sibling = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hidden target']);
+    $this->context->setSite($this->main);
+    DB::table('entry_relations')->where('source_entry_id', $created['id'])->where('target_entry_id', $pin->id)
+        ->update(['target_entry_id' => $sibling->id]);
+    expect(fn () => $read())->toThrow(DomainException::class, 'relation is unavailable')
+        ->and($read([])['relations'])->toBe([]);
 });

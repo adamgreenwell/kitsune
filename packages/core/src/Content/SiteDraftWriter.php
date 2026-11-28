@@ -46,11 +46,7 @@ final readonly class SiteDraftWriter
         ?int $entryId = null,
         ?int $expectedRevision = null,
     ): array {
-        $current = Permissions::currentUser();
-        if ($current === null || $current::class !== $actor::class || $current->getAuthIdentifier() === null
-            || (string) $current->getAuthIdentifier() !== (string) $actor->getAuthIdentifier()) {
-            throw new DomainException('Draft writes require the active staff actor.');
-        }
+        $current = $this->access->activeActor($actor);
 
         try {
             return TransactionRecovery::run((new Entry)->getConnection(), function () use (
@@ -59,7 +55,7 @@ final readonly class SiteDraftWriter
                 $site = $this->access->site($siteId);
                 $type = $this->access->type($site, $typeHandle, $current);
                 $entry = $this->access->writeTarget($siteId, $type, $current, $entryId, lock: true);
-                if (($entry === null ? null : self::revision($entry)) !== $expectedRevision) {
+                if (($entry === null ? null : $this->access->revision($entry)) !== $expectedRevision) {
                     throw new DomainException('The draft revision changed. Review the draft again.');
                 }
 
@@ -73,7 +69,7 @@ final readonly class SiteDraftWriter
                 [$attributes, $links] = $contract->writeChanges($entry, $changes);
                 $this->persist($entry, $site, $current, $contract, $attributes, $links);
 
-                return ['id' => (int) $entry->getKey(), 'revision' => self::revision($entry), 'errors' => []];
+                return ['id' => (int) $entry->getKey(), 'revision' => $this->access->revision($entry), 'errors' => []];
             });
         } catch (ValidationException $failure) {
             return ['id' => null, 'revision' => null, 'errors' => $failure->errors()];
@@ -125,17 +121,7 @@ final readonly class SiteDraftWriter
             }
 
             $definitions = $contract->definitions();
-            $viewable = [];
-            $canRead = function (Entry $target) use ($site, $actor, &$viewable): bool {
-                if ($target->org_id !== $site->org_id || ($target->site_id !== null && $target->site_id !== $site->id)) {
-                    return false;
-                }
-                if (! array_key_exists($target->type_handle, $viewable)) {
-                    $viewable[$target->type_handle] = $this->access->viewableTypeId($site, $target->type_handle, $actor);
-                }
-
-                return $viewable[$target->type_handle] === $target->entry_type_id && Gate::forUser($actor)->allows('view', $target);
-            };
+            $canRead = $this->access->relationReader($site, $actor);
             $entry->writeRelationsAndReconcile(function () use ($entry, $actor, $definitions, $links, $canRead, $creating, $site): void {
                 foreach ($links as $handle => $choices) {
                     try {
@@ -157,12 +143,5 @@ final readonly class SiteDraftWriter
         } finally {
             $revision?->discard();
         }
-    }
-
-    private static function revision(Entry $entry): ?int
-    {
-        $id = $entry->revisions()->latest('id')->lockForUpdate()->value('id');
-
-        return $id === null ? null : (int) $id;
     }
 }
