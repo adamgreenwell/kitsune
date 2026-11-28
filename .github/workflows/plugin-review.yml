@@ -1,0 +1,122 @@
+name: Plugin source review
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact-id:
+        description: Artifact ID in this repository
+        required: true
+        type: string
+      artifact-sha256:
+        description: SHA-256 of the GitHub Actions artifact ZIP
+        required: true
+        type: string
+      distribution-sha256:
+        description: SHA-256 of the original Composer distribution ZIP
+        required: true
+        type: string
+      submission-head-sha:
+        description: Commit SHA of the workflow run that uploaded the artifact
+        required: true
+        type: string
+      package-version:
+        description: Operator-verified release version without the leading v (for example 1.2.3)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install trusted development dependencies
+        run: composer install --prefer-dist --no-plugins --no-scripts --no-interaction --no-progress
+
+      - name: Download the specified submission
+        env:
+          ARTIFACT_ID: ${{ inputs.artifact-id }}
+          ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+          SUBMISSION_HEAD_SHA: ${{ inputs.submission-head-sha }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 2
+          [[ "$ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 2
+          [[ "$SUBMISSION_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          work="$RUNNER_TEMP/plugin-review"
+          mkdir -m 700 "$work"
+          url="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
+          options=(--fail --silent --show-error --proto '=https' --max-time 120)
+          curl "${options[@]}" --max-filesize 1048576 \
+            --header @<(printf 'Authorization: Bearer %s' "$GH_TOKEN") \
+            --header 'Accept: application/vnd.github+json' \
+            --output "$work/artifact.json" "$url"
+          jq -e --arg id "$ARTIFACT_ID" --arg digest "sha256:$ARTIFACT_SHA256" \
+            --arg repo "$REPOSITORY_ID" --arg sha "$SUBMISSION_HEAD_SHA" '
+              (.id | tostring) == $id and .name == "plugin-submission"
+              and .expired == false and .digest == $digest
+              and (.workflow_run.repository_id | tostring) == $repo
+              and (.workflow_run.head_repository_id | tostring) == $repo
+              and .workflow_run.head_sha == $sha
+            ' "$work/artifact.json" >/dev/null
+          curl "${options[@]}" --location --proto-redir '=https' --max-filesize 135266304 \
+            --header @<(printf 'Authorization: Bearer %s' "$GH_TOKEN") \
+            --output "$work/submission.zip" "$url/zip"
+
+      - name: Inspect the archive and file inventory
+        env:
+          ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+          DISTRIBUTION_SHA256: ${{ inputs.distribution-sha256 }}
+          PACKAGE_VERSION: ${{ inputs.package-version }}
+        run: |
+          set -u
+          work="$RUNNER_TEMP/plugin-review"
+          [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$ ]] || exit 2
+          python3 -I .github/scripts/unpack-plugin-submission.py \
+            "$work/submission.zip" "$ARTIFACT_SHA256" "$DISTRIBUTION_SHA256" "$work/package"
+          mkdir -m 700 "$work/reports"
+          jq --arg digest "sha256:$DISTRIBUTION_SHA256" --arg version "$PACKAGE_VERSION" '
+            {artifact_id: .id, artifact_digest: .digest, workflow_run: .workflow_run,
+             distribution_digest: $digest, version_declared_by_operator: $version}
+          ' "$work/artifact.json" > "$work/reports/provenance.json"
+          php bin/check-plugin-distribution.php record "$work/package" "$PACKAGE_VERSION" > "$work/package.json"
+          jq -e 'type == "object"' "$work/package.json" >/dev/null
+          mv "$work/package.json" "$work/reports/package.json"
+
+          status=0
+          php bin/check-plugin.php --strict "$work/package" > "$work/source.json" || status=$?
+          case "$status" in
+            0|1|3)
+              jq -e 'type == "object"' "$work/source.json" >/dev/null
+              mv "$work/source.json" "$work/reports/source.json"
+              ;;
+          esac
+          printf '%s\n' "$status" > "$work/reports/scanner-exit-status.txt"
+          exit "$status"
+
+      - name: Retain inspection reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plugin-review/reports/
+          if-no-files-found: ignore
