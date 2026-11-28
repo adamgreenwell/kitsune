@@ -22,7 +22,7 @@ use PDOException;
 final class WordPressDatabaseExport
 {
     /** @return array{sha256: string, blog: string, rows: list<SourceRow>} */
-    public function read(PDO $source, string $prefix, string $blog): array
+    public function read(PDO $source, string $prefix, string $blog, ?WordPressBodyRead $bodies = null): array
     {
         if ($source->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql' || $source->inTransaction()
             || preg_match('/^[a-zA-Z0-9_]{1,54}$/D', $prefix) !== 1 || $blog === '') {
@@ -36,7 +36,7 @@ final class WordPressDatabaseExport
             }
 
             try {
-                $rows = $this->rows($source, $prefix, $blog);
+                $rows = $this->rows($source, $prefix, $blog, $bodies);
             } finally {
                 if ($source->exec('ROLLBACK') === false) {
                     throw new InvalidArgumentException('Unable to close the read-only WordPress snapshot.');
@@ -54,7 +54,7 @@ final class WordPressDatabaseExport
     }
 
     /** @return list<SourceRow> */
-    private function rows(PDO $source, string $prefix, string $blog): array
+    private function rows(PDO $source, string $prefix, string $blog, ?WordPressBodyRead $bodies): array
     {
         $address = $source->query("SELECT option_value FROM `{$prefix}options` WHERE option_name = 'home'");
         if ($address === false || $address->fetchAll(PDO::FETCH_COLUMN) !== [$blog]) {
@@ -80,6 +80,9 @@ final class WordPressDatabaseExport
             $row['meta'] = [];
             $rows[$row['id']] = $row;
         }
+        if ($bodies !== null) {
+            $rows = $this->readBodies($source, $prefix, $rows, $bodies);
+        }
         $metadata = $source->query("SELECT CAST(post_id AS CHAR) AS post_id, meta_key, meta_value
             FROM `{$prefix}postmeta` ORDER BY meta_id");
         if ($metadata === false) {
@@ -92,5 +95,39 @@ final class WordPressDatabaseExport
         }
 
         return array_values($rows);
+    }
+
+    /**
+     * The post metadata and bounded batches are read in the same repeatable-read transaction.
+     *
+     * @param  array<array-key, SourceRow>  $rows
+     * @return array<array-key, SourceRow>
+     */
+    private function readBodies(PDO $source, string $prefix, array $rows, WordPressBodyRead $bodies): array
+    {
+        $ids = [];
+        foreach ($rows as $id => $row) {
+            if ($bodies->selects($row['type'], $row['status'])) {
+                $ids[] = $id;
+            }
+        }
+
+        $limit = WordPressBodyRead::MAX_BODY_BYTES;
+        foreach (array_chunk($ids, 16) as $batch) {
+            $parameters = implode(', ', array_fill(0, count($batch), '?'));
+            $posts = $source->prepare("SELECT CAST(ID AS CHAR) AS id, OCTET_LENGTH(post_password) > 0 AS protected,
+                CASE WHEN OCTET_LENGTH(post_password) = 0 AND OCTET_LENGTH(CONVERT(post_content USING utf8mb4)) <= {$limit}
+                THEN CONVERT(post_content USING utf8mb4) END AS body
+                FROM `{$prefix}posts` WHERE ID IN ({$parameters}) ORDER BY ID");
+            if ($posts === false || ! $posts->execute($batch)) {
+                throw new InvalidArgumentException('Unable to read the selected WordPress bodies.');
+            }
+            while (($row = $posts->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $id = $row['id'];
+                $rows[$id] += $bodies->collect($row['body'], (bool) $row['protected']);
+            }
+        }
+
+        return $rows;
     }
 }

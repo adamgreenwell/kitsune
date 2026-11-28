@@ -80,6 +80,23 @@ The positional path in database mode is the reviewed ACF report. The reader conf
 the source URL against the prefix's `home` option and requires InnoDB for a read-only
 repeatable-read snapshot. Configure source credentials in the host environment.
 
+## Review WordPress body fields
+
+Use `--wordpress-body=post=body` in raw WXR or offline database preview to map
+one WordPress post type to an existing single rich-text field on its destination
+entry type. Preview uses paragraph breaks and line breaks for plain-text bodies.
+Review the converted HTML in the report. It flags markup normalization and
+classic layout for review. Blockers identify the affected field.
+Preview makes no destination changes. Apply checks the reviewed rich text against
+the current field and normalization before writing drafts.
+
+The reader retains up to 512 KiB per source body and 16 MiB of bodies per report.
+The normalized values also have a 16 MiB report budget. Password-protected bodies
+and recognized inline media hold approval. Media mentioned in a body needs reviewed
+rehosting before conversion can proceed. The reader keeps the WordPress source
+bytes local and includes the original body digest in its source fingerprint.
+WordPress rendering behavior such as shortcodes remains an editorial review item.
+
 ## Plan former addresses
 
 Once an approved draft import is complete, use `plan-redirects` with the same report,

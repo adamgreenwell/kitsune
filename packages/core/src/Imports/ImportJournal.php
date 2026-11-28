@@ -297,6 +297,14 @@ final readonly class ImportJournal
             throw new DomainException('The destination schema changed. Review a new import preview.');
         }
 
+        foreach ($plan->records as $action) {
+            DraftFieldValues::verifyReviewedRichText(
+                $availableTypes->get($action['entry_type_id']),
+                $action['reviewed_rich_text'] ?? [],
+                $action['values'] ?? [],
+            );
+        }
+
         $source = ImportSource::query()->where('site_id', $plan->siteId)->where('source_key', $plan->sourceKey)->first();
         if ($this->relationFindings($plan->records, $source, $plan->siteId, $availableTypes, $plan->media) !== []) {
             throw new DomainException('The approved draft relationships are no longer available.');

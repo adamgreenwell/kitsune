@@ -14,6 +14,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Console\ImportDraftsCommand;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
@@ -22,6 +23,8 @@ use Kitsune\Core\Imports\ImportPlan;
 use Kitsune\Core\Imports\ImportRedirectPlan;
 use Kitsune\Core\Imports\ImportSchema;
 use Kitsune\Core\Imports\StructuredDraftInput;
+use Kitsune\Core\Media\MediaDelivery;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -975,5 +978,171 @@ it('plans former addresses from committed import identities and holds unroutable
         $this->get('https://example.test/news/catalogue/story')->assertOk();
     } finally {
         (new Filesystem)->deleteDirectory($theme);
+    }
+});
+
+it('plans the selected WordPress rich text field and writes only reviewed draft content', function (): void {
+    if (! class_exists(XMLReader::class)) {
+        $this->markTestSkipped('This import format requires PHP XMLReader.');
+    }
+
+    $storage = FieldStorage::create([
+        'handle' => 'source_body', 'type' => 'rich_text', 'settings' => [],
+        'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+        'label' => 'Body', 'is_required' => false,
+    ]);
+    $mediaType = EntryType::create([
+        'handle' => 'source_asset', 'name' => 'Asset', 'plural_name' => 'Assets', 'is_media' => true,
+    ]);
+    $relation = FieldStorage::create([
+        'handle' => 'illustration', 'type' => 'relation',
+        'settings' => ['targetTypes' => ['source_asset']], 'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $relation->id, 'label' => 'Illustration',
+    ]);
+    $kernel = app(Kernel::class);
+    $kernel->registerCommand(app(ImportDraftsCommand::class));
+    $temporary = sys_get_temp_dir().'/kitsune-wordpress-body-'.bin2hex(random_bytes(8));
+    mkdir($temporary, 0700);
+    $export = $temporary.'/export.xml';
+    $acf = $temporary.'/acf.json';
+    $report = $temporary.'/plan.json';
+    file_put_contents($acf, '{"blocked":false,"groups":[]}');
+    $fixture = <<<'XML'
+        <rss version="2.0" xmlns:wp="https://wordpress.org/export/1.2/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+          <channel>
+            <wp:wxr_version>1.2</wp:wxr_version>
+            <wp:base_blog_url>https://fixture.example.test/blog</wp:base_blog_url>
+            <item><title>Article</title><wp:post_id>17</wp:post_id><wp:post_type>post</wp:post_type>
+              <wp:status>publish</wp:status><wp:post_parent>0</wp:post_parent><wp:post_name>article</wp:post_name>
+              <wp:post_password>PASSWORD</wp:post_password><wp:post_date_gmt>2025-01-01 12:00:00</wp:post_date_gmt>
+              <content:encoded><![CDATA[BODY]]></content:encoded>
+              POSTMETA
+            </item>
+            ATTACHMENT
+          </channel>
+        </rss>
+        XML;
+    $preview = static function (string $body, string $password = '', array $override = [], string $postMeta = '', string $attachment = '') use ($kernel, $fixture, $export, $acf): array {
+        file_put_contents($export, strtr($fixture, [
+            'BODY' => $body, 'PASSWORD' => $password, 'POSTMETA' => $postMeta, 'ATTACHMENT' => $attachment,
+        ]));
+        $output = new BufferedOutput;
+        $exit = $kernel->call('kitsune:import-drafts', [
+            'action' => 'preview', 'path' => $export, '--org' => 'home', '--site' => 'home',
+            '--source' => 'wordpress-body-fixture', '--format' => 'wxr', '--wordpress-blog' => 'https://fixture.example.test/blog',
+            '--acf-schema' => $acf, '--type' => ['post=catalogue'], '--wordpress-body' => ['post=source_body'],
+            '--complete' => true, ...$override,
+        ], $output);
+
+        return [$exit, $output->fetch()];
+    };
+
+    try {
+        $fullBody = '<!-- wp:paragraph --><p>Copy <strong>with emphasis</strong>.</p><!-- /wp:paragraph -->';
+        $normalized = '<p>Copy <strong>with emphasis</strong>.</p>';
+        [$status, $bytes] = $preview($fullBody);
+        $plan = ImportPlan::restore($bytes);
+        expect($status)->toBe(0)->and(Entry::count())->toBe(0)
+            ->and($plan->records[0]['values'])->toBe(['source_body' => $normalized])
+            ->and(array_column($plan->sourceNotices, 'code'))->toContain('wordpress-body-markup-normalized')
+            ->not->toContain('wordpress-body-conversion-not-performed')
+            ->and($bytes)->not->toContain('wp:paragraph');
+
+        [$classicStatus, $classicReport] = $preview("First & second.\n\nNext paragraph.\nNew line.");
+        expect($classicStatus)->toBe(0)
+            ->and(ImportPlan::restore($classicReport)->records[0]['values']['source_body'])
+            ->toBe('<p>First &amp; second.</p><p>Next paragraph.<br>New line.</p>');
+        [$literalStatus] = $preview('<p>Docs show &lt;img&gt; as text.</p>');
+        expect($literalStatus)->toBe(0);
+
+        foreach ([
+            '<p>Copy</p><img src="https://fixture.example.test/uploads/photo.jpg">',
+            '<!-- wp:embed --><p>https://fixture.example.test/uploads/photo.jpg</p><!-- /wp:embed -->',
+            '<div style="background-image:url(https://fixture.example.test/uploads/photo.jpg)">Cover</div>',
+            '<p><a href="https://fixture.example.test/wp-content/uploads/photo.jpg">A download</a></p>',
+        ] as $mediaBody) {
+            [$mediaStatus, $mediaBytes] = $preview($mediaBody);
+            expect($mediaStatus)->toBe(1)
+                ->and(ImportPlan::restore($mediaBytes)->findings)->toContain([
+                    'position' => 1, 'code' => 'wordpress-finding-body-inline-media-needs-rehosting',
+                    'source_id' => '17', 'field' => 'source_body',
+                ])->and($mediaBytes)->not->toContain('photo.jpg');
+        }
+
+        [$protectedStatus, $protectedBytes] = $preview($fullBody, 'fixture-password');
+        expect($protectedStatus)->toBe(1)
+            ->and(array_column(ImportPlan::restore($protectedBytes)->findings, 'code'))->toContain('wordpress-finding-body-is-password-protected')
+            ->and($protectedBytes)->not->toContain('fixture-password', 'with emphasis')
+            ->and($preview($fullBody, override: ['--wordpress-body' => ['post=unavailable']])[0])->toBe(1);
+
+        $command = [
+            'action' => 'apply', 'path' => $report, '--org' => 'home', '--site' => 'home', '--approval' => $plan->digest(),
+        ];
+        $drifted = ImportPlan::restore(str_replace($normalized, $fullBody, $bytes));
+        file_put_contents($report, $drifted->report());
+        expect($kernel->call('kitsune:import-drafts', array_replace($command, ['--approval' => $drifted->digest()])))->toBe(1)
+            ->and(Entry::count())->toBe(0)
+            ->and(ImportSource::count())->toBe(0);
+
+        file_put_contents($report, $bytes);
+        expect($kernel->call('kitsune:import-drafts', $command))->toBe(0);
+        $entry = Entry::query()->sole();
+        expect($entry->status)->toBe('draft')->and($entry->published_at)->toBeNull()
+            ->and($entry->values['source_body'])->toContain('<strong>with emphasis</strong>')
+            ->and($kernel->call('kitsune:import-drafts', $command))->toBe(0)
+            ->and(Entry::query()->sole()->id)->toBe($entry->id);
+
+        $image = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jXWQAAAAASUVORK5CYII=', true);
+        file_put_contents($temporary.'/photo.png', $image);
+        $checksum = hash('sha256', $image);
+        $manifest = $temporary.'/media.json';
+        file_put_contents($manifest, json_encode([[
+            'source_type' => 'attachment', 'source_id' => '40', 'path' => 'photo.png', 'original_name' => 'photo.png',
+            'size' => strlen($image), 'sha256' => $checksum, 'entry_type_id' => $mediaType->id,
+        ]], JSON_THROW_ON_ERROR));
+        file_put_contents($acf, json_encode(['blocked' => false, 'groups' => [[
+            'post_types' => ['post'],
+            'fields' => [['name' => 'illustration', 'source_key' => 'field_cover', 'required' => false, 'proposed_kind' => 'media-reference']],
+        ]]], JSON_THROW_ON_ERROR));
+
+        $postMeta = <<<'XML'
+            <wp:postmeta><wp:meta_key>illustration</wp:meta_key><wp:meta_value>40</wp:meta_value></wp:postmeta>
+            <wp:postmeta><wp:meta_key>_illustration</wp:meta_key><wp:meta_value>field_cover</wp:meta_value></wp:postmeta>
+            XML;
+        $attachment = <<<'XML'
+            <item><title>Photo</title><wp:post_id>40</wp:post_id><wp:post_type>attachment</wp:post_type>
+              <wp:status>inherit</wp:status><wp:post_parent>17</wp:post_parent><wp:post_name>photo</wp:post_name>
+              <wp:post_date_gmt>2025-01-01 12:00:00</wp:post_date_gmt><content:encoded></content:encoded>
+              <wp:postmeta><wp:meta_key>_wp_attached_file</wp:meta_key><wp:meta_value>photo.png</wp:meta_value></wp:postmeta>
+            </item>
+            XML;
+        $disk = Storage::fake(MediaDisks::PRIVATE);
+        [$withMediaStatus, $withMediaBytes] = $preview('<p>Updated copy and a separately approved image.</p>', override: [
+            '--media-manifest' => $manifest, '--media-root' => $temporary,
+        ], postMeta: $postMeta, attachment: $attachment);
+        $withMedia = ImportPlan::restore($withMediaBytes);
+        expect($withMedia->findings)->toBe([])
+            ->and($withMediaStatus)->toBe(0)->and($withMedia->records[0]['links']['illustration'])->toBe([
+                ['source_type' => 'attachment', 'source_id' => '40'],
+            ])->and($disk->allFiles())->toBe([]);
+        file_put_contents($report, $withMediaBytes);
+        $applyMedia = array_replace($command, ['--approval' => $withMedia->digest()]);
+        expect($kernel->call('kitsune:import-drafts', array_replace($applyMedia, [
+            'action' => 'stage-media', '--media-root' => $temporary,
+        ])))->toBe(0)->and($kernel->call('kitsune:import-drafts', $applyMedia))->toBe(0);
+        $related = Entry::where('entry_type_id', $mediaType->id)->sole();
+        $file = MediaDelivery::fileFor($related);
+        expect($file?->visibility)->toBe('private')
+            ->and($file?->checksum)->toBe($checksum)
+            ->and($related->site_id)->toBe($this->home->id)
+            ->and($entry->fresh()->relationState())->toBe([$relation->id => [$related->id]])
+            ->and($entry->fresh()->values['source_body'])->toContain('Updated copy');
+    } finally {
+        (new Filesystem)->deleteDirectory($temporary);
     }
 });

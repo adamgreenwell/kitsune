@@ -34,10 +34,13 @@ final readonly class WordPressDraftInput
     /**
      * @param  array<string, int>  $destinationTypes
      * @param  list<ImportMediaAsset>  $media
+     * @param  list<Finding>  $bodyNotices
+     * @param  array<string, string>  $bodyFields
      */
     public function preview(
         string $mode, string $sourceKey, string $projection, array $destinationTypes, bool $complete,
         array $media, ?string $mediaRoot, ?string $snapshot = null, ?string $confirmedBlog = null,
+        array $bodyNotices = [], bool $metadataOnly = true, array $bodyFields = [],
     ): ImportPlan {
         if (! in_array($mode, ['direct', 'wxr'], true)) {
             throw new InvalidArgumentException('Use a direct or WXR WordPress projection.');
@@ -85,6 +88,7 @@ final readonly class WordPressDraftInput
                 }
                 $links[$field] = [(object) ['source_type' => 'attachment', 'source_id' => $attachment]];
             }
+            $bodyField = $bodyFields[$row->source->type] ?? null;
             $drafts[] = [
                 'source_type' => $row->source->type,
                 'source_id' => $id,
@@ -93,6 +97,7 @@ final readonly class WordPressDraftInput
                 'slug' => $row->slug ?? null,
                 'values' => (object) $values,
                 'links' => (object) $links,
+                ...($bodyField === null || ! isset($values[$bodyField]) ? [] : ['reviewed_rich_text' => [$bodyField]]),
             ];
         }
 
@@ -106,7 +111,7 @@ final readonly class WordPressDraftInput
         if ($report->blocked && $blockers === []) {
             $blockers[] = ['position' => 0, 'code' => 'wordpress-source-blocked'];
         }
-        $notices = ['wordpress-body-conversion-not-performed' => ['position' => 0, 'code' => 'wordpress-body-conversion-not-performed']];
+        $notices = $metadataOnly ? ['wordpress-body-conversion-not-performed' => ['position' => 0, 'code' => 'wordpress-body-conversion-not-performed']] : [];
         $limits = self::items($report->limits ?? []);
         array_push($limits, ...($mode === 'wxr' ? self::WXR_LIMITS : []));
         foreach ($limits as $code) {
@@ -120,7 +125,7 @@ final readonly class WordPressDraftInput
         return $this->journal->preview(
             $sourceKey, 'wordpress:'.$mode.':v1', $snapshot ?? hash('sha256', $projection), $drafts, $complete,
             $media, $mediaRoot,
-            ['blockers' => $blockers, 'notices' => array_values($notices)], $confirmedBlog,
+            ['blockers' => $blockers, 'notices' => [...array_values($notices), ...$bodyNotices]], $confirmedBlog,
         );
     }
 

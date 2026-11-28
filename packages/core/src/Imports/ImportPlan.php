@@ -21,7 +21,7 @@ use stdClass;
  *
  * @phpstan-type Finding array{position: int, code: string, source_id?: string, field?: string}
  * @phpstan-type LinkTargets array<string, list<array{source_type: string, source_id: string}>>
- * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets}
+ * @phpstan-type DraftAction array{source_type: string, source_id: string, entry_type_id: int, title: string, slug: string, expected_revision_id: ?int, values?: array<string, mixed>, links?: LinkTargets, reviewed_rich_text?: list<string>}
  */
 final readonly class ImportPlan
 {
@@ -217,7 +217,7 @@ final readonly class ImportPlan
 
         $action = get_object_vars($record);
         $required = ['source_type', 'source_id', 'entry_type_id', 'title', 'slug', 'expected_revision_id'];
-        if (array_diff($required, array_keys($action)) !== [] || array_diff(array_keys($action), [...$required, 'values', 'links']) !== []
+        if (array_diff($required, array_keys($action)) !== [] || array_diff(array_keys($action), [...$required, 'values', 'links', 'reviewed_rich_text']) !== []
             || (array_key_exists('values', $action) && ! $action['values'] instanceof stdClass)
             || ! is_string($action['source_type']) || ! self::validKey($action['source_type'])
             || ! is_string($action['source_id']) || $action['source_id'] === '' || strlen($action['source_id']) > 4096
@@ -227,6 +227,21 @@ final readonly class ImportPlan
             || preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $action['slug']) !== 1
             || ($action['expected_revision_id'] !== null && (! is_int($action['expected_revision_id']) || $action['expected_revision_id'] < 1))) {
             throw new InvalidArgumentException('The import report contains an invalid draft action.');
+        }
+
+        $reviewedRichText = $action['reviewed_rich_text'] ?? [];
+        if ((array_key_exists('reviewed_rich_text', $action) && $reviewedRichText === [])
+            || ! is_array($reviewedRichText) || ! array_is_list($reviewedRichText)) {
+            throw new InvalidArgumentException('Reviewed rich text needs a nonempty list of field handles.');
+        }
+        $values = isset($action['values']) ? get_object_vars($action['values']) : [];
+        $seenRichText = [];
+        foreach ($reviewedRichText as $handle) {
+            if (! is_string($handle) || ! self::validKey($handle) || ! is_string($values[$handle] ?? null)
+                || isset($seenRichText[$handle])) {
+                throw new InvalidArgumentException('A reviewed rich-text field is invalid, absent, or repeated.');
+            }
+            $seenRichText[$handle] = true;
         }
 
         return [
@@ -240,6 +255,7 @@ final readonly class ImportPlan
                 'values' => json_decode(json_encode($action['values'], JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR),
             ]),
             ...(! array_key_exists('links', $action) ? [] : ['links' => self::links($action['links'])]),
+            ...($reviewedRichText === [] ? [] : ['reviewed_rich_text' => $reviewedRichText]),
         ];
     }
 
